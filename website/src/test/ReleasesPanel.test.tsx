@@ -175,6 +175,76 @@ describe('ReleasesPanel', () => {
     expect(screen.queryByTestId('releases-show-more')).toBeNull()
   })
 
+  it('moves focus to the first revealed row when the last Show more goes away', async () => {
+    mount(MANY)
+    await waitFor(() => expect(rows()).toHaveLength(5))
+    fireEvent.click(screen.getByRole('button', { name: 'Show 5 more' }))
+    expect(document.activeElement).toBe(rows()[5])
+    fireEvent.click(screen.getByRole('button', { name: 'Show 2 more' }))
+    expect(screen.queryByTestId('releases-show-more')).toBeNull()
+    expect(document.activeElement).toBe(rows()[10])
+  })
+
+  it('points aria-controls at the notes only while a row is open', async () => {
+    mount(STABLE_NO_NOTES)
+    await waitFor(() => expect(rows()).toHaveLength(1))
+    const row = rows()[0]
+    expect(row).not.toHaveAttribute('aria-controls')
+    fireEvent.click(row)
+    expect(document.getElementById(row.getAttribute('aria-controls')!)).not.toBeNull()
+  })
+
+  it('scrolls to and focuses the release notes section for the old bare Releases address', async () => {
+    const scrolled: Element[] = []
+    const original = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = function (this: Element) { scrolled.push(this) }
+    try {
+      mount(MANY, '/settings/about?release=notes')
+      const section = await screen.findByTestId('release-notes-section')
+      await waitFor(() => expect(document.activeElement).toBe(section))
+      expect(scrolled).toContain(section)
+      // Nothing opens and no notice shows: it is a section link, not a version.
+      expect(rows().every(r => r.getAttribute('aria-expanded') === 'false')).toBe(true)
+      expect(screen.queryByTestId('releases-link-missing')).toBeNull()
+    } finally {
+      Element.prototype.scrollIntoView = original
+    }
+  })
+
+  it('tags the running release as installed and lists newer versions apart from earlier ones', async () => {
+    mount({
+      current_version: '0.12.0',
+      stale: false,
+      releases: [
+        { version: '0.12.2', date: '2026-11-12', body: 'Two ahead.', is_current: false, in_progress: false },
+        { version: '0.12.1', date: '2026-11-09', body: 'One ahead.', is_current: false, in_progress: false },
+        { version: '0.12.0', date: '2026-11-05', body: 'Mine.', is_current: true, in_progress: false },
+        { version: '0.11.0', date: '2026-10-24', body: 'Older.', is_current: false, in_progress: false },
+      ],
+    })
+    const newer = await screen.findByTestId('releases-newer')
+    expect(within(newer).getByRole('heading')).toHaveTextContent('Newer than yours')
+    expect(within(newer).getAllByRole('button').map(b => b.textContent)).toEqual([
+      expect.stringContaining('0.12.2'), expect.stringContaining('0.12.1'),
+    ])
+    expect(within(current()).getByTestId('releases-installed')).toHaveTextContent('Installed')
+    expect(rows().map(r => r.textContent)).toEqual([expect.stringContaining('0.11.0')])
+    expect(screen.getByText('1 release')).toBeInTheDocument()
+  })
+
+  it('shows the running release\u2019s summary and folds the rest into Read all notes', async () => {
+    mount({
+      ...STABLE_NO_NOTES,
+      releases: [{ ...STABLE_NO_NOTES.releases[0], body: 'The summary.\n\n### Section\n\n- **A change**: detail' }, STABLE_NO_NOTES.releases[1]],
+    })
+    await waitFor(() => expect(within(current()).getByText('The summary.')).toBeInTheDocument())
+    const more = within(current()).getByTestId('release-read-all')
+    expect(more).not.toHaveAttribute('open')
+    expect(within(more).getByText('Read all notes')).toBeInTheDocument()
+    // The summary is not repeated inside the disclosure.
+    expect(within(more).queryByText('The summary.')).toBeNull()
+  })
+
   it('offers no Show more when fewer than five earlier releases exist', async () => {
     mount(STABLE_NO_NOTES)
     await waitFor(() => expect(rows()).toHaveLength(1))

@@ -19750,7 +19750,7 @@
         "arm_ended_without_update": "Запрос на обновление завершился до начала обновления. Его отклонили или шлюз перезапустился, ты тут ни при чём. Нажми «{{label}}», чтобы попробовать ещё раз.",
         "try_again": "Повторить",
         "not_on_channel_yet": "Не на канале {{channel}}",
-        "channel_explainer_gateway_switch_note_version": "Переключение меняет только то, какой канал проверяется на обновления. Канал {{channel}} сейчас публикует v{{version}} — более старую версию, чем запущенная сборка; чтобы действительно перевести эту установку, выполните команду ниже.",
+        "channel_explainer_gateway_switch_note_version": "Переключение меняет только канал, в котором проверяются обновления. У тебя сборка новее той, что предлагает {{channel}} (v{{version}}), так что делать ничего не нужно, если только ты не хочешь вернуться на {{channel}}; для этого выполни команду ниже.",
         "channel_publishes_older_version": "Канал {{channel}} сейчас публикует v{{version}} — более старую версию, чем запущенная сборка, поэтому обновлений нет. <link>Скачайте v{{version}}</link>, чтобы перейти на этот канал.",
         "switch_to_version": "Перейти на v{{version}}",
         "in_app_channel_move_intro": "Релиз выбранного канала устанавливается рядом с текущим, а переключение происходит атомарно. Для применения нужна одна команда подтверждения на хосте шлюза.",
@@ -19788,7 +19788,12 @@
         "what_you_d_get_in_version_one": "Что входит в {{version}} ({{count}} изменение)",
         "what_you_d_get_in_version_few": "Что входит в {{version}} ({{count}} изменения)",
         "what_you_d_get_in_version_many": "Что входит в {{version}} ({{count}} изменений)",
-        "what_you_d_get_in_version_other": "Что входит в {{version}} ({{count}} изменения)"
+        "what_you_d_get_in_version_other": "Что входит в {{version}} ({{count}} изменения)",
+        "what_you_d_get_plain": "Что ты получишь",
+        "what_you_d_get_in_version_plain": "Что входит в {{version}}",
+        "what_you_d_get_none": "Между твоей сборкой и этим обновлением нет записей в журнале изменений.",
+        "version_label": "Версия",
+        "named_update_available": "{{name}} {{version}} доступна."
       },
       "botChannelPanel": {
         "allowed_user_ids": "Разрешённые ID пользователей",
@@ -21020,7 +21025,11 @@
         "show_more_few": "Показать ещё {{count}}",
         "show_more_many": "Показать ещё {{count}}",
         "show_more_other": "Показать ещё {{count}}",
-        "link_not_found": "Версии {{version}} нет в списке выпусков этой сборки."
+        "link_not_found": "Версии {{version}} нет в списке выпусков этой сборки.",
+        "section_label": "Примечания к выпускам",
+        "newer_title": "Новее твоей",
+        "badge_installed": "Установлена",
+        "read_all_notes": "Читать все примечания"
       },
       "reportProblemCard": {
         "blurb": "Что-то не работает? Отправьте нам диагностический отчёт — секреты удаляются из логов заранее.",

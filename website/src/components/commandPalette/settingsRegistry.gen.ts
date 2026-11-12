@@ -15,6 +15,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "about.release-notes",
+    "labelKey": "pages.settings.releases.section_label",
+    "tab": "about",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "release": "notes"
+    },
+    "label": "Release notes"
+  },
+  {
     "id": "about.update-channel",
     "labelKey": "pages.settings.aboutPanel.update_channel",
     "tab": "about",
@@ -31,6 +42,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "type": "toggle",
     "occurrence": 1,
     "configKey": "auto_update"
+  },
+  {
+    "id": "about.version",
+    "labelKey": "pages.settings.aboutPanel.version_label",
+    "tab": "about",
+    "type": "select",
+    "occurrence": 1,
+    "label": "Version",
+    "description": "Version, update channel, check for updates, and license"
   },
   {
     "id": "agent.kiro-sign-in",

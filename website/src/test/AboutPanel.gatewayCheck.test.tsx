@@ -416,8 +416,8 @@ describe('AboutPanel gateway update check', () => {
     // A promoted stable candidate keeps its rc stamp in latest_version (that is
     // what arm/apply key on); the check response carries the folded sibling
     // latest_version_display for the human-facing line. The manual-check
-    // handler must adopt it -- this is the path the About panel's "a new
-    // version (vX) is available" text renders from.
+    // handler must adopt it -- this is the path the About panel's "Kiro Crew X
+    // is available." line renders from.
     stubFetch({
       check_status: 'succeeded',
       update_available: true,
@@ -434,7 +434,7 @@ describe('AboutPanel gateway update check', () => {
 
     await waitFor(() => {
       const body = document.body.textContent || ''
-      expect(body).toContain('(v0.4.0)')
+      expect(body).toContain('Kiro Crew 0.4.0 is available.')
       expect(body).not.toContain('0.4.0rc14')
     })
   })
@@ -454,7 +454,7 @@ describe('AboutPanel gateway update check', () => {
     await pressCheck()
 
     await waitFor(() => {
-      expect(document.body.textContent || '').toContain('(v0.4.0rc14)')
+      expect(document.body.textContent || '').toContain('Kiro Crew 0.4.0rc14 is available.')
     })
   })
 

@@ -19258,7 +19258,7 @@
         "arm_ended_without_update": "La solicitud de actualización terminó antes de que empezara la actualización. Se descartó o el gateway se reinició, no fue algo que hicieras tú. Pulsa “{{label}}” para intentarlo de nuevo.",
         "try_again": "Reintentar",
         "not_on_channel_yet": "No en {{channel}}",
-        "channel_explainer_gateway_switch_note_version": "Cambiar solo modifica qué canal se consulta en busca de actualizaciones. El canal {{channel}} publica actualmente la v{{version}}, MÁS ANTIGUA que la compilación que estás ejecutando: ejecuta el comando de abajo para mover realmente esta instalación.",
+        "channel_explainer_gateway_switch_note_version": "Cambiar solo cambia qué canal se consulta para las actualizaciones. Ejecutas una compilación más nueva que la que ofrece {{channel}} (v{{version}}), así que no tienes que hacer nada salvo que quieras volver a {{channel}}; para eso, ejecuta el comando de abajo.",
         "channel_publishes_older_version": "El canal {{channel}} publica actualmente la v{{version}}, más antigua que la compilación que estás ejecutando, así que no ofrece ninguna actualización. <link>Descarga la v{{version}}</link> para pasar a ese canal.",
         "switch_to_version": "Cambiar a la v{{version}}",
         "in_app_channel_move_intro": "La versión del canal elegido se instala junto a la actual y el cambio es atómico. Aplicarlo requiere un comando de aprobación en el host de la pasarela.",
@@ -19293,7 +19293,12 @@
         "what_you_d_get_more_other": "Hay {{count}} cambios más en las notas completas.",
         "what_you_d_get_in_version_one": "Qué incluye {{version}} ({{count}} cambio)",
         "what_you_d_get_in_version_many": "Qué incluye {{version}} ({{count}} cambios)",
-        "what_you_d_get_in_version_other": "Qué incluye {{version}} ({{count}} cambios)"
+        "what_you_d_get_in_version_other": "Qué incluye {{version}} ({{count}} cambios)",
+        "what_you_d_get_plain": "Qué obtendrías",
+        "what_you_d_get_in_version_plain": "Qué incluye {{version}}",
+        "what_you_d_get_none": "No hay entradas del registro de cambios entre tu compilación y esta actualización.",
+        "version_label": "Versión",
+        "named_update_available": "{{name}} {{version}} está disponible."
       },
       "botChannelPanel": {
         "allowed_user_ids": "IDs de usuario permitidos",
@@ -20502,7 +20507,11 @@
         "show_more_one": "Mostrar {{count}} más",
         "show_more_many": "Mostrar {{count}} más",
         "show_more_other": "Mostrar {{count}} más",
-        "link_not_found": "La versión {{version}} no está en la lista de versiones de esta compilación."
+        "link_not_found": "La versión {{version}} no está en la lista de versiones de esta compilación.",
+        "section_label": "Notas de la versión",
+        "newer_title": "Más nuevas que la tuya",
+        "badge_installed": "Instalada",
+        "read_all_notes": "Leer todas las notas"
       },
       "reportProblemCard": {
         "blurb": "¿Algo no funciona? Envíanos un informe de diagnóstico — antes se eliminan los secretos de los registros.",

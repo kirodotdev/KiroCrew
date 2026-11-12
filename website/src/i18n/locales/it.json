@@ -19258,7 +19258,7 @@
         "arm_ended_without_update": "La richiesta di aggiornamento è terminata prima che l’aggiornamento iniziasse. È stata scartata o il gateway si è riavviato, non dipende da te. Premi «{{label}}» per riprovare.",
         "try_again": "Riprova",
         "not_on_channel_yet": "Non su {{channel}}",
-        "channel_explainer_gateway_switch_note_version": "Cambiare canale modifica solo quale canale viene controllato per gli aggiornamenti. Il canale {{channel}} pubblica attualmente la v{{version}}, PIÙ VECCHIA della build in esecuzione: esegui il comando qui sotto per spostare davvero questa installazione.",
+        "channel_explainer_gateway_switch_note_version": "Il cambio modifica solo il canale controllato per gli aggiornamenti. Stai usando una build più recente di quella offerta da {{channel}} (v{{version}}), quindi non devi fare nulla, a meno che tu non voglia tornare su {{channel}}; per farlo, esegui il comando qui sotto.",
         "channel_publishes_older_version": "Il canale {{channel}} pubblica attualmente la v{{version}}, più vecchia della build in esecuzione, quindi non ha aggiornamenti da offrire. <link>Scarica la v{{version}}</link> per passare a quel canale.",
         "switch_to_version": "Passa alla v{{version}}",
         "in_app_channel_move_intro": "La release del canale scelto viene installata accanto a quella attuale e il passaggio è atomico. Per applicarla serve un comando di approvazione sull'host del gateway.",
@@ -19293,7 +19293,12 @@
         "what_you_d_get_more_other": "Altre {{count}} modifiche sono nelle note complete.",
         "what_you_d_get_in_version_one": "Cosa contiene la {{version}} ({{count}} modifica)",
         "what_you_d_get_in_version_many": "Cosa contiene la {{version}} ({{count}} modifiche)",
-        "what_you_d_get_in_version_other": "Cosa contiene la {{version}} ({{count}} modifiche)"
+        "what_you_d_get_in_version_other": "Cosa contiene la {{version}} ({{count}} modifiche)",
+        "what_you_d_get_plain": "Cosa otterresti",
+        "what_you_d_get_in_version_plain": "Cosa contiene la {{version}}",
+        "what_you_d_get_none": "Non ci sono voci del changelog tra la tua build e questo aggiornamento.",
+        "version_label": "Versione",
+        "named_update_available": "{{name}} {{version}} è disponibile."
       },
       "botChannelPanel": {
         "allowed_user_ids": "ID utente consentiti",
@@ -20502,7 +20507,11 @@
         "show_more_one": "Mostra altre {{count}}",
         "show_more_many": "Mostra altre {{count}}",
         "show_more_other": "Mostra altre {{count}}",
-        "link_not_found": "La versione {{version}} non è nell'elenco delle versioni di questa build."
+        "link_not_found": "La versione {{version}} non è nell'elenco delle versioni di questa build.",
+        "section_label": "Note di rilascio",
+        "newer_title": "Più recenti della tua",
+        "badge_installed": "Installata",
+        "read_all_notes": "Leggi tutte le note"
       },
       "reportProblemCard": {
         "blurb": "Qualcosa non funziona? Inviaci un report diagnostico — i log vengono prima ripuliti dai segreti.",

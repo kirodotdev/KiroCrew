@@ -18274,7 +18274,7 @@
         "arm_ended_without_update": "更新请求在更新开始前已结束。请求已被撤销或网关已重启，并非你的操作导致。请按“{{label}}”重试。",
         "try_again": "重试",
         "not_on_channel_yet": "不在 {{channel}} 通道",
-        "channel_explainer_gateway_switch_note_version": "切换仅改变检查更新的渠道。{{channel}} 通道当前发布的是 v{{version}}，比你正在运行的版本更旧——请运行下方命令，才会真正将此安装切换过去。",
+        "channel_explainer_gateway_switch_note_version": "切换只会改变检查更新时使用的渠道。你运行的构建比 {{channel}} 提供的版本（v{{version}}）更新，所以无需任何操作，除非你想回到 {{channel}}；要回去，请运行下面的命令。",
         "channel_publishes_older_version": "{{channel}} 通道当前发布的是 v{{version}}，比你正在运行的版本更旧，因此不会提示更新。<link>下载 v{{version}}</link> 即可切换到该通道。",
         "switch_to_version": "切换到 v{{version}}",
         "in_app_channel_move_intro": "所选通道的版本会安装在当前版本旁边，然后原子切换过去。应用时需在网关主机上执行一条批准命令。",
@@ -18303,7 +18303,12 @@
         "what_you_d_get_view_on_github": "在 GitHub 上阅读",
         "what_you_d_get_load": "查看这次更新包含什么",
         "what_you_d_get_more_other": "完整说明中还有 {{count}} 项变更。",
-        "what_you_d_get_in_version_other": "{{version}} 包含的内容（{{count}} 项变更）"
+        "what_you_d_get_in_version_other": "{{version}} 包含的内容（{{count}} 项变更）",
+        "what_you_d_get_plain": "更新后可获得",
+        "what_you_d_get_in_version_plain": "{{version}} 包含的内容",
+        "what_you_d_get_none": "你的构建和这次更新之间没有更新日志条目。",
+        "version_label": "版本",
+        "named_update_available": "{{name}} {{version}} 可用。"
       },
       "botChannelPanel": {
         "allowed_user_ids": "允许的用户 ID",
@@ -19466,7 +19471,11 @@
         "releases_title": "版本",
         "earlier_count_other": "{{count}} 个版本",
         "show_more_other": "再显示 {{count}} 个",
-        "link_not_found": "此构建的版本列表中没有 {{version}}。"
+        "link_not_found": "此构建的版本列表中没有 {{version}}。",
+        "section_label": "更新日志",
+        "newer_title": "比你的版本更新",
+        "badge_installed": "已安装",
+        "read_all_notes": "阅读全部说明"
       },
       "reportProblemCard": {
         "blurb": "遇到问题？发送一份诊断报告给我们 — 日志会先移除密钥。",

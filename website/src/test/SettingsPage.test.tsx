@@ -165,8 +165,8 @@ describe('SettingsPage tabs', () => {
   })
 
   it.each([
-    ['/settings/releases', '/settings/about'],
-    ['/settings?tab=releases', '/settings/about'],
+    ['/settings/releases', '/settings/about?release=notes'],
+    ['/settings?tab=releases', '/settings/about?release=notes'],
     ['/settings/releases/0.12.0', '/settings/about?release=0.12.0'],
     ['/settings/releases/0.12.0?from=link', '/settings/about?from=link&release=0.12.0'],
   ])('sends the old Releases address %s to About', async (from, to) => {

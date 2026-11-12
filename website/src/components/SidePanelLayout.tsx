@@ -656,7 +656,9 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
         {isMobile && !subDrilled && <NavBackBar label={title} onBack={backToRoot} />}
         {!subDrilled && <div data-testid={isMobile ? 'mobile-detail-header' : 'side-panel-header'} className={`flex items-end justify-between gap-4 shrink-0 ${isMobile ? 'px-4 pb-2' : 'px-6 pt-2 pb-3'}`}>
           <div>
-            <div className="text-2xl font-bold tracking-tight text-text-strong">{meta?.label || ''}</div>
+            {/* A heading, so the tab's title is the page's first heading for a
+                screen reader rather than plain text above its cards. */}
+            <h2 className="text-2xl font-bold tracking-tight text-text-strong">{meta?.label || ''}</h2>
             {meta?.description && <div className="text-muted text-sm mt-1">{meta.description}</div>}
           </div>
           {/* Only the 'header' dock renders here. 'bottom-float' lives in the

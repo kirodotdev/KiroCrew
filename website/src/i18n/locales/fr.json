@@ -19258,7 +19258,7 @@
         "arm_ended_without_update": "La demande de mise à jour a pris fin avant le début de la mise à jour. Elle a été écartée ou la passerelle a redémarré, tu n’y es pour rien. Appuie sur «{{label}}» pour réessayer.",
         "try_again": "Réessayer",
         "not_on_channel_yet": "Pas sur {{channel}}",
-        "channel_explainer_gateway_switch_note_version": "Changer de canal modifie seulement celui qui est consulté pour les mises à jour. Le canal {{channel}} publie actuellement la v{{version}}, PLUS ANCIENNE que la version que vous exécutez ; exécutez la commande ci-dessous pour déplacer réellement cette installation.",
+        "channel_explainer_gateway_switch_note_version": "Changer ne modifie que le canal consulté pour les mises à jour. Tu utilises un build plus récent que celui que propose {{channel}} (v{{version}}) : tu n'as rien à faire, sauf si tu veux revenir sur {{channel}} ; pour cela, lance la commande ci-dessous.",
         "channel_publishes_older_version": "Le canal {{channel}} publie actuellement la v{{version}}, plus ancienne que la version que vous exécutez : il n'a donc aucune mise à jour à proposer. <link>Téléchargez la v{{version}}</link> pour passer sur ce canal.",
         "switch_to_version": "Passer à la v{{version}}",
         "in_app_channel_move_intro": "La version du canal choisi s'installe à côté de l'actuelle, puis la bascule est atomique. L'application nécessite une commande d'approbation sur l'hôte de la passerelle.",
@@ -19293,7 +19293,12 @@
         "what_you_d_get_more_other": "{{count}} autres changements figurent dans les notes complètes.",
         "what_you_d_get_in_version_one": "Contenu de la {{version}} ({{count}} changement)",
         "what_you_d_get_in_version_many": "Contenu de la {{version}} ({{count}} changements)",
-        "what_you_d_get_in_version_other": "Contenu de la {{version}} ({{count}} changements)"
+        "what_you_d_get_in_version_other": "Contenu de la {{version}} ({{count}} changements)",
+        "what_you_d_get_plain": "Ce que tu obtiendras",
+        "what_you_d_get_in_version_plain": "Contenu de la {{version}}",
+        "what_you_d_get_none": "Aucune entrée du journal des modifications entre ton build et cette mise à jour.",
+        "version_label": "Version",
+        "named_update_available": "{{name}} {{version}} est disponible."
       },
       "botChannelPanel": {
         "allowed_user_ids": "ID d'utilisateurs autorisés",
@@ -20502,7 +20507,11 @@
         "show_more_one": "Afficher {{count}} de plus",
         "show_more_many": "Afficher {{count}} de plus",
         "show_more_other": "Afficher {{count}} de plus",
-        "link_not_found": "La version {{version}} ne figure pas dans la liste des versions de ce build."
+        "link_not_found": "La version {{version}} ne figure pas dans la liste des versions de ce build.",
+        "section_label": "Notes de version",
+        "newer_title": "Plus récentes que la tienne",
+        "badge_installed": "Installée",
+        "read_all_notes": "Lire toutes les notes"
       },
       "reportProblemCard": {
         "blurb": "Quelque chose ne fonctionne pas ? Envoyez-nous un rapport de diagnostic — les secrets sont d’abord masqués dans les journaux.",

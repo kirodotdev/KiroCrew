@@ -9,6 +9,12 @@
       "description": "Downloads new versions in the background and installs them the next time you quit the app."
     },
     {
+      "id": "about.release-notes",
+      "label": "Release notes",
+      "tab": "about",
+      "route": "/settings/about?release=notes&highlight=about.release-notes"
+    },
+    {
       "id": "about.update-channel",
       "label": "Update channel",
       "tab": "about",
@@ -21,6 +27,13 @@
       "route": "/settings/about?highlight=key%3Aauto_update",
       "description": "Updates are downloaded automatically and take effect the next time you restart Kiro Crew. Nothing restarts by itself. When off, it stays on its current version.",
       "configKey": "auto_update"
+    },
+    {
+      "id": "about.version",
+      "label": "Version",
+      "tab": "about",
+      "route": "/settings/about?highlight=about.version",
+      "description": "Version, update channel, check for updates, and license"
     },
     {
       "id": "agent.kiro-sign-in",

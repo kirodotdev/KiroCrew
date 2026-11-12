@@ -8904,7 +8904,7 @@
         "arm_ended_without_update": "The update request ended before the update started. It was dismissed or the gateway restarted, not something you did. Press “{{label}}” to try again.",
         "try_again": "Try again",
         "not_on_channel_yet": "Not on {{channel}}",
-        "channel_explainer_gateway_switch_note_version": "Switching only changes which channel is checked for updates. The {{channel}} channel currently publishes v{{version}}, which is OLDER than the build you are running — run the command below to actually move this install onto it.",
+        "channel_explainer_gateway_switch_note_version": "Switching only changes which channel is checked for updates. You're running a newer build than {{channel}} offers (v{{version}}), so there is nothing to do unless you want to go back to {{channel}}; to do that, run the command below.",
         "channel_publishes_older_version": "The {{channel}} channel currently publishes v{{version}}, which is older than the build you are running, so it has no update to offer. <link>Download v{{version}}</link> to move onto that channel.",
         "switch_to_version": "Switch to v{{version}}",
         "in_app_channel_move_intro": "The chosen channel's release installs beside the current one and switches over atomically. Applying takes one approval command on the gateway host.",
@@ -8935,7 +8935,12 @@
         "what_you_d_get_more_one": "{{count}} more change is in the full notes.",
         "what_you_d_get_more_other": "{{count}} more changes are in the full notes.",
         "what_you_d_get_in_version_one": "What's in {{version}} ({{count}} change)",
-        "what_you_d_get_in_version_other": "What's in {{version}} ({{count}} changes)"
+        "what_you_d_get_in_version_other": "What's in {{version}} ({{count}} changes)",
+        "what_you_d_get_plain": "What you'd get",
+        "what_you_d_get_in_version_plain": "What's in {{version}}",
+        "what_you_d_get_none": "No changelog entries between your build and this update.",
+        "version_label": "Version",
+        "named_update_available": "{{name}} {{version}} is available."
       },
       "crewmatesSection": {
         "reply_threads": "Reply threads on bot chat messages",
@@ -10483,7 +10488,11 @@
         "earlier_count_other": "{{count}} releases",
         "show_more_one": "Show {{count}} more",
         "show_more_other": "Show {{count}} more",
-        "link_not_found": "Version {{version}} is not in this build's release list."
+        "link_not_found": "Version {{version}} is not in this build's release list.",
+        "section_label": "Release notes",
+        "newer_title": "Newer than yours",
+        "badge_installed": "Installed",
+        "read_all_notes": "Read all notes"
       }
     },
     "worldsPage": {

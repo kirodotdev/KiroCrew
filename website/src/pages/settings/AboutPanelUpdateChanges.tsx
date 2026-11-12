@@ -1,8 +1,10 @@
-import { useMemo } from 'react'
+import { useId, useMemo } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { ExternalLink, RefreshCw } from 'lucide-react'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import { i18nT } from '../../i18n/t'
-import { changeEntries } from './updateChanges'
+import { api } from '../../api/client'
+import { archiveNotes, changeEntries, notesSince, type ArchiveRelease } from './updateChanges'
 
 /** How many changes the list names before it folds the rest into a count. */
 export const UPDATE_CHANGES_SHOWN = 5
@@ -13,30 +15,55 @@ const RELEASES_URL = 'https://github.com/kirodotdev/KiroCrew/releases'
  * "What you'd get": the changes an available update brings, under its Update
  * control in About > Updates.
  *
- * `notes` is the changelog text the update itself carries (see updateChanges.ts).
- * A feed-installed gateway's check carries none, so an empty `notes` says the
- * notes are not shown here and links the release on GitHub, rather than
+ * `notes` is the changelog text the update itself carries (see updateChanges.ts);
+ * when it carries none, this install's release list supplies the update's
+ * sections if it has them (`archiveNotes`). Notes with no bullet or bold lead to
+ * count are still shown, under a title with no count. A feed-installed gateway's check carries none, so an empty `notes`
+ * says the notes are not shown here and links the release on GitHub, rather than
  * claiming the update changes nothing. A git checkout's check carries them, but
  * the update can be known from the background check alone: `onLoad` is that
- * case, and offers to run the check that brings them.
+ * case, and offers to run the check that brings them; `checked` says that check
+ * ran and found no changelog lines.
  */
-export function AboutPanelUpdateChanges({ notes, version, sinceBuild = false, onLoad, loading = false }: {
+export function AboutPanelUpdateChanges({ notes: carried, version, runningVersion, bytesAreStable = false, sinceBuild: carriedSinceBuild = false, checked = false, onLoad, loading = false }: {
   notes: string
   version: string
+  /** Desktop build and lane membership; absent for gateway-relative archive notes. */
+  runningVersion?: string
+  bytesAreStable?: boolean
   /**
    * The notes span every release since the running build (a checkout's
-   * `CHANGELOG.md` diff). False for the desktop feed, whose notes are the
-   * target version's own section only.
+   * `CHANGELOG.md` diff). False for notes that are one release's section only,
+   * such as the desktop feed's.
    */
   sinceBuild?: boolean
+  /** The source that carries this update's changelog lines was read, so empty notes mean none were written. */
+  checked?: boolean
   /** Runs the check that returns this update's notes; absent once it has run. */
   onLoad?: () => void
   loading?: boolean
 }) {
+  // An update that carries no notes falls back to this install's own release
+  // list (the query the release notes section below already holds), which
+  // covers a changelog that got ahead of the running build.
+  const carries = carried.trim() !== ''
+  const { data: archive } = useQuery({
+    queryKey: ['releases'],
+    queryFn: () => api.releases() as Promise<{ releases: ArchiveRelease[] }>,
+    enabled: !carries,
+  })
+  const fallback = useMemo(() => {
+    const notes = carries ? '' : archiveNotes(archive?.releases, version, runningVersion === undefined)
+    return runningVersion === undefined ? { notes, sinceBuild: true } : notesSince(notes, runningVersion, bytesAreStable)
+  }, [carries, archive, version, runningVersion, bytesAreStable])
+  const notes = carries ? carried : fallback.notes
+  const sinceBuild = carries ? carriedSinceBuild : fallback.sinceBuild
   const entries = useMemo(() => changeEntries(notes), [notes])
+  const titleId = useId()
+  const hasNotes = notes.trim() !== ''
   // Only a bare release has a tag of that exact name; a nightly stamp has none.
   const releaseUrl = /^[0-9]+(\.[0-9]+)*$/.test(version) ? `${RELEASES_URL}/tag/v${version}` : RELEASES_URL
-  if (entries.length === 0 && onLoad) {
+  if (!hasNotes && onLoad) {
     return (
       <button
         type="button"
@@ -50,7 +77,14 @@ export function AboutPanelUpdateChanges({ notes, version, sinceBuild = false, on
       </button>
     )
   }
-  if (entries.length === 0) {
+  if (!hasNotes && checked) {
+    return (
+      <p className="text-[12px] text-muted" data-testid="update-changes-none">
+        {i18nT('pages.settings.aboutPanel.what_you_d_get_none')}
+      </p>
+    )
+  }
+  if (!hasNotes) {
     return (
       <p className="text-[12px] text-muted" data-testid="update-changes-empty">
         {i18nT('pages.settings.aboutPanel.what_you_d_get_no_entries')}{' '}
@@ -67,18 +101,25 @@ export function AboutPanelUpdateChanges({ notes, version, sinceBuild = false, on
     )
   }
   const hidden = entries.length - UPDATE_CHANGES_SHOWN
-  const title = sinceBuild
-    ? i18nT('pages.settings.aboutPanel.what_you_d_get', { count: entries.length })
-    : i18nT('pages.settings.aboutPanel.what_you_d_get_in_version', { count: entries.length, version })
+  // Prose with nothing to count keeps its title, minus the count.
+  const title = entries.length === 0
+    ? sinceBuild
+      ? i18nT('pages.settings.aboutPanel.what_you_d_get_plain')
+      : i18nT('pages.settings.aboutPanel.what_you_d_get_in_version_plain', { version })
+    : sinceBuild
+      ? i18nT('pages.settings.aboutPanel.what_you_d_get', { count: entries.length })
+      : i18nT('pages.settings.aboutPanel.what_you_d_get_in_version', { count: entries.length, version })
   return (
-    <section className="flex flex-col gap-1.5" aria-label={title} data-testid="update-changes">
-      <span className="text-[12px] font-medium text-text">{title}</span>
-      <ul className="list-disc list-inside text-[12px] text-text flex flex-col gap-0.5" data-testid="update-changes-list">
-        {entries.slice(0, UPDATE_CHANGES_SHOWN).map((entry, i) => (
-          // Index in the key: two changes may share a lead ("Settings").
-          <li key={`${i}-${entry}`} className="truncate">{entry}</li>
-        ))}
-      </ul>
+    <section className="flex flex-col gap-1.5" aria-labelledby={titleId} data-testid="update-changes">
+      <span id={titleId} className="text-[12px] font-medium text-text">{title}</span>
+      {entries.length > 0 && (
+        <ul className="list-disc list-inside text-[12px] text-text flex flex-col gap-0.5" data-testid="update-changes-list">
+          {entries.slice(0, UPDATE_CHANGES_SHOWN).map((entry, i) => (
+            // Index in the key: two changes may share a lead ("Settings").
+            <li key={`${i}-${entry}`} className="truncate">{entry}</li>
+          ))}
+        </ul>
+      )}
       {hidden > 0 && (
         <span className="text-[12px] text-muted" data-testid="update-changes-more">
           {i18nT('pages.settings.aboutPanel.what_you_d_get_more', { count: hidden })}

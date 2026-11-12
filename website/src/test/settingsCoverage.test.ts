@@ -96,7 +96,6 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'PostureDisclosure.tsx': "read-only disclosure rows for SecurityPanel's posture section (manual entry security.live-security-posture)",
   'RemoteControlCard.tsx': "the Remote Crew tab's personal Remote Control status and its one-click Turn off; it writes only an explicit off through its own route, holding no searchable setting",
   'AboutPanelUpdateChanges.tsx': "read-only list of the changes an available update brings, under About > Updates; zero controls",
-  'ReleasesPanel.tsx': 'read-only release notes section of About, zero persistent settings',
   'RemoteCrewWindowsNotice.tsx': "the Remote Crew Set-up tab's Windows-gateway notice in place of the AWS checklist; text and a guide link, zero controls",
   'ReportProblemCard.tsx': 'feedback action card, no settings',
   'SettingsSearch.tsx': 'the settings search box itself — indexing it would be self-referential',

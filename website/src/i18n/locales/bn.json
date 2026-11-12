@@ -18766,7 +18766,7 @@
         "arm_ended_without_update": "আপডেট শুরু হওয়ার আগেই আপডেটের অনুরোধ শেষ হয়ে গেছে। অনুরোধটি বাতিল হয়েছে বা গেটওয়ে রিস্টার্ট হয়েছে, এটা তোমার কারণে নয়। আবার চেষ্টা করতে “{{label}}” চাপো।",
         "try_again": "আবার চেষ্টা করুন",
         "not_on_channel_yet": "{{channel}}-এ নয়",
-        "channel_explainer_gateway_switch_note_version": "বদলালে কেবল কোন চ্যানেল পরীক্ষা করা হবে তা বদলায়। {{channel}} চ্যানেল এখন v{{version}} প্রকাশ করে, যা আপনার চলমান বিল্ডের চেয়ে পুরোনো — ইনস্টলেশনটি সত্যিই সরাতে নিচের কমান্ড চালান।",
+        "channel_explainer_gateway_switch_note_version": "বদলালে শুধু আপডেটের জন্য কোন চ্যানেল দেখা হবে সেটা বদলায়। তুমি {{channel}}-এর দেওয়া সংস্করণের (v{{version}}) চেয়ে নতুন বিল্ড চালাচ্ছ, তাই কিছু করার নেই, যদি না তুমি {{channel}}-এ ফিরতে চাও; তার জন্য নিচের কমান্ডটি চালাও।",
         "channel_publishes_older_version": "{{channel}} চ্যানেল এখন v{{version}} প্রকাশ করে, যা আপনার চলমান বিল্ডের চেয়ে পুরোনো, তাই কোনো আপডেট দেখানো হয় না। ওই চ্যানেলে যেতে <link>v{{version}} ডাউনলোড করুন</link>।",
         "switch_to_version": "v{{version}}-এ যান",
         "in_app_channel_move_intro": "নির্বাচিত চ্যানেলের রিলিজ বর্তমানটির পাশে ইনস্টল হয় এবং অ্যাটমিকভাবে বদলে যায়। প্রয়োগ করতে গেটওয়ে হোস্টে একটি অনুমোদন কমান্ড চালাতে হয়।",
@@ -18798,7 +18798,12 @@
         "what_you_d_get_more_one": "পুরো নোটে আরও {{count}}টি পরিবর্তন আছে।",
         "what_you_d_get_more_other": "পুরো নোটে আরও {{count}}টি পরিবর্তন আছে।",
         "what_you_d_get_in_version_one": "{{version}}-এ কী আছে ({{count}}টি পরিবর্তন)",
-        "what_you_d_get_in_version_other": "{{version}}-এ কী আছে ({{count}}টি পরিবর্তন)"
+        "what_you_d_get_in_version_other": "{{version}}-এ কী আছে ({{count}}টি পরিবর্তন)",
+        "what_you_d_get_plain": "তুমি কী পাবে",
+        "what_you_d_get_in_version_plain": "{{version}}-এ কী আছে",
+        "what_you_d_get_none": "তোমার বিল্ড আর এই আপডেটের মধ্যে কোনো চেঞ্জলগ এন্ট্রি নেই।",
+        "version_label": "সংস্করণ",
+        "named_update_available": "{{name}} {{version}} পাওয়া যাচ্ছে।"
       },
       "botChannelPanel": {
         "allowed_user_ids": "অনুমোদিত ইউজার ID",
@@ -19984,7 +19989,11 @@
         "earlier_count_other": "{{count}}টি রিলিজ",
         "show_more_one": "আরও {{count}}টি দেখাও",
         "show_more_other": "আরও {{count}}টি দেখাও",
-        "link_not_found": "সংস্করণ {{version}} এই বিল্ডের রিলিজ তালিকায় নেই।"
+        "link_not_found": "সংস্করণ {{version}} এই বিল্ডের রিলিজ তালিকায় নেই।",
+        "section_label": "রিলিজ নোট",
+        "newer_title": "তোমার সংস্করণের চেয়ে নতুন",
+        "badge_installed": "ইনস্টল করা",
+        "read_all_notes": "সব নোট পড়ো"
       },
       "reportProblemCard": {
         "blurb": "কিছু কাজ করছে না? আমাদের একটি ডায়াগনস্টিক রিপোর্ট পাঠান — লগ থেকে সিক্রেট আগেই মুছে ফেলা হয়।",

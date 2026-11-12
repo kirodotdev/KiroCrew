@@ -512,6 +512,13 @@ export function AboutPanel() {
   // reports its darwin default everywhere.
   const manualUrl = info?.downloadUrl || null
   const showManualFallback = !!manualUrl && (cardReady || cardFailed)
+  // Whether the running bytes are the followed lane's stable release, so the
+  // release-list fallback keeps or drops the running release's own section.
+  const desktopBytesAreStable = followedLanePublishesRunningBytes({
+    followedChannel: info?.channel,
+    laneAnswered: runningAheadOfLane === true || runningAheadOfLane === false,
+    runningAheadOfLane: runningAheadOfLane === true,
+  })
   const updateCard: React.ReactNode = showUpdateCard ? (
     <div className="p-3 bg-bg rounded-lg border border-border flex flex-col gap-2" data-testid="update-card">
       <div className="flex items-start justify-between gap-3">
@@ -643,7 +650,7 @@ export function AboutPanel() {
           </span>
         </span>
       )}
-      <AboutPanelUpdateChanges notes={updateState?.notes || ''} version={updateState?.version || ''} />
+      <AboutPanelUpdateChanges notes={updateState?.notes || ''} version={updateState?.version || ''} runningVersion={info?.version || ''} bytesAreStable={desktopBytesAreStable} />
     </div>
   ) : null
 
@@ -821,6 +828,16 @@ export function AboutPanel() {
     </a>
   )
 
+  // Desktop channel controls: shown for an install with a lane its owner reads.
+  const desktopChannelShown = isDesktop && !!channel && !isExternallyManaged && !isGatewayPolicyManaged
+  const desktopChannelSwitchable = !!info?.channelSwitchable && !!desktopApi?.setChannel
+  // Check for updates, wherever the install can check for itself: the desktop
+  // updater's own lane, or a gateway with no update or channel move on screen
+  // (that state offers the update instead).
+  const showCheckButton = isDesktop
+    ? !isExternallyManaged && !updatesDisabled && !isGatewayPolicyManaged
+    : !(showUpdate || channelMovePending)
+
   return (
     <>
       <Card style={HERO_BG}>
@@ -839,7 +856,7 @@ export function AboutPanel() {
               <span className="text-[19px] font-extrabold tracking-tight text-text-strong">{botName || 'Kiro Crew'}</span>
               <span className="text-[12px] font-mono font-semibold text-accent rounded-full px-2.5 py-0.5 border" style={ACCENT_TINT}
                     title={versionLanesDiffer ? i18nT('pages.settings.aboutPanel.app_lane_title') : undefined}
-                    data-testid="about-version">
+                    data-testid="about-version" data-setting-label={i18nT('pages.settings.aboutPanel.version_label')}>
                 {versionLanesDiffer && (
                   <span className="font-sans font-medium text-muted mr-1" data-testid="about-version-lane">{i18nT('pages.settings.aboutPanel.app_lane_label')}</span>
                 )}
@@ -936,6 +953,48 @@ export function AboutPanel() {
           </span>
         </div>
 
+        {/* The read-only channel and the Check button sit with the version they
+            describe. The Updates card below holds what changes it: the channel
+            switcher, the update itself and the auto-update switch. */}
+        {desktopChannelShown && !desktopChannelSwitchable && (
+          <Row label={i18nT('pages.settings.aboutPanel.update_channel')}>
+              {info?.channelLockedByPolicy ? (
+                <span className="inline-flex items-center gap-2">
+                  {channelLabel(channel)}
+                  {/* A build that cannot follow the required channel names both:
+                      the lane it is on, and the one the policy requires. */}
+                  {info.requiredChannel && info.requiredChannel !== channel && (
+                    <span className="text-muted" data-testid="channel-requires">
+                      {i18nT('pages.settings.aboutPanel.update_channel_requires', { channel: info.requiredChannel })}
+                    </span>
+                  )}
+                  <LockedByPolicyBadge />
+                </span>
+              ) : channel}
+          </Row>
+        )}
+        {gwLtsLane && (
+          <div data-testid="gateway-channel-locked">
+            <Row label={i18nT('pages.settings.aboutPanel.update_channel')}>
+              <span className="inline-flex items-center gap-2">
+                {channelLabel(effectiveGwChannel)}
+                <LockedByPolicyBadge />
+              </span>
+            </Row>
+          </div>
+        )}
+        {showCheckButton && (
+          <div className="mt-2">
+            <Btn
+              primary={isDesktop}
+              onClick={() => (isDesktop ? checkMutation.mutate() : gwUpdate.gwCheck.mutate())}
+              disabled={isDesktop ? checking : gwUpdate.gwCheck.isPending}
+              data-testid="about-check-for-updates"
+            >
+              <RefreshCw size={13} className={`lucide-inline ${(isDesktop ? checking : gwUpdate.gwCheck.isPending) ? 'animate-spin' : ''}`} /> {i18nT('pages.settings.aboutPanel.check_for_updates')}
+            </Btn>
+          </div>
+        )}
         {isPrerelease && (
           // NOT behind the disclosure: a user already running prerelease bytes
           // is exactly who must see the ask, and hiding it behind a click means
@@ -979,8 +1038,7 @@ export function AboutPanel() {
         {/* The channel controls open the card: switching lanes is how the next
             update is chosen, and the pending-move note below them points at the
             installer command further down this card. */}
-        {isDesktop && channel && !isExternallyManaged && !isGatewayPolicyManaged && (
-          info?.channelSwitchable && desktopApi?.setChannel ? (
+        {desktopChannelShown && desktopChannelSwitchable && (
             <div className="flex flex-col" data-testid="channel-switcher" data-setting-label={i18nT('pages.settings.aboutPanel.update_channel')}>
               <div className="flex items-center justify-between py-1.5 text-sm gap-3">
                 <div className="flex flex-col items-start min-w-0">
@@ -1051,33 +1109,6 @@ export function AboutPanel() {
                 />
               )}
             </div>
-          ) : (
-            <Row label={i18nT('pages.settings.aboutPanel.update_channel')}>
-              {info?.channelLockedByPolicy ? (
-                <span className="inline-flex items-center gap-2">
-                  {channelLabel(channel)}
-                  {/* A build that cannot follow the required channel names both:
-                      the lane it is on, and the one the policy requires. */}
-                  {info.requiredChannel && info.requiredChannel !== channel && (
-                    <span className="text-muted" data-testid="channel-requires">
-                      {i18nT('pages.settings.aboutPanel.update_channel_requires', { channel: info.requiredChannel })}
-                    </span>
-                  )}
-                  <LockedByPolicyBadge />
-                </span>
-              ) : channel}
-            </Row>
-          )
-        )}
-        {gwLtsLane && (
-          <div data-testid="gateway-channel-locked">
-            <Row label={i18nT('pages.settings.aboutPanel.update_channel')}>
-              <span className="inline-flex items-center gap-2">
-                {channelLabel(effectiveGwChannel)}
-                <LockedByPolicyBadge />
-              </span>
-            </Row>
-          </div>
         )}
         {showGwChannelSwitcher && (
           // Gateway (CLI / wheel / cloud source) channel switcher: the same two
@@ -1208,7 +1239,7 @@ export function AboutPanel() {
                 <AlertCircle size={13} className="lucide-inline shrink-0 text-warn" />
                 <span>{i18nT('pages.settings.aboutPanel.channel_explainer_gateway_switch_note_version', {
                   channel: effectiveGwChannel,
-                  version: gwTargetDisplay || gwStatusLatestDisplay,
+                  version: (newestIsLocal ? gwTargetDisplay : '') || gwStatusLatestDisplay,
                 })}</span>
               </span>
             )}
@@ -1353,11 +1384,6 @@ export function AboutPanel() {
               <p className="text-sm text-muted">
                 {botName || 'Kiro Crew'} {i18nT('pages.settings.aboutPanel.checks_for_updates_automatically_you_can_also_ch')}
               </p>
-              <div>
-                <Btn primary onClick={() => checkMutation.mutate()} disabled={checking}>
-                  <RefreshCw size={13} className={`lucide-inline ${checking ? 'animate-spin' : ''}`} /> {i18nT('pages.settings.aboutPanel.check_for_updates')}
-                </Btn>
-              </div>
               {status && <div className="text-[13px]">{status}</div>}
               {/* The followed lane has never published these bytes (the running
                   build is ahead of its feed), so "up to date" above is about the

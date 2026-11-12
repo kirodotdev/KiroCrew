@@ -12,12 +12,14 @@
  * but split one question ("what am I on, can I update, what changes?") across
  * two tabs.
  *
- * The section keeps About bounded instead by what it shows unasked: the notes
- * for the running release, and FIVE earlier releases as collapsed one-line
- * rows. A row opens in place; "Show N more" adds five rows at a time, only
- * when asked. `RELEASE_PARAM` (`/settings/about?release=<version>`, where the
- * old `/settings/releases/<version>` links now land) opens and scrolls to one
- * release.
+ * The section keeps About bounded instead by what it shows unasked: the
+ * running release's summary (the rest behind "Read all notes"), and FIVE
+ * earlier releases as collapsed one-line rows. A row opens in place; "Show N
+ * more" adds five rows at a time, only when asked. `RELEASE_PARAM`
+ * (`/settings/about?release=<version>`, where the old
+ * `/settings/releases/<version>` links now land) opens and scrolls to one
+ * release; `?release=notes`, where the bare `/settings/releases` lands, scrolls
+ * to and focuses the section.
  *
  * ## Why the list is short
  *
@@ -40,7 +42,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
-import { ChevronRight, FileText, GitCommitHorizontal, History, Loader2, Sparkles } from 'lucide-react'
+import { ArrowUp, ChevronRight, FileText, GitCommitHorizontal, History, Loader2, Sparkles } from 'lucide-react'
 import { api } from '../../api/client'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import { Card, CardTitle, Btn } from '../../components/ui'
@@ -69,6 +71,24 @@ export const EARLIER_PAGE = 5
 
 /** The About query parameter that opens one release: `?release=0.12.0`. */
 export const RELEASE_PARAM = 'release'
+
+/** `?release=notes`: no single release, just the release notes section (the old bare `/settings/releases`). */
+export const RELEASE_NOTES_LINK = 'notes'
+
+/**
+ * A release body's opening summary: the paragraphs before its first heading,
+ * bullet or bold-led paragraph. The rest of the body stays behind "Read all
+ * notes", so a long release does not push the earlier ones off the page.
+ */
+export function releaseSummary(body: string): { summary: string; rest: string } {
+  const blocks = body.trim().split(/\n\s*\n/)
+  const lead: string[] = []
+  for (const block of blocks) {
+    if (/^\s*(#|[-*+]\s|\*\*|\d+\.\s|```|\|)/.test(block)) break
+    lead.push(block)
+  }
+  return { summary: lead.join('\n\n'), rest: blocks.slice(lead.length).join('\n\n') }
+}
 
 /** A linked version as a release: `v0.12.0-rc.1` → `0.12.0`. */
 function linkedRelease(raw: string): string {
@@ -108,12 +128,29 @@ function CommitsLink({ href }: { href: string }) {
 }
 
 /** A release's notes, or why it has none and where its changes are. */
-function ReleaseNotes({ release, older, alwaysLinkCommits }: { release: Release; older: Release | undefined; alwaysLinkCommits?: boolean }) {
+function ReleaseNotes({ release, older, alwaysLinkCommits, summarize }: {
+  release: Release
+  older: Release | undefined
+  alwaysLinkCommits?: boolean
+  /** Show the opening summary and fold the rest into "Read all notes". */
+  summarize?: boolean
+}) {
   const href = commitsUrl(release, older)
   if (release.body) {
+    const { summary, rest } = summarize ? releaseSummary(release.body) : { summary: release.body, rest: '' }
     return (
       <div className="flex flex-col gap-3">
-        <MarkdownRenderer content={release.body} />
+        {summary && <MarkdownRenderer content={summary} />}
+        {rest && (
+          <details className="text-sm" data-testid="release-read-all">
+            <summary className="cursor-pointer text-accent hover:underline w-fit">
+              {i18nT('pages.settings.releases.read_all_notes')}
+            </summary>
+            <div className="mt-3">
+              <MarkdownRenderer content={rest} />
+            </div>
+          </details>
+        )}
         {alwaysLinkCommits && <CommitsLink href={href} />}
       </div>
     )
@@ -146,13 +183,21 @@ export default function ReleasesPanel() {
   // every render and re-fire the link effect below.
   const releases = useMemo(() => data?.releases ?? [], [data?.releases])
   const current = releases.find(r => r.is_current)
-  const earlier = useMemo(() => releases.filter(r => !r.is_current), [releases])
+  // The list is newest first. Rows above the running release are newer than
+  // this build (a changelog that got ahead of the version stamp), so they go in
+  // their own group rather than under "Earlier releases".
+  const currentIndex = current ? releases.indexOf(current) : -1
+  const newer = useMemo(() => (currentIndex > 0 ? releases.slice(0, currentIndex) : []), [releases, currentIndex])
+  const earlier = useMemo(() => releases.slice(currentIndex + 1), [releases, currentIndex])
   const [shown, setShown] = useState(EARLIER_PAGE)
   const [open, setOpen] = useState('')
   // The link this section last acted on, and what it found: `''` none, a
   // version, `current`, or `missing`.
   const handledLink = useRef('')
   const [linkTarget, setLinkTarget] = useState('')
+  // Index of the row "Show more" revealed first, to move focus to it once drawn.
+  const [focusRow, setFocusRow] = useState(-1)
+  const sectionRef = useRef<HTMLDivElement>(null)
   const currentRef = useRef<HTMLDivElement>(null)
   const earlierRef = useRef<HTMLDivElement>(null)
 
@@ -166,9 +211,18 @@ export default function ReleasesPanel() {
     }
     if (releases.length === 0 || handledLink.current === linked) return
     handledLink.current = linked
+    if (linked === RELEASE_NOTES_LINK) {
+      setLinkTarget('section')
+      return
+    }
     const want = linkedRelease(linked)
     if (current?.version === want) {
       setLinkTarget('current')
+      return
+    }
+    if (newer.some(r => r.version === want)) {
+      setOpen(want)
+      setLinkTarget(want)
       return
     }
     const index = earlier.findIndex(r => r.version === want)
@@ -179,10 +233,17 @@ export default function ReleasesPanel() {
     setOpen(want)
     setShown(s => Math.max(s, Math.ceil((index + 1) / EARLIER_PAGE) * EARLIER_PAGE))
     setLinkTarget(want)
-  }, [linked, releases, current, earlier])
+  }, [linked, releases, current, newer, earlier])
 
   useEffect(() => {
     if (!linkTarget) return
+    if (linkTarget === 'section') {
+      // The old Releases tab's address: bring the section into view and put
+      // focus on it, so a keyboard or screen reader user starts there too.
+      sectionRef.current?.scrollIntoView?.({ block: 'start' })
+      sectionRef.current?.focus({ preventScroll: true })
+      return
+    }
     const el = linkTarget === 'current'
       ? currentRef.current
       : linkTarget === 'missing'
@@ -191,6 +252,12 @@ export default function ReleasesPanel() {
     // Optional call: jsdom has no scrollIntoView.
     el?.scrollIntoView?.({ block: 'start' })
   }, [linkTarget])
+
+  useEffect(() => {
+    if (focusRow < 0) return
+    earlierRef.current?.querySelectorAll<HTMLButtonElement>('li > button[aria-expanded]')[focusRow]?.focus()
+    setFocusRow(-1)
+  }, [focusRow])
 
   if (isLoading) {
     return (
@@ -233,14 +300,73 @@ export default function ReleasesPanel() {
   const visible = earlier.slice(0, shown)
   const remaining = earlier.length - visible.length
 
+  const renderRow = (r: Release) => {
+    const isOpen = open === r.version
+    const panelId = `release-notes-${r.version}`
+    return (
+      <li key={r.version} id={`release-${r.version}`} className="scroll-mt-4">
+        <button
+          type="button"
+          aria-expanded={isOpen}
+          // Only while open: a closed row's notes are not mounted.
+          aria-controls={isOpen ? panelId : undefined}
+          onClick={() => setOpen(isOpen ? '' : r.version)}
+          className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left hover:bg-bg-hover cursor-pointer bg-transparent border-none"
+        >
+          <ChevronRight
+            size={14}
+            className={`lucide-inline shrink-0 text-muted transition-transform motion-reduce:transition-none ${isOpen ? 'rotate-90' : ''}`}
+            aria-hidden="true"
+          />
+          <span className="text-sm font-semibold tabular-nums text-text">{r.version}</span>
+          <span className="ml-auto text-xs text-muted tabular-nums">{rowNote(r)}</span>
+        </button>
+        {isOpen && (
+          <div id={panelId} className="px-2 pb-4 pt-1 sm:pl-8">
+            <ReleaseNotes release={r} older={olderReleased(r)} />
+          </div>
+        )}
+      </li>
+    )
+  }
+
   return (
-    <>
+    // The release notes section as one landmark, so the old Releases address
+    // (`?release=notes`) has one place to scroll to and focus.
+    <div
+      ref={sectionRef}
+      id="release-notes"
+      tabIndex={-1}
+      role="region"
+      aria-label={i18nT('pages.settings.releases.section_label')}
+      data-setting-label={i18nT('pages.settings.releases.section_label')}
+      className="scroll-mt-4 outline-hidden"
+      data-testid="release-notes-section"
+    >
+      {newer.length > 0 && (
+        <Card>
+          <div data-testid="releases-newer">
+            <CardTitle className="flex-wrap">
+              <ArrowUp size={15} className="lucide-inline" aria-hidden="true" />
+              {i18nT('pages.settings.releases.newer_title')}
+            </CardTitle>
+            <ul className="flex flex-col divide-y divide-border" aria-label={i18nT('pages.settings.releases.newer_title')}>
+              {newer.map(renderRow)}
+            </ul>
+          </div>
+        </Card>
+      )}
+
       {current && (
         <Card>
           <div ref={currentRef} className="scroll-mt-4" data-testid="releases-current">
             <CardTitle className="mb-1 flex-wrap">
               <Sparkles size={15} className="lucide-inline" aria-hidden="true" />
               {i18nT('pages.settings.releases.whats_new_in', { version: current.version })}
+              {/* Which row is the reader's own, so counting back from it works. */}
+              <span className="rounded border border-border px-1.5 py-0.5 text-[10px] font-medium text-muted" data-testid="releases-installed">
+                {i18nT('pages.settings.releases.badge_installed')}
+              </span>
               {current.in_progress && (
                 // OUTLINE, not a solid accent fill: solid `bg-accent` with
                 // `text-accent-fg` at this size is this codebase's
@@ -256,16 +382,16 @@ export default function ReleasesPanel() {
                 ? i18nT('pages.settings.releases.detail_on_prerelease', { version: data!.current_version })
                 : current.date || i18nT('pages.settings.releases.detail_no_date')}
             </p>
+            {earlier.length === 0 && missingNotice}
             {/* The archive is read from this install, never the network, so a
                 prerelease build shows it as of its branch point. Said out loud
                 instead of letting the list look complete when it is not. */}
-            {earlier.length === 0 && missingNotice}
             {data?.stale && (
               <p className="mb-3 rounded-lg bg-bg-accent px-3 py-2 text-xs text-muted">
                 {i18nT('pages.settings.releases.stale_note', { version: data.current_version })}
               </p>
             )}
-            <ReleaseNotes release={current} older={olderReleased(current)} alwaysLinkCommits />
+            <ReleaseNotes release={current} older={olderReleased(current)} alwaysLinkCommits summarize />
           </div>
         </Card>
       )}
@@ -282,38 +408,19 @@ export default function ReleasesPanel() {
             </CardTitle>
             {missingNotice}
             <ul className="flex flex-col divide-y divide-border" aria-label={i18nT('pages.settings.releases.list_label')}>
-              {visible.map(r => {
-                const isOpen = open === r.version
-                const panelId = `release-notes-${r.version}`
-                return (
-                  <li key={r.version} id={`release-${r.version}`} className="scroll-mt-4">
-                    <button
-                      type="button"
-                      aria-expanded={isOpen}
-                      aria-controls={panelId}
-                      onClick={() => setOpen(isOpen ? '' : r.version)}
-                      className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left hover:bg-bg-hover cursor-pointer bg-transparent border-none"
-                    >
-                      <ChevronRight
-                        size={14}
-                        className={`lucide-inline shrink-0 text-muted transition-transform motion-reduce:transition-none ${isOpen ? 'rotate-90' : ''}`}
-                        aria-hidden="true"
-                      />
-                      <span className="text-sm font-semibold tabular-nums text-text">{r.version}</span>
-                      <span className="ml-auto text-xs text-muted tabular-nums">{rowNote(r)}</span>
-                    </button>
-                    {isOpen && (
-                      <div id={panelId} className="px-2 pb-4 pt-1 sm:pl-8">
-                        <ReleaseNotes release={r} older={olderReleased(r)} />
-                      </div>
-                    )}
-                  </li>
-                )
-              })}
+              {visible.map(renderRow)}
             </ul>
             {remaining > 0 && (
               <div className="mt-2">
-                <Btn onClick={() => setShown(s => s + EARLIER_PAGE)} data-testid="releases-show-more">
+                <Btn
+                  onClick={() => {
+                    // The button unmounts on the last page, so focus moves to
+                    // the first row it revealed instead of falling to <body>.
+                    setFocusRow(shown)
+                    setShown(s => s + EARLIER_PAGE)
+                  }}
+                  data-testid="releases-show-more"
+                >
                   {i18nT('pages.settings.releases.show_more', { count: Math.min(EARLIER_PAGE, remaining) })}
                 </Btn>
               </div>
@@ -321,6 +428,6 @@ export default function ReleasesPanel() {
           </div>
         </Card>
       )}
-    </>
+    </div>
   )
 }

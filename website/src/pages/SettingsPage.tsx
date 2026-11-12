@@ -22,7 +22,7 @@ import { OverviewPanel } from './settings/OverviewPanel'
 import { NotificationsPanel } from './settings/NotificationsPanel'
 import { ShortcutsPanel } from './settings/ShortcutsPanel'
 import { AboutPanel } from './settings/AboutPanel'
-import { RELEASE_PARAM } from './settings/ReleasesPanel'
+import { RELEASE_NOTES_LINK, RELEASE_PARAM } from './settings/ReleasesPanel'
 import { ImportPanel } from './settings/ImportPanel'
 import { ComputerUsePanel } from './settings/ComputerUsePanel'
 import { WebhooksPanel } from './settings/WebhooksPanel'
@@ -287,15 +287,16 @@ export default function SettingsPage() {
   // The release notes used to be a Releases tab of their own and now sit at the
   // foot of About, so its old addresses (`/settings/releases`,
   // `/settings/releases/<version>` and the legacy `?tab=releases`) land there,
-  // with a named version opened and scrolled into view. Rendered in place of
+  // with the release notes section, or a named version in it, scrolled into
+  // view. Rendered in place of
   // the layout so no other tab paints for a frame on the way.
   const releasesSegments = parsePathSegments(SETTINGS_BASE_PATH, pathname)
   const legacyReleasesTab = !releasesSegments[0] && memorySelection.get('tab') === 'releases'
   if (releasesSegments[0] === 'releases' || legacyReleasesTab) {
     const qs = new URLSearchParams(search)
     qs.delete('tab')
-    const version = releasesSegments[1] || ''
-    if (version) qs.set(RELEASE_PARAM, version)
+    // A named version opens that release; the bare address opens the section.
+    qs.set(RELEASE_PARAM, releasesSegments[1] || RELEASE_NOTES_LINK)
     const rest = qs.toString()
     return <Navigate replace to={{ pathname: `${SETTINGS_BASE_PATH}/about`, search: rest ? `?${rest}` : '' }} />
   }

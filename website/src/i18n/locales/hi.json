@@ -18766,7 +18766,7 @@
         "arm_ended_without_update": "अपडेट शुरू होने से पहले ही अपडेट का अनुरोध खत्म हो गया। अनुरोध खारिज हुआ या गेटवे रीस्टार्ट हुआ, यह तुम्हारी वजह से नहीं हुआ। दोबारा कोशिश करने के लिए “{{label}}” दबाओ।",
         "try_again": "फिर से कोशिश करें",
         "not_on_channel_yet": "{{channel}} पर नहीं",
-        "channel_explainer_gateway_switch_note_version": "बदलने से केवल यह बदलता है कि कौन सा चैनल जांचा जाता है। {{channel}} चैनल अभी v{{version}} प्रकाशित करता है, जो तुम्हारे चल रहे बिल्ड से पुराना है — इस इंस्टॉल को वास्तव में ले जाने के लिए नीचे दिया कमांड चलाएं।",
+        "channel_explainer_gateway_switch_note_version": "बदलने से सिर्फ़ यह बदलता है कि अपडेट के लिए कौन सा चैनल जाँचा जाए। तुम {{channel}} के दिए वर्ज़न (v{{version}}) से नया बिल्ड चला रहे हो, इसलिए कुछ करने की ज़रूरत नहीं, जब तक तुम {{channel}} पर वापस न जाना चाहो; उसके लिए नीचे दिया कमांड चलाओ।",
         "channel_publishes_older_version": "{{channel}} चैनल अभी v{{version}} प्रकाशित करता है, जो तुम्हारे चल रहे बिल्ड से पुराना है, इसलिए कोई अपडेट नहीं दिखेगा। उस चैनल पर जाने के लिए <link>v{{version}} डाउनलोड करो</link>।",
         "switch_to_version": "v{{version}} पर जाओ",
         "in_app_channel_move_intro": "चुने गए चैनल का रिलीज़ मौजूदा के बगल में इंस्टॉल होता है और परमाणु रूप से स्विच हो जाता है। लागू करने के लिए गेटवे होस्ट पर एक अनुमोदन कमांड चलानी होती है।",
@@ -18798,7 +18798,12 @@
         "what_you_d_get_more_one": "पूरे नोट्स में {{count}} और बदलाव है।",
         "what_you_d_get_more_other": "पूरे नोट्स में {{count}} और बदलाव हैं।",
         "what_you_d_get_in_version_one": "{{version}} में क्या है ({{count}} बदलाव)",
-        "what_you_d_get_in_version_other": "{{version}} में क्या है ({{count}} बदलाव)"
+        "what_you_d_get_in_version_other": "{{version}} में क्या है ({{count}} बदलाव)",
+        "what_you_d_get_plain": "तुम्हें क्या मिलेगा",
+        "what_you_d_get_in_version_plain": "{{version}} में क्या है",
+        "what_you_d_get_none": "तुम्हारे बिल्ड और इस अपडेट के बीच कोई चेंजलॉग प्रविष्टि नहीं है।",
+        "version_label": "वर्ज़न",
+        "named_update_available": "{{name}} {{version}} उपलब्ध है।"
       },
       "botChannelPanel": {
         "allowed_user_ids": "अनुमत उपयोगकर्ता ID",
@@ -19984,7 +19989,11 @@
         "earlier_count_other": "{{count}} रिलीज़",
         "show_more_one": "{{count}} और दिखाओ",
         "show_more_other": "{{count}} और दिखाओ",
-        "link_not_found": "संस्करण {{version}} इस बिल्ड की रिलीज़ सूची में नहीं है।"
+        "link_not_found": "संस्करण {{version}} इस बिल्ड की रिलीज़ सूची में नहीं है।",
+        "section_label": "रिलीज़ नोट्स",
+        "newer_title": "तुम्हारे वर्ज़न से नए",
+        "badge_installed": "इंस्टॉल किया हुआ",
+        "read_all_notes": "सारे नोट्स पढ़ो"
       },
       "reportProblemCard": {
         "blurb": "कुछ काम नहीं कर रहा? हमें डायग्नोस्टिक रिपोर्ट भेजें — लॉग से सीक्रेट पहले ही हटा दिए जाते हैं।",

@@ -47,6 +47,8 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   'about.install-app-updates-automatically': ['auto update', 'auto-update', 'automatic updates', 'auto update on restart', 'auto-update on restart', 'auto download', 'app updates'],
   // About (manual entries — settingsManual.ts)
   'about.update-channel': ['stable', 'insider', 'nightly', 'release channel', 'beta'],
+  'about.version': ['version', 'about', 'build', 'what version', 'licence', 'license'],
+  'about.release-notes': ['release notes', 'releases', 'changelog', 'change log', "what's new", 'whats new', 'what changed'],
 
   // Channels (manual entry — settingsManual.ts): the bot token WeCom calls a secret.
   'channels.wecom-bot-secret': ['bot token'],
