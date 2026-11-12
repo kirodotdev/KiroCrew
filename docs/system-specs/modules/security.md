@@ -1007,6 +1007,20 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   Governance-home path writes are intentionally outside this module and are
   enforced by the OS sandbox. Structure is the point: the product name in a path,
   search pattern, or commit message is not itself a verdict.
+- `call_views.py` — one gate call's shared reads. `sharing_views` (on `is_denied`) opens a
+  memo when the call starts and drops it when the call returns; a reader marked
+  `once_per_call` keeps its answers there under `(reader, text)`, so each distinct text is
+  read once inside that call however many floors ask. Marked today: the shell tokenizer
+  (`shell_normalizer._shell_tokens`, which hands every caller its own list), the program
+  basename, the operand normalizer and the self-program test of a token, the quote-aware
+  line-continuation fold, and the Python lexer the inline-payload reader walks
+  (`inline_payload._lex`, read to its end once per view). Only a PURE reader may be marked:
+  its answer is decided by its one argument and module constants, never by the
+  filesystem, the clock or configuration, which is what makes one read and many reads the
+  same verdict. Outside a call every reader computes afresh, and nothing is kept between
+  calls, judgements or sessions. `test_deny_gate_call_sharing.py` judges a corpus with the
+  memo and without and requires one verdict. A leaf: it imports nothing from the package,
+  so `shell_normalizer_walk.py` and every reader above it can import it.
 - `shell_commands.py` — the shared quote-aware command reader. `read_commands(text, track)`
   walks the text once with `shell_normalizer._iter_shell_chars` and returns one `ShellCommand`
   per command: its steps (raw text, raw offsets, quote state), its words (split at live
@@ -1038,10 +1052,11 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   views in `deny_gate.py` and to `shell_normalizer._shell_payload_walk` (the
   self-protection and git-publish floors), which add them to the frame's own payloads, so
   `sh -c 2>/dev/null '<script>'` hides no script and the frame's exemptions still apply.
-  Within one `is_denied` call (`shell_commands.sharing_views`) both walks share one
-  result per frame text, and `_shell_payload_walk` keeps its frames in the same cache, so
-  every floor of the call shares one walk of each distinct text and gets fresh lists of
-  it; the cache lives only for that call, so nothing carries between decisions.
+  Within one `is_denied` call (`call_views.sharing_views`, which this module also serves
+  to its importers) both walks share one result per frame text, and `_shell_payload_walk`
+  and `argv_floor_self._quoted_assignment_scripts` keep theirs in the same memo, so every
+  floor of the call shares one walk of each distinct text and gets fresh lists of it; the
+  memo lives only for that call, so nothing carries between decisions.
   It sits on `shell_normalizer.py` (which imports it inside that walk) and below
   `rm_floor.py`, `exfil_bash.py` and `deny_gate.py`.
 - `rm_floor.py` — the recursive-force `rm` floor behind the two `local-destructive-rm-rf-*`

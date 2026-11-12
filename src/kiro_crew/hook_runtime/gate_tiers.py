@@ -6,7 +6,7 @@ another tier. A tier body answers one question about one call and returns a
 ``ToolHookResult`` through its counted factories, or ``None`` to let the next row
 decide. :class:`GateFacts` carries the call, the surface asking, and the values
 the tiers derive from them, derived on first use from one platform-context
-snapshot per judgement (the effective deny set is resolved twice from it).
+snapshot per judgement (the effective deny set is resolved once from it).
 
 Composed onto ``kiro_crew.hooks``; see :mod:`kiro_crew.hook_runtime`. The tier
 bodies read the facade's globals at call time, so a test that patches
@@ -82,9 +82,9 @@ class GateFacts:
     each computed on first use and kept for the rest of the judgement; the pure
     projections of the frozen call (the canonical MCP name, the governance
     reference, the exempt command) are simply recomputed. The effective deny set is
-    resolved twice, both times against the one snapshot: once for the enabled rule
-    ids and once for the deny-rules tier. Two consequences matter. The platform
-    context is read ONCE per call (:meth:`snapshot`), so a live ceiling refresh
+    resolved once against the one snapshot, and both its readers take that one
+    result: the enabled rule ids and the deny-rules tier. Two consequences matter.
+    The platform context is read ONCE per call (:meth:`snapshot`), so a live ceiling refresh
     cannot land between two reads and judge one call half under the old ceiling
     and half under the new one. And a value no tier reaches is never computed -- a
     call the first tier denies reads neither the context nor the effective deny
@@ -247,7 +247,7 @@ class GateFacts:
         input vetting) keep passing."""
         return self._once(
             "enabled_ids",
-            lambda: security.enabled_rule_ids(self.manager._effective_denied(self.ctx)),
+            lambda: security.enabled_rule_ids(self.denied_regexes),
         )
 
     @property
