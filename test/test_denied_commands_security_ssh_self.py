@@ -10,7 +10,11 @@ compared against is pinned by ``TestSandboxEscapeSshSelfOwnHost`` in
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
+import sys
+import textwrap
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -24,6 +28,8 @@ from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
 from kiro_crew.security import BUILTIN_DENIED_RULES
 from kiro_crew.security import argv_floor as _argv_floor
 from kiro_crew.security import compute_effective_denied, is_denied, is_safe_user_regex
+from kiro_crew.security.call_views import _CALL_VIEWS, sharing_views
+from kiro_crew.testing.wait import default_timeout
 
 # Each test starts with the macOS libc and libproc handle caches unbuilt and puts them
 # back after, as every test of the test_denied_commands_security family does (see conftest.py).
@@ -722,6 +728,80 @@ class TestSandboxEscapeSshSelf:
         # ssh-family program must not slip the verb gate.
         assert _denied_by("/usr/bin/s?h localhost id") == self._RULE
         assert _denied_by("/usr/bin/s?h remote.example.com id") is None
+
+    def test_glob_naming_several_verbs_is_judged_as_each_in_every_process(self, tmp_path):
+        # ``s??`` names scp and ssh, which check different operands, so the
+        # glob is refused when either reading reaches this host.  frozenset
+        # order follows PYTHONHASHSEED, fixed per process, so only fresh
+        # interpreters under different seeds show an order-dependent verdict:
+        # before the fix, seeds 0 and 3 gave these lines different verdicts.
+        script = textwrap.dedent("""
+            import json
+            import sys
+
+            from kiro_crew.security import argv_floor
+
+            argv_floor._OWN_HOST_NAMES_CACHE = frozenset()
+            argv_floor._OWN_HOST_RESOLVE_DONE = True
+            argv_floor._NETLINK_ADDRS_PUBLISHED = True
+            argv_floor._OWN_HOST_RESOLVE_NEXT_TRY = float("inf")
+            argv_floor._resolved_host_verdict = lambda host, **_kw: False
+            print(json.dumps([argv_floor._is_ssh_to_self(cmd) for cmd in sys.argv[1:]]))
+            """)
+        cmds = [
+            "/usr/bin/s?? x localhost",
+            "/usr/bin/s* x ::1",
+            "cp /usr/bin/s?? /tmp/q && /tmp/q x localhost",
+            "/usr/bin/s?? remote.example.com id",
+        ]
+        verdicts = set()
+        for seed in ("0", "3"):
+            result = subprocess.run(
+                [sys.executable, "-c", script, *cmds],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=default_timeout(),
+                cwd=str(tmp_path),
+                env={**os.environ, "PYTHONHASHSEED": seed},
+            )
+            assert result.returncode == 0, result.stderr
+            verdicts.add(tuple(json.loads(result.stdout.strip().splitlines()[-1])))
+        assert verdicts == {(True, True, True, False)}
+
+    def test_nested_payloads_of_a_multi_verb_glob_are_judged_once(self, monkeypatch):
+        # Each reading of ``[rs]*`` rebuilds the xargs payload and walks it, and
+        # the deeper payloads are the same text from every reading.  Each is
+        # judged once per gate call, or the cost grows as 4 ** depth.
+        calls = []
+        real_frames = _argv_floor._self_token_frames
+
+        def _counting_frames(text):
+            calls.append(text)
+            return real_frames(text)
+
+        monkeypatch.setattr(_argv_floor, "_self_token_frames", _counting_frames)
+        # ``[rs]*`` also sits in host position, where it would match a host named
+        # ``runner...``; this test is about cost, so this host has no names.
+        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", frozenset())
+        depth = 6
+        cmd = " ".join(["xargs [rs]*"] * depth) + " " + " ".join(f"<<< a{j}" for j in range(depth))
+        assert not sharing_views(_argv_floor._is_ssh_to_self)(cmd)
+        assert len(calls) == len(set(calls)), len(calls)
+        assert _CALL_VIEWS.get() is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cd ~/.ssh && xargs s??>/dev/null <<< localhost",
+            "cd ~/.ssh && xargs -I{} /usr/bin/s??>/dev/null {} <<< localhost",
+            'cp /usr/bin/ssh "/tmp/[s ]*" && xargs "/tmp/[s ]*" <<< localhost',
+        ],
+    )
+    def test_xargs_glob_program_is_denied_however_its_word_is_written(self, cmd):
+        # The rebuilt xargs command names each reading's verb, so neither a
+        # redirect glued to the glob nor a space inside it hides the verb.
+        assert _denied_by(cmd) == self._RULE
 
     def test_glob_expandable_self_operand_is_denied(self):
         # The same expansion applies to operands: ``localho?t`` matches a

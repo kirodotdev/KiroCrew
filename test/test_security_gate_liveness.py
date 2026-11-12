@@ -801,7 +801,11 @@ def _url_payload_command(n: int) -> str:
 #: rebuild's budget for every caller and is reused for a second on the event loop, so
 #: no gate scans ``apps/`` on its own thread. A miss refuses, and refuses later callers
 #: at once while that listing is still in flight. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_901
+#: Raised by 29 more, from 35,901, for ``argv_floor_ssh``: a glob program word is walked
+#: once per ssh-family verb it can name (``_ssh_family_verbs``, ``_frame_verb_choices``),
+#: and ``_is_ssh_to_self`` is marked ``once_per_call`` so those walks share each nested
+#: payload's verdict. Nothing is relaxed. Re-measured.
+_PACKAGE_LINE_BUDGET = 35_930
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
