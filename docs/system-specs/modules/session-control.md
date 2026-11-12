@@ -889,8 +889,8 @@ pending-rewrite flush being the fork's own save; then the rotated-archive rebuil
 through the child's mint, message copy, save and the deleted-source rollback. The
 session-control verb calls the same two, so what an agent's fork copies and what
 it inherits — agent, model, memory store and mode bound at birth, project,
-folder, tags, `forked_from` — is by construction what a person's fork copies
-and inherits, except the sidebar pin (last table row) and the folder of a
+folder, tags, sidebar color, `forked_from` — is by construction what a person's
+fork copies and inherits, except the sidebar pin (last table row) and the folder of a
 Ultra Mode caller's child, which is cleared (§ `session_create`'s Ultra Mode
 filing rule). The human route's behaviour is unchanged by the split; the core
 takes the request-derived facts as arguments (`request_app`, `origin`,

@@ -300,6 +300,18 @@ def test_an_agent_fork_of_a_pinned_session_is_not_pinned(tmp_path):
     assert state.get_slot(result["target"]).pinned is False
 
 
+def test_an_agent_fork_keeps_the_sources_color(tmp_path):
+    """Unlike the pin, color groups sessions the way the folder does, so the
+    agent's child keeps it too (``test_chat_fork_inherits_color.py``)."""
+    state = _make_state(tmp_path)
+    caller = _seed(state, "chat-1")
+    caller.color_index = 4
+
+    result = _fork(state, caller)
+
+    assert state.get_slot(result["target"]).color_index == 4
+
+
 def test_an_unknown_folder_refuses_the_whole_fork(tmp_path):
     state = _make_state(tmp_path)
     caller = _seed(state, "chat-1")
