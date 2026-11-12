@@ -8111,6 +8111,7 @@
       "loopback_slow_hint": "O login ainda não foi concluído. Se você fechou a aba de login, comece de novo. Se a página de login não conseguir alcançar este computador, use um código em vez disso.",
       "loopback_fell_back": "O login não conseguiu voltar direto para este computador, então aqui está um código.",
       "cancel_unsettled": "Não foi possível cancelar o login. Ele ainda está ativo: pressione a mesma opção novamente para tentar de novo.",
+      "pending_cancel_unsettled": "Conectado, mas não foi possível cancelar o login que você iniciou aqui. Ele continua aberto até expirar.",
       "card_intro": "Usado apenas pelo backend Kiro Agent: seus agentes são executados com esta conta Kiro. O Kiro CLI mantém o próprio login do kiro-cli, então entrar aqui não o altera.",
       "previous_sign_in_not_removed": "Conectado, mas não foi possível remover o login anterior",
       "previous_sign_in_not_removed_body": "A nova conta foi salva, mas a conta da qual você estava saindo ainda está lá e tem prioridade. Saia dela e depois confira o login mostrado aqui."

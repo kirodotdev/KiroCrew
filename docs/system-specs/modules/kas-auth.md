@@ -645,9 +645,13 @@ engine instead ([aws-control.md](aws-control.md)).
   still stored after the cancel, so only a changed `identity` or `expires_at`
   between a status read taken right before the cancel and one after it counts as
   the attempt having landed (a cached read can predate a token refresh, which
-  moves `expires_at` too). "Use a different sign-in" is the smaller link back to
-  the chooser. The code screen shows when the code stops working, from the begin
-  answer's `expires_at`.
+  moves `expires_at` too). An attempt still pending when a status read says
+  signed in with no switch running (another tab or the CLI finished first) is
+  dropped, then cancelled through the same settle, so its poll stops. When that
+  cancel does not settle, the signed-in view says so with a notice that offers
+  Try again. "Use a different sign-in" is the smaller link back to the chooser.
+  The code screen shows when the code stops working, from the begin answer's
+  `expires_at`.
 - The persistent signal for a lapsed sign-in is the app-level **Kiro sign-in
   notice** (`website/src/components/KiroSignInNotice.tsx`, mounted in `App.tsx`
   above every route beside `CrashReportNotice`), because the card above lives on

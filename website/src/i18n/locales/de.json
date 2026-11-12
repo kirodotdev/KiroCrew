@@ -7904,6 +7904,7 @@
       "loopback_slow_hint": "Die Anmeldung ist noch nicht abgeschlossen. Wenn du den Anmelde-Tab geschlossen hast, beginne neu. Wenn die Anmeldeseite diesen Computer nicht erreicht, verwende stattdessen einen Code.",
       "loopback_fell_back": "Die Anmeldung konnte nicht direkt auf diesen Computer zurückkommen, deshalb gibt es stattdessen einen Code.",
       "cancel_unsettled": "Die Anmeldung konnte nicht abgebrochen werden. Sie läuft noch – wähle dieselbe Option erneut, um es noch einmal zu versuchen.",
+      "pending_cancel_unsettled": "Angemeldet, aber die hier gestartete Anmeldung konnte nicht abgebrochen werden. Sie bleibt offen, bis sie abläuft.",
       "card_intro": "Wird nur vom Backend Kiro Agent verwendet: Dessen Agenten laufen unter diesem Kiro-Konto. Kiro CLI behält seine eigene kiro-cli-Anmeldung; eine Anmeldung hier ändert daran nichts.",
       "previous_sign_in_not_removed": "Angemeldet, aber die vorherige Anmeldung konnte nicht entfernt werden",
       "previous_sign_in_not_removed_body": "Das neue Konto ist gespeichert, aber das Konto, von dem du gewechselt hast, ist noch da und hat Vorrang. Melde dich dort ab und prüfe dann die hier angezeigte Anmeldung."

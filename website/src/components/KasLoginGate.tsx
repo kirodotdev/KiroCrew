@@ -877,6 +877,9 @@ function KasLoginFlow({
   // waiting screen up with no explanation — buttons re-enabled, nothing said.
   // Held here and rendered on that screen; cleared by the next attempt.
   const [settleError, setSettleError] = useState('')
+  // The login a signed-in status dropped whose cancel did not settle: the
+  // gateway keeps it open, so the signed-in view says so and offers a retry.
+  const [unsettledLoginId, setUnsettledLoginId] = useState<string | null>(null)
   const statusQuery = useQuery({
     queryKey: QUERY_KEY,
     queryFn: api.kasLoginStatus,
@@ -1093,6 +1096,23 @@ function KasLoginFlow({
         : beginDevice.mutate({ provider: prev.provider, extra: prev.extra }),
     )
 
+  // Signed in another way (another tab, the CLI) while this login was pending:
+  // the signed-in view hides it, and it would poll unseen until its code
+  // expires. Drop it, then cancel it the way a user's cancel does. The session
+  // is never restored, so an unsettled cancel does not resume the poll.
+  const cancelDropped = async (loginId: string) => {
+    setUnsettledLoginId(null)
+    if ((await settleCancel(loginId)) === 'unknown') setUnsettledLoginId(loginId)
+  }
+  useEffect(() => {
+    if (!status?.authenticated || reauth || !session || settling) return
+    setSession(null)
+    setFellBack(false)
+    void cancelDropped(session.login_id)
+    // cancelDropped is re-created every render; listing it would re-fire on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status?.authenticated, reauth, session, settling])
+
   // Mirror KiroPrerequisiteGate: an unresolved check is UNKNOWN, never a locked
   // door — render the app rather than flashing a sign-in screen at every load.
   if (statusQuery.isPending) return <>{renderPending ? renderPending() : children}</>
@@ -1156,6 +1176,22 @@ function KasLoginFlow({
             message={i18nT('components.kasLogin.previous_sign_in_not_removed_body')}
             onDismiss={() => setReplaceWarning(false)}
             testId="kas-login-replace-warning"
+          />
+        ) : null}
+        {unsettledLoginId ? (
+          // askAgent on, as above: nothing here is a draft, and the agent runs
+          // as the account that is signed in.
+          <ErrorNotice
+            className={chrome.card ? 'mb-3' : 'mb-4 max-w-lg'}
+            askAgent
+            message={i18nT('components.kasLogin.pending_cancel_unsettled')}
+            footer={
+              <Btn type="button" onClick={() => void cancelDropped(unsettledLoginId)}>
+                {i18nT('components.kiroPrerequisiteGate.try_again')}
+              </Btn>
+            }
+            onDismiss={() => setUnsettledLoginId(null)}
+            testId="kas-login-cancel-unsettled"
           />
         ) : null}
         {renderAuthenticated ? renderAuthenticated(status, { reauth: () => setReauth(true) }) : children}

@@ -7697,6 +7697,7 @@
       "loopback_slow_hint": "登录还没有完成。如果你关闭了登录标签页，请重新开始。如果登录页无法连回这台电脑，请改用验证码。",
       "loopback_fell_back": "登录结果无法直接回到这台电脑，所以改为使用验证码。",
       "cancel_unsettled": "无法取消登录。登录仍在进行中，请再次点击同一选项重试。",
+      "pending_cancel_unsettled": "已登录，但无法取消你在此处发起的登录。该登录会保持开启，直到超时。",
       "card_intro": "仅供 Kiro Agent 后端使用：其 Agent 将以这个 Kiro 账号运行。Kiro CLI 仍沿用自己的 kiro-cli 登录，在此登录不会改变它。",
       "previous_sign_in_not_removed": "已登录，但无法移除之前的登录",
       "previous_sign_in_not_removed_body": "新账号已保存，但你切换前的那个账号仍然存在且优先生效。请先将其登出，再确认此处显示的登录。"
