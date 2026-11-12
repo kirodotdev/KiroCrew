@@ -19,14 +19,16 @@ from app_manager_helpers import _make_app_source
 
 import kiro_crew.apps.hooks_integration as hooks_mod
 from kiro_crew import member_records
-from kiro_crew.apps import protected_app_state
+from kiro_crew.apps import manager_records, protected_app_state
 from kiro_crew.apps.lifecycle import LifecycleDispatcher
 from kiro_crew.apps.manager import disable_app, enable_app, get_app, install_app, update_app
+from kiro_crew.dashboard import token_auth_tokens
 from kiro_crew.dashboard.token_auth import (
     read_app_secret,
     validate_app_secret,
     validate_token_with_app,
 )
+from kiro_crew.testing.clock import ManualClock
 
 APP = "test-app"
 HOOKS = {"on_startup": "backend.hooks:on_startup"}
@@ -134,7 +136,11 @@ async def test_enable_moves_the_secret_of_an_app_installed_and_then_updated(tmp_
 
 
 @pytest.mark.asyncio
-async def test_the_hook_context_mints_this_apps_token(tmp_path, app_home):
+async def test_the_hook_context_mints_this_apps_token(tmp_path, app_home, monkeypatch):
+    # One stepped clock for the enable cutoff and the mint, so iat > cutoff never ties.
+    clock = ManualClock(tick=1.0)
+    clock.install(monkeypatch, manager_records)
+    clock.install(monkeypatch, token_auth_tokens)
     _install_as_an_older_version_left_it(tmp_path, app_home)
     contexts: list[Any] = []
     with _gateway_wiring(contexts):
