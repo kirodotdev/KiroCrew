@@ -1169,19 +1169,20 @@ def test_a_probe_that_will_not_exit_is_killed_with_everything_it_started(tmp_pat
     """The kill takes the CLI's worker too, not only the CLI."""
     pidfile = tmp_path / "pids"
 
-    strands_mod._verify_strands_gate(
-        _readback_session(str(tmp_path)),
-        [sys.executable, "-c", _CLI_THAT_STAYS_UP, str(pidfile)],
-        dict(os.environ),
-        "/sealed/agent.py",
-        str(tmp_path / "marker.json"),
-        "nonce",
-        child_scrub_names=(),
-    )
-
-    pids = await_pids(pidfile)
-    alive = [pid for pid in pids if not await_gone(pid)]
-    kill_leftovers(alive)
+    try:
+        strands_mod._verify_strands_gate(
+            _readback_session(str(tmp_path)),
+            [sys.executable, "-c", _CLI_THAT_STAYS_UP, str(pidfile)],
+            dict(os.environ),
+            "/sealed/agent.py",
+            str(tmp_path / "marker.json"),
+            "nonce",
+            child_scrub_names=(),
+        )
+        pids = await_pids(pidfile)
+        alive = [pid for pid in pids if not await_gone(pid)]
+    finally:
+        kill_leftovers(await_pids(pidfile) if pidfile.exists() else ())
     assert alive == [], f"the probe's kill left {alive} of {pids} running"
 
 
