@@ -792,7 +792,10 @@ def _url_payload_command(n: int) -> str:
 #: ``bounded_judgment``, one shared budget of resolver wait that every off-loop
 #: request checks before it is sent and that clamps only candidate waits; and the
 #: three lines the ``paths`` facade's manifest lists for them. No check was relaxed.
-_PACKAGE_LINE_BUDGET = 35_804
+#: Raised by 20, from 35,804, to 35,824, for ``StreamRedactor.release_sentence_end`` in
+#: ``text_redaction``: a withheld run that is one plain word ending a sentence can be
+#: committed before the next chunk arrives. No pattern, pass or commit boundary moved.
+_PACKAGE_LINE_BUDGET = 35_824
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
