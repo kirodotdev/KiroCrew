@@ -12712,7 +12712,7 @@
         "approve": "Aprobar",
         "approved": "Aprobado",
         "artifact_save_permanently": "Guardar permanentemente",
-        "artifact_save_permanently_aria": "Guardar este artefacto permanentemente para que no se elimine",
+        "artifact_save_permanently_aria": "Guardar {{name}} permanentemente para que no se elimine",
         "artifacts": "Artefactos",
         "artifacts_browse_all": "Ver todos ({{count}})",
         "artifacts_browse_folder": "Ver esta carpeta",

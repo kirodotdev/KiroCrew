@@ -12444,7 +12444,7 @@
         "approve": "Genehmigen",
         "approved": "Genehmigt",
         "artifact_save_permanently": "Dauerhaft speichern",
-        "artifact_save_permanently_aria": "Dieses Artefakt dauerhaft speichern, damit es nicht entfernt wird",
+        "artifact_save_permanently_aria": "{{name}} dauerhaft speichern, damit es nicht entfernt wird",
         "artifacts": "Artefakte",
         "artifacts_browse_all": "Alle anzeigen ({{count}})",
         "artifacts_browse_folder": "Diesen Ordner anzeigen",

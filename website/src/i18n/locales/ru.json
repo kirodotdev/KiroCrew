@@ -12980,7 +12980,7 @@
         "approve": "Разрешить",
         "approved": "Разрешено",
         "artifact_save_permanently": "Сохранить навсегда",
-        "artifact_save_permanently_aria": "Сохранить этот артефакт навсегда, чтобы он не был удалён",
+        "artifact_save_permanently_aria": "Сохранить {{name}} навсегда, чтобы его не удалили",
         "artifacts": "Артефакты",
         "artifacts_browse_all": "Показать все ({{count}})",
         "artifacts_browse_folder": "Показать эту папку",
