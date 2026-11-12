@@ -73,7 +73,7 @@ def test_recording_a_spawn_into_a_missing_file_still_creates_it(pidfile):
     assert list(json.loads(pidfile.read_text())) == ["gamma"]
 
 
-def test_the_reap_keeps_kept_rows_when_the_file_is_cut_off_mid_scan(pidfile):
+def test_the_reap_keeps_kept_rows_when_the_file_is_cut_off_mid_scan(pidfile, monkeypatch):
     rows = {
         "old": {"pid": 4321, "start_time": "ST-1", "port": 9100},
         "kept": {"pid": 4322, "start_time": "ST-2", "port": 9101},
@@ -88,15 +88,18 @@ def test_the_reap_keeps_kept_rows_when_the_file_is_cut_off_mid_scan(pidfile):
             state["cut"] = pidfile.read_bytes()
         return "ST-1" if pid == 4321 else None  # 'kept': identity unreadable, row kept
 
-    with (
-        patch.object(backend_mod, "_proc_start_time", side_effect=start_time),
-        patch.object(backend_mod.os, "kill", return_value=None),
-        patch.object(backend_mod.os, "getpgid", return_value=4321),
-        patch.object(backend_mod.os, "killpg"),
-        patch.object(backend_mod, "sel"),
-        patch.object(backend_mod, "_REAP_SIGTERM_GRACE", 0.0),
-        patch.object(backend_mod, "_REAP_POLL_INTERVAL", 0.01),
-    ):
-        backend_mod._reap_stale_app_backends()
+    # Mock at the platform seam the reap calls, so the same fake processes run on
+    # every platform: both pids are alive, the matched one stops at its terminate.
+    compat = backend_mod.platform_compat
+    monkeypatch.setattr(backend_mod, "_proc_start_time", start_time)
+    monkeypatch.setattr(compat, "pid_liveness", lambda _pid: compat.PID_ALIVE)
+    monkeypatch.setattr(
+        compat, "kill_process_tree_pinned", lambda pid, expected, sig, **kwargs: True
+    )
+    monkeypatch.setattr(backend_mod, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(backend_mod, "sel", lambda: None)
+
+    backend_mod._reap_stale_app_backends()
+
     assert state["cut"] is not None
     assert pidfile.read_bytes() == state["cut"]
