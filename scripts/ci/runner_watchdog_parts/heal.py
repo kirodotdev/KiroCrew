@@ -21,6 +21,7 @@ from runner_watchdog import (
     MAX_RESTORE_DEPTH,
     NESTED_RERUN_RESERVE_SECONDS,
     ORPHANED,
+    OUTCOME_ABORTED_RATE_LIMITED,
     OUTCOME_CANCEL_FAILED,
     OUTCOME_CANCEL_TIMED_OUT,
     OUTCOME_COMPLETED_ON_ITS_OWN,
@@ -157,9 +158,13 @@ def heal_runs(
             fresh_run = api.get(run_path) or {}
             fresh_jobs = list_jobs(api, policy.repo, verdict.run_id)
         except ApiError as exc:
-            # Nothing has been touched yet; the next tick re-inspects it.
+            # Nothing has been touched yet; the next tick re-inspects it. A rate
+            # limit is a condition rather than a one-off, so the orphan reds the
+            # tick instead of waiting behind a green one for the quota to reset.
             log(f"{_label(verdict)} could not be re-read before the heal ({exc}); leaving it")
-            outcomes[verdict.run_id] = OUTCOME_NOT_ATTEMPTED
+            outcomes[verdict.run_id] = (
+                OUTCOME_ABORTED_RATE_LIMITED if exc.rate_limited else OUTCOME_NOT_ATTEMPTED
+            )
             continue
         fresh = classify_run(fresh_run, fresh_jobs, replace(policy, now=tick.now()))
         if fresh.run_attempt != verdict.run_attempt or fresh.verdict != ORPHANED:
@@ -230,7 +235,9 @@ def heal_runs(
         except ApiError as exc:
             if not exc.ambiguous:
                 log(f"cancel refused for {_label(verdict)}: {exc}")
-                outcomes[verdict.run_id] = OUTCOME_CANCEL_FAILED
+                outcomes[verdict.run_id] = (
+                    OUTCOME_ABORTED_RATE_LIMITED if exc.rate_limited else OUTCOME_CANCEL_FAILED
+                )
                 continue
             # The cancel may have landed. It is not re-posted (a repeat on a
             # cancelling run is a conflict that would read as a refusal and
