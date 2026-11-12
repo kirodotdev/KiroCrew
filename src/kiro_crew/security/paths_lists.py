@@ -683,6 +683,11 @@ _CREW_SECRET_LEAVES: list[str] = [
     # opens these paths directly rather than through this gate, so publishing keeps
     # working.
     "auth-store-staging",
+    # The self-update engine's wheel download directory: the wheel sits here between its
+    # SHA-256 check and pip's install. Same top-level whole-directory shape as the entry
+    # above; the engine opens it directly. Also sandbox-masked
+    # (``sandbox_leaves._UPDATE_STAGING_LEAF``).
+    "update-staging",
     # Mediated-secret owner-signed egress policy: writable, it would let an agent try
     # to authorize its own origin. Only the gateway and owner CLI open it, directly.
     "secret-request-policy",

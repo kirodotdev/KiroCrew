@@ -775,7 +775,10 @@ def _url_payload_command(n: int) -> str:
 #: Raised by one, from 35,533, for the ``update_next_start.json`` entry on the
 #: file-tool write fence: the update armed for the next start, which the sandbox
 #: seals read-only too.
-_PACKAGE_LINE_BUDGET = 35_534
+#: Raised by 5, from 35,534, for the ``update-staging`` entry in the home fence: the
+#: self-update engine's wheel staging directory moved out of ``trust/`` to its own
+#: top-level masked leaf, and the file-tool gate covers it as it covered ``trust/``.
+_PACKAGE_LINE_BUDGET = 35_539
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
