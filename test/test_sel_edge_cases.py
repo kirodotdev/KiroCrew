@@ -10,6 +10,7 @@ fixtures and helpers live in ``sel_helpers.py``.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import threading
@@ -92,6 +93,69 @@ class TestHmacKeyManagementExtras:
         log = SecurityEventLog(base_dir=tmp_path, sync=True)
         assert (tmp_path / "trust" / "sel_hmac.key").exists()
         assert log._hmac_key
+
+    def test_masked_trust_dir_fails_closed_naming_the_credential_mask(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A leaf this process may not stat presents mkdir=EEXIST with
+        isdir=False -- the enforced-harness credential mask withholding
+        trust/ from a third-party child shows a healthy on-host directory
+        as a creation fault. Init must fail closed naming the mask instead
+        of surfacing "File exists" for a directory nobody is missing.
+        """
+        # A healthy init first: the trust dir and key exist, exactly the
+        # on-host state the mask then hides from the child.
+        SecurityEventLog(base_dir=tmp_path, sync=True)
+        trust_dir = tmp_path / "trust"
+        assert trust_dir.is_dir()
+
+        real_stat = os.stat
+        denied_target = os.path.realpath(os.fspath(trust_dir))
+
+        def _stat_denying_trust(path, *args, **kwargs):
+            try:
+                resolved = os.fspath(path)
+            except TypeError:
+                # An fd-based probe names no path this emulation concerns.
+                return real_stat(path, *args, **kwargs)
+            if os.path.realpath(resolved) == denied_target:
+                # What the credential mask answers for a withheld leaf:
+                # EPERM, which every caller in this process reads as
+                # isdir=False and exists=False.
+                raise PermissionError(errno.EPERM, "Operation not permitted")
+            return real_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "stat", _stat_denying_trust)
+        # _init_locked runs exactly once per instance: the healthy init
+        # above holds the class singleton, so clear both guards -- the
+        # same reset the autouse fixture applies between tests -- to make
+        # the masked init a real re-initialization.
+        SecurityEventLog._instance = None
+        SecurityEventLog._initialized = False
+        # assert rather than pytest.raises so prove.py credits the red under
+        # a reverted fix: the propagated FileExistsError would pass through
+        # raises' match as an accident rather than a test judgement.
+        try:
+            SecurityEventLog(base_dir=tmp_path, sync=True)
+        except (RuntimeError, OSError) as exc:
+            assert isinstance(exc, RuntimeError), (
+                f"init must name the credential mask for a masked trust "
+                f"leaf, not report a directory fault nobody has: {exc!r}"
+            )
+            assert "credential mask" in str(exc)
+        else:
+            pytest.fail("init must fail closed when the trust root is masked")
+
+    def test_a_real_non_directory_at_the_trust_name_keeps_raising_eexist(
+        self, tmp_path: Path
+    ) -> None:
+        """The boundary the masked arm is judged against: a plain FILE
+        parked at the trust name stats fine, so init keeps surfacing the
+        mkdir EEXIST unchanged rather than claiming a credential mask.
+        """
+        (tmp_path / "trust").write_text("not a directory")
+        with pytest.raises(FileExistsError):
+            SecurityEventLog(base_dir=tmp_path, sync=True)
 
     def test_key_lockdown_precedes_content(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
