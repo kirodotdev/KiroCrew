@@ -35,6 +35,7 @@ from kiro_crew import llm_helpers, security
 from kiro_crew.hooks import HookManager, HooksConfig, UserDeniedPattern
 from kiro_crew.llm_helpers import ToolApprovalPolicy, _resolve_permission
 from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
+from kiro_crew.subprocess_pool import SubprocessPoolTimeout
 
 # A title that survives every title-tier check, so the decision under test is
 # decided by tool_input alone.
@@ -464,6 +465,57 @@ class TestPathTierWording:
             "Blocked: sensitive path in tool_input: ~/.ssh/id_rsa",
             "~/.ssh/id_rsa",
         )
+
+
+class TestOneResolverDeadlinePerCall:
+    """Every path check one tool call makes shares one resolver deadline.
+
+    The scan runs on a worker thread, where no per-thread wait allowance applies, so a
+    call naming many slow mounts would hold the approval and its worker for a full
+    budget plus grace on each path. Inside one judgment the checks stop once the
+    shared deadline is spent, and the call is refused as unverifiable.
+    """
+
+    @staticmethod
+    def _slow_mounts(monkeypatch: pytest.MonkeyPatch, delay: float) -> list[str]:
+        """Answer each resolution under ``/net/kc-slow-*`` after *delay* injected seconds."""
+        clock = [1000.0]
+        probed: list[str] = []
+
+        def _resolve(worker, expanded, timeout):
+            if "kc-slow-" not in expanded:
+                return worker(expanded)
+            probed.append(expanded)
+            clock[0] += min(timeout, delay)
+            if delay > timeout:
+                raise SubprocessPoolTimeout("child did not answer", child_syscall=None)
+            return {expanded}
+
+        monkeypatch.setattr(security, "_path_resolve_degraded", {})
+        monkeypatch.setattr(security, "_path_resolve_clock", lambda: clock[0])
+        monkeypatch.setattr(security.paths, "_resolve_on_calling_thread", _resolve)
+        return probed
+
+    @pytest.mark.asyncio
+    async def test_slow_mounts_stop_at_the_shared_deadline_and_the_call_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        delay = 1.5
+        cap = security.paths._PATH_RESOLVE_WAIT_CAP_SECS
+        assert delay < security.paths._PATH_RESOLVE_TIMEOUT_SECS, "each answer is on time"
+        probes: list[int] = []
+        for count in (20, 40):
+            probed = self._slow_mounts(monkeypatch, delay)
+            payload = json.dumps([f"/net/kc-slow-{n}/f" for n in range(count)])
+            approved, provider, rows = await _resolve(payload)
+            assert approved is False
+            assert provider.rejected == ["r1"]
+            _outcome, error, mechanism = _decision(rows)
+            assert security.is_unverifiable_path_refusal(error), error
+            assert mechanism == "always_deny_input"
+            probes.append(len(probed))
+        assert probes[0] == probes[1] <= int(cap / delay) + 1, probes
+        assert security._path_resolve_degraded == {}, "an on-time answer charges no prefix"
 
 
 class TestShellCommandTextLeavesThePathTier:
