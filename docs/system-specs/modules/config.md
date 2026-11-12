@@ -1221,7 +1221,13 @@ it could not read (see its API entry). Two explicit, user-invoked paths replace
 the document instead: `kirocrew config set --file` installs the given file
 whole (under the same lock, with `on_corrupt="reset"`, so it also overwrites an
 unreadable file), and the dashboard import's **Replace** installs the archive's
-`config.json`. Its **Merge** never overwrites a settings document this install
+`config.json`. `--file --local` installs the given file as the overlay
+(`config.local.json`), not the base, and is not meta-stamped; like a base
+`--file` write it refuses a new or changed workspace `dir` that is not an existing
+directory, judged against the base with the current overlay over it (an entry
+the base alone already binds to that dir is saved with a warning); a positional
+key/value given with `--file` is reported ignored, since `--file` replaces the
+whole document. Its **Merge** never overwrites a settings document this install
 has (see [Settings import](#settings-import-dashboard-merge)). The overlay is for a
 value you want PINNED above whatever those writers later put in the base.
 
