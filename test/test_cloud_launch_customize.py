@@ -206,6 +206,9 @@ class TestAmiArchitectureCheck:
         from kiro_crew.cloud.launch_state import LaunchState
 
         def fake_run(args, profile="", region="", **kw):
+            if args[:2] == ["cloudformation", "describe-stacks"]:
+                # The failed launch looks for a stack it left; there is none.
+                return 254, "", "ValidationError: Stack with id x does not exist"
             assert args[:4] == ["ec2", "describe-images", "--image-ids", "ami-0abc1234"]
             images = [{"ImageId": "ami-0abc1234", "Architecture": image_arch}]
             return 0, json.dumps({"Images": images}), ""
