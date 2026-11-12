@@ -578,6 +578,8 @@ def _verify_deepseek_gate(
             stdin=subprocess_mod.PIPE,
             stdout=subprocess_mod.DEVNULL,
             stderr=subprocess_mod.DEVNULL,
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
         )
     except (OSError, subprocess_mod.SubprocessError) as exc:
         # The boot itself failed, which is not the same finding as a boot that
@@ -604,12 +606,12 @@ def _verify_deepseek_gate(
         try:
             process.wait(timeout=_DSH_GATE_PROBE_EXIT_S if published else 0)
         except subprocess_mod.TimeoutExpired:
-            process.kill()
+            platform_compat.kill_popen_tree(process)
             with suppress(subprocess_mod.SubprocessError, OSError):
                 process.wait(timeout=_DSH_GATE_PROBE_EXIT_S)
     except (OSError, subprocess_mod.SubprocessError) as exc:
         with suppress(OSError, subprocess_mod.SubprocessError):
-            process.kill()
+            platform_compat.kill_popen_tree(process)
         return (
             f"the gate's load marker could not be read back ({exc})",
             acp_tool_gate.remediation_for(backend),
