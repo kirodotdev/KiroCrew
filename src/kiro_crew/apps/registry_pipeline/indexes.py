@@ -32,6 +32,7 @@ from kiro_crew.apps.registry_pipeline.checkout import (
     _HOOKS_NEUTRALIZER_ARGV,
     _communicate_with_timeout,
     _git_fetch_branch,
+    _mkdtemp_settled,
     _rmtree_force_settled,
 )
 from kiro_crew.apps.registry_pipeline.git_targets import (
@@ -346,11 +347,9 @@ async def _fetch_external_registry_index(
 
     _sel_outcome("started")
 
-    import tempfile
-
     tmp_root: str | None = None
     try:
-        tmp_root = await asyncio.to_thread(tempfile.mkdtemp, prefix="kirocrew-registry-")
+        tmp_root = await _mkdtemp_settled("kirocrew-registry-")
         clone_path = Path(tmp_root)
         if isolate_transport:
             # See `_git_fetch_branch`: a combined credentialed clone would let
