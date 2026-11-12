@@ -190,7 +190,8 @@ function armRefusalCode(e: ApiError): string | null {
  * `arm_no_longer_offered`: nothing newer is available. `arm_offer_withdrawn`: the
  * clicked upgrade was withdrawn and the lane now sits below the running build, so
  * "already up to date" would be contradicted by the channel-move offer the next
- * status frame shows. `arm_check_failed`: the arm's own re-check failed, so the
+ * status frame shows. `arm_check_failed` and `update_check_pending` (the gateway has
+ * no check result yet, or the arm's own re-check failed): the
  * offer stands and trying again is the remedy; its line names the button by
  * `startLabel`, the button's own translated label at the time of the click.
  *
@@ -200,7 +201,8 @@ function armRefusalText(code: string | null, startLabel: string): string | null 
   switch (code) {
     case 'arm_no_longer_offered': return i18nT('pages.settings.aboutPanel.arm_no_longer_offered')
     case 'arm_offer_withdrawn': return i18nT('pages.settings.aboutPanel.arm_offer_withdrawn')
-    case 'arm_check_failed': return i18nT('pages.settings.aboutPanel.arm_check_failed', { label: startLabel })
+    case 'arm_check_failed':
+    case 'update_check_pending': return i18nT('pages.settings.aboutPanel.arm_check_failed', { label: startLabel })
     case 'arm_no_verdict': return i18nT('pages.settings.aboutPanel.arm_no_verdict')
     case 'arm_below_min_version': return i18nT('pages.settings.aboutPanel.arm_below_min_version')
     case 'arm_policy_managed': return i18nT('pages.settings.aboutPanel.updates_managed_by_policy')

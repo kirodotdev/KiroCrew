@@ -47,6 +47,13 @@ function createManagedLane({
   gatewayArm = null,
   // A start-time apply that failed (armed-apply.js): shown once, as an install error.
   startupApplyError = null,
+  // Is the first version strictly newer than the second? null when it cannot tell.
+  isNewerVersion = () => null,
+  // Is the gateway behind `gatewayArm` the one this app runs on this machine? The
+  // arm sync judges an arm against THIS app's version, which only means something
+  // for that gateway; a remote crew's arm is its own business. A host that injects
+  // none owns nothing, so the sync leaves every arm alone.
+  isOwnGateway = async () => false,
 }) {
   // Whether a security policy provider owns this install's updates right now.
   // A live verdict is also recorded in the app's store, so a start-time apply
@@ -226,10 +233,43 @@ function createManagedLane({
     // A governed install's arm belongs to the policy provider; main would never
     // apply it, so it does not adopt (or withdraw) one.
     if (governed()) return;
+    // Another crew's gateway is neither adopted from nor disarmed.
+    let own = false;
+    try { own = (await isOwnGateway()) === true; } catch { own = false; }
+    if (!own) return;
     let v = null;
-    try { v = await gatewayArm.armedVersion(); } catch { v = null; }
+    let armedAt = null;
+    try {
+      if (typeof gatewayArm.armedRecord === "function") {
+        const rec = await gatewayArm.armedRecord();
+        if (rec) { v = rec.version; armedAt = rec.armedAt; }
+      } else {
+        v = await gatewayArm.armedVersion();
+      }
+    } catch { v = null; }
     if (v === null) return;
     if (v) {
+      // An apply of this version was given up on at start: the gateway's arm is stale
+      // (the old version still runs), so it is disarmed, not adopted.
+      // The same holds for an arm the running app already reached or passed (armed
+      // 2.0.0, then 3.0.0 landed and the quit installed it): equality is not enough.
+      let runningVersion = "";
+      try { runningVersion = String(app.getVersion() || ""); } catch { runningVersion = ""; }
+      const stale = isNewerVersion(v, runningVersion) === false;
+      // A give-up is about the arm that existed then. An arm the gateway recorded
+      // after it (a fresh click on the same version) is a new ask and is adopted.
+      const failed = updateArm.failedRecord();
+      const failedArm = failed !== null && failed.version === v && !(armedAt !== null && armedAt * 1000 > failed.atMs);
+      if (stale || failedArm) {
+        log.info(`[update] the gateway holds ${v}, which is stale or failed - disarming it instead of adopting it`);
+        // Compare-and-cancel: a click that re-armed the gateway since the read above
+        // carries a new armed_at (or version), and is not this stale record.
+        try {
+          const again = typeof gatewayArm.armedRecord === "function" ? await gatewayArm.armedRecord() : { version: v, armedAt };
+          if (again && again.version === v && again.armedAt === armedAt) await gatewayArm.cancel(armedAt);
+        } catch { /* the next poll retries */ }
+        return;
+      }
       if (!updateArm.read()) {
         try { updateArm.arm(v); } catch (err) {
           log.error("[update] could not record the gateway's armed version", err);
@@ -487,7 +527,7 @@ function createManagedLane({
     emit("downloaded", downloadedPayload(version));
     if (gatewayArm) {
       try {
-        const told = await gatewayArm.arm();
+        const told = await gatewayArm.arm(version);
         log.info(told ? "[update] the running gateway recorded the arm" : "[update] no running gateway recorded the arm - main holds it");
       } catch (err) {
         log.info(`[update] telling the gateway about the arm failed: ${(err && err.message) || err}`);

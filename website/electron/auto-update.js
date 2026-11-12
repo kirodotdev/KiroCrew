@@ -1107,6 +1107,7 @@ function initAutoUpdate(deps) {
     updateArm = undefined,
     gatewayArm = null,
     startupApplyError = null,
+    isOwnGateway = null,
   } = deps;
 
   // Linux install shape. Resolved once, and BEFORE getInfo() is defined: the
@@ -1193,6 +1194,8 @@ function initAutoUpdate(deps) {
       ...(updateArm ? { updateArm } : {}),
       gatewayArm,
       startupApplyError,
+      isNewerVersion,
+      ...(isOwnGateway ? { isOwnGateway } : {}),
     });
   }
   // Updating requires an installed, signed bundle (macOS code signature

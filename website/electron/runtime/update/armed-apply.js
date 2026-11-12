@@ -94,6 +94,9 @@ async function applyArmedAtStart({ arm, exec, currentVersion, relaunch, app, log
   }
   log.error(`[update] armed update ${rec.version} failed at start (${result.message}) - starting the version that is installed`);
   arm.recordApplyError(rec.version, result.message);
+  // The hosted gateway still holds this arm (the old version runs), and syncing it
+  // back would re-run a failed update on every quit.
+  arm.recordFailedVersion(rec.version);
   return { outcome: "failed", error: result.message };
 }
 

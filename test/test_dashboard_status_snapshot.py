@@ -203,6 +203,7 @@ class TestAllStatusSnapshotCallersPassTheUpdateFields:
             "update_restart_ready_version",
             "update_restart_ready_reason",
             "update_armed_version",
+            "update_armed_at",
             "pending_apply_error",
             "update_last_checked_at",
             "update_check_interval_secs",

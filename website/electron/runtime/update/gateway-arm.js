@@ -64,26 +64,43 @@ function createGatewayArm({
    * cannot be asked or does not speak the arm contract (no update_armed_version
    * key in its status).
    */
-  async function armedVersion() {
+  async function armedRecord() {
     const res = await request("GET", "/api/status");
     if (!res.reached || res.status !== 200 || !res.json || typeof res.json !== "object") return null;
     if (!Object.prototype.hasOwnProperty.call(res.json, "update_armed_version")) return null;
     const v = res.json.update_armed_version;
-    return typeof v === "string" ? v : "";
+    const at = res.json.update_armed_at;
+    return { version: typeof v === "string" ? v : "", armedAt: typeof at === "number" && Number.isFinite(at) ? at : null };
+  }
+
+  async function armedVersion() {
+    const rec = await armedRecord();
+    return rec ? rec.version : null;
   }
 
   return {
     /**
      * Tell a running gateway the user armed an update. Nothing is posted unless
      * its status proves it knows the arm contract.
+     * @param {string} [version] the release main armed, so a gateway that cannot
+     *   see it records the right one.
      * @returns {Promise<boolean>} accepted
      */
-    async arm() {
+    async arm(version) {
       if ((await armedVersion()) === null) return false;
-      const res = await request("POST", "/api/update", { when: "next-start" });
+      const body = { when: "next-start", ...(version ? { version: String(version) } : {}) };
+      const res = await request("POST", "/api/update", body);
       return res.reached && res.status === 202;
     },
+    /** Disarm the gateway's own record, only the one stamped `armedAt` when given. @returns {Promise<boolean>} accepted */
+    async cancel(armedAt = null) {
+      const body = { when: "cancel", ...(typeof armedAt === "number" ? { armed_at: armedAt } : {}) };
+      const res = await request("POST", "/api/update", body);
+      return res.reached && res.status === 200;
+    },
     armedVersion,
+    /** `{version, armedAt}` (seconds, null when the gateway sends none), or null as armedVersion. */
+    armedRecord,
   };
 }
 
