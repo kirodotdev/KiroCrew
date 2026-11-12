@@ -641,14 +641,20 @@ its own once the cache refreshes with a list that carries it.
   (`_inherited_default_model`) only to know which default the slot inherits. Neither
   `slot.model` backfill site writes the provider's served model into such a slot,
   whatever that default is, Auto included (every tier deferring to the backend); the
-  composer chip reads it from `served_model`. The backfill writes only a slot whose
-  Bot pins a model. A settings change to the default
+  composer chip reads it from `served_model`. A Bot's thread with no pick of its own
+  is the same: it asks for the Bot's model on every turn and `slot.model` stays empty,
+  so `slot.model` holds only a person's pick. A settings change to the default or to
+  the Bot's model
   rebuilds the provider factory but leaves live sessions alone, so the next turn of an
   inheriting slot compares its live session's allocation stamp
-  (`allocation_requested_model`) with the default it inherits now. When they differ
+  (`allocation_requested_model`) with the model it inherits now (the Bot's model, else
+  the default). When they differ
   it queues the same reset a model pick queues, consumed with `skip_if_busy`, so a
   turn already streaming on that session is never cut. An empty stamp is unknown and
-  triggers nothing. A slot or Bot pin never triggers it. A `slot.model` an
+  triggers nothing. A slot pin never triggers it. An engine fallback moves the live
+  session without moving its stamp, so it triggers nothing either: the thread runs on
+  the engine's model until its next fresh start, then on its Bot's model again. A
+  `slot.model` an
   earlier backfill stored is indistinguishable from a person's pick, so nothing
   clears it on its own: it stays until the user picks Auto in that chat, or presses
   **Make my chats follow the default** under Settings > Chat > Model. That action
@@ -672,8 +678,8 @@ its own once the cache refreshes with a list that carries it.
   it on the fallback: the fallback's restore still moves it back. A chat
   `session_create` made (its line names a `created_by`), a Bot's own chat, and
   app, cron, channel and remote sessions are never counted. Neither is a chat on a
-  Bot whose config pins a model: that pin outranks the default, and the chat's
-  next turn would write it back. A slot kind a person does not start must set a
+  Bot whose config pins a model: that pin outranks the default, so a cleared chat
+  would land on the Bot's model, not the default. A slot kind a person does not start must set a
   non-person origin or a `created_by`: the origin check is the guard that keeps it
   out. Config pins are read, never written. An open chat's clear is saved at once
   and confirmed as a guarded write, so a close waits for it or refuses it. A
