@@ -493,6 +493,86 @@ class TestDiscoverInstall:
         finally:
             await client.close()
 
+    @pytest.mark.parametrize(
+        "stub",
+        [
+            {"disabled": True},
+            {"disabledTools": ["x"]},
+            {},
+            {"command": "", "args": ["old"]},
+            {"url": "", "type": "sse"},
+        ],
+        ids=["off", "tools", "empty", "stale-invocation", "stale-transport"],
+    )
+    async def test_official_install_over_a_stub_entry_writes_the_spec(
+        self, sandbox, fake_sel, reset_registry, stub
+    ):
+        """A stub left by a scope-off or tool toggle has no command, so the spec
+        lookup cannot see it; the install must fill it in, not answer ok over it."""
+        sandbox.kirocrew_json.write_text(
+            json.dumps({"mcpServers": {"weather": dict(stub)}}), encoding="utf-8"
+        )
+        client = await _client(FakeOfficialProvider())
+        try:
+            resp = await client.post(
+                "/api/mcp/discover/install",
+                json={"provider": "official", "id": _WEATHER_ID},
+            )
+            assert resp.status == 200
+            entry = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))["mcpServers"][
+                "weather"
+            ]
+            assert entry["command"] == "npx"
+            assert entry["args"] == ["-y", "@acme/weather-mcp@1.2.3"]
+            assert entry["disabled"] is True
+            assert "url" not in entry and "type" not in entry, "no stale launch key is kept"
+            for k, v in stub.items():
+                if k not in ("disabled", "command", "args", "url", "type"):
+                    assert entry[k] == v, "the stub's own overrides are kept"
+        finally:
+            await client.close()
+
+    async def test_install_over_a_registry_pointer_leaves_it_and_is_a_coded_409(
+        self, sandbox, fake_sel, reset_registry
+    ):
+        """A ``type: registry`` pointer has no command but is not a stub: the
+        catalog launches it, so the install must not replace it."""
+        pointer = {"type": "registry", "disabled": True}
+        sandbox.kirocrew_json.write_text(
+            json.dumps({"mcpServers": {"weather": pointer}}), encoding="utf-8"
+        )
+        raw = sandbox.kirocrew_json.read_bytes()
+        client = await _client(FakeOfficialProvider())
+        try:
+            resp = await client.post(
+                "/api/mcp/discover/install",
+                json={"provider": "official", "id": _WEATHER_ID},
+            )
+            assert resp.status == 409
+            assert (await resp.json()).get("code") == "mcp_server_name_in_use"
+            assert sandbox.kirocrew_json.read_bytes() == raw
+        finally:
+            await client.close()
+
+    async def test_install_on_an_ambiguous_store_name_is_a_coded_409(
+        self, sandbox, fake_sel, reset_registry, monkeypatch
+    ):
+        """Two store keys alias to the name: nothing is written, and the 409 carries
+        the same code the toggle answers for an ambiguous name."""
+        from kiro_crew.dashboard.handlers import mcp_discover
+
+        monkeypatch.setattr(mcp_discover, "_set_kirocrew_entry", lambda *a, **k: "ambiguous")
+        client = await _client(FakeOfficialProvider())
+        try:
+            resp = await client.post(
+                "/api/mcp/discover/install",
+                json={"provider": "official", "id": _WEATHER_ID},
+            )
+            assert resp.status == 409
+            assert (await resp.json()).get("code") == "mcp_server_name_ambiguous"
+        finally:
+            await client.close()
+
     async def test_install_reports_a_declined_rebuild(self, sandbox, fake_sel, reset_registry):
         """The shared-home guard refused the write: saved, but not live yet."""
         sandbox.rebuild.side_effect = lambda **_: Path("/dev/null")
