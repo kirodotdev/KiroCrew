@@ -552,6 +552,7 @@ async def _mount_member_panel(
             where,
         )
         return mcp_servers, False
+    entry = _with_runtime_ipc_pickups(self, [entry], stub_token)[0]
     # Session-level entries outrank same-named spec entries, so drop any stub
     # for the same server rather than registering it twice.
     return [e for e in mcp_servers if e.get("name") != entry["name"]] + [entry], True
@@ -726,24 +727,7 @@ async def _mirrored_session_mcp(
             session_key=session_key or "",
             agent_id=active_agent or "",
         )
-    runtime_ref = weakref.ref(self)
-
-    def _own_root_pid() -> int | None:
-        live_runtime = runtime_ref()
-        if live_runtime is None:
-            return None
-        return live_runtime._pid  # pid-owner-ok: the runtime reads its own root
-
-    # An enforced harness's kirocrew-core cannot read the gateway secret through its
-    # credential mask, so its element gets an agent-socket pickup bound to this
-    # session's stub token and this runtime's process tree (acp/ipc_pickup.py).
-    servers = with_ipc_pickups(
-        servers,
-        backend=self.acp_backend,
-        session_token=stub_token,
-        runtime_pid=_own_root_pid,
-        owner=self,
-    )
+    servers = _with_runtime_ipc_pickups(self, servers, stub_token)
     return _MirroredSessionMcp(
         servers=servers,
         denied_tools=projection.denied_tools,
@@ -752,6 +736,27 @@ async def _mirrored_session_mcp(
         ref_spec=ref_spec,
         agent_spec=projection.agent_spec,
         crew_bridged=crew_bridged,
+    )
+
+
+def _with_runtime_ipc_pickups(
+    runtime: AcpRuntime, servers: list[dict[str, Any]], stub_token: str
+) -> list[dict[str, Any]]:
+    """Issue pickups for this runtime's projected or late-added member elements."""
+    runtime_ref = weakref.ref(runtime)
+
+    def _own_root_pid() -> int | None:
+        live_runtime = runtime_ref()
+        if live_runtime is None:
+            return None
+        return live_runtime._pid  # pid-owner-ok: the runtime reads its own root
+
+    return with_ipc_pickups(
+        servers,
+        backend=runtime.acp_backend,
+        session_token=stub_token,
+        runtime_pid=_own_root_pid,
+        owner=runtime,
     )
 
 

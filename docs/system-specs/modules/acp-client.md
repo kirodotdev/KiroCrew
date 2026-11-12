@@ -198,6 +198,17 @@ names its responsibility, bound in the class under that owner's header.
 | `acp/runtime_reader_loop.py` | the single stdout reader: routing every frame by id and sessionId, the host's notification aliases, oversize-frame recovery, and the error an awaited request fails with |
 | `acp/runtime_class.py` | the class statement: the constructor, the properties, the class constants, the field declarations, the binding block and the `_MEMBER_OWNERS` set it passes to `own_methods`; `acp/runtime.py` re-exports the class, which keeps that module as its `__module__` |
 
+The runtime's mirrored array and its late member mounts share
+`runtime_session_setup._with_runtime_ipc_pickups`: each newly constructed dashboard
+entry on create or resume, and each panel entry in `_mount_member_panel`, goes
+through the same issuer with the session's stub token, the runtime's live root-pid
+reader and the runtime as lifetime owner. Issuance for a dashboard entry does not
+depend on the panel being enabled. Only the new entry is passed to the issuer, so
+existing projected entries are not issued duplicate pickups. Server eligibility
+and startup redemption remain the separate contract in `acp/ipc_pickup.py` and
+each server's entry point; composing an entry does not make it eligible. Disabled
+servers and narrowed panel tools still withhold their mounts before issuance.
+
 `acp/_dispatch.py`, the dispatch parser both transports share, is a mirror facade over
 the owners in `acp/_dispatch_parts/`. It keeps the session handshake -- the request shapes
 both transports send (`build_session_new_params`, `set_mode_params`, `set_model_params`),

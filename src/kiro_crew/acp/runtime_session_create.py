@@ -44,6 +44,7 @@ from kiro_crew.acp.runtime_session_setup import (
     _drop_withdrawn_stubs,
     _kas_worker_stub_names,
     _pooled_session_servers_and_ref_spec,
+    _with_runtime_ipc_pickups,
 )
 from kiro_crew.acp.runtime_start import _START_COLLECT_TIMEOUT_DEFAULT, StartCollector, StartPermit
 from kiro_crew.acp.session_handle import (
@@ -300,6 +301,7 @@ async def create_session(
         )
         member_mounted = member_entry is not None
         if member_entry is not None:
+            member_entry = _with_runtime_ipc_pickups(self, [member_entry], stub_token)[0]
             # Session-level entries outrank same-named spec entries, so drop
             # any stub for the same server rather than registering it twice.
             mcp_servers = [e for e in mcp_servers if e.get("name") != member_entry["name"]] + [
