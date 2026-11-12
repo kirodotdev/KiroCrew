@@ -471,7 +471,7 @@ describe('chat sidebar — Resume all interrupted sessions', () => {
   })
 })
 
-type CountRow = Pick<ChatSlot, 'mode' | 'surface' | 'running' | 'interrupted' | 'subagents_running' | 'executor' | 'crew_root'>
+type CountRow = Pick<ChatSlot, 'mode' | 'surface' | 'running' | 'interrupted' | 'interrupted_stale' | 'subagents_running' | 'executor' | 'crew_root'>
 type CountCase = { name: string; crew_mode?: boolean; slots: { key: string; row: CountRow | null }[]; expected: string[] }
 
 describe('the shared count fixture (test/fixtures/resume_all_candidates.json)', () => {

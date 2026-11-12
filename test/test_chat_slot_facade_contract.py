@@ -68,6 +68,7 @@ _TO_DICT_KEYS = (
     "waiting_for_input",
     "needs_input",
     "interrupted",
+    "interrupted_stale",
     "stop_state",
     "wait_state",
     "created",
