@@ -825,7 +825,8 @@ entry is dropped. The built-in Workflows app's `/run` handler returns its result
 `RunHandle` holds `run_id`, `name`, `status`, the growing `events` list, `result`,
 `error`, `author`, `session_key`, `source`, `args`, `agent_results`,
 `agent_errors`, exact saved-definition provenance, optional `derived_from`
-ancestry, and the driving `task`. Statuses: `running`, `paused`, `finished`,
+ancestry, the launch limits `timeout_secs` and `budget_total` (stored, and read
+back as `None` from an older record that lacks them), and the driving `task`. Statuses: `running`, `paused`, `finished`,
 `failed`, `cancelled`; `running` and `paused` are active states.
 
 Two distinct serializations:
@@ -1413,7 +1414,8 @@ remains an exact saved invocation and cannot be promoted into a duplicate or
 appended as a revision. An
 edited rerun clears that saved-definition identity because its submitted source
 is no longer the exact saved revision, and keeps the former id and revision only
-as `derived_from` ancestry; any later rerun carries that ancestry forward.
+as `derived_from` ancestry; any later rerun carries that ancestry forward. A rerun also runs under the prior run's own `timeout_secs` and
+`budget_total`; a `timeout_secs` the caller passes still wins.
 
 TaskRunner applies the same rule to saved task plans. A user edit or automatic
 replan clears the run's exact definition id, slug, and revision before publishing

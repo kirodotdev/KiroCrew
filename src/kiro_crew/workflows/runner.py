@@ -1680,4 +1680,6 @@ class WorkflowRunner:
             fallback_title=fallback_title,
             fallback_folder_id=fallback_folder_id,
             admission_closed=admission_closed,
+            timeout_secs=self._timeout_secs,
+            budget_total=budget_total,
         )
