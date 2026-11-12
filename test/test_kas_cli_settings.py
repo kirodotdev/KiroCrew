@@ -131,6 +131,56 @@ def test_an_opt_out_shows_one_session_notice_row(monkeypatch):
     assert rows == []
 
 
+def test_a_chat_shows_the_telemetry_notice_once_across_its_sessions(monkeypatch):
+    """A chat gets a new KAS session after idle, a restart or a switch; the row shows once."""
+    from types import SimpleNamespace
+
+    from kiro_crew.dashboard import chat_runner
+
+    slot = SimpleNamespace(messages=[])
+
+    def append(state, slot_, role, content, cls=""):
+        slot_.messages.append({"role": role, "content": content, "cls": cls})
+
+    monkeypatch.setattr(chat_runner, "append_and_surface", append)
+
+    def new_session(**notices):
+        chat_runner._notice_steer_upgrade(object(), slot, SimpleNamespace(**notices))
+        return [m["content"] for m in slot.messages if m["role"] == "notice"]
+
+    off = kcs.TELEMETRY_UNCONFIRMED_NOTICE
+    assert new_session(telemetry_unconfirmed_notice=off) == [off]
+    # A second, third session of the same chat: no new row.
+    assert new_session(telemetry_unconfirmed_notice=off) == [off]
+    assert new_session(telemetry_unconfirmed_notice=off) == [off]
+    # A changed answer is a new row.
+    not_applied = kcs.TELEMETRY_NOT_APPLIED_NOTICE
+    assert new_session(telemetry_unconfirmed_notice=not_applied) == [off, not_applied]
+    # Only this notice is held to once per chat; a session-start notice about the
+    # installed adapter still shows on every session that has it.
+    steer = "ℹ this adapter cannot take a mid-turn message"
+    new_session(telemetry_unconfirmed_notice=off, steer_upgrade_notice=steer)
+    assert new_session(steer_upgrade_notice=steer).count(steer) == 2
+
+
+def test_a_telemetry_row_from_another_role_does_not_hold_back_the_notice(monkeypatch):
+    """Only a notice row counts: the same words in an assistant reply are not the row."""
+    from types import SimpleNamespace
+
+    from kiro_crew.dashboard import chat_runner
+
+    off = kcs.TELEMETRY_UNCONFIRMED_NOTICE
+    slot = SimpleNamespace(messages=[{"role": "assistant", "content": off}])
+    rows = []
+    monkeypatch.setattr(chat_runner, "append_and_surface", lambda *a, **k: rows.append(a))
+
+    chat_runner._notice_steer_upgrade(
+        object(), slot, SimpleNamespace(telemetry_unconfirmed_notice=off)
+    )
+
+    assert [r[3] for r in rows] == [off]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("name", kcs.TELEMETRY_OFF_ENV)
 async def test_a_switch_in_the_spawns_extra_env_turns_it_off(homes, name):

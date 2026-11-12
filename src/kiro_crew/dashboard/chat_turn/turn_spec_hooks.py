@@ -624,7 +624,8 @@ def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: An
     tested one and the command that installs it. One more on a session whose MCP
     servers start without part of their env or headers, naming each server and the
     key names it lost, never a value. One more on a KAS session told to turn telemetry
-    off, since Crew cannot confirm the engine applied it. One more on a claude session
+    off, since Crew cannot confirm the engine applied it, shown once per chat (see
+    :func:`_chat_shows_notice`). One more on a claude session
     that runs in Default instead of the Auto it asked for, naming the ways back."""
     for name in (
         "steer_upgrade_notice",
@@ -637,7 +638,30 @@ def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: An
     ):
         notice = getattr(client, name, "")
         if isinstance(notice, str) and notice:
-            append_and_surface(state, slot, "notice", _redact_display_text(notice), "msg msg-info")
+            text = _redact_display_text(notice)
+            if name == "telemetry_unconfirmed_notice" and _chat_shows_notice(slot, text):
+                continue
+            append_and_surface(state, slot, "notice", text, "msg msg-info")
+
+
+def _chat_shows_notice(slot: Any, text: str) -> bool:
+    """Whether this chat's loaded window already holds a notice row reading *text*.
+
+    The telemetry notice rides on every KAS session, and one chat goes through many:
+    a new one after an idle timeout, a gateway restart, or a model, project or
+    harness switch. The row is meant once per chat. A changed answer has different
+    text, so it still shows.
+
+    shortcut: only rows in the loaded window count, so a chat whose notice has
+    left the window shows it once more; persist a per-chat marker if that is noisy.
+    """
+    rows = getattr(slot, "messages", None)
+    if not isinstance(rows, list):
+        return False
+    return any(
+        isinstance(row, dict) and row.get("role") == "notice" and row.get("content") == text
+        for row in rows
+    )
 
 
 #: Notice text per ``settings_withheld_cause`` answer (see ``LLMProvider``).
