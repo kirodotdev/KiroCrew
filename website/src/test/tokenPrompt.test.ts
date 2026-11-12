@@ -50,34 +50,43 @@ describe('extractSlackContextFromToken', () => {
       session_key: 'dashboard:chat-2-9', channel: 'C9', thread_ts: '1700.5',
     })
     expect(extractSlackContextFromToken(token)).toEqual({
-      sessionKey: 'dashboard:chat-2-9', channel: 'C9', threadTs: '1700.5',
+      sessionKey: 'dashboard:chat-2-9', channel: 'C9', threadTs: '1700.5', msgTs: null,
     })
   })
 
   it('returns nulls when claims absent', () => {
     const token = fakeToken({ sub: 'u', prompt: 'hi' })
     expect(extractSlackContextFromToken(token)).toEqual({
-      sessionKey: null, channel: null, threadTs: null,
+      sessionKey: null, channel: null, threadTs: null, msgTs: null,
     })
   })
 
   it('returns only the claims that are present (fresh thread, no session)', () => {
     const token = fakeToken({ sub: 'u', prompt: 'hi', channel: 'C9', thread_ts: '1800.9' })
     expect(extractSlackContextFromToken(token)).toEqual({
-      sessionKey: null, channel: 'C9', threadTs: '1800.9',
+      sessionKey: null, channel: 'C9', threadTs: '1800.9', msgTs: null,
     })
   })
 
   it('rejects non-string / oversized claims', () => {
     const token = fakeToken({ sub: 'u', channel: 123, thread_ts: 'x'.repeat(500) })
     expect(extractSlackContextFromToken(token)).toEqual({
-      sessionKey: null, channel: null, threadTs: null,
+      sessionKey: null, channel: null, threadTs: null, msgTs: null,
+    })
+  })
+
+  it('extracts msg_ts so a thread reply can be told from its thread root', () => {
+    const token = fakeToken({
+      sub: 'u', prompt: 'fix it', channel: 'D9', thread_ts: '1800.9', msg_ts: '1800.95',
+    })
+    expect(extractSlackContextFromToken(token)).toEqual({
+      sessionKey: null, channel: 'D9', threadTs: '1800.9', msgTs: '1800.95',
     })
   })
 
   it('returns nulls for malformed token', () => {
     expect(extractSlackContextFromToken('not-a-token')).toEqual({
-      sessionKey: null, channel: null, threadTs: null,
+      sessionKey: null, channel: null, threadTs: null, msgTs: null,
     })
   })
 })
