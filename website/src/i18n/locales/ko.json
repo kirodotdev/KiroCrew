@@ -16375,6 +16375,8 @@
         "share_refused_restart": "MCP 관리에서 각각 공유를 승인하세요. 그런 다음 게이트웨이를 다시 시작하면(설정 → 정보 → 게이트웨이 다시 시작) 새 채팅이 공유 사본을 사용합니다.",
         "share_refused_review": "MCP 관리에서 검토",
         "share_status_failed": "공유하도록 설정한 서버가 승인되었는지 확인하지 못했습니다.",
+        "unreadable_file": "{{productName}}에서 {{file}} 파일을 읽을 수 없습니다. 이유: {{reason}}. 이 파일의 MCP 서버는 목록에 표시되지 않습니다.",
+        "unreadable_files_failed": "건너뛴 MCP 구성 파일을 확인할 수 없습니다.",
         "actions": "동작",
         "add_custom": "사용자 지정 추가",
         "add_server": "서버 추가",

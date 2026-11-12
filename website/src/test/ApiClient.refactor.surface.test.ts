@@ -98,7 +98,7 @@ const API_KEY_ORDER = [
   'skillsPending', 'skillPendingDetail', 'approvePendingSkill', 'dismissPendingSkill',
   'dismissAllPendingSkills', 'pinSkill', 'setSkillInjectOnTrigger', 'skillsBudget',
   'discoverSkills', 'previewDiscoveredSkill', 'installDiscoveredSkill', 'mcpServers',
-  'mcpGlobalScopes', 'mcpDiscover', 'mcpDiscoverDetail', 'mcpDiscoverInstall',
+  'mcpGlobalScopes', 'mcpUnreadableFiles', 'mcpDiscover', 'mcpDiscoverDetail', 'mcpDiscoverInstall',
   'mcpCustomAdd', 'mcpCustomGet', 'mcpCustomUpdate', 'mcpActive',
   'mcpProbe', 'mcpResetProbeFailures', 'mcpSync', 'mcpApply',
   'mcpToggle', 'mcpToggleTool', 'mcpToggleAll', 'mcpRemove',

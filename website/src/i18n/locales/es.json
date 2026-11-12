@@ -17233,6 +17233,8 @@
         "share_refused_restart": "En Gestión de MCP, aprueba compartir cada uno. Después reinicia el gateway (Configuración → Acerca de → Reiniciar la pasarela) para que los chats nuevos usen la copia compartida.",
         "share_refused_review": "Revisar en Gestión de MCP",
         "share_status_failed": "No se pudo comprobar si los servidores que quieres compartir están aprobados.",
+        "unreadable_file": "{{productName}} no pudo leer {{file}} porque {{reason}}. Sus servidores MCP no aparecen en la lista.",
+        "unreadable_files_failed": "No se pudo comprobar qué archivos de configuración de MCP se omitieron.",
         "actions": "Acciones",
         "add_custom": "Añadir personalizado",
         "add_server": "Añadir servidor",

@@ -273,6 +273,7 @@ from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402, F401
     api_mcp_toggle,
     api_mcp_toggle_all,
     api_mcp_toggle_tool,
+    api_mcp_unreadable_files,
 )
 
 # ── Crew Members (handlers/members.py) ──

@@ -16375,6 +16375,8 @@
         "share_refused_restart": "在MCP 管理中逐个批准共享。然后重启网关（设置 → 关于 → 重启网关），新聊天才会使用共享副本。",
         "share_refused_review": "在MCP 管理中查看",
         "share_status_failed": "无法检查设为共享的服务器是否已获批准。",
+        "unreadable_file": "{{productName}} 无法读取 {{file}}，原因：{{reason}}。其中的 MCP 服务器未列出。",
+        "unreadable_files_failed": "无法检查哪些 MCP 配置文件被跳过。",
         "actions": "操作",
         "add_custom": "添加自定义",
         "add_server": "添加服务器",

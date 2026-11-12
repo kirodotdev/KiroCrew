@@ -46,19 +46,36 @@ _WIDE_BOMS = (
 
 
 def wide_bom_reason(raw: bytes) -> str | None:
-    """The fixed repair reason when *raw* opens with a UTF-16/UTF-32 mark, else ``None``.
+    """The fixed repair reason when *raw* is UTF-16 or marked UTF-32 text, else ``None``.
 
     A Windows editor that saves a config as UTF-16/UTF-32 (PowerShell 5.1's ``>``)
     leaves a file the UTF-8 readers cannot decode, so they skip it. The bytes carry
     exactly the cause, so this returns the same actionable reason the kiro-cli path
     uses — words a user can act on — rather than letting the opaque ``'utf-8' codec
     can't decode`` message be the only signal. The reason is fixed text plus a short
-    encoding family name, never any content from the file.
+    encoding family name, never any content from the file. A file opening with a
+    UTF-16/UTF-32 mark is named, and so is UTF-16 saved without one
+    (:func:`_unmarked_utf16`).
     """
     for bom, family in _WIDE_BOMS:
         if raw.startswith(bom):
             return f"it is saved as {family}; re-save it as UTF-8"
+    if _unmarked_utf16(raw):
+        return "it is saved as UTF-16; re-save it as UTF-8"
     return None
+
+
+def _unmarked_utf16(raw: bytes) -> bool:
+    """Whether *raw* opens like UTF-16 text saved without a byte-order mark.
+
+    A config document opens with ASCII characters (``{``, whitespace, ``/``), and
+    UTF-16 pairs each with a NUL byte: after it little-endian (``{\\0"\\0``),
+    before it big-endian (``\\0{\\0"``). A NUL as the first byte, or right after
+    the first character, is not JSON or JSONC, so a file read as UTF-8 never
+    opens this way and only an already unreadable file is named.
+    """
+    nul = [byte == 0 for byte in raw[:4]]
+    return nul in ([False, True, False, True], [True, False, True, False])
 
 
 def strip_utf8_bom(text: str) -> str:

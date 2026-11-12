@@ -7887,6 +7887,8 @@
         "share_refused_restart": "In MCP Management, press Approve sharing for each one. Then restart the gateway (Settings → About → Restart gateway) so new chats use the shared copy.",
         "share_refused_review": "Review in MCP Management",
         "share_status_failed": "Could not check whether the servers set to share are approved.",
+        "unreadable_file": "{{productName}} could not read {{file}} because {{reason}}. Its MCP servers are not listed.",
+        "unreadable_files_failed": "Could not check which MCP config files were skipped.",
         "applied_change_one": "Applied {{count}} change",
         "applied_change_other": "Applied {{count}} changes",
         "edit_json_for": "Edit JSON for {{name}}",

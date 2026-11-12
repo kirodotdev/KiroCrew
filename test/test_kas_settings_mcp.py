@@ -176,8 +176,9 @@ class TestUndeclaredFileServers:
         assert without_excluded_stubs([{"name": "pooled"}], stamped) == []
         assert finish_settings_mcp(stamped[0])["excludedTools"] == ["@pooled"]
 
-    def test_each_unreadable_file_gets_one_notice_line(self, home, work):
-        utf16 = b"\xff\xfe" + json.dumps({"mcpServers": {"x": {}}}).encode("utf-16-le")
+    @pytest.mark.parametrize("mark", [b"\xff\xfe", b""], ids=["marked", "unmarked"])
+    def test_each_unreadable_file_gets_one_notice_line(self, home, work, mark):
+        utf16 = mark + json.dumps({"mcpServers": {"x": {}}}).encode("utf-16-le")
         (home / "mcp.json").write_bytes(utf16)
         (work / ".kiro" / "settings").mkdir(parents=True)
         (work / ".kiro" / "settings" / "mcp.json").write_bytes(utf16)

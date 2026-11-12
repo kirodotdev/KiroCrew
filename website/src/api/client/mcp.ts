@@ -116,6 +116,8 @@ export function createMcpEndpoints({ get, post, put, j, jfetch: fetch }: ClientT
     // MCP
     mcpServers: () => fetch('/api/mcp').then(j),
     mcpGlobalScopes: () => fetch('/api/mcp/scopes').then(j),
+    /** The MCP config files the servers list skipped because they are saved as UTF-16 or UTF-32. */
+    mcpUnreadableFiles: () => get('/api/mcp/unreadable').then(j) as Promise<{ files: import('../../types').McpUnreadableFile[] }>,
     /** Multi-provider MCP server discovery (official registry, plus the
      *  edition capability provider when one is installed). A query
      *  shorter than 2 chars returns {results: [], providers: [...]} without

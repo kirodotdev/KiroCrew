@@ -16375,6 +16375,8 @@
         "share_refused_restart": "MCP 管理 でそれぞれの共有を承認してください。その後、ゲートウェイを再起動すると (設定 → バージョン情報 → ゲートウェイを再起動)、新しいチャットが共有コピーを使います。",
         "share_refused_review": "MCP 管理 で確認",
         "share_status_failed": "共有に設定したサーバーが承認済みか確認できませんでした。",
+        "unreadable_file": "{{productName}} は {{file}} を読み込めませんでした（理由: {{reason}}）。このファイルの MCP サーバーは一覧に表示されません。",
+        "unreadable_files_failed": "スキップされた MCP 設定ファイルを確認できませんでした。",
         "actions": "アクション",
         "add_custom": "カスタムを追加",
         "add_server": "サーバーを追加",

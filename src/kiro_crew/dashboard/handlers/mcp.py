@@ -1156,7 +1156,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _mcp_config_unreadable,
         _McpFileLockSync,
         _resolve_key_from_read,
+        _unreadable_mcp_files,
         api_mcp_global_scopes,
+        api_mcp_unreadable_files,
     )
     from kiro_crew.dashboard.handlers.mcp_config_purge import (  # noqa: F401
         _scrub_preregistered_oauth_copies,
