@@ -398,13 +398,19 @@ def undo_member_self(
         raise SelfUpdateError(
             "stale_undo", f"the Bot's {exc.field} was changed again since; nothing was undone"
         ) from None
+    from kiro_crew.agent_files import ASSISTANT_DEFAULT_DISPLAY_NAME, is_assistant_member
+
+    restored = str(agent.display_name or "").strip()
+    if not restored:
+        restored = ASSISTANT_DEFAULT_DISPLAY_NAME if is_assistant_member(member, agent) else member
     return {
         "member": member,
         # The name the crewmate goes by now the change is back, the same shape
-        # :func:`update_member_self` answers with (its key when it has none):
-        # the caller renames the home folder from it, so both directions of one
-        # change leave the sidebar reading what every other surface reads.
-        "name": agent.display_name or member,
+        # :func:`update_member_self` answers with: the caller renames the home
+        # folder from it, so both directions of one change leave the sidebar
+        # reading what every other surface reads. A crewmate with no name of its
+        # own carries its key, except the first one, whose key is an internal id.
+        "name": restored,
         "changed": changed,
         "after": {k: _copy_value(getattr(agent, k)) for k in values},
     }

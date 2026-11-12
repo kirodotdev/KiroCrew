@@ -855,6 +855,25 @@ def test_taking_a_rename_back_renames_the_home_folder_too() -> None:
     assert state.slots_pushed == 2
 
 
+def test_taking_the_first_crewmates_rename_back_names_its_folder_bot() -> None:
+    # The first crewmate has no display name of its own, so an undo restores an
+    # empty one: the label this answers with is the only thing keeping its
+    # internal key out of the sidebar, in the direction a rename comes back.
+    _seed()
+    state = FakeState()
+    _thread(state, ASSISTANT_MEMBER_NAME)
+    home = _home(state, ASSISTANT_DEFAULT_DISPLAY_NAME)
+    status, body = _update(state, {"display_name": "Pebble"})
+    assert status == 200, body
+    assert _home_name(state, home) == "Pebble"
+    status, undone = _undo(state, members_mod.member_slug(ASSISTANT_MEMBER_NAME), body["change_id"])
+    assert status == 200, undone
+    assert undone["changed"] == ["display_name"]
+    # The route answers with no label of its own; the folder it renamed is where
+    # the restored name becomes visible.
+    assert _home_name(state, home) == ASSISTANT_DEFAULT_DISPLAY_NAME
+
+
 def test_a_change_that_is_not_a_rename_leaves_the_home_folder_alone() -> None:
     _seed()
     state = FakeState()
