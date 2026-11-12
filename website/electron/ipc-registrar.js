@@ -876,6 +876,16 @@ function createIpcRegistrar({
           cookieHeader,
           log: makeUpdaterLogger(log),
         }),
+        // Only the gateway this app spawned is judged by this app's version: locality
+        // proves nothing (another installation's gateway, or a tunnel, can answer on
+        // loopback), so the kernel must name our own child as the listener.
+        isOwnGateway: async () => {
+          try {
+            return windows.security.isGatewayLocalForWindow(windows.getMainWindow()) === true
+              && typeof gateway.ownsLocalListener === "function"
+              && (await gateway.ownsLocalListener()) === true;
+          } catch { return false; }
+        },
         // A start-time apply that failed (main.js runs it before any window).
         startupApplyError: updateArm.takeApplyError(),
         // electron-updater's AppUpdater, NOT Electron's built-in autoUpdater:

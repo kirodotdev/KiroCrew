@@ -176,6 +176,23 @@ def _exit_with_sigterm_status() -> None:
     os.kill(os.getpid(), signal.SIGTERM)
 
 
+def _running_reaches(running: str, armed: str) -> bool:
+    """Whether *running* is *armed* or newer (equal text when the order cannot be read)."""
+    if running == armed:
+        return True
+    from kiro_crew.dashboard.handlers.updates_verdict import _is_newer
+
+    return _is_newer(armed, running) is False
+
+
+async def _clear_arm_best_effort() -> None:
+    """Clear an arm nothing needs to install; a record that will not clear must not stop the start."""
+    try:
+        await asyncio.to_thread(update_next_start.finish)
+    except Exception:
+        logger.warning("Could not clear the armed update record; starting anyway", exc_info=True)
+
+
 async def _apply_armed_update_at_boot() -> bool:
     """Apply the armed update, if any. ``True`` only when a re-exec was attempted and returned.
 
@@ -196,15 +213,35 @@ async def _apply_armed_update_at_boot() -> bool:
             # would otherwise outlive the state it describes.
             await asyncio.to_thread(update_next_start.clear_error)
         return False
-    if hosted_by_desktop():
-        logger.info("Update armed (%s): the desktop app owns the apply", state.armed_version or "-")
+    if not state.armed_version:
+        # No arm names a version any more; one left by an older build would install
+        # without the person having been offered anything.
+        logger.warning("Dropping an armed update that names no version")
+        await _clear_arm_best_effort()
         return False
     # A git checkout can be behind its upstream with no version bump, so its arm
     # carries the distance and an equal version is not "already running" for it.
     git_ahead = state.armed_behind > 0
-    if state.armed_version and state.armed_version == running and not git_ahead:
-        logger.info("Armed update %s is already running; nothing to apply", running)
-        await asyncio.to_thread(update_next_start.finish)
+    # Order decides only where the desktop owns the apply: there an older arm is always
+    # stale. Elsewhere a policy provider's check may name an older version on purpose
+    # (a rollback), and that arm still applies, so only equality clears it.
+    reached = not git_ahead and (
+        _running_reaches(running, state.armed_version)
+        if hosted_by_desktop()
+        else running == state.armed_version
+    )
+    if hosted_by_desktop() and not reached:
+        logger.info("Update armed (%s): the desktop app owns the apply", state.armed_version)
+        return False
+    # The desktop applies on quit with this gateway already gone, so the record it
+    # armed here is cleared by the first start that runs the version it named.
+    if reached:
+        logger.info(
+            "Armed update %s is already running (%s); nothing to apply",
+            state.armed_version,
+            running,
+        )
+        await _clear_arm_best_effort()
         return False
     if state.attempts >= update_next_start.MAX_BOOT_ATTEMPTS:
         logger.error(

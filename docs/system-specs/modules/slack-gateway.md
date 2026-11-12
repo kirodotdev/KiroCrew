@@ -748,8 +748,16 @@ take the hold in `cli.main` after argument parsing.
   "next-start"}`, or no `when`, arms the update through `kiro_crew.update_next_start`
   (a small file in the data home) and answers `202 {armed: true, version}`;
   `{"when": "cancel"}` disarms it; any other `when` or a non-object body is `400
-  invalid_body`; a legacy `force` is read as nothing. It answers `409 no_update` when
-  the last check succeeded and found none. The status frame and `GET
+  invalid_body`; a legacy `force` is read as nothing. It never records an arm without a
+  version: with no succeeded check yet it awaits the shared check (30 s bound), then answers `409
+  arm_check_failed` (the check failed) or `409 update_check_pending` (it has not finished, or named
+  no version); `409 no_update` when the check succeeded and found none. `update_next_start.arm` itself
+  raises on a blank version, and a boot that finds a record with none drops it. A gateway the desktop hosts
+  (`KIROCREW_DESKTOP_GATEWAY`) records the optional `version` string (64 chars at most, else `400 invalid_body`) in the
+  body, which `gateway-arm.js` sends, without a check; any other gateway ignores it. The desktop's quit-time apply
+  runs with the gateway gone, so the first start that runs the armed version clears the record, hosted or not.
+  The status frame carries `update_armed_at` beside `update_armed_version`; its one reader is the desktop's arm sync
+  (`managed-lane.js`), which adopts a gateway arm made after a given-up apply of the same version and disarms one made before it. The status frame and `GET
   /api/update/check` carry `update_armed_version` and `pending_apply_error`. The apply runs at
   service boot, in `run()` before the listeners bind and before any session is
   restored (`update_boot_apply.apply_armed_update_at_boot`): when the running version

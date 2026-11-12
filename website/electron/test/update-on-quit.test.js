@@ -83,6 +83,8 @@ function managedFixture({ stopGateway, isPolicyGoverned, autoDownload = false, g
   if (isPolicyGoverned) deps.isPolicyGoverned = isPolicyGoverned;
   deps.updateArm = createUpdateArm({ store });
   deps.gatewayArm = gatewayArm;
+  // The fixture's gateway is this app's own unless a test says otherwise.
+  deps.isOwnGateway = async () => true;
   deps.startupApplyError = startupApplyError;
   const fireQuit = () => {
     const fn = quitHandlers.shift();
@@ -157,6 +159,17 @@ test("D-a: the gateway client posts S1 and reads update_armed_version", async ()
   assert.strictEqual(await none.armedVersion(), null);
 });
 
+test("D-a: the arm names the version main armed", async () => {
+  const bodies = [];
+  const fetchImpl = async (url, init) => {
+    if (init.method === "POST") bodies.push(init.body);
+    return { status: init.method === "POST" ? 202 : 200, json: async () => ({ update_armed_version: null }) };
+  };
+  const c = createGatewayArm({ backendUrl: "http://127.0.0.1:1", fetchGatewayAuth: async () => ({ value: "tok" }), fetchImpl });
+  assert.strictEqual(await c.arm("2.0.0"), true);
+  assert.deepStrictEqual(bodies, [JSON.stringify({ when: "next-start", version: "2.0.0" })]);
+});
+
 // A gateway older than the arm contract applies and restarts on POST /api/update
 // {when: "next-start"}, so the arm is sent only to one whose status proves it
 // speaks the contract: the update_armed_version key is present (null when idle).
@@ -184,7 +197,7 @@ test("D-a: an idle gateway that reports update_armed_version null is sent the ar
   calls.length = 0;
   assert.strictEqual(await c.arm(), true);
   assert.deepStrictEqual(calls, ["GET", "POST"]);
-  assert.strictEqual(typeof c.cancel, "undefined", "the unused cancel client is gone");
+  assert.strictEqual(typeof c.cancel, "function");
 });
 
 // ---------------------------------------------------------------------------
@@ -556,6 +569,206 @@ test("an arm the dashboard made (the gateway's update_armed_version) is adopted 
   await f.settle();
   assert.ok(f.sp.commands.includes("pkgtool update kirocrew"));
   assert.ok(!f.events.includes("relaunch"));
+});
+
+test("two failed applies, then the hosted gateway's stale arm is disarmed, not adopted, and no apply runs on quit", async (t) => {
+  const { applyArmedAtStart } = require("../runtime/update/armed-apply");
+  const store = memoryStore();
+  const arm = createUpdateArm({ store });
+  arm.arm("2.0.0");
+  // The quit-time apply failed and left the arm; the start-time retry fails too and gives up.
+  const quiet = { info() {}, error() {}, warn() {} };
+  const exec = { runUpdateCommand: async () => ({ code: 1, failed: false }) };
+  const r = await applyArmedAtStart({ arm, exec, currentVersion: "1.0.0", relaunch() {}, app: { exit() {} }, log: quiet });
+  assert.strictEqual(r.outcome, "failed");
+  assert.strictEqual(arm.read(), null);
+
+  const cancelled = [];
+  const f = await foundFixture({
+    store,
+    gatewayArm: { arm: async () => true, armedVersion: async () => "2.0.0", cancel: async () => { cancelled.push("cancel"); return true; } },
+  });
+  t.after(f.sp.restore);
+  await f.settle();
+  assert.strictEqual(f.deps.updateArm.read(), null, "the failed version is not adopted again");
+  assert.deepStrictEqual(cancelled, ["cancel"], "the gateway's copy is disarmed");
+  const { prevented } = f.fireQuit();
+  await f.settle();
+  assert.strictEqual(prevented, false, "nothing is armed, so the quit applies nothing");
+  assert.deepStrictEqual(f.sp.commands, [], "no update command ran");
+});
+
+test("a new Install click for the version that failed arms it again", () => {
+  const arm = createUpdateArm({ store: memoryStore() });
+  arm.recordFailedVersion("2.0.0");
+  arm.arm("2.0.0");
+  assert.strictEqual(arm.failedVersion(), "");
+});
+
+test("an arm the running app has reached or passed is disarmed, not adopted (armed 2.0.0, quit installed 3.0.0)", async (t) => {
+  const cancelled = [];
+  const f = managedFixture({
+    gatewayArm: { arm: async () => true, armedVersion: async () => "2.0.0", cancel: async () => { cancelled.push("cancel"); return true; } },
+  });
+  f.deps.app.getVersion = () => "3.0.0";
+  const sp = stubSpawn(() => ({ code: 0, out: "2.0.0\n" }));
+  t.after(sp.restore);
+  const u = initAutoUpdate(f.deps);
+  await u.check();
+  await f.settle();
+  assert.strictEqual(f.deps.updateArm.read(), null, "an arm at or below the running version is not adopted");
+  assert.deepStrictEqual(cancelled, ["cancel"]);
+  assert.strictEqual(f.fireQuit().prevented, false, "nothing armed, so the quit applies nothing");
+});
+
+// The give-up is stamped with this fixed time; gateway arms are placed before or after it.
+const FIXED_NOW = 1_800_000_000_000;
+
+async function failedAtStart(store, version) {
+  const { applyArmedAtStart } = require("../runtime/update/armed-apply");
+  const arm = createUpdateArm({ store, now: () => FIXED_NOW });
+  arm.arm(version);
+  const quiet = { info() {}, error() {}, warn() {} };
+  const exec = { runUpdateCommand: async () => ({ code: 1, failed: false }) };
+  await applyArmedAtStart({ arm, exec, currentVersion: "1.0.0", relaunch() {}, app: { exit() {} }, log: quiet });
+}
+
+test("after a failed apply of V, a fresh dashboard arm of V is adopted and applied on quit", async (t) => {
+  const store = memoryStore();
+  await failedAtStart(store, "2.0.0");
+  const freshAt = (FIXED_NOW + 5000) / 1000;
+  const f = await foundFixture({
+    store,
+    gatewayArm: { arm: async () => true, armedVersion: async () => "2.0.0", armedRecord: async () => ({ version: "2.0.0", armedAt: freshAt }), cancel: async () => { throw new Error("a fresh arm must not be cancelled"); } },
+  });
+  t.after(f.sp.restore);
+  await f.settle();
+  assert.strictEqual(f.deps.updateArm.read().version, "2.0.0", "the fresh arm is adopted");
+  assert.strictEqual(f.deps.updateArm.failedVersion(), "", "adopting a fresh arm clears the give-up");
+  const { prevented } = f.fireQuit();
+  assert.strictEqual(prevented, true);
+  await f.settle();
+  assert.ok(f.sp.commands.includes("pkgtool update kirocrew"), "the quit applies it");
+});
+
+test("after a failed apply of V, the arm the gateway recorded before the failure is still disarmed", async (t) => {
+  const store = memoryStore();
+  await failedAtStart(store, "2.0.0");
+  const cancelled = [];
+  const f = await foundFixture({
+    store,
+    gatewayArm: { arm: async () => true, armedVersion: async () => "2.0.0", armedRecord: async () => ({ version: "2.0.0", armedAt: (FIXED_NOW - 60000) / 1000 }), cancel: async () => { cancelled.push("cancel"); return true; } },
+  });
+  t.after(f.sp.restore);
+  await f.settle();
+  assert.strictEqual(f.deps.updateArm.read(), null);
+  assert.deepStrictEqual(cancelled, ["cancel"]);
+});
+
+test("a user click before the first sync re-stamps the stale record, and the sync then adopts it", async (t) => {
+  const store = memoryStore();
+  await failedAtStart(store, "2.0.0");
+  // The gateway still held the stale record of the given-up arm when the click landed,
+  // before any sync: the click stamped a new armed_at on it (update_next_start.arm),
+  // later than the failure, so the first sync sees a fresh arm.
+  const record = { version: "2.0.0", armedAt: (FIXED_NOW + 5000) / 1000 };
+  const cancelled = [];
+  const f = await foundFixture({
+    store,
+    gatewayArm: { arm: async () => true, armedVersion: async () => record.version, armedRecord: async () => record, cancel: async () => { cancelled.push("cancel"); return true; } },
+  });
+  t.after(f.sp.restore);
+  await f.settle();
+  assert.strictEqual(f.deps.updateArm.read().version, "2.0.0", "the re-stamped arm is adopted");
+  assert.deepStrictEqual(cancelled, []);
+});
+
+test("a remote crew's arm is neither adopted nor disarmed", async (t) => {
+  const cancelled = [];
+  const sp2 = stubSpawn(() => ({ code: 0, out: "2.0.0\n" }));
+  t.after(sp2.restore);
+  const remote = managedFixture({
+    gatewayArm: { arm: async () => true, armedVersion: async () => "2.0.0", armedRecord: async () => ({ version: "2.0.0", armedAt: FIXED_NOW / 1000 }), cancel: async () => { cancelled.push("cancel"); return true; } },
+  });
+  remote.deps.app.getVersion = () => "3.0.0";
+  remote.deps.isOwnGateway = async () => false;
+  const u = initAutoUpdate(remote.deps);
+  await u.check();
+  await remote.settle();
+  assert.strictEqual(remote.deps.updateArm.read(), null, "not adopted");
+  assert.deepStrictEqual(cancelled, [], "not disarmed, though 2.0.0 is below this app's 3.0.0");
+});
+
+test("the own gateway's stale arm is still disarmed", async (t) => {
+  const cancelled = [];
+  const f = managedFixture({
+    gatewayArm: { arm: async () => true, armedVersion: async () => "2.0.0", armedRecord: async () => ({ version: "2.0.0", armedAt: FIXED_NOW / 1000 }), cancel: async () => { cancelled.push("cancel"); return true; } },
+  });
+  f.deps.app.getVersion = () => "3.0.0";
+  f.deps.isOwnGateway = async () => true;
+  const sp = stubSpawn(() => ({ code: 0, out: "2.0.0\n" }));
+  t.after(sp.restore);
+  await initAutoUpdate(f.deps).check();
+  await f.settle();
+  assert.deepStrictEqual(cancelled, ["cancel"]);
+});
+
+test("a fresh re-arm between the read and the cancel is not disarmed", async (t) => {
+  const cancelled = [];
+  const reads = [
+    { version: "2.0.0", armedAt: (FIXED_NOW - 60000) / 1000 },
+    { version: "2.0.0", armedAt: (FIXED_NOW + 5000) / 1000 },
+  ];
+  const f = managedFixture({
+    gatewayArm: { arm: async () => true, armedVersion: async () => "2.0.0", armedRecord: async () => reads.length > 1 ? reads.shift() : reads[0], cancel: async () => { cancelled.push("cancel"); return true; } },
+  });
+  f.deps.app.getVersion = () => "3.0.0";
+  const sp = stubSpawn(() => ({ code: 0, out: "2.0.0\n" }));
+  t.after(sp.restore);
+  await initAutoUpdate(f.deps).check();
+  await f.settle();
+  assert.deepStrictEqual(cancelled, [], "the click's new armed_at is left alone");
+});
+
+test("a host that injects no isOwnGateway owns nothing: its arm is left alone", async (t) => {
+  const cancelled = [];
+  const f = managedFixture({
+    gatewayArm: { arm: async () => true, armedVersion: async () => "2.0.0", armedRecord: async () => ({ version: "2.0.0", armedAt: FIXED_NOW / 1000 }), cancel: async () => { cancelled.push("cancel"); return true; } },
+  });
+  delete f.deps.isOwnGateway;
+  f.deps.app.getVersion = () => "3.0.0";
+  const sp = stubSpawn(() => ({ code: 0, out: "2.0.0\n" }));
+  t.after(sp.restore);
+  await initAutoUpdate(f.deps).check();
+  await f.settle();
+  assert.deepStrictEqual(cancelled, []);
+  assert.strictEqual(f.deps.updateArm.read(), null);
+});
+
+test("the cancel names the armed_at it read, and the client sends it", async () => {
+  const bodies = [];
+  const fetchImpl = async (url, init) => {
+    if (init.method === "POST") bodies.push(init.body);
+    return { status: 200, json: async () => ({ ok: true }) };
+  };
+  const c = createGatewayArm({ backendUrl: "http://127.0.0.1:1", fetchGatewayAuth: async () => ({ value: "tok" }), fetchImpl });
+  assert.strictEqual(await c.cancel(1234.5), true);
+  assert.strictEqual(await c.cancel(), true);
+  assert.deepStrictEqual(bodies, [JSON.stringify({ when: "cancel", armed_at: 1234.5 }), JSON.stringify({ when: "cancel" })]);
+});
+
+test("the own gateway's stale arm is cancelled naming the stamp it read", async (t) => {
+  const named = [];
+  const stamp = (FIXED_NOW - 60000) / 1000;
+  const f = managedFixture({
+    gatewayArm: { arm: async () => true, armedVersion: async () => "2.0.0", armedRecord: async () => ({ version: "2.0.0", armedAt: stamp }), cancel: async (at) => { named.push(at); return true; } },
+  });
+  f.deps.app.getVersion = () => "3.0.0";
+  const sp = stubSpawn(() => ({ code: 0, out: "2.0.0\n" }));
+  t.after(sp.restore);
+  await initAutoUpdate(f.deps).check();
+  await f.settle();
+  assert.deepStrictEqual(named, [stamp]);
 });
 
 test("a gateway that withdraws the arm it made takes main's adopted copy with it", async (t) => {

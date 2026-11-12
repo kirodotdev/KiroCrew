@@ -393,7 +393,7 @@ function createGatewaySupervisor({
     waitForPortFree,
     waitForIncumbentExit,
   });
-  const { fetchRemoteToken, mintLocalToken } = createTokenSources({
+  const { fetchRemoteToken, mintLocalToken, ownsLocalListener } = createTokenSources({
     store,
     port: PORT,
     backendUrl: BACKEND_URL,
@@ -1750,6 +1750,7 @@ function createGatewaySupervisor({
     start: startGateway,
     connect: showLoadingThenConnect,
     mintLocalToken,
+    ownsLocalListener,
     fetchRemoteToken,
     entryUrl: dashboardEntryUrl,
     probePrimaryPortOwner,

@@ -9,6 +9,7 @@ process and the re-exec replaced by recording stand-ins.
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from unittest.mock import patch
 
@@ -96,6 +97,85 @@ def test_a_gateway_the_desktop_hosts_leaves_the_apply_to_the_desktop(calls, monk
 
     assert calls.child == 0 and calls.execs == []
     assert update_next_start.read().armed is True
+
+
+def test_a_desktop_hosted_gateway_clears_an_arm_the_desktop_already_applied(
+    calls, monkeypatch
+) -> None:
+    monkeypatch.setenv(update_boot_apply.DESKTOP_HOSTED_ENV, "1")
+    update_next_start.arm("1.0.0")
+
+    assert _boot() is False
+
+    assert calls.child == 0 and calls.execs == []
+    assert update_next_start.read().armed is False
+
+
+def test_a_desktop_hosted_gateway_clears_an_arm_the_running_version_has_passed(
+    calls, monkeypatch
+) -> None:
+    # Armed 2.0.0, then 3.0.0 landed and the quit installed it: equality never matches.
+    monkeypatch.setattr("kiro_crew.__version__", "3.0.0")
+    monkeypatch.setenv(update_boot_apply.DESKTOP_HOSTED_ENV, "1")
+    update_next_start.arm("2.0.0")
+
+    assert _boot() is False
+
+    assert calls.child == 0 and calls.execs == []
+    assert update_next_start.read().armed is False
+
+
+def test_a_standalone_gateway_still_applies_an_older_arm_a_rollback(calls, monkeypatch) -> None:
+    monkeypatch.setattr("kiro_crew.__version__", "3.0.0")
+    calls.installed = ["3.0.0"]
+    calls.installed_after = "2.0.0"
+    update_next_start.arm("2.0.0")
+
+    assert _boot() is True
+
+    assert calls.child == 1
+
+
+def test_an_arm_for_a_newer_version_than_the_running_one_stays_for_the_desktop(
+    calls, monkeypatch
+) -> None:
+    monkeypatch.setenv(update_boot_apply.DESKTOP_HOSTED_ENV, "1")
+    update_next_start.arm("2.0.0")
+
+    assert _boot() is False
+
+    assert update_next_start.read().armed is True
+
+
+def test_an_arm_that_names_no_version_is_dropped_at_boot(calls) -> None:
+    update_next_start._state_path().write_text(
+        json.dumps({"armed_version": "", "armed_at": 1.0, "attempts": 0})
+    )
+    assert update_next_start.read().armed is True
+
+    assert _boot() is False
+
+    assert calls.child == 0 and calls.execs == []
+    assert update_next_start.read().armed is False
+
+
+@pytest.mark.parametrize("version", ["1.0.0", ""], ids=["already-running", "blank"])
+def test_a_record_that_will_not_clear_does_not_stop_the_start(calls, monkeypatch, version) -> None:
+    if version:
+        update_next_start.arm(version)
+    else:
+        update_next_start._state_path().write_text(
+            json.dumps({"armed_version": "", "armed_at": 1.0, "attempts": 0})
+        )
+
+    def _boom(**_kw: object) -> None:
+        raise OSError("read-only data home")
+
+    monkeypatch.setattr(update_next_start, "finish", _boom)
+
+    assert _boot() is False
+
+    assert calls.child == 0 and calls.execs == []
 
 
 def test_an_armed_version_that_already_runs_is_cleared_without_applying(calls) -> None:

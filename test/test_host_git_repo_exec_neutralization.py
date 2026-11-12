@@ -706,7 +706,8 @@ class TestDashboardUpdateApply:
         _prove_planted_vector_fires(proj, marker, "status", "--porcelain")
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
-        monkeypatch.setitem(_update_info, "check_status", "")
+        monkeypatch.setitem(_update_info, "check_status", "succeeded")
+        monkeypatch.setitem(_update_info, "update_available", True)
         monkeypatch.setitem(_update_info, "latest_version", "9.9.9")
         # The temp clone is not this install's own checkout, so the shape the
         # capability derivation reports is pinned to the git lane under test.

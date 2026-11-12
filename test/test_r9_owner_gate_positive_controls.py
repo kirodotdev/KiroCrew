@@ -279,6 +279,9 @@ async def test_update_apply_allows_owner(monkeypatch, tmp_path) -> None:
     # A policy-defined provider owns the update, so any layout may arm.
     monkeypatch.setattr(update_provider, "resolve_provider", lambda: object())
     monkeypatch.setattr(updates, "_restart_gateway", restarted)
+    monkeypatch.setitem(updates._update_info, "check_status", "succeeded")
+    monkeypatch.setitem(updates._update_info, "update_available", True)
+    monkeypatch.setitem(updates._update_info, "latest_version", "9.9.9")
     app = web.Application(middlewares=[_owner()])
     app["state"] = SimpleNamespace(owner_id=OWNER, push_refresh=lambda _kind: None)
     app.router.add_post("/api/update", updates.api_update_apply)
