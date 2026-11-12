@@ -11,6 +11,11 @@ import json
 import os
 
 import pytest
+from session_search_rank_helpers import (
+    RARE_WORD_QUERY,
+    write_rare_word_corpus,
+    write_session,
+)
 
 from kiro_crew import history, history_search
 from kiro_crew.history import ConversationLog
@@ -970,3 +975,65 @@ class TestRecencyBoost:
         results = log.search_sessions("apollo")
 
         assert [s["key"] for s in results] == ["stale", "fresh"]
+
+    def test_a_year_old_content_only_match_with_three_hits_still_wins(self, tmp_path, clock):
+        """Both titles are ``notes``, so only the content's hit count can win."""
+        log = ConversationLog(base_dir=tmp_path)
+        now = int(clock.time())
+        write_session(tmp_path, "stale", "apollo apollo apollo deployment notes", mtime=now)
+        write_session(tmp_path, "fresh", "apollo filler filler deployment notes", mtime=now)
+        self._set_age(tmp_path, clock, "stale", 365)
+        self._set_age(tmp_path, clock, "fresh", 0)
+
+        results = log.search_sessions("apollo")
+
+        assert [s["key"] for s in results] == ["stale", "fresh"]
+
+
+class TestRareWordWeighting:
+    """A word few sessions hold outweighs one every session holds, however often repeated."""
+
+    def test_the_rare_word_decides_over_the_repeated_common_one(self, tmp_path):
+        write_rare_word_corpus(tmp_path)
+
+        results = ConversationLog(base_dir=tmp_path).search_sessions(RARE_WORD_QUERY)
+
+        assert [s["key"] for s in results] == ["focused", "chatty"]
+
+    def test_private_sessions_do_not_weigh_the_words(self, tmp_path):
+        """Private sessions holding the rare word would make it common and flip the order."""
+        write_rare_word_corpus(tmp_path, private_sessions=6)
+
+        results = ConversationLog(base_dir=tmp_path).search_sessions(RARE_WORD_QUERY)
+
+        assert [s["key"] for s in results][:2] == ["focused", "chatty"]
+
+    def test_repeating_a_word_still_ranks_above_saying_it_once(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        write_session(tmp_path, "once", "the uploader timeout notes", mtime=1_700_000_000)
+        write_session(
+            tmp_path, "thrice", "the uploader timeout uploader uploader", mtime=1_700_000_000
+        )
+
+        assert [s["key"] for s in log.search_sessions("uploader")] == ["thrice", "once"]
+
+
+class TestRankingWeights:
+    def test_idf_falls_as_more_sessions_hold_the_needle_and_stays_positive(self):
+        weights = [history_search.inverse_document_frequency(n, 100) for n in (1, 10, 50, 100)]
+
+        assert weights == sorted(weights, reverse=True)
+        assert weights[-1] > 0
+
+    def test_saturated_frequency_rises_with_hits_and_levels_off(self):
+        factors = [history_search.saturated_frequency(n, 4000, 4000.0) for n in (0, 1, 3, 1000)]
+
+        assert factors[0] == 0.0
+        assert factors == sorted(factors)
+        assert factors[-1] < history_search._BM25_K1 + 1
+
+    def test_a_longer_session_needs_more_hits_for_the_same_factor(self):
+        short = history_search.saturated_frequency(2, 2000, 8000.0)
+        long = history_search.saturated_frequency(2, 32000, 8000.0)
+
+        assert short > long
