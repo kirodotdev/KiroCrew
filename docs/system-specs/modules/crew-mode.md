@@ -1881,7 +1881,9 @@ only where the person talked to it. The rule is recorded in
 Recent
 order is by `last_active_ts`, the crew log's fold of the thread's last
 `member/message` (see `_recency_for_row`), so the list reads newest conversation
-first like a messages app. The client stamps a send on the row bound to the
+first like a messages app. Starred Bots lead the list under either sort, in the
+left dock's `star_order` (below), and every other row follows in the chosen
+sort's held order. The client stamps a send on the row bound to the
 sending slot (`noteUserChat`: `has_dm_message` and `last_active_ts`), so a
 Bot the user just messaged lists and moves without waiting for the crew
 log's push or a refetch. There is no separate record of the user's own sends: a
@@ -1962,6 +1964,22 @@ person to every device; `PUT` refuses a non-integer or a value outside
 is not starred, so a re-star lands at the bottom. While a docked Bot's chat is
 open its dock row is the lit one, not the Bots page row.
 
+The Bots page roster draws the same order: every starred Bot first, in
+`star_order`, under both sorts (`starredFirst` in
+`website/src/pages/members/rosterStarOrder.tsx`). The held order covers every
+row and the starred ones are drawn out of it, so a star or an unstar re-sorts
+no other row, and an unstarred Bot returns to its held place. At md and up a
+starred row drags among the starred rows of its own team group, and
+Alt+ArrowUp / Alt+ArrowDown on a starred row moves
+it one place among the starred rows that group shows (a search can hide some),
+as on the Sessions sidebar's pinned rows; on any other row the chord stays the
+open chat's turn step. Both moves renumber the whole starred list through the
+dock's own write path (`useStarOrderReorder`, `website/src/hooks/`), so the
+dock and the roster show one order, and a move from either list is ignored
+while a reorder from either list is saving. A failed move shows the dock's
+`reorder_failed` words in an `ErrorNotice` on the roster. Below md the roster
+keeps the order without the drag, as the phone tiles do.
+
 Deleting a Bot is available on this page: the Bot's edit controls
 open `CrewEditorModal` in place, and its Danger pane deletes the
 mate. A row the listing rule hides is reached through search, or through
@@ -2038,7 +2056,7 @@ change, and edits the order pin (follow-up #20512 for the Schedules guard state)
 | `MembersPage.tsx` | the composition; the page's selection state (open Bot, crew being edited, open Profile card); the New Bot card and its post-create follow-up; the guide facts and hand-offs; the exit guards (the native confirms the lint allowlist permits); the face-flight overlay |
 | `membersPageModel.ts` | pure rules: `resolveMateLanding`, `resolveDefaultMember`, `memberMemoryDisplay`, `panelSitsBeside`, `panelChrome`, the withheld view sets, `createDraftFromHref`, the `?member=` param and the roster width bounds |
 | `useMembersPageRoster.ts` | the roster read and its projection merge; per-row live readings (unread, patrol, on watch = monitor OR heartbeat, needs-you, goal); applying the filters to the held order (`sortedMembers`) and the filter menu's tallies, which need those readings |
-| `MembersPageRoster.tsx` | the roster column (header and add menu, search, filter menu, chip, team groups, resize grip) and the roster view state: presence, the open Bot's projected record and DM identity (`activeRoster`, `activeView`, `crewmateIdentity`), the persisted filters and sort with the question they ask (`rosterFilterQuery`) and the population it lists, starring, the held order |
+| `MembersPageRoster.tsx` | the roster column (header and add menu, search, filter menu, chip, team groups, resize grip) and the roster view state: presence, the open Bot's projected record and DM identity (`activeRoster`, `activeView`, `crewmateIdentity`), the persisted filters and sort with the question they ask (`rosterFilterQuery`) and the population it lists, starring, the display order (starred rows first, then the held order) |
 | `MembersPageRosterRows.tsx` | `MemberRow` (one roster row, reading its own `roster` projection, drawn through `CrewmateRowBody` plus the star) and `CrewmateEmptyHero` (the empty roster's call to action) |
 | `CrewmateRowBody.tsx` | the one Bot row the full roster and the switcher's options share: the face with its presence dot and on-watch ring, the name with the goal mark at the row's top-right corner, the status line (`Stopped` chip, preview; an sr-only "On watch"), and the right-edge needs-you and unread marks, all read off one `MemberSignals` |
 | `useMembersPageCrewEditor.ts` | the in-place `CrewEditorDialog`: its registry reads, the admitted-roster latch, the unsaved and in-flight stakes |

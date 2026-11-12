@@ -6,7 +6,9 @@
  * `useMembersPageRosterView` is the state behind it: live presence from the
  * slot frames, the open crewmate's projected record and DM identity, the
  * persisted filters and sort with the question they ask (`rosterFilterQuery`)
- * and the population it lists, starring, and the held display order. The rows
+ * and the population it lists, starring, and the display order: starred rows
+ * first in the dock's order, then the held order (rosterStarOrder.tsx owns the
+ * starred rows' order and their moves). The rows
  * the filters leave (`sortedMembers`) and the filter menu's tallies need the
  * live readings, so `useMembersPageRosterSignals` (useMembersPageRoster.ts)
  * computes them.
@@ -21,6 +23,7 @@
  * change even when every test of the moved code still passes.
  */
 import { Fragment, useCallback, useMemo, useRef, useState } from 'react'
+import { SortableContext } from '@dnd-kit/sortable'
 import { Check, Circle, FileUp, MessageCircleQuestionMark, Plus, Radar, Star, X, Zap } from 'lucide-react'
 import { Btn } from '../../components/ui'
 import { CrewMemberMark } from '../../components/CrewMemberMark'
@@ -32,11 +35,12 @@ import { useMutation, type QueryClient } from '@tanstack/react-query'
 import { fmtList, fmtNumber } from '../../i18n/format'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { usePersistedString } from '../../hooks/usePersistedString'
-import { findReport, type ErrorReport } from '../../utils/errorReport'
+import { findReport, reportForError, type ErrorReport } from '../../utils/errorReport'
 import ErrorNotice from '../../components/ErrorNotice'
 import { SearchFilterBar, FilterMenuButton, FilterChip, FILTER_CHIP_ROW_CLS, FilterMenuLabel, FilterMenuContent } from '../../components/SearchFilterBar'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
 import { hasNoCrewmates, listedByDefault, parseSort, parseSourceFilter, parseStatusFilters, rosterPopulation, sortRoster, SORT_OPTIONS, SOURCE_FILTERS, STATUS_FILTERS, type MemberSort, type MemberSourceFilter, type MemberStatusFilter, type RosterQuery } from './rosterFilter'
+import { StarredReorder, starredFirst, useRosterStarOrder } from './rosterStarOrder'
 import ResizeHandle from '../../components/ResizeHandle'
 import { LIST_SHELL_CLS, LIST_HEADER_CLS, LIST_TITLE_CLS, LIST_BODY_CLS, ROW_STATUS_CLS } from '../../components/listShell'
 import { ListDock } from '../../components/ListDock'
@@ -369,6 +373,13 @@ export function useMembersPageRosterView({
   // Recency-ordered only. Under the by-name sort a recency advance says nothing
   // about where a row belongs, so the lift does not run and the name order
   // stands.
+  //
+  // Starred rows lead, ahead of the held order, in the left dock's `star_order`
+  // (`starredFirst`, rosterStarOrder.tsx), under either sort. That order is the
+  // person's own: only a star, an unstar or a move they make changes it, so it
+  // is not held. The held order covers every row and the starred ones are drawn
+  // out of it, so a star or an unstar re-sorts no other row, and an unstarred
+  // row goes back to its held place.
   const committedOrderRef = useRef<{
     sort: MemberSort
     names: string[]
@@ -394,7 +405,7 @@ export function useMembersPageRosterView({
       names = [activeName, ...names.filter((n) => n !== activeName)]
     }
     committedOrderRef.current = { sort, names, openName: activeName, openTs }
-    return names.map((n) => byName.get(n)).filter((m): m is MemberRosterRow => !!m)
+    return starredFirst(names.map((n) => byName.get(n)).filter((m): m is MemberRosterRow => !!m), members)
   }, [members, sort, activeName])
   // The rows wait for the team read: one team turns the flat list into
   // groups, so a list drawn before it answered reshuffled under team headers
@@ -465,7 +476,10 @@ export function MembersPageRosterColumn({
   const [importing, setImporting] = useState(false)
   const { rosterQuery, loaded, loadError, collidingSlugs, members } = rosterRead
   const { teamsNoticeShown, dismissTeamsNotice, activeTeam, collapsedTeams, toggleTeamCollapsed } = teamsRead
-  const { roster, rosterPinned, rosterFolded, rosterShown, rosterAsideRef, setRosterPin } = layout
+  const { roster, rosterPinned, rosterFolded, rosterShown, rosterAsideRef, setRosterPin, isMobile } = layout
+  // The starred rows' moves: a drag needs a pointer and room, so a phone
+  // keeps the order without the drag, as the dock's phone tiles do.
+  const starOrder = useRosterStarOrder(members)
   const { closeRosterDrawer, rosterDrawerAvailable } = drawers
   const {
     filter, setFilter, filterMenuOpen, setFilterMenuOpen, starredOnly, sourceFilter,
@@ -834,6 +848,21 @@ export function MembersPageRosterColumn({
                 />
               </div>
             )}
+            {/* A starred row's move that did not save. The order re-reads from
+                the server either way; the dock's own failure notice uses the
+                same words. No draft here, so the hand-off is safe. */}
+            {starOrder.error && (
+              <div className="px-2">
+                <ErrorNotice
+                  message={t('components.matesDock.reorder_failed')}
+                  report={reportForError(starOrder.error)}
+                  onDismiss={starOrder.reset}
+                  askAgent
+                  actionPlacement="below"
+                  testId="member-reorder-error"
+                />
+              </div>
+            )}
             {gone && gone.shown === '' && (
               /* The roster is the answer surface when there is no thread to stand
                  in the gone member's place: a gone `?member=` with nothing
@@ -847,6 +876,9 @@ export function MembersPageRosterColumn({
             )}
               </>
             )}>
+            {/* Outside the list: the drag surface draws its screen-reader text
+                and live region in place, and a list holds rows only. */}
+            <StarredReorder starOrder={starOrder}>
             <ul
               className={`${LIST_BODY_CLS} list-none m-0`}
               style={{ scrollbarWidth: 'none' }}
@@ -914,9 +946,11 @@ export function MembersPageRosterColumn({
                   crewmates indented under it, the rows no team lists in a trailing
                   muted "No team" group. With no teams the list is flat, as it was
                   before teams -- one anonymous group and no header. A collapsed
-                  group hides its rows; the fold persists per team. */}
+                  group hides its rows; the fold persists per team. A group's
+                  starred rows lead it and move among themselves only. */}
               {rowsReady && rosterGroups.map((group) => {
                 const collapsed = grouped && collapsedTeams.has(group.id)
+                const starredNames = group.members.filter((m) => m.starred).map((m) => m.name)
                 return (
                   <Fragment key={group.id}>
                     {grouped && (
@@ -933,8 +967,9 @@ export function MembersPageRosterColumn({
                         onToggle={() => toggleTeamCollapsed(group.id)}
                       />
                     )}
-                    {!collapsed &&
-                      group.members.map((m) => (
+                    {!collapsed && (
+                      <SortableContext id={group.id} items={starredNames}>
+                      {group.members.map((m) => (
                         <MemberRow
                           key={m.name}
                           m={m}
@@ -954,8 +989,12 @@ export function MembersPageRosterColumn({
                           slugCollides={collidingSlugs.has(m.slug)}
                           indented={grouped}
                           faceOnStage={faceOnStageFor === m.name}
+                          reorderable={!isMobile && !!m.starred}
+                          onStarMove={m.starred ? (delta) => starOrder.step(m.name, delta, starredNames) : undefined}
                         />
                       ))}
+                      </SortableContext>
+                    )}
                   </Fragment>
                 )
               })}
@@ -976,6 +1015,7 @@ export function MembersPageRosterColumn({
                 </li>
               )}
             </ul>
+            </StarredReorder>
             </ListDock>
             {/* Window-splitter between roster and thread: the same component as the
                 Sessions sidebar's grip, sitting on the card's right border the same
