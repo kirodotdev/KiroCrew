@@ -22293,7 +22293,9 @@
       "load_error": "Geheimnisse konnten nicht geladen werden: {{error}}",
       "wakatime_unused_hint": "Wird nicht verwendet, solange WakaTime deaktiviert ist. Aktiviere WakaTime oder lösche diesen Eintrag.",
       "connections_client_secret_description": "Client-Secret einer Verbindungen-OAuth-App. Wird unter Einstellungen → OAuth-Apps verwaltet.",
-      "connections_client_secret_manage": "In OAuth-Apps verwalten"
+      "connections_client_secret_manage": "In OAuth-Apps verwalten",
+      "wakatime_oauth_tokens_description": "Deine WakaTime-Anmeldung, von {{productName}} verwahrt. Wird im WakaTime-Bereich verwaltet.",
+      "wakatime_oauth_tokens_manage": "In WakaTime verwalten"
     }
   },
   "store": {

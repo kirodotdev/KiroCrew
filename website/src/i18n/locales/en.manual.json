@@ -10786,7 +10786,9 @@
       "value_placeholder": "sk-...",
       "load_error": "Could not load secrets: {{error}}",
       "connections_client_secret_description": "Client secret of a Connections OAuth app. Managed under Settings → OAuth Apps.",
-      "connections_client_secret_manage": "Manage in OAuth Apps"
+      "connections_client_secret_manage": "Manage in OAuth Apps",
+      "wakatime_oauth_tokens_description": "Your WakaTime sign-in, kept by {{productName}}. Managed in the WakaTime panel.",
+      "wakatime_oauth_tokens_manage": "Manage in WakaTime"
     },
     "tabs": {
       "about": {

@@ -23369,7 +23369,9 @@
       "load_error": "Не удалось загрузить секреты: {{error}}",
       "wakatime_unused_hint": "Не используется, пока WakaTime отключён. Включите WakaTime или удалите эту запись.",
       "connections_client_secret_description": "Секрет клиента OAuth-приложения Подключений. Управляется в Настройки → OAuth-приложения.",
-      "connections_client_secret_manage": "Управлять в OAuth-приложениях"
+      "connections_client_secret_manage": "Управлять в OAuth-приложениях",
+      "wakatime_oauth_tokens_description": "Твой вход в WakaTime, который хранит {{productName}}. Управляется в панели WakaTime.",
+      "wakatime_oauth_tokens_manage": "Управлять в WakaTime"
     }
   },
   "store": {
