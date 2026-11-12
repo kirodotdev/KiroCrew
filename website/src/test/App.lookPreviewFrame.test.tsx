@@ -24,6 +24,7 @@ const themeState = {
   importOnboarded: true,
   privacyAcked: true,
   themeBootReady: true,
+  themeBootRead: true,
   themes: [],
   // What the Pick your look step itself reads once it opens (the control case).
   allThemes: [{ value: 'kiro', label: 'Kiro' }],
