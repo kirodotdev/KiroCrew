@@ -38,6 +38,7 @@ import { useAppRailOrder } from './nav/appRail'
 import { setRailWidth, railWidthFor } from '../hooks/useRailWidth'
 import { useFocusChrome } from './focus/focusChrome'
 import { useNativeNotification } from '../hooks/useNativeNotification'
+import { useAgentInstallLatch } from '../hooks/useAgentInstallLatch'
 import { useNotificationSound } from '../hooks/useNotificationSound'
 import { recordSessionStart } from '../rum'
 import { api, isAuthBannerShown } from '../api/client'
@@ -410,6 +411,9 @@ export function useAppShell() {
   // Capture Electron update lifecycle events app-wide so UpdateModal fires on
   // any page, not just after the user has opened Settings > About.
   useUpdateSubscription()
+  // Finish an agent update request's approved install wherever the user is
+  // when its download lands, not only on Settings > About.
+  useAgentInstallLatch()
   // Notify the main process whenever the gateway status reports a security
   // policy provider governs this install's updates, so the feed lane stands down.
   usePolicyGovernedNotification()
