@@ -20,6 +20,7 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew import crew_mode, crew_pause, platform_compat
+from kiro_crew.dashboard.handlers.office_slides import _KeyedLocks
 from kiro_crew.dashboard.turn_dispatch import mark_turn_unstarted
 from kiro_crew.testing.wait import until_parked
 
@@ -1061,7 +1062,7 @@ async def test_a_resume_all_during_a_members_refused_continue_still_hands_it_bac
 
     from kiro_crew.dashboard import chat_handlers
 
-    monkeypatch.setattr(routes.handler, "_ROOT_LOCKS", {})
+    monkeypatch.setattr(routes.handler, "_ROOT_LOCKS", _KeyedLocks())
     state = _make_state(tmp_path)
     state.get_or_create_slot("chat-w1")
     crew_pause.pause("chat-root", ["chat-w1"], ["chat-w1"])
@@ -1076,7 +1077,9 @@ async def test_a_resume_all_during_a_members_refused_continue_still_hands_it_bac
         resume.append(
             asyncio.ensure_future(routes.handler.api_crew_resume(_req(state, "chat-root")))
         )
-        await until_parked(routes.handler._root_lock("chat-root"))
+        # The member's Continue holds the root lock, so the live entry is this
+        # lock object and Resume all parks on it.
+        await until_parked(routes.handler._ROOT_LOCKS._locks["chat-root"][0])
         raise chat_handlers.SlotContinueRefusal("still stopping", "slot_running", 409)
 
     monkeypatch.setattr(chat_handlers, "continue_slot_turn", _continue)
@@ -1097,15 +1100,15 @@ async def test_a_members_continue_that_waited_behind_resume_all_starts_no_second
 
     from kiro_crew.dashboard import chat_handlers
 
-    monkeypatch.setattr(routes.handler, "_ROOT_LOCKS", {})
+    monkeypatch.setattr(routes.handler, "_ROOT_LOCKS", _KeyedLocks())
     state = _make_state(tmp_path)
     slot = state.get_or_create_slot("chat-w1")
     crew_pause.pause("chat-root", ["chat-w1"], ["chat-w1"])
-    lock = routes.handler._root_lock("chat-root")
     app = web.Application()
     app["state"] = state
     req = make_mocked_request("POST", "/x", app=app, match_info={"slot": "chat-w1"})
-    async with lock:
+    async with routes.handler._ROOT_LOCKS.hold("chat-root"):
+        lock = routes.handler._ROOT_LOCKS._locks["chat-root"][0]
         # Resume all holds the lock when the member's own Continue arrives.
         pressed = asyncio.ensure_future(chat_handlers.api_chat_slot_continue(req))
         await until_parked(lock)
@@ -1124,15 +1127,15 @@ async def test_a_members_continue_after_resume_and_a_new_pause_still_continues_i
 
     from kiro_crew.dashboard import chat_handlers
 
-    monkeypatch.setattr(routes.handler, "_ROOT_LOCKS", {})
+    monkeypatch.setattr(routes.handler, "_ROOT_LOCKS", _KeyedLocks())
     state = _make_state(tmp_path)
     slot = state.get_or_create_slot("chat-w1")
     crew_pause.pause("chat-root", ["chat-w1"], ["chat-w1"])
-    lock = routes.handler._root_lock("chat-root")
     app = web.Application()
     app["state"] = state
     req = make_mocked_request("POST", "/x", app=app, match_info={"slot": "chat-w1"})
-    async with lock:
+    async with routes.handler._ROOT_LOCKS.hold("chat-root"):
+        lock = routes.handler._ROOT_LOCKS._locks["chat-root"][0]
         pressed = asyncio.ensure_future(chat_handlers.api_chat_slot_continue(req))
         await until_parked(lock)
         # Resume all hands the member back, then a newer Pause all stops it again.
@@ -1441,3 +1444,22 @@ async def test_a_slow_resume_never_overwrites_a_newer_pause(routes, monkeypatch)
     crew_pause.keep_pending("root", ["w9"], root_pending=False)
     rec = crew_pause.record("root")
     assert set(rec["held"]) >= {"w1", "w2", "w9"} and set(rec["stopped"]) >= {"w1", "w2", "w9"}
+
+
+@pytest.mark.asyncio
+async def test_a_bogus_slot_pause_leaves_no_lock_behind(routes, monkeypatch):
+    """A 404'd (or any one-off) slot must not leak an asyncio.Lock for the life
+    of the process: the per-root lock registry is self-pruning."""
+    handler = routes.handler
+    # A fresh registry so a sibling test that parked a holder on the shared one
+    # cannot make this assertion fail (or pass) for the wrong reason.
+    monkeypatch.setattr(handler, "_ROOT_LOCKS", _KeyedLocks())
+    # An empty tree: `_live_root` finds no crew root, so the request 404s.
+    resp = await handler.api_crew_pause(_req(_state([]), slot="not-a-real-root"))
+    assert resp.status == 404, resp.text
+    # The lock taken for that slot was released and its entry dropped, so the
+    # registry does not grow by one per distinct slot ever posted. Read the live
+    # entries generically so the leaking-dict regression fails this assertion
+    # rather than erroring before it.
+    live = getattr(handler._ROOT_LOCKS, "_locks", handler._ROOT_LOCKS)
+    assert dict(live) == {}
