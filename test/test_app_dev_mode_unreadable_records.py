@@ -11,8 +11,9 @@ The sentinel is derived from every ``installed.json``. The same read there dropp
 other dev app from the watched set until the next restart.
 
 An enable that cannot read the grant record changes nothing and says so. A disable
-changes nothing in the record, since there is no grant to find in it. A sentinel that
-cannot be read is rebuilt from the install records.
+changes nothing in the record, since there is no grant to find in it. Every toggle
+rebuilds the sentinel from the install records, so a sentinel that cannot be read is
+never the starting point.
 """
 
 from __future__ import annotations
@@ -147,6 +148,14 @@ class TestSentinelIsRebuiltNotEmptied:
         _sentinel_file().write_bytes(b'["dev-a", "de')
 
         assert set_dev_mode("dev-b", False)["dev"] is False
+
+        assert json.loads(_sentinel_file().read_text(encoding="utf-8")) == ["dev-a"]
+
+    def test_a_toggle_writes_the_sentinel_from_the_install_records(self, tmp_path, monkeypatch):
+        _install(tmp_path, monkeypatch, "dev-a")
+        _sentinel_file().write_text(json.dumps(["gone-app"]), encoding="utf-8")
+
+        assert set_dev_mode("dev-a", True)["dev"] is True
 
         assert json.loads(_sentinel_file().read_text(encoding="utf-8")) == ["dev-a"]
 

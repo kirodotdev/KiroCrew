@@ -141,24 +141,6 @@ def _read_dev_sentinel() -> set[str]:
     return set()
 
 
-def _read_dev_sentinel_for_update() -> set[str] | None:
-    """The sentinel a read-modify-write starts from; ``None`` when it cannot be used.
-
-    Unlike :func:`_read_dev_sentinel`, only a missing file is empty. A sentinel
-    that is cut off, has the wrong shape or cannot be opened answers ``None``, so
-    the caller does not write back a set holding only the app it is changing.
-    """
-    try:
-        data = json.loads(_sentinel_path().read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return set()
-    except (OSError, ValueError):
-        return None
-    if isinstance(data, list):
-        return {str(x) for x in data}
-    return None
-
-
 def _load_dev_apps() -> set[str]:
     """Read the sentinel and drop stale entries not backed by a dev-mode install.
 
@@ -298,12 +280,13 @@ def _scan_installed_dev_apps() -> set[str]:
     Unlike :func:`_load_dev_apps` (which only *filters* the sentinel against
     on-disk metadata and can never *add* an entry the sentinel is missing), this
     walks the apps directory and reads each app's ``installed.json`` ``dev``
-    flag directly. It is the source of truth for reconciling the sentinel at
-    startup, so a ``dev: true`` written to ``installed.json`` out-of-band
-    (snapshot restore, hand-edit, a crash between the metadata write and the
-    sentinel write) is actually honored — the documented contract field, not
-    the internal sentinel, decides. Blocking filesystem IO — offload to a
-    thread; called only once at watcher init, never on the hot path.
+    flag directly. It is the source of truth the sentinel is rebuilt from, at
+    startup and on every toggle, so a ``dev: true`` written to ``installed.json``
+    out-of-band (snapshot restore, hand-edit, a crash between the metadata write
+    and the sentinel write) is actually honored — the documented contract field,
+    not the internal sentinel, decides. Blocking filesystem IO — offload to a
+    thread; called at watcher init and by :func:`set_dev_mode`, never on the hot
+    path.
     """
     keep: set[str] = set()
     root = apps_dir()
@@ -641,15 +624,10 @@ def set_dev_mode(
                 _write_dev_grants(grants)
         meta.dev = enabled
         _write_installed(name, meta)
-        # The sentinel is derived from every ``installed.json``: when it cannot be
-        # read, rebuild it from them rather than start from the one app changed here
-        # (this app's flag was just written above, so the rebuild already reflects it).
-        read_names = _read_dev_sentinel_for_update()
-        names = read_names if read_names is not None else _scan_installed_dev_apps()
-        if enabled:
-            names.add(name)
-        else:
-            names.discard(name)
+        # The sentinel is derived from every ``installed.json`` (this app's flag was
+        # just written above), so it is rebuilt from them, never patched from a
+        # sentinel that may be cut off or unreadable.
+        names = _scan_installed_dev_apps()
         _write_dev_sentinel(names)
         if enabled and granted_root is not None:
             # The AUTHORIZATION record, written LAST on enable (mirror of the
