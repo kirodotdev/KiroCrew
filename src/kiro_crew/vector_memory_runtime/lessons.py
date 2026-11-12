@@ -785,7 +785,15 @@ def delete_lesson(
     wanted_text = rule_substring.lower().strip()
     matched: list[tuple[dict[str, Any], str]] = []
     for e in store.get_lessons():
-        val = json.loads(e["value_json"])
+        try:
+            val = json.loads(e["value_json"])
+        except (TypeError, ValueError):
+            # A damaged row's scope cannot be read, and keep_one must never keep it
+            # over a valid copy of its text, so only a delete with neither reaches
+            # it, matched on its raw stored text.
+            if scope_selective or keep_one:
+                continue
+            val = e["value_json"]
         # Match against the rendered lesson text so a mapping-shaped row is
         # matched on its rule/clause, not on its repr (which would let a
         # substring like "category" delete every imported lesson). Rows with
