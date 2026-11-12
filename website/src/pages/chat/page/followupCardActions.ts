@@ -69,6 +69,16 @@ export function useFollowupCardActions({
     moveSlotToFolder(slot, folderId, { onCommitted: () => dispatch(clearFolderSuggestion({ slot, ts })) })
   }, [activeSlot, folderSuggestion, moveSlotToFolder, dispatch])
 
+  // Undo of an auto-applied filing clears the card only once the server
+  // acknowledged the move back to the top level; a failed move leaves the card
+  // and is reported on the shell banner like any other rolled-back move.
+  const folderSuggestionUndo = useCallback(() => {
+    if (!activeSlot || !folderSuggestion) return
+    const slot = activeSlot
+    const ts = folderSuggestion.ts
+    moveSlotToFolder(slot, '', { onCommitted: () => dispatch(clearFolderSuggestion({ slot, ts })) })
+  }, [activeSlot, folderSuggestion, moveSlotToFolder, dispatch])
+
   const folderSuggestionDecline = useCallback(() => {
     if (!activeSlot || !folderSuggestion) return
     // Nothing to tell the backend: it already spent its one offer for this slot,
@@ -89,7 +99,7 @@ export function useFollowupCardActions({
     return `followup/${slug || 'suggestion'}`
   }, [])
   return {
-    followupTsRef, followupAddToSession, folderSuggestionAccept, folderSuggestionDecline, followupBranchFor,
+    followupTsRef, followupAddToSession, folderSuggestionAccept, folderSuggestionUndo, folderSuggestionDecline, followupBranchFor,
   }
 }
 

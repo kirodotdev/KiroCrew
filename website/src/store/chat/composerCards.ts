@@ -35,7 +35,14 @@ export const isAnsweredQuestionEnding = (reason: unknown): boolean =>
  *  only trusted before the first live snapshot (see its call site). Declining,
  *  by contrast, writes nothing server-side, so a decline stays window-local
  *  and other windows age their copy out (FOLDER_SUGGESTION_MAX_TURNS) — the
- *  offer is still answerable there. */
+ *  offer is still answerable there.
+ *
+ *  An APPLIED card (auto-apply already filed the session) reports a filing
+ *  rather than offering one, so a row naming that same folder keeps it, and a
+ *  row naming another folder retires it. An unfiled row retires nothing, for
+ *  either kind, so a stale list cannot take the card away; after a move back
+ *  to the top elsewhere it lingers until answered or aged, and both its
+ *  buttons are then no-ops (Undo files to the top, Keep only dismisses). */
 export const clearFiledFolderSuggestions = (
   state: ChatState,
   payload: readonly { key: string; folder_id?: string }[],
@@ -44,8 +51,11 @@ export const clearFiledFolderSuggestions = (
   for (const s of payload) {
     if (!s.folder_id) continue
     // Both spellings, same as evictSlotState: some writers key through safeKey().
-    delete state.folderSuggestions[s.key]
-    delete state.folderSuggestions[safeKey(s.key)]
+    for (const key of [s.key, safeKey(s.key)]) {
+      const card = state.folderSuggestions[key]
+      if (card?.applied && card.folderId === s.folder_id) continue
+      delete state.folderSuggestions[key]
+    }
   }
 }
 
@@ -336,14 +346,14 @@ export const composerCardReducers = {
     if (items.length) state.followups[slot] = { ...card, items }
     else delete state.followups[slot]
   },
-  setFolderSuggestion(state: ChatState, action: PayloadAction<{ slot: string; folderId: string; folderName: string; breadcrumb: string; ts?: number }>) {
-    const { slot, folderId, folderName, breadcrumb, ts } = action.payload
+  setFolderSuggestion(state: ChatState, action: PayloadAction<{ slot: string; folderId: string; folderName: string; breadcrumb: string; ts?: number; applied?: boolean }>) {
+    const { slot, folderId, folderName, breadcrumb, ts, applied } = action.payload
     if (!slot || !folderId || !folderName) return
     if (isUnsafeKey(slot)) return  // never index a state map with __proto__/constructor/prototype
     // Defensive: a partial preloaded slice (tests, older persisted state) can
     // arrive without this key.
     if (!state.folderSuggestions) state.folderSuggestions = {}
-    state.folderSuggestions[slot] = { folderId, folderName, breadcrumb, ts: ts ?? Date.now() / 1000, turns: 0 }
+    state.folderSuggestions[slot] = { folderId, folderName, breadcrumb, ts: ts ?? Date.now() / 1000, turns: 0, ...(applied ? { applied: true } : {}) }
   },
   // Both answers land here — accepting the move and declining it clear the same
   // way, because the backend keeps no state to resolve and offers at most one

@@ -309,7 +309,7 @@ export function useComposerCards(dispatch: AppDispatch): ComposerCards {
       // user's own stored folder data (the backend model call returns an
       // index, not text), but the shape is still validated here so a
       // malformed frame cannot render an empty or half-filled card.
-      const raw = data as { slot?: string; folder_id?: string; folder_name?: string; breadcrumb?: string; ts?: number }
+      const raw = data as { slot?: string; folder_id?: string; folder_name?: string; breadcrumb?: string; ts?: number; applied?: boolean }
       if (raw.slot && typeof raw.folder_id === 'string' && raw.folder_id && typeof raw.folder_name === 'string' && raw.folder_name) {
         dispatch(setFolderSuggestion({
           slot: raw.slot,
@@ -317,6 +317,8 @@ export function useComposerCards(dispatch: AppDispatch): ComposerCards {
           folderName: raw.folder_name,
           breadcrumb: typeof raw.breadcrumb === 'string' ? raw.breadcrumb : '',
           ...(typeof raw.ts === 'number' ? { ts: raw.ts } : {}),
+          // Auto-apply already filed the session: the card reports it instead of asking.
+          ...(raw.applied === true ? { applied: true } : {}),
         }))
       }
     },
