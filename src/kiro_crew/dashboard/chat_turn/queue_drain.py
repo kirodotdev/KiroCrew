@@ -469,9 +469,9 @@ def _is_own_recovery(items: "list[dict]", predecessor_actor: str, predecessor_tu
 _REPLAYS_COMPLETION_KEY = "_replays_completion"
 
 #: Process-local key on a synthetic-recovery queue entry that a loop's own cycle
-#: queued for itself: that loop's ``(id, config generation)``, so the recovery's
-#: fault is charged to the loop like the cycle it retries. Never persisted: a kinded
-#: entry is not durable.
+#: queued for itself, or on a requeued automation steer (a loop's steered wake):
+#: that loop's ``(id, config generation)``, so the turn's fault is charged to the
+#: loop like the cycle it carries. Never persisted: it is not a durable queue key.
 _RECOVERED_WAKE_KEY = "_recovered_wake"
 
 
@@ -1536,7 +1536,10 @@ async def _start_next_queued_turn(
         _run_kwargs["_synthetic_recovery_turn"] = True
         if len(consumed) == 1 and consumed[0].get(_REPLAYS_COMPLETION_KEY) is True:
             _run_kwargs["_replays_completion"] = True
-        if len(consumed) == 1 and consumed[0].get(_RECOVERED_WAKE_KEY):
+    # Read only while the entry is still the recovery or the wake: a person's edit
+    # takes the automation origin off a requeued wake, and its words charge no loop.
+    if (is_recovery or is_automation_steer) and len(consumed) == 1:
+        if consumed[0].get(_RECOVERED_WAKE_KEY):
             _run_kwargs["_recovered_wake"] = consumed[0][_RECOVERED_WAKE_KEY]
     if _possibly_delivered_steer:
         _run_kwargs["_steer_possibly_delivered"] = True

@@ -542,8 +542,9 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # entry, so the sub-agent hold lets it drain instead of parking it.
     self._steer_act_now = set()
     # Pending AUTOMATION steers (a work-ledger wake), each with the
-    # ``meta.nudge`` its row carries. Requeue stamps it on the entry
-    # (``AUTOMATION_STEER_META``), so the drained row is a nudge row too.
+    # ``meta.nudge`` its row carries plus the loop's generation, which no row
+    # carries. Requeue stamps the nudge on the entry (``AUTOMATION_STEER_META``),
+    # so the drained row is a nudge row too.
     self._steer_automation = {}
     # In-flight `wait` tool sleep, as reported by the tool's own keepalive
     # ping: {"wait_id": str, "seconds": int, "deadline_ts": float}. The

@@ -911,9 +911,9 @@ async def _run_chat(
     # message-value key could not tell apart). Captured by the fire path.
     _directive_loop_gen: int = 0,
     # The drained synthetic-recovery entry was queued by a loop's own cycle (marked
-    # by ``_queue_recovery``): that loop's ``(id, config generation)``. It grants no
-    # wake authority; a fault that ends this turn is charged to that loop as its
-    # cycle's. Only the queue drain sets it.
+    # by ``_queue_recovery``), or is a loop's requeued steered wake: that loop's
+    # ``(id, config generation)``. It grants no wake authority; a fault that ends
+    # this turn is charged to that loop as its cycle's. Only the queue drain sets it.
     _recovered_wake: tuple[str, int] | None = None,
     # The text skill triggers match on a loop's wake, when it is not the
     # message: a plain nudge passes the loop's own message, without the cycle
