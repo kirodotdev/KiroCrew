@@ -287,6 +287,15 @@ class TestExtractHistorySnippet:
     def test_blank_needle_returns_empty(self):
         assert _extract_history_snippet([{"role": "user", "content": "hi"}], "   ") == ""
 
+    def test_a_short_term_inside_an_earlier_word_does_not_take_the_snippet(self):
+        msgs = [
+            {"role": "user", "content": "please maintain the release notes"},
+            {"role": "assistant", "content": "we started tracking ai usage per team"},
+        ]
+        out = _extract_history_snippet(msgs, "ai usage tracking")
+        assert "<<<usage>>>" in out
+        assert "maintain" not in out
+
     def test_tool_roles_are_skipped(self):
         msgs = [
             {"role": "tool", "content": "needle in a tool trace"},
