@@ -54,11 +54,15 @@ and a later parse reads a transcript again only when either
 changed. The path check and the `stat` still run on every transcript, and on a
 store of thousands of transcripts the path check takes most of a warm parse.
 
-A harness that writes none of those transcripts (Claude Code, usage-row provider
-`claude_code`, listed in `usage_store._SHARD_COUNTED_PROVIDERS`) has its
-sessions counted from the per-turn usage rows of the same 30-day window
-(`_shard_sessions`) into the same today, week, month, daily and total figures. A
-row is parsed only when its text names one of those providers, so on an install
+A harness that writes none of those transcripts has its sessions counted from
+the per-turn usage rows of the same 30-day window (`_shard_sessions`) into the
+same today, week, month, daily and total figures. A row counts when its
+`provider` is in `usage_store._SHARD_COUNTED_PROVIDERS` (`claude_code`) or its
+`harness` is in `usage_store._SHARD_COUNTED_HARNESSES` (Claude, Codex, Copilot,
+DeepSeek, goose, OpenCode, Pi, Strands). Every ACP harness other than Claude
+records `provider: acp`, the same value kiro-cli does, so it is the row's
+`harness` that tells their turns apart. A row is parsed only when its text holds
+one of those providers or a counted `"harness": "<id>"` member, so on an install
 where none ran the pass costs a substring test per row. A
 session is the row's `transcript` key, else its `slot` through
 `spend_key_for_slot` (so a bare `chat-…` slot joins its `dashboard:chat-…`
@@ -70,11 +74,13 @@ the two rows a kiro-cli turn's transcript holds), or one when the row says
 (`is_session_slot`: a subagent) is left out, and so is a background one-liner's
 row (a `surface` starting `bg:`: a title, a tag, a folder suggestion), which is
 no turn of any session. Usage rows carry no tool-call
-count, so such a session adds no tool calls. The set is positive: a provider whose
-sessions do write those transcripts is counted from them and never twice. Every
-other ACP harness records `provider: acp`, the same value kiro-cli does, so a
-usage row cannot tell its sessions from kiro-cli's and they are not counted
-here.
+count, so such a session adds no tool calls. Both sets are positive: kiro-cli and KAS,
+whose sessions do write those transcripts, are counted from them and never twice,
+and `test_every_known_harness_is_counted_from_rows_or_from_its_transcripts` makes
+each id in `ACP_BACKENDS_KNOWN` sit in exactly one of the two. A row written
+before the `harness` field records only `provider: acp` and is not counted, as
+before. A session counted from rows that wrote no `transcript` key (a cron job, a
+channel thread) is grouped by its slot for the whole window.
 
 When the local session transcript directory does not exist, `/api/usage/kiro`
 returns the same complete zero-valued session statistics as an empty directory,

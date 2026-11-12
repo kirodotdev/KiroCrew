@@ -192,3 +192,69 @@ def test_a_background_one_liner_is_no_turn_of_any_session(parse) -> None:
     r = run()
     # The kiro-cli transcript plus chat-9's one real turn.
     assert (r["total_sessions"], r["total_messages"]) == (2, 3)
+
+
+def test_sessions_of_a_harness_that_records_provider_acp_are_counted_by_harness(parse) -> None:
+    shards, run = parse
+    today = _noon(0)
+    _write_shard(
+        shards,
+        _day(today),
+        [
+            # Codex records provider acp, as kiro-cli does; its harness tells them apart.
+            _row(today, "acp", transcript="dashboard:chat-10-10", harness="codex"),
+            _row(today, "acp", transcript="dashboard:chat-10-10", harness="codex"),
+            _row(today, "acp", transcript="dashboard:chat-11-11", harness="pi"),
+            # kiro-cli and KAS are counted from their transcripts, never from rows.
+            _row(today, "acp", transcript="dashboard:chat-12-12", harness="kiro"),
+            _row(today, "acp", transcript="dashboard:chat-13-13", harness="kas"),
+            # A row from before the field: provider acp alone counts as before.
+            _row(today, "acp", transcript="dashboard:chat-14-14"),
+        ],
+    )
+    r = run()
+    # The kiro-cli transcript (1 session, 1 message), chat-10 (2 turns), chat-11 (1 turn).
+    assert (r["total_sessions"], r["total_messages"]) == (3, 7)
+
+
+def test_every_known_harness_is_counted_from_rows_or_from_its_transcripts() -> None:
+    # A harness added later must be placed: counted from its rows, or read from
+    # a transcript the parse knows. Leaving it in neither drops its sessions.
+    from kiro_crew.agent_sdk.backends import ACP_BACKENDS_KNOWN, backend_to_stored
+
+    transcript_counted = {"kiro", "kas"}
+    for backend in ACP_BACKENDS_KNOWN:
+        harness = backend_to_stored(backend)
+        assert (harness in store_mod._SHARD_COUNTED_HARNESSES) != (
+            harness in transcript_counted
+        ), harness
+
+
+@pytest.mark.asyncio
+async def test_the_usage_row_records_the_harness_of_the_session_it_ran_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
+    seen: list[object] = []
+    source = object()
+
+    def _harness_of(provider: object) -> str:
+        seen.append(provider)
+        return "codex"
+
+    monkeypatch.setattr(usage_mod, "harness_of", _harness_of)
+    await usage_mod.persist_token_record_async(
+        "chat-1-1", "m", {"input_tokens": 1}, provider="acp", model_source=source, emit_metric=False
+    )
+    (row,) = [json.loads(ln) for p in tmp_path.glob("*.jsonl") for ln in p.read_text().splitlines()]
+    assert seen == [source]
+    assert row["harness"] == "codex"
+
+
+def test_an_unresolved_harness_leaves_the_field_off_the_row() -> None:
+    now = _noon(0)
+    for harness in ("", "unknown"):
+        record = usage_mod._build_token_record(
+            "chat-1-1", "m", object(), "acp", now, harness=harness
+        )
+        assert "harness" not in record

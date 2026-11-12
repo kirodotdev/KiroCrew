@@ -224,6 +224,7 @@ def _build_token_record(
     app: str = "",
     delivered: bool | None = None,
     transcript: str = "",
+    harness: str = "",
 ) -> dict[str, Any]:
     """Build the JSONL token-usage record dict (no I/O).
 
@@ -262,6 +263,12 @@ def _build_token_record(
     writes under a key its name cannot reach, and this row is the one record
     that outlives the tab, so it is what names a closed tab's transcript.
     ``""`` leaves the key off the row.
+
+    ``harness`` is the effective harness of the session the turn ran on, in the
+    ``kirocrew.harness`` vocabulary (:func:`kiro_crew.metrics.harness.harness_of`):
+    the field a row needs to tell a Codex turn from a kiro-cli one, since both
+    record ``provider: acp``. ``""`` and ``unknown`` leave the key off the row,
+    as on rows written before the field existed.
     """
     # Usage lives on event.usage (TurnUsage). Fall back to the event itself when
     # it isn't a real TurnUsage (legacy / non-AcpEvent producers, test doubles).
@@ -315,6 +322,8 @@ def _build_token_record(
         record["delivered"] = delivered
     if transcript:
         record["transcript"] = transcript
+    if harness and harness != HARNESS_UNKNOWN:
+        record["harness"] = harness
     return record
 
 
@@ -490,6 +499,7 @@ def persist_token_record(
                 context_window=context_window,
                 elapsed_ms=elapsed_ms,
                 app=app,
+                harness=harness_of(model_source),
             ),
             now,
         )
@@ -561,6 +571,11 @@ async def persist_token_record_async(
     """
     try:
         model = _resolve_model(model, model_source)
+        # The harness is read off model_source, the live provider every surface
+        # already hands in to name the model that ran: it is the one object here
+        # that knows the session's EFFECTIVE backend, overrides included. It
+        # goes on the row and labels the turn samples, so the two agree.
+        harness = harness_of(model_source)
         now = datetime.now().astimezone()
         record = _build_token_record(
             slot_key,
@@ -576,19 +591,16 @@ async def persist_token_record_async(
             app=app,
             delivered=delivered,
             transcript=transcript,
+            harness=harness,
         )
         # Before the offloaded write: a file-write failure must not cost the
         # latency sample, which needs nothing from disk.
         if emit_metric:
-            # The harness is read off model_source, the live provider every
-            # surface already hands in to name the model that ran: it is the one
-            # object here that knows the session's EFFECTIVE backend, overrides
-            # included. Not written to the row; it labels the turn samples only.
             _emit_turn_histogram(
                 record,
                 slot_key,
                 event,
-                harness=harness_of(model_source),
+                harness=harness,
                 trigger=trigger,
                 origin=origin,
             )
@@ -794,6 +806,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SESSIONS_CACHE,
         _SESSIONS_CACHE_LOCK,
         _SESSIONS_CACHE_TS,
+        _SHARD_COUNTED_NEEDLES,
         _TRANSCRIPT_COUNTS,
         _USAGE_SESSION_REFRESH_TASK,
         _USAGE_SESSION_WAIT_SECONDS,
@@ -829,6 +842,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _NON_SESSION_CHANNELS,
         _SESSIONS_DIR,
         _SESSIONS_HISTORY_DAYS,
+        _SHARD_COUNTED_HARNESSES,
         _SHARD_COUNTED_PROVIDERS,
         _TOKEN_USAGE_DIR,
         MAX_WINDOW_DAYS,
@@ -847,6 +861,16 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew import model_registry, platform_compat  # noqa: F401
+    from kiro_crew.agent_sdk.backends import (  # noqa: F401
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_CODEX,
+        ACP_BACKEND_COPILOT,
+        ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_GOOSE,
+        ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_PI,
+        ACP_BACKEND_STRANDS,
+    )
     from kiro_crew.agent_sdk.provider_identity import PROVIDER_CLAUDE_CODE  # noqa: F401
     from kiro_crew.config.paths import data_home, kiro_sessions_dir  # noqa: F401
     from kiro_crew.constants import crew_log_enabled, env_file_display  # noqa: F401
