@@ -1,5 +1,5 @@
 {
-  "_comment": "Canonical model registry. Source of truth for Python (model_registry.py) and frontend (modelRegistry.ts). Canonical keys are versioned+capability. providers maps canonical -> per-provider id: 'claude_code' is the claude-agent-acp id (global.anthropic.*[1m]), 'acp' is the kiro-cli id (bare dotted, e.g. 'claude-opus-4.8', as advertised by 'kiro-cli chat --list-models'). window = context tokens. Aliases include each provider id's bare (prefix-stripped) form, e.g. 'claude-opus-4-8[1m]', because claude-agent-acp advertises bare ids without the 'global.anthropic.' prefix; listing them lets from_provider_id fold the advertised rows onto the canonical key so the dropdown does not show duplicates. A bare alias such as 'opus' may repeat on a newer row; the alias index keeps the first row that lists it, so a newer row goes after the row that owns its bare alias.",
+  "_comment": "Canonical model registry. Source of truth for Python (model_registry.py) and frontend (modelRegistry.ts). Canonical keys are versioned+capability. providers maps canonical -> per-provider id: 'claude_code' is the claude-agent-acp id (global.anthropic.*[1m]), 'acp' is the kiro-cli id (bare dotted, e.g. 'claude-opus-4.8', as advertised by 'kiro-cli chat --list-models'). window = context tokens. Aliases include each provider id's bare (prefix-stripped) form, e.g. 'claude-opus-4-8[1m]', because claude-agent-acp advertises bare ids without the 'global.anthropic.' prefix; listing them lets from_provider_id fold the advertised rows onto the canonical key so the dropdown does not show duplicates. A bare alias such as 'opus' may repeat on a newer row; the alias index keeps the first row that lists it, so a newer row goes after the row that owns its bare alias. 'claude_code_aliases' are indexed for the claude_code provider only and win there, so a bare 'opus' is the newest model on Claude Code while kiro (acp) keeps the alias on its older row.",
   "fable-5-1m": {
     "display": "Fable 5 (1M context)",
     "description": "Most intelligent, demanding reasoning and agentic work",
@@ -95,7 +95,8 @@
     "description": "Most capable for complex, long-running work, 1M context",
     "window": 1000000,
     "supports_effort": true,
-    "aliases": ["claude-opus-5.5", "claude-opus-5-5", "claude-opus-5-5[1m]", "opus"],
+    "aliases": ["claude-opus-5.5", "claude-opus-5-5", "claude-opus-5-5[1m]"],
+    "claude_code_aliases": ["opus"],
     "providers": { "claude_code": "global.anthropic.claude-opus-5-5[1m]", "acp": "claude-opus-5.5" }
   },
   "sonnet-5.5-1m": {
@@ -103,7 +104,8 @@
     "description": "Fast and capable for everyday tasks, 1M context",
     "window": 1000000,
     "supports_effort": true,
-    "aliases": ["claude-sonnet-5.5", "claude-sonnet-5-5", "claude-sonnet-5-5[1m]", "sonnet"],
+    "aliases": ["claude-sonnet-5.5", "claude-sonnet-5-5", "claude-sonnet-5-5[1m]"],
+    "claude_code_aliases": ["sonnet"],
     "providers": { "claude_code": "global.anthropic.claude-sonnet-5-5[1m]", "acp": "claude-sonnet-5.5" }
   },
   "fable-5.1-1m": {
