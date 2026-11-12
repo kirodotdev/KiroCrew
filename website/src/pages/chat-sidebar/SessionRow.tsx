@@ -246,8 +246,8 @@ interface SessionRowProps {
 /** An Ultra Mode root's status line: "N needs you", "N stalled" (plus who
  *  stalled longest), "N running", or "Done" -- only what applies. With no crew
  *  and nothing owed it shows *fallback*, the row's usual line. */
-function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0 }: {
-  root: string; fallback: ReactNode; own?: CrewRowOwnState | null
+function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0, dot = null }: {
+  root: string; fallback: ReactNode; own?: CrewRowOwnState | null; /** The row's unread dot, kept in front of the status. */ dot?: ReactNode
   /** The root's ledger in brief (`crew_work`): what waits on a person, what stalled. */
   work?: CrewWorkFacts | null
   /** The root itself holds an approval or a question for the person. */
@@ -296,7 +296,7 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0 }:
   // Nothing needs attention and the crew is not finished (or paused): the row's usual line.
   if (!failed && !paused && !ownFirst && !allDone && needsYou === 0 && stall.stalled === 0 && running === 0) return <>{fallback}</>
   return (
-    <div className={ROW_STATUS_LINE_CLS} data-testid="crew-root-summary">
+    <div className={ROW_STATUS_LINE_CLS} data-testid="crew-root-summary">{dot}
       {/* The row's own state outranks a failed crew read: it is said first. */}
       {failed && own && <CrewStateWord kind={own.kind} title={own.title} />}
       {!failed && ownFirst && <CrewStateWord kind={ownFirst.kind} title={ownFirst.title} />}
@@ -1918,7 +1918,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 tail's place (ONE line); a search's snippet stands in for the tail. */}
             {crewRoot
               // An Ultra Mode row shows only what needs attention (counts in the tooltip), else the usual tail.
-              ? <CrewRootSummaryLine root={s.key} fallback={<SearchHitTail slot={s} preview={lastMessageLine} dot={unreadDot} tail={rowState ?? lastMessageLine} />} own={crewOwnState} work={s.crew_work}
+              ? <CrewRootSummaryLine root={s.key} fallback={<SearchHitTail slot={s} preview={lastMessageLine} dot={unreadDot} tail={rowState ?? lastMessageLine} />} own={crewOwnState} work={s.crew_work} dot={unreadDot}
                   // What the main chat itself holds for the person: an approval, a question, a
                   // spawn approval, or an armed loop asking (a ledger item on the person is counted from `crew_work`).
                   rootOwes={s.pending_approval || s.needs_input || subagentAwaiting > 0 || (loopWaiting && !(crewWork?.person ?? 0)) ? 1 : 0} />
