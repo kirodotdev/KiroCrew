@@ -53,6 +53,22 @@ ENOSPC_LOG = (
 )
 
 
+def _scratch_parent(run_root: Path) -> str:
+    """The directory cli.sh's ``mktemp -d`` puts its scratch dir in, with TMPDIR
+    at ``run_root/tmp`` as ``_run`` sets it. GNU mktemp honours TMPDIR; macOS's
+    prefers the per-user ``_CS_DARWIN_USER_TEMP_DIR`` (/var/folders/.../T), so
+    the same mktemp is asked rather than assuming TMPDIR."""
+    tmpdir = run_root / "tmp"
+    tmpdir.mkdir(parents=True, exist_ok=True)
+    probe = run_bounded(
+        ["sh", "-c", 'd="$(mktemp -d)" && rmdir "$d" && printf %s "${d%/*}"'],
+        {**os.environ, "PATH": "/usr/bin:/bin", "TMPDIR": str(tmpdir)},
+        cwd=str(run_root),
+    )
+    assert probe.returncode == 0 and probe.stdout, probe.stderr
+    return probe.stdout  # verbatim: cli.sh prints this exact string
+
+
 @pytest.fixture(scope="module")
 def signing_key(test_key: SigningKey) -> SigningKey:  # noqa: F811 -- pytest fixture by name
     if os.name == "nt":
@@ -81,7 +97,7 @@ def _run(
             (stubs / name).write_text(_VENV_FAILS, encoding="utf-8")
             (stubs / name).chmod(0o755)
     tmpdir = run_root / "tmp"
-    tmpdir.mkdir()
+    tmpdir.mkdir(exist_ok=True)
     env["PATH"] = os.pathsep.join([str(stubs), env["PATH"]])
     env["TMPDIR"] = str(tmpdir)
     if env_extra:
@@ -102,7 +118,7 @@ def test_too_little_free_space_stops_before_the_first_download(
     one mktemp created the install's scratch dir in."""
     case = tmp_path / "case"
     run_root = case / "run"
-    short_dir = run_root if short == "install" else run_root / "tmp"
+    short_dir = run_root if short == "install" else _scratch_parent(run_root)
     result, _root = _run(
         case,
         signing_key,
@@ -136,7 +152,7 @@ def test_a_df_that_cannot_answer_skips_the_check(tmp_path: Path, signing_key: Si
             "wheel install",
             "kirocrew-install: the disk filled up during the install (No space left on device). "
             "Free some space where Kiro Crew installs ({root}) and in the temp directory "
-            "({root}/tmp), then re-run this installer.",
+            "({scratch}), then re-run this installer.",
         ),
     ],
 )
@@ -145,6 +161,7 @@ def test_a_first_install_that_fails_says_disk_full_and_removes_its_venv(
 ) -> None:
     """Both failing steps of a first install name the full disk, and the venv
     the run created from nothing is gone afterwards, so a re-run starts clean."""
+    scratch = _scratch_parent(tmp_path / "case" / "run")
     if step == "venv create":
         result, run_root = _run(tmp_path / "case", signing_key, venv_fails=True)
     else:
@@ -152,7 +169,7 @@ def test_a_first_install_that_fails_says_disk_full_and_removes_its_venv(
 
     venv = run_root / "data-home-venv"
     assert result.returncode == 1, result.stderr
-    assert message.format(venv=venv, root=run_root) in result.stderr
+    assert message.format(venv=venv, root=run_root, scratch=scratch) in result.stderr
     assert "The previous install was restored" not in result.stderr
     assert not venv.exists()
 
