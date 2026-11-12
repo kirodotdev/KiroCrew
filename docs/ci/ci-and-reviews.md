@@ -3373,6 +3373,14 @@ rounds, and for candidates past five to be merged by shared root cause rather
 than dropped; the calibration note says "No findings." is the expected output for
 a typical PR.
 
+### Ownership mandate, for authors and reviewers
+
+Authors and reviewers work from one ownership mandate: the `## Own the codebase`
+section in the root `AGENTS.md`, and there is no other copy. Every review lane
+that loads the root `AGENTS.md` as its conventions reads the mandate there, so
+a review judges a change by the rule its author was given, and a finding still
+has to meet that lane's own bar.
+
 ### Asymmetric multi-pass is intentional
 
 BOTH line reviewers run **two real invocations**: a discovery pass that
