@@ -23,6 +23,8 @@ from denied_commands_security_helpers import (
 )
 from named_cases_helpers import named_cases
 
+from kiro_crew.security import is_denied
+
 # Each test starts with the macOS libc and libproc handle caches unbuilt and puts them
 # back after, as every test of the test_denied_commands_security family does (see conftest.py).
 pytestmark = pytest.mark.usefixtures("fresh_darwin_libc_handles")
@@ -1316,3 +1318,120 @@ class TestSelfKillRawWindowSearchesDequotedView:
     )
     def test_named_allowances_stay_allowed(self, cmd):
         assert _denied_by(cmd.format(n=_NAME, q=self._SPLICED)) is None
+
+
+class TestXargsPipelineAfterAChainedCommand:
+    """An ``xargs`` pipeline gets the verdict it has alone, whatever runs before it.
+
+    ``echo <name> | xargs <kill>`` runs ``<kill> <name>``. A command chained in front
+    of the pipeline must not change that, and a line that only mentions the name
+    elsewhere keeps its ordinary verdict.
+    """
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "echo x; echo {n} | xargs {pk} -f",
+            "cd /tmp; echo {n} | xargs {pk} -f",
+            "echo x && echo {n} | xargs {pk} -f",
+            "echo x || echo {n} | xargs {pk} -f",
+            "echo x & echo {n} | xargs {pk} -f",
+            "echo x | cat; echo {n} | xargs {pk} -f",
+            "echo x; echo {n} | xargs {ka}",
+            "echo x; echo {n} '; y' | xargs {pk} -f",
+            "echo x; (echo {n}) | xargs {pk} -f",
+            "echo x; {{ echo {n}; }} | xargs {pk} -f",
+            "echo x; echo {n} |& xargs {pk} -f",
+            "if true; then echo {n} | xargs {pk} -f; fi",
+            "{{ echo x; echo {n} | xargs {pk} -f; }}",
+            "cat <<EOF\nhi\nEOF\necho x; echo {n} | xargs {pk} -f",
+            "echo x; echo {n} <<EOF |\n$(true)\nEOF\nxargs {pk} -f",
+            "echo x; echo {n} <<EOF |\n$()\nEOF\nxargs {pk} -f",
+            "echo x; {{ echo {n} | xargs echo; }} | xargs {pk} -f",
+            "cd /tmp; pgrep -f {n} |\nxargs kill",
+            "cd /tmp; pgrep -f {n} | # c\nxargs kill",
+            "cd /tmp; echo a | xargs echo {n} | xargs {pk} -f",
+            "cd /tmp; (echo a | xargs echo x) | xargs echo {n} | xargs {pk} -f",
+            "echo x; echo {n} | x''args {pk} -f",
+            "echo x; echo {n} | xa\\rgs {pk} -f",
+            "echo x; echo {n} | x$()args {pk} -f",
+            "echo x; for v in {n}; do echo $v; done | xargs {pk} -f",
+            "echo x; case a in a) echo {n};; esac | xargs {pk} -f",
+            "echo x; echo $(date) for {n} | xargs {pk} -f",
+            "cd app; case $m in a) echo hi; (echo {n}) | xargs {pk} -f;; esac",
+            "echo x; (printf '' | xargs echo {n}) | xargs {pk} -f",
+            "echo x; case a in a) echo {n};; es\\\nac | xargs {pk} -f",
+            "cd app; case $m in x) echo in\n(echo {n}) | xargs {pk} -f;; esac",
+        ],
+    )
+    def test_a_chained_command_does_not_hide_the_target(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME, pk=_PK, ka=_KA)) == _RULE_KILL
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "npm run build && echo vite | xargs {pk} -f",
+            "npm run build && cp -r dist ~/.{n}/web && echo vite | xargs {pk} -f",
+            "echo x; echo vite | grep -v {n} | xargs {pk} -f",
+            "git status; ls | xargs -n1 echo",
+            "if true; then {n} status | xargs {pk} -f; fi",
+            "cd app; {{ pgrep -f vite | xargs kill; }} | xargs echo restarting {n} | tee log",
+            "if true; then echo $(echo a | grep -v {n}) | xargs {pk} -f; fi",
+            "cd app; for f in a b; do echo $f; done | xargs echo {n}",
+            "cd app; case $mode in (token) echo status | xargs {n};; esac",
+        ],
+    )
+    def test_an_ordinary_chained_pipeline_stays_allowed(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME, pk=_PK)) is None
+
+    @pytest.mark.parametrize(
+        "cmd, rule",
+        [
+            ("echo $(echo x | xargs echo {t} | xargs {n}) | cat", _RULE_MINT),
+            ("echo $(echo x | xargs echo {n} | xargs {pk} -f) | xargs echo b", _RULE_KILL),
+        ],
+    )
+    def test_a_cut_pipeline_takes_no_walk_away(self, cmd, rule):
+        assert _denied_by(cmd.format(n=_NAME, t=_TOK, pk=_PK)) == rule
+
+    def test_a_cut_pipeline_takes_no_join_away(self):
+        """The push refusal names its rule id, not a pattern, so it is read off the verdict."""
+        cmd = (
+            r"""echo a | xargs echo $(eval eval git "\"'push origin main'\""); """
+            r"""bash -c 'bash -c "eval git '\''push origin main'\''"'"""
+        )
+        head = (is_denied(cmd) or "").splitlines()[:1]
+        assert head == ["Blocked by security policy: git-publish-push-protected-branch-name"]
+
+    @pytest.mark.parametrize("consumer, growth", [("echo b", 2), ("eval", 4)])
+    def test_nesting_grows_the_walk_no_faster_than_the_line_does(self, consumer, growth):
+        """A cut pipeline is rebuilt once per pipe of its own, so nesting adds no chain per
+        cut: doubling the depth doubles the frames, or quadruples them where the ``eval``
+        join already re-reads each level on its own."""
+
+        from kiro_crew import security
+
+        def frames(depth: int) -> int:
+            line = f"echo a | xargs {consumer}"
+            for _ in range(depth):
+                line = "echo a | { " + line + f"; }} | xargs {consumer}"
+            return len(security._shell_payload_walk("true; " + line))
+
+        assert frames(40) <= growth * frames(20) + 20
+
+    def test_nested_substitutions_rebuild_each_cut_pipeline_once(self, monkeypatch):
+        """Every enclosing ``$( … )`` cuts the pipelines nested in it again, and each one is
+        still rebuilt once per walk: doubling the depth doubles the rebuilds."""
+        from kiro_crew import security
+        from kiro_crew.security import shell_commands
+
+        heads: list[str] = []
+        real = shell_commands.xargs_handed_on
+        monkeypatch.setattr(shell_commands, "xargs_handed_on", lambda h: heads.append(h) or real(h))
+
+        def rebuilds(depth: int) -> int:
+            heads.clear()
+            security._shell_payload_walk("echo x; " + "$(" * depth + "a" + " | xargs b)" * depth)
+            return len(heads)
+
+        assert rebuilds(40) <= 2 * rebuilds(20) + 20
