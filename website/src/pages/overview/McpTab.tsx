@@ -12,6 +12,7 @@ import InfoTip from '../../components/InfoTip'
 import ErrorNotice from '../../components/ErrorNotice'
 import AgentSpecNotRewrittenNotice from '../../components/AgentSpecNotRewrittenNotice'
 import McpShareRefusedNotice from './McpShareRefusedNotice'
+import McpUnreadableFilesNotice from './McpUnreadableFilesNotice'
 import { clearStagedChanges, stagedChangesSnapshot, useStagedChangesMemory } from '../../hooks/useMcpStagedChangesMemory'
 import { useProvider } from '../../providers'
 import McpBrowserModal from '../../components/McpBrowserModal'
@@ -573,7 +574,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
     []
   )
 
-  const { data: servers = [], isLoading, isSuccess: serversLoaded, refetch } = useQuery<McpServer[]>({
+  const { data: servers = [], isLoading, isSuccess: serversLoaded, refetch, dataUpdatedAt: serversReadAt } = useQuery<McpServer[]>({
     queryKey: ['mcp-servers'],
     queryFn: fetchServers,
   })
@@ -842,6 +843,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
       {/* Staged changes live only in this tab: with any pending, the notice keeps
           its chat hand-off off and opens MCP Management in a new tab. */}
       <McpShareRefusedNotice className="mb-3" stagedChanges={pendingCount > 0} />
+      <McpUnreadableFilesNotice className="mb-3" stagedChanges={pendingCount > 0} listReadAt={serversReadAt} />
 
       {/* Pending-changes banner */}
       {pendingCount > 0 && (

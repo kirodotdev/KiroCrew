@@ -63,6 +63,7 @@ export type {
   McpServer,
   McpApplyChange,
   McpGlobalScope,
+  McpUnreadableFile,
 } from './index.capabilities'
 export type {
   TodoTask,

@@ -1,11 +1,11 @@
 """Where the MCP config files are, and reading, refusing and writing them.
 
 The server-name check, the Kiro-global ``mcp.json`` path and the Kiro Crew one, the extra
-provider scopes an edition adds, the refusal of a commented (JSONC) file, the retrying read
-of the Kiro-global file, the atomic write and its off-loop form, resolving which key of a
-file names a server, the synchronous config lock the cleanup sweep takes, and the coded
-error bodies the toggle routes answer when a file will not parse, read or write, or names
-no usable server.
+provider scopes an edition adds, the files the servers list skips for their encoding, the
+refusal of a commented (JSONC) file, the retrying read of the Kiro-global file, the atomic
+write and its off-loop form, resolving which key of a file names a server, the synchronous
+config lock the cleanup sweep takes, and the coded error bodies the toggle routes answer
+when a file will not parse, read or write, or names no usable server.
 
 Part of the ``kiro_crew.dashboard.handlers.mcp`` family: callers and tests reach every
 name here as ``kiro_crew.dashboard.handlers.mcp.<name>``, and a patch there reaches this
@@ -386,6 +386,32 @@ async def api_mcp_global_scopes(request: web.Request) -> web.Response:
     """
     scopes = [{"id": f"{s.id}Global", "label": s.label or s.id} for s in _extra_mcp_scopes()]
     return web.json_response({"scopes": scopes})
+
+
+def _unreadable_mcp_files() -> list[dict[str, str]]:
+    """Each MCP config file the servers list skips for its encoding, home as ``~``."""
+    from kiro_crew.mcp_discovery import _load_mcp_json_by_source  # circular import
+
+    skipped: list[tuple[Path, str]] = []
+    _load_mcp_json_by_source(skipped=skipped)
+    home = Path.home()
+    files = []
+    for path, reason in skipped:
+        shown = f"~/{path.relative_to(home).as_posix()}" if path.is_relative_to(home) else str(path)
+        files.append({"file": shown, "reason": reason})
+    return files
+
+
+async def api_mcp_unreadable_files(request: web.Request) -> web.Response:
+    """GET /api/mcp/unreadable — the MCP config files the servers list skipped.
+
+    A file saved as UTF-16 or UTF-32 is skipped, so it adds no row to
+    ``GET /api/mcp`` and nothing there says why its servers are missing. This
+    names each one with the fixed repair reason the chat notice and the log give
+    (``user_json.wide_bom_reason``), never its content. The scan reads files, so
+    it runs off the loop.
+    """
+    return web.json_response({"files": await asyncio.to_thread(_unreadable_mcp_files)})
 
 
 #: Error code for a write refused because the file holds JSONC (see below).

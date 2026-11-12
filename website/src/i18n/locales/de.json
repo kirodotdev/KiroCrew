@@ -16803,6 +16803,8 @@
         "share_refused_restart": "Gib in MCP-Verwaltung jeden davon zum Teilen frei. Starte danach das Gateway neu (Einstellungen → Über → Gateway neu starten), damit neue Chats die geteilte Kopie nutzen.",
         "share_refused_review": "In MCP-Verwaltung prüfen",
         "share_status_failed": "Konnte nicht prüfen, ob die Server, die du teilen willst, freigegeben sind.",
+        "unreadable_file": "{{productName}} konnte {{file}} nicht lesen, weil {{reason}}. Die MCP-Server darin werden nicht aufgeführt.",
+        "unreadable_files_failed": "Konnte nicht prüfen, welche MCP-Konfigurationsdateien übersprungen wurden.",
         "actions": "Aktionen",
         "add_custom": "Benutzerdefiniert hinzufügen",
         "add_server": "Server hinzufügen",
