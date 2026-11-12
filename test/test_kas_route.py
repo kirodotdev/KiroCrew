@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from kiro_crew import lts_sign_in
 from kiro_crew.acp import kas_bundle, kas_engine_install, kas_route
 from kiro_crew.acp.harness.base import SpawnContext
 from kiro_crew.acp.harness.kas import KAS_BUNDLE_SPAWN_LABEL, KasHarness
@@ -281,6 +282,49 @@ class TestCrewEntrySkipsLauncher:
         monkeypatch.setattr(kas_route.sys, "platform", "linux")
         monkeypatch.setattr("kiro_crew.kiro_cli.chat_sibling", lambda *a, **k: None)
         assert kas_route.crew_entry_skips_launcher("/opt/kiro/kiro-cli", {}) is False
+
+
+class TestCrewSignInStartsSpawn:
+    @pytest.fixture
+    def vault(self, monkeypatch):
+        selection = lts_sign_in.Selection(lts_sign_in.Source.VAULT, "arn")
+        monkeypatch.setattr(lts_sign_in, "resolve", lambda **k: selection)
+
+    @pytest.mark.parametrize("sibling", [True, False], ids=["kiro-cli-chat", "launcher"])
+    def test_on_the_relay_only_the_chat_entry_starts_on_crew_sign_in_alone(
+        self, tmp_path, monkeypatch, vault, sibling
+    ):
+        """The launcher checks kiro-cli's own sign-in before it starts the relay."""
+        monkeypatch.setattr(kas_route, "resolve_kas_route", lambda **k: kas_route.RELAY)
+        monkeypatch.setattr(
+            "kiro_crew.acp.client._resolve_kiro_bin", lambda **k: "/opt/kiro/kiro-cli"
+        )
+        monkeypatch.setattr(kas_route.sys, "platform", "linux")
+        monkeypatch.setattr(
+            "kiro_crew.kiro_cli.chat_sibling",
+            lambda *a, **k: "/opt/kiro/kiro-cli-chat" if sibling else None,
+        )
+        assert kas_route.crew_sign_in_starts_spawn(environ={}, home=tmp_path) is sibling
+
+    def test_the_bundle_route_starts_on_crew_sign_in_alone(self, tmp_path, monkeypatch, vault):
+        bundle = kas_route.KasRoute(bundle=True, reason=kas_route.REASON_NO_KIRO_CLI)
+        monkeypatch.setattr(kas_route, "resolve_kas_route", lambda **k: bundle)
+        monkeypatch.setattr("kiro_crew.acp.client._resolve_kiro_bin", lambda **k: None)
+        assert kas_route.crew_sign_in_starts_spawn(environ={}, home=tmp_path) is True
+
+    def test_no_usable_crew_sign_in_does_not(self, tmp_path, monkeypatch):
+        def _lapsed(**kwargs):
+            raise lts_sign_in.SignInError(
+                "signed out",
+                lts_sign_in.CAUSE_SIGN_IN_UNUSABLE,
+                lts_sign_in.Source.VAULT,
+            )
+
+        monkeypatch.setattr(lts_sign_in, "resolve", _lapsed)
+        monkeypatch.setattr(
+            kas_route, "resolve_kas_route", lambda **k: pytest.fail("route read without a sign-in")
+        )
+        assert kas_route.crew_sign_in_starts_spawn(environ={}, home=tmp_path) is False
 
 
 class TestRouteText:
