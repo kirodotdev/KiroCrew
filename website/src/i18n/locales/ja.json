@@ -9440,7 +9440,8 @@
       "trust_this_command_channel": "<mono/>を @{{role}} に対して信頼 — {{productName}} の再起動まで",
       "trust_this_command_hour": "<mono/>を1時間信頼（{{time}} まで）",
       "trust_this_command_session": "<mono/>をこのセッション中は信頼",
-      "trust_this_command_today": "<mono/>を深夜0時まで信頼（{{time}}）"
+      "trust_this_command_today": "<mono/>を深夜0時まで信頼（{{time}}）",
+      "trust_unavailable": "このリクエストでは信頼を利用できません。1 回のみ許可または却下を選択できます。"
     },
     "tunnelStatus": {
       "connected": "接続されました",

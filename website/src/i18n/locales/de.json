@@ -9668,7 +9668,8 @@
       "trust_this_command_channel": "<mono/> für @{{role}} vertrauen — bis {{productName}} neu startet",
       "trust_this_command_hour": "<mono/> eine Stunde lang vertrauen (bis {{time}})",
       "trust_this_command_session": "<mono/> in dieser Sitzung vertrauen",
-      "trust_this_command_today": "<mono/> bis Mitternacht vertrauen ({{time}})"
+      "trust_this_command_today": "<mono/> bis Mitternacht vertrauen ({{time}})",
+      "trust_unavailable": "Vertrauen ist für diese Anfrage nicht verfügbar. Erlaube sie einmal oder lehne sie ab."
     },
     "tunnelStatus": {
       "connected": "Verbunden",

@@ -5981,7 +5981,8 @@
     },
     "trustDropdown": {
       "trust": "Trust",
-      "trust_all_tools": "Trust all tools for this session"
+      "trust_all_tools": "Trust all tools for this session",
+      "trust_unavailable": "Trust is not available for this request. Allow it once or reject it."
     },
     "tunnelStatus": {
       "tunnel": "Tunnel"

@@ -9896,7 +9896,8 @@
       "trust_this_command_channel": "Fidati di <mono/> per @{{role}} — fino al riavvio di {{productName}}",
       "trust_this_command_hour": "Fidati di <mono/> per un’ora (fino alle {{time}})",
       "trust_this_command_session": "Fidati di <mono/> per questa sessione",
-      "trust_this_command_today": "Fidati di <mono/> fino a mezzanotte ({{time}})"
+      "trust_this_command_today": "Fidati di <mono/> fino a mezzanotte ({{time}})",
+      "trust_unavailable": "L’opzione Considera attendibile non è disponibile per questa richiesta. Consentila una volta o rifiutala."
     },
     "tunnelStatus": {
       "connected": "Connesso",
