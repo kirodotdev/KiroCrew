@@ -756,6 +756,12 @@ class _FakeHandle:
     def begin_session(self, servers):
         return None
 
+    def fold_mark(self):
+        return 0
+
+    def forget_reported(self, before):
+        return None
+
     def record_mcp_launches(self, spec, wire_servers):
         return None
 

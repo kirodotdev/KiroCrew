@@ -812,8 +812,12 @@ def _reset_state(self: AcpClient) -> None:
     # A retired session's report must not be read as the next one's. This
     # view exists to be evidence, and stale evidence is worse than none:
     # the replacement process re-initializes its servers from scratch and
-    # will report again.
+    # will report again. Its reader follows the new one.
+    # ``getattr``: a client built without ``__init__`` (tests) has none to retire.
+    retired = getattr(self, "_mcp_report", None)
     self._mcp_report = McpSessionReport()
+    if retired is not None:
+        retired.hand_over(self._mcp_report)
     #: Index into ``_mcp_notifications`` below which frames belong to a PRIOR
     #: session attempt and must not reach the report. See
     #: ``_begin_session_report``.

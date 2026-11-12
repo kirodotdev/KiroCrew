@@ -34,6 +34,7 @@ from kiro_crew.acp.client import CLIENT_NAME
 from kiro_crew.acp.harness import HarnessAdapter, harness_for
 from kiro_crew.acp.harness.kas_cloud import KasCloudSandboxHarness
 from kiro_crew.acp.mcp_connect_progress import McpConnectProgress
+from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.runtime_liveness import _DEFAULT_MAX_AGE_SECS, _DEFAULT_MAX_RSS_MB
 from kiro_crew.acp.runtime_process_tree import EMPTY_WALK_RETRY_DELAY, ChildRecord
 from kiro_crew.acp.runtime_start import _INIT_NOTIFICATION_BUFFER_LIMIT, StartCollector
@@ -168,6 +169,9 @@ class AcpRuntime:
     _mcp_init_progress = _rt_registry._mcp_init_progress
     _session_start_stalled = _rt_registry._session_start_stalled
     _stage_init_frame = _rt_registry._stage_init_frame
+    _open_mcp_report = _rt_registry._open_mcp_report
+    _mcp_reports = _rt_registry._mcp_reports
+    _fold_mcp_frame = _rt_registry._fold_mcp_frame
     _finish_session_init = _rt_registry._finish_session_init
     # Putting a session on its agent: ``kiro_crew.acp.runtime_mode_activation``.
     _skill_projection_lock = _rt_mode._skill_projection_lock
@@ -449,6 +453,11 @@ class AcpRuntime:
         # sessionId -> the cwd its ``session/new`` / ``session/load`` named, so the
         # paths kiro-cli reports against ``_launch_process_cwd`` map to it.
         self._session_cwds: dict[str, str] = {}
+        # sessionId -> that session's MCP report, registered with its queue. The
+        # reader loop folds each frame that names the session into it as the
+        # frame arrives (``_fold_mcp_frame``); the session's handle holds the
+        # same object.
+        self._session_mcp_reports: dict[str, McpSessionReport] = {}
         # The session tree's work directory when this runtime is not the tree's
         # first process (a companion runtime spawned for a parent's subagents,
         # or the successor of a recycled ``_bg`` runtime). Re-validated at spawn

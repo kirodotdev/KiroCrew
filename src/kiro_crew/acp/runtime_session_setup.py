@@ -1169,6 +1169,8 @@ def _guard_unresolved_mcp_refs(
         # So it waits only for the spec servers one of the two delivered: one
         # Crew held back from both would never report, and every run would wait
         # out the bound. Other hosts declare nothing.
+        if self._expect_mcp_reports:
+            handle.mcp_session_report().record_switched_off(spec)
         if self._expect_mcp_reports and self.acp_backend == ACP_BACKEND_KIRO:
             handle.mcp_session_report().record_declared(spec, mcp_json)
         elif self._expect_mcp_reports and self.acp_backend == ACP_BACKEND_KAS:

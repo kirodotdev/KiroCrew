@@ -308,7 +308,7 @@ FACADE_LOGGER = "kiro_crew.context"
 #: The owners the facade composes. A module added or removed changes the
 #: composition, so the set is spelled out rather than globbed.
 OWNER_MODULES = frozenset(
-    """agent_spec budget delivery_records inclusion markers member member_gates
+    """agent_spec budget delivery_records inclusion markers mcp_servers member member_gates
     output_contract replay sections session_start store_admission tool_names turn
     turn_message""".split()
 )

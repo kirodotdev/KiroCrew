@@ -297,6 +297,42 @@ project's MCP settings. Session-scoped tools such as skill search need that
 per-session copy, so the session is refused instead of silently losing them.
 Remove the restriction the way the message names, then start a new session.
 
+### A server's tools are not there yet on a chat's first message
+
+A new chat's first message is sent as soon as Kiro Crew's own MCP servers are
+ready. It does not wait for the servers you added, so one that is slow to start
+may still be connecting while the agent works on that message. (The few servers
+Kiro Crew attaches to the session itself, a Connection's bridge for example, get
+a wait of at most 5 seconds.)
+
+The agent is told which of the chat's servers it cannot use and why: still
+starting, failed to start, waiting for a sign-in, switched off, or left out by
+your organization's MCP registry. It is told on every message while a server is
+still starting, with each such server by name (up to 256 of them), and once when
+a server settles in one of the other states. When your request needs a server
+that is still starting, the agent says so in a sentence, waits for that server
+with the `mcp_server_wait` tool (up to 90 seconds in one call), then uses its
+tool and finishes the request in the same reply. If the server is still not
+ready after that, the agent says so and you can ask again a moment later. For a
+server in any other state it does not wait: it tells you what is true of the
+server and does what it can without it.
+
+A first message that cannot carry that note still waits for your servers, for at
+most 5 seconds, as every first message did before: `kirocrew chat` in a
+terminal, a Side Chat question, a reply thread under a Bot's message, a slash
+command sent as a chat's first message, and an agent with more than 256 servers
+of its own. A server that will not start (switched off, or left out by your
+organization's registry) is never waited for.
+
+A server that failed to start usually stays failed for that chat. (One that
+failed over a missing or refused credential may be tried again.) Check its row
+and its command on the **MCP Servers** page, then start a new chat.
+
+A sub-agent and an unattended run (a schedule, a webhook) still wait briefly for
+the agent's servers before their first prompt, because such a run may have only
+one turn. On an agent harness that reports no server states, the agent is told
+nothing about them.
+
 ### MCP tools missing on an enterprise (work) account
 
 If the probe above reports every server healthy but the tools are still absent in

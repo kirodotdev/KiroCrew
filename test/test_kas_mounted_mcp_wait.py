@@ -49,9 +49,16 @@ def _handle(*frames: JsonRpcMessage | None) -> AcpSessionHandle:
     handle._mcp_report.begin_session([])
     handle._queue = asyncio.Queue()
     for frame in frames:
-        handle._queue.put_nowait(frame)
+        _deliver(handle, frame)
     handle._apply_init_notification = lambda *_a, **_k: None  # type: ignore[method-assign]
     return handle
+
+
+def _deliver(handle: AcpSessionHandle, frame: JsonRpcMessage | None) -> None:
+    """Hand *frame* to the session as the runtime's reader does: report, then queue."""
+    if frame is not None:
+        handle._mcp_report.fold_frame(frame)
+    handle._queue.put_nowait(frame)
 
 
 @pytest.fixture
@@ -73,7 +80,7 @@ async def test_a_slow_connection_is_waited_for_before_turn_one(runtime):
         # The required barrier is through; the start now parks on github alone.
         await async_wait_until(lambda: handle._queue.empty() and bool(handle._queue._getters))
         assert not task.done()
-        handle._queue.put_nowait(_status(**{_CORE: "connected", "github": "connected"}))
+        _deliver(handle, _status(**{_CORE: "connected", "github": "connected"}))
         await finished(task, "start barrier")
     finally:
         task.cancel()

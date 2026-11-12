@@ -347,6 +347,11 @@ async def _init_services(self: GatewayOrchestrator) -> None:
     self.ctx_builder.conversation_log = self.conv_log
 
     self.sessions = SessionManager(self._cfg, provider_factory=factory)  # type: ignore[arg-type]
+    # A turn's build names the MCP servers its session cannot use yet, and
+    # records on the session that the turn is told.
+    from kiro_crew.agent_sdk.mcp_problems import TurnMcpStatesReader
+
+    self.ctx_builder.mcp_states_for_session = TurnMcpStatesReader(self.sessions)
 
     self.consolidator = HistoryConsolidator(
         log=self.conv_log,

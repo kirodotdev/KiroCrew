@@ -84,6 +84,7 @@ if TYPE_CHECKING:
         _drain_session_init_oauth_requests,
         _notice_unresolved_control_plane,
         _publish_session_mcp_report,
+        _watch_session_mcp_report,
     )
     from kiro_crew.dashboard.chat_turn.model_fallback import (
         _app_allocation_kwargs,
@@ -1632,6 +1633,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # a failed session init, so it is best-effort.
     try:
         _publish_session_mcp_report(state, slot, client)
+        _watch_session_mcp_report(state, slot, client)
     except Exception:  # pragma: no cover
         logger.warning("Failed to publish the session MCP report", exc_info=True)
 
