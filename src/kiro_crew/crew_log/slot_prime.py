@@ -149,6 +149,7 @@ def _run(key: "tuple[str, str, str]", slot: str, name: str) -> None:
         started = eager._begin_pass()
         try:
             with _fold_gate:
+                _prime_siblings(key, slot, name)
                 folded = _read_backfilled(slot, name)
             ok = True
         except Exception:
@@ -190,6 +191,22 @@ def _run(key: "tuple[str, str, str]", slot: str, name: str) -> None:
         if _catch_up(key, slot, name):
             continue
         return
+
+
+def _prime_siblings(key: "tuple[str, str, str]", slot: str, name: str) -> None:
+    """Fold *name* and every cell of *slot* queued with it over one walk. Never raises."""
+    try:
+        from kiro_crew.crew_log import slot_backfill_child
+        from kiro_crew.crew_log.projection_slot_share import prime_slot_projections
+
+        # shortcut: while the backfill child is usable it folds each cold cell alone; share
+        # those walks too by batching the child's request.
+        with _lock:
+            names = {k[2] for k, at in _state.items() if k[:2] == key[:2] and at.running}
+        cold = not slot_backfill_child.usable()
+        prime_slot_projections(slot, sorted(names | {name}), cold=cold)
+    except Exception:
+        _log_exc("crew log slot prime could not share a walk for %s", slot)
 
 
 def _read_backfilled(slot: str, name: str) -> Any:
