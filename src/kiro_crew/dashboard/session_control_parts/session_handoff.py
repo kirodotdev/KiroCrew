@@ -117,6 +117,7 @@ async def handoff_target(
     target: str,
     to: str,
     caller_fenced: bool | None = None,
+    bind: bool = False,
 ) -> "dict[str, Any]":
     """Make *to* the manager of *target*.
 
@@ -127,6 +128,13 @@ async def handoff_target(
     of the person's own tabs could hand another of the person's tabs, which has no
     manager, to a fenced session. Refused when the recipient is the target, already
     manages it, or is managed by it (a loop in the manager line).
+
+    With *bind* on (opt-in, default off) the record also carries work-ledger bind
+    rights, so the new manager may bind the target on its own ledger; the
+    work-ledger ``bind`` route closes the target's open item on the giver's board
+    atomically as the new manager binds it (``_refuse_unowned_worker`` /
+    ``_refuse_dispatched_worker``). Off, bind rights stay with the creator and only
+    management moves, which is the existing behaviour.
 
     The new manager is written to disk before anything else changes. The tree edge and
     the transcript row follow, and neither can undo the handoff.
@@ -197,7 +205,9 @@ async def handoff_target(
             # it and this write. A close that lands during the write pops the receiver,
             # then waits here in ``hand_back_on_close`` and hands back what this saved.
             try:
-                await asyncio.to_thread(session_managers.write, {slot.key: (receiver.key, tab)})
+                await asyncio.to_thread(
+                    session_managers.write, {slot.key: (receiver.key, tab, bind)}
+                )
             except OSError as exc:
                 raise SessionControlError(
                     f"the handoff of {slot.key!r} could not be saved, so nothing changed",
@@ -209,7 +219,11 @@ async def handoff_target(
         operation="handoff",
         slot_key=slot.key,
         outcome="allowed",
-        detail={"manager": receiver.key, "previous_manager": previous or "none"},
+        detail={
+            "manager": receiver.key,
+            "previous_manager": previous or "none",
+            "bind": "yes" if bind else "no",
+        },
     )
     tree_moved = await _move_tree_edge(state, slot, receiver.key)
     note = f"This session was handed over: {receiver.key} manages it now"
@@ -220,6 +234,7 @@ async def handoff_target(
         "manager": receiver.key,
         "previous_manager": previous,
         "tree_moved": tree_moved,
+        "bind": bind,
     }
 
 
