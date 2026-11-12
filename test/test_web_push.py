@@ -156,6 +156,15 @@ def test_store_rejects_invalid_port(monkeypatch, tmp_path, _public_dns):
             store.add({"endpoint": endpoint, "keys": {"p256dh": "a", "auth": "b"}})
 
 
+def test_store_rejects_unparseable_endpoint(monkeypatch, tmp_path, _public_dns):
+    """An endpoint urlparse cannot parse is a 400-class PushSubscriptionError, not a bare ValueError."""
+    monkeypatch.setattr("kiro_crew.notifications.push_store.config_dir", lambda: tmp_path)
+    store = PushSubscriptionStore()
+    for endpoint in ("https://[abc/x", "https://[::1/x"):
+        with pytest.raises(PushSubscriptionError):
+            store.add({"endpoint": endpoint, "keys": {"p256dh": "a", "auth": "b"}})
+
+
 def test_store_files_live_in_the_masked_directory(monkeypatch, tmp_path, _public_dns):
     """Both stores and their atomic-write temps sit under the sandbox-masked dir."""
     from kiro_crew.notifications.push_store import WEB_PUSH_DIR_LEAF
