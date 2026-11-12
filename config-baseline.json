@@ -2132,6 +2132,7 @@
         "file_changes_keep_turns": 0,
         "kas_delete_delay_secs": 0,
         "search_scan_window": 2000,
+        "semantic_search": false,
         "watchdog_rss_max_mb": 4096,
         "watchdog_end_leftovers_mid_turn": false,
         "harness_background_hold_secs": 3600,
@@ -2391,6 +2392,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 2000
+    },
+    {
+      "path": "session.semantic_search",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Session Search by Meaning",
+      "help": "Build a chunk store of session text in the background so session search can later find a conversation by describing it. Off by default. While on, the session index worker cuts each quiet session into chunks with the embedding model's tokenizer; incognito and temporary sessions are never read. Search does not read the store.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "session.watchdog_rss_max_mb",

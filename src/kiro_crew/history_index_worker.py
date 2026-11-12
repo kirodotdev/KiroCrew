@@ -76,6 +76,10 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from multiprocessing.context import SpawnProcess
+    from types import ModuleType
+
+    from kiro_crew.history import ConversationLog
+    from kiro_crew.history_vectors_index import Tokenizer
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -223,6 +227,7 @@ def run_index_worker(
 
     log = ConversationLog(Path(sessions_dir))
     projection = log._catalog_projection
+    chunks = _ChunkPass(log, pass_budget_secs)
     passes = 0
     try:
         while not stopping.is_set():
@@ -236,6 +241,7 @@ def run_index_worker(
                 if not _wait_or_retire(stopping, idle_pause_secs):
                     break
                 continue
+            report = chunks.run(report)
             passes += 1
             if passes % optimize_every_passes == 0:
                 try:
@@ -254,6 +260,58 @@ def run_index_worker(
     finally:
         try:
             projection.search_index.close()
+        except Exception:  # noqa: BLE001 — exiting anyway
+            pass
+        chunks.close()
+
+
+class _ChunkPass:
+    """The semantic chunk pass, run after each keyword pass while the flag is on.
+
+    The tokenizer loads on the first pass with the flag on, and again when the
+    active model file changes. Its failure leaves the keyword index untouched.
+    """
+
+    def __init__(self, log: "ConversationLog", budget_secs: float) -> None:
+        from kiro_crew.history_vectors_index import vector_store_for
+
+        self._log = log
+        self._budget_secs = budget_secs
+        self._store = vector_store_for(log._dir)
+        self._tokenizer: "Tokenizer | None" = None
+        self._failed_signature = ""
+
+    def run(self, report: dict[str, int]) -> dict[str, int]:
+        """*report* with this pass's ``remaining`` added, for the worker's pacing."""
+        from kiro_crew import history_vectors_index as chunking
+
+        if not chunking.configured_semantic_search():
+            return report
+        try:
+            tokenizer = self._current_tokenizer(chunking)
+            if tokenizer is None:
+                return report
+            done = chunking.backfill_chunks(
+                self._log, self._store, tokenizer, budget_secs=self._budget_secs
+            )
+        except Exception:  # noqa: BLE001 — the keyword index must not depend on this
+            _LOGGER.warning("Session chunk pass failed", exc_info=True)
+            return report
+        return {**report, "remaining": report.get("remaining", 0) + done["remaining"]}
+
+    def _current_tokenizer(self, chunking: "ModuleType") -> "Tokenizer | None":
+        expected = chunking.tokenizer_signature()
+        if self._tokenizer is not None and self._tokenizer.signature == expected:
+            return self._tokenizer
+        if not expected or expected == self._failed_signature:
+            return None
+        self._tokenizer = chunking.load_tokenizer()
+        self._failed_signature = "" if self._tokenizer is not None else expected
+        return self._tokenizer
+
+    def close(self) -> None:
+        try:
+            self._store.close()
         except Exception:  # noqa: BLE001 — exiting anyway
             pass
 

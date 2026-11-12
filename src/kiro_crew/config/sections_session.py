@@ -238,6 +238,17 @@ class SessionConfig:
             "100..100000. Read at each search, so a change needs no restart.",
         ),
     )
+    semantic_search: bool = field(
+        default=False,
+        metadata=_meta(
+            "Session Search by Meaning",
+            "Build a chunk store of session text in the background so session "
+            "search can later find a conversation by describing it. Off by "
+            "default. While on, the session index worker cuts each quiet session "
+            "into chunks with the embedding model's tokenizer; incognito and "
+            "temporary sessions are never read. Search does not read the store.",
+        ),
+    )
     watchdog_rss_max_mb: int = field(
         default=DEFAULT_WATCHDOG_RSS_MAX_MB,
         metadata=_meta(

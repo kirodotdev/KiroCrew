@@ -217,7 +217,9 @@ condition (open question 5).
 | Table | Key | Columns |
 |---|---|---|
 | `chunk` | chunk id | text hash (unique), token count, vector (nullable), embedder signature, vector written at |
+| `pending_text` | chunk id | the chunk's text, until its vector is written |
 | `chunk_ref` | session key, ordinal | message index, char start, char end, chunk id |
+| `session_state` | session key | file identity, chunker signature |
 
 - A chunk never spans two messages, so every hit addresses one message.
 - Chunks are cut at 300 tokens of the model's tokenizer, which caps every chunk at
@@ -225,8 +227,11 @@ condition (open question 5).
 - Identical text is stored once and referenced from every session holding it.
   Twinned files can diverge (measured: 35 of 227 pairs hold text only in the copy),
   so dedup is per chunk, and result rows collapse per conversation.
-- Rows are written with a null vector and filled at `PRIORITY_BULK`, so the pending
-  count is real and the build resumes after a restart.
+- Chunks are cut in the session index worker, which owns transcript parsing; the
+  gateway, which owns the one loaded model, fills vectors at `PRIORITY_BULK`.
+  Rows are written with a null vector and their text in `pending_text`, and the fill
+  writes the vector and deletes the text in one transaction, so the pending count is
+  real and the build resumes after a restart.
 - A session is indexed once quiet for `_INDEX_QUIET_WINDOW_SECS`, the FTS rule.
 - Incognito and temporary sessions are never indexed.
 
@@ -364,9 +369,10 @@ Exit criteria, each a test or a harness run:
   row; the fixture indexes to coverage 1.0, and a restart mid-build resumes with the
   pending count never rising; the deletion test in section 12 passes.
 - Phase 3: a test asserts that an embed call without the query role sends the same
-  text as on main; tests 1 to 4 in 7.3 and the ownership test in section 9 pass; on the
-  fixture, routed R@1 is at or above vector R@1 and literal R@1 at or above keyword
-  R@1; the harness reports resident memory and CPU at the measured chunk count.
+  text as on main; tests 1 to 4 in 7.3, the ownership test in section 9 and the
+  count test in section 12 pass; on the fixture, routed R@1 is at or above vector
+  R@1 and literal R@1 at or above keyword R@1; the harness reports resident memory
+  and CPU at the measured chunk count.
 
 Resource ceilings for phase 4, measured on the smallest host the project supports:
 
@@ -394,9 +400,10 @@ the measured chunk count so phase 4 can confirm or replace them.
 
 ## 12. Security considerations
 
-`session_vectors.db` holds transcript-derived data: text hashes, message offsets and
-the vectors computed from the text. It stores no chunk text, but a vector can leak the
-text it came from, so the store gets the FTS index's deletion and privacy contract.
+`session_vectors.db` holds transcript-derived data: text hashes, message offsets, the
+vectors computed from the text, and a chunk's text until its vector is written. That
+text is a subset of what the FTS index already keeps, and a vector can leak the text it
+came from, so the store gets the FTS index's deletion and privacy contract.
 
 - Restricted sessions: the indexer reads a session through the derivation guard
   (`_withhold_if_restricted`, which applies `is_incognito_transcript`), so incognito
@@ -415,11 +422,24 @@ text it came from, so the store gets the FTS index's deletion and privacy contra
 - Resident matrix: the drop removes the session's rows from the loaded matrix, so a
   deleted session never ranks once the delete returns. A session whose file is gone
   is dropped by the indexer, as the FTS indexer does.
+- Counts: the coverage note follows the `SearchRows` contract from #23603.
+  `semantic.eligible` is the same visible count as `SearchRows.eligible`, and
+  `semantic.indexed` counts the visible sessions in the current session list whose
+  chunks are all embedded. Neither count includes incognito or temporary sessions, and
+  neither depends on how many of them the store, the window or the build queue
+  holds, so `eligible` minus `indexed` counts only visible sessions still pending. A
+  search scoped by `keys` alone reports no semantic coverage, and a `title:` search
+  counts visible title matches, as `SearchRows` does. The bulk build's progress and
+  pending counts in logs and status follow the same rule.
 - Embedding runs on the local model, so no transcript text leaves the host.
 
 Pinned by a test: seed a session with a unique chunk, delete it, then assert that no
-`chunk_ref` or `chunk` row remains for it, that neither the database nor the WAL file
-contains its vector bytes, and that a meaning query no longer returns it.
+`chunk_ref`, `chunk` or `pending_text` row remains for it, that neither the database
+nor the WAL file contains its text or vector bytes, and that a meaning query no
+longer returns it. A second
+test pins the counts: a store holding N visible sessions plus any number of incognito
+and temporary ones reports the same `semantic` counts, at every stage of the build, as
+a store holding only the N visible sessions.
 
 ## 13. Alternatives considered
 

@@ -221,6 +221,17 @@ class SessionMetadataProjection:
                         key,
                     )
                     return False
+                # The chunk store holds data derived from this text under the
+                # same contract: drop() succeeds when no store file exists and
+                # fails when one exists and cannot be opened or erased.
+                vector_store = self._log._catalog_projection.vector_store
+                if existed and not vector_store.drop(identities):
+                    _HISTORY_LOGGER.warning(
+                        "delete_session: could not remove the session's chunk rows, "
+                        "not deleting key=%s",
+                        key,
+                    )
+                    return False
                 # The images this session's messages showed are its content,
                 # served by ``/api/file-raw`` the way the transcript's text is
                 # served by the session view. They leave with the transcript in
