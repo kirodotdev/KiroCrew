@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import logging
 import threading
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
@@ -9,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kiro_crew.artifacts import ArtifactNotFoundError, ArtifactStore
-from kiro_crew.knowledge import artifact_ingest
+from kiro_crew.knowledge import artifact_ingest, ingestion
 from kiro_crew.knowledge.artifact_ingest import (
     ARTIFACT_SOURCE_TYPE,
     ARTIFACT_SOURCE_URI,
@@ -77,6 +78,27 @@ def art_store(tmp_path):
 def _contents(kstore, source_id):
     return [r["content"] for r in kstore.db.execute(
         "SELECT content FROM items WHERE source_id = ?", (source_id,)).fetchall()]
+
+
+def _fail_ingest(pipeline, monkeypatch, oversized):
+    """Fail the next ingest: on the pipeline's own size check, with the cap
+    lowered to about 1 KB, or with a read error."""
+    if oversized:
+        monkeypatch.setattr(ingestion, "_max_ingest_file_mb", lambda: 0.001)
+    else:
+        monkeypatch.setattr(
+            pipeline, "ingest_file", AsyncMock(side_effect=RuntimeError("read failed")))
+
+
+def _logged(caplog):
+    """(an ERROR from artifact_ingest, the pipeline's oversized-file WARNING)."""
+    records = caplog.records
+    return (
+        any(r.name == artifact_ingest.logger.name and r.levelno >= logging.ERROR
+            for r in records),
+        any(r.name == ingestion.logger.name and "oversized" in r.getMessage()
+            for r in records),
+    )
 
 
 def _item_ids(kstore, source_id):
@@ -510,6 +532,21 @@ class TestReconcile:
         assert (ingested, removed, deferred) == (0, 0, 0)
         assert any("original body" in c for c in _contents(kstore, sid)), (
             "a failed replacement must not leave the artifact unsearchable")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("oversized", [False, True], ids=["read_error", "oversized"])
+    async def test_a_failed_ingest_logs_an_error_unless_the_file_was_oversized(
+        self, pipeline, art_store, kstore, monkeypatch, caplog, oversized
+    ):
+        """The pipeline already warned about an oversized file, so the pass does
+        not log it a second time at ERROR."""
+        sid, _ = ensure_artifact_source(kstore)
+        art_store.create(name="Doc", content="x" * 4096, kind="markdown")
+        _fail_ingest(pipeline, monkeypatch, oversized)
+        with caplog.at_level(logging.WARNING):
+            counts = await reconcile_artifacts(pipeline, art_store, sid, DEFAULT_KINDS)
+        assert counts == (0, 0, 0)
+        assert _logged(caplog) == (not oversized, oversized)
 
     @pytest.mark.asyncio
     async def test_a_deduped_row_keeps_its_hash_so_its_claim_can_be_released(
@@ -955,6 +992,22 @@ class TestArtifactKnowledgeSyncStop:
 
 
 class TestArtifactKnowledgeSync:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("oversized", [False, True], ids=["read_error", "oversized"])
+    async def test_a_failed_event_logs_an_error_unless_the_file_was_oversized(
+        self, pipeline, art_store, kstore, monkeypatch, caplog, oversized
+    ):
+        sync = ArtifactKnowledgeSync(
+            art_store=art_store, pipeline=pipeline, kinds=DEFAULT_KINDS,
+            loop=asyncio.get_running_loop())
+        art = art_store.create(name="Doc", content="x" * 4096, kind="markdown")
+        _fail_ingest(pipeline, monkeypatch, oversized)
+        with caplog.at_level(logging.WARNING):
+            sync._schedule("upsert", art.slug)
+            # The task's own done callbacks run before this await resumes.
+            await asyncio.gather(*sync._tasks, return_exceptions=True)
+        assert _logged(caplog) == (not oversized, oversized)
+
     @pytest.mark.asyncio
     async def test_handle_upsert_then_delete(self, pipeline, art_store, kstore):
         sync = ArtifactKnowledgeSync(
