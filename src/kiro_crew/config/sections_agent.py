@@ -1041,13 +1041,15 @@ class AgentConfig:
             "time is not charged to the start budget "
             "or the startup deadline, but a subagent start that stays queued past "
             "the start-queue cap ends as never started, unless its subagent "
-            "timeout ends it first. A fixed bound, not adaptive: the adaptive loop is the MCP gateway spawn "
+            "timeout ends it first. Not adaptive: the adaptive loop is the MCP gateway spawn "
             'gate and the execution-cap controller. "auto" (the default) sizes it '
-            "once at gateway start as min(cpus // 4, available GB // 3) clamped to "
-            "2..16, with cpus the affinity count capped by a cgroup cpu.max quota; "
-            "the gateway logs the value in force at boot, and kirocrew doctor "
+            "at gateway start as min(cpus // 4, available GB // 3) clamped to "
+            "2..16, with cpus the affinity count capped by a cgroup cpu.max quota, "
+            "and widens it when a later reading finds more memory available; it "
+            "never narrows and never passes what the cores give. "
+            "The gateway logs the value in force at boot and each time it widens, and kirocrew doctor "
             "shows what auto picks for the host now. An integer sets it "
-            "explicitly, clamped to 1..64.",
+            "explicitly, clamped to 1..64, and is fixed until a restart.",
             restart=True,
         ),
     )

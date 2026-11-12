@@ -3930,7 +3930,8 @@ clamped to 1..32. `SessionManager.__init__` publishes it for the process
 (`cold_start_sizing.configure_runtime_spawn_width`) from the cached host reading
 only, so `auto` is the floor until that reading exists; the gateway's post-bind
 sizing task reads the host in a worker thread and then republishes it
-(`SessionManager.widen_cold_start_queues`). Every admission lookup grows the loop's
+(`SessionManager.widen_cold_start_queues`), and again whenever a later re-read
+raises the `auto` width (`start_gate_widening`). Every admission lookup grows the loop's
 admission to the published width (an int compare, never a shrink), so a spawn that
 ran before the manager published does not pin the loop at the floor. `spawn()`
 takes no await before admission, so concurrent spawns queue in arrival order. A process that built no manager (an embedder's, a
@@ -3965,15 +3966,24 @@ gate** bounds the other expensive start: `session/new` on an already-running
 runtime, which blocks while the backend initializes the session's MCP servers.
 `AcpRuntime.create_session` acquires the current loop's `SessionStartGate`
 (`agent.session_start_concurrency`, default `auto`, FIFO within a start priority,
-sized once per loop from config; `restart=True`; `auto` resolves once per process in
+sized per loop from config; `restart=True`; `auto` resolves in
 `kiro_crew/session_start_sizing.py` to `clamp(min(cpus // 4, available_GB // 3), 2, 16)`,
 with cpus the affinity count capped by a cgroup v2 `cpu.max` quota and memory from the
 `resource_status` probe; the gateway resolves it in a worker thread at boot and logs the
 value in force with its inputs, and `kirocrew doctor` prints what `auto` picks for the
-host at the time it runs; an explicit integer wins) BEFORE `session/new` goes on
-the wire and releases it as soon as the answer arrives. The gate is a FIXED semaphore: the adaptive
+host at the time it runs; an explicit integer wins and is fixed for the loop's life.
+An `auto` gate widens and never narrows: while memory, not the cores, sets the width,
+the boot task re-reads available memory every 60 s (`start_gate_widening`), the cached
+reading's memory figure only rises (`refresh_host_capacity`), and each gate lookup
+grows the gate to the width that reading gives (`_widen_auto_gate`,
+`SessionStartGate.widen_to`), held permits and queued starts kept. What widens is
+decided by the settings in force when the gate and the session manager were built
+(`SessionStartGate.auto`, `SessionManager._cold_start_agent`), so an edit of one of
+the three `restart=True` settings changes no width before the restart; the
+subagent startup bound, which tracks the gate width, follows it) BEFORE `session/new` goes on
+the wire and releases it as soon as the answer arrives. The gate never narrows: the adaptive
 loop is the gatewayd spawn gate plus the execution-cap controller, and two
-adapting loops on one resource oscillate. It is one gate for every harness
+loops adapting one resource both ways oscillate. It is one gate for every harness
 (kiro-cli, KAS, a later Claude host), because every backend's session start
 runs through `create_session` (harness-parity: no per-backend branch).
 
