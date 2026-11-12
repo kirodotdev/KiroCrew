@@ -144,9 +144,12 @@ def _register_mcp_routes(app: web.Application) -> None:
     """Register API routes used by MCP tools (spawn, lessons, crons, etc.)."""
     # Both entrypoints register this table, so both start reading the Ultra Mode
     # pause file off-loop at startup; the hook returns at once.
-    from kiro_crew import crew_pause
+    from kiro_crew import crew_pause, mcp_listing_gateway
 
     app.on_startup.append(crew_pause.startup_preload)
+    # The same shape: the listing relay's code stamp is read off-loop at startup, and
+    # until it is in, a server that asks builds its own list.
+    app.on_startup.append(mcp_listing_gateway.startup_stamp)
     app.router.add_post("/api/spawn", handlers.api_spawn)
     app.router.add_post("/api/spawn/lost", handlers.api_spawn_lost)
     app.router.add_post("/api/spawn/mark-collected", handlers.api_spawn_mark_collected)

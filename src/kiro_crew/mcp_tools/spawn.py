@@ -945,6 +945,7 @@ if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still 
     from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS  # noqa: F401
     from kiro_crew.execution_context import read_session_execution  # noqa: F401
     from kiro_crew.mcp_core_parts.identity import _resolve_session_key  # noqa: F401
+    from kiro_crew.mcp_listing_relay import built_for_a_tool_server  # noqa: F401
     from kiro_crew.mcp_shared import DEFERRED_STEP_WORKERS  # noqa: F401
     from kiro_crew.mcp_tools.catalog import loaded_binding  # noqa: F401
     from kiro_crew.platform import redact_via_context as redact  # noqa: F401

@@ -650,6 +650,7 @@ class SessionManager:
     get_approval_policy = _claims.get_approval_policy
     approval_revocation = _claims.approval_revocation
     get_agent = _claims.get_agent
+    starting_agent = _claims.starting_agent
     get_agent_selection = _claims.get_agent_selection
     set_approval_policy = _claims.set_approval_policy
     # -- Background, warm-pool and companion runtimes (session_parts.runtimes).

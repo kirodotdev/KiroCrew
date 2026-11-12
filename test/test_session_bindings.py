@@ -353,6 +353,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "settle_turn": ("function", False, "958babeb61c8", "claims"),
     "slack_link_nonce": ("function", False, "f1d40e624ae4", "links"),
     "start_pool": ("function", True, "255a2f05f73c", "runtimes"),
+    "starting_agent": ("function", False, "f1d40e624ae4", "claims"),
     "stop_generation": ("function", False, "028659ce42ac", "teardown"),
     "stop_turn": ("function", True, "67ebfe2370a5", "teardown"),
     "suppress_replay_persistently": ("function", False, "958babeb61c8", "turn_context"),

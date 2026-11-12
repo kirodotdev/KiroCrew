@@ -85,8 +85,8 @@ sys.stdin = io.TextIOWrapper(io.open(read_fd, "rb"))
 answer = mcp_entry._answer_before_handlers
 
 
-def answer_then_stop(command):
-    answer(command)
+def answer_then_stop(command, relayed=None):
+    answer(command, relayed)
     sys.stdout.flush()
     sys.stderr.write({_MARK!r} + json.dumps(sorted(sys.modules)) + "\\n")
     raise SystemExit(0)

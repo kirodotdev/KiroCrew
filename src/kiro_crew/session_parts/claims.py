@@ -871,6 +871,11 @@ def get_agent(self: SessionManager, key: str) -> str:
     return self._allocation_boundary().get_agent(key)
 
 
+def starting_agent(self: SessionManager, key: str) -> str:
+    """The agent a cold start in flight will register *key* as, or ``""``."""
+    return self._allocation_boundary().starting_agent(key)
+
+
 def get_agent_selection(self: SessionManager, key: str) -> tuple[str, str]:
     """Snapshot the allocation-owned namespace and name for inheritance."""
     return self._allocation_boundary().get_agent_selection(key)
