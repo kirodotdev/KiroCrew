@@ -217,7 +217,8 @@ class MemberLog:
 
         The change time and the inode are there for the append path: a rewrite that
         keeps the size and puts the modification time back still moves the change
-        time, and a file swapped in by rename has another inode.
+        time, and a file swapped in by rename has another inode. Windows reports the
+        creation time in that field, so there the change time shows nothing.
         """
         try:
             st = self.path.stat()
@@ -358,7 +359,9 @@ class MemberLog:
         a record the events held do not have.
 
         Not covered: an older record rewritten in place to the same length within the
-        clock tick of the load stamp. Timestamps cannot see it, here or on a read.
+        clock tick of the load stamp. Timestamps cannot see it, here or on a read. On
+        Windows the same rewrite with its modification time put back is not seen
+        either, at any distance in time, because no change time is reported there.
 
         The fresh handle replaces the cached one, as a reload does, so the write lease
         the append took is released here too.

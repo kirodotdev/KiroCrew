@@ -594,7 +594,8 @@ What still parses the whole log: the first load of a member in a process, a relo
 after the file changed under the instance, the first fold of a member after boot, and
 `append_if` (the closer path, once per ended patrol). Not seen by the proof, or by a
 read: an older record rewritten in place to the same length within the clock tick of
-the load stamp.
+the load stamp. On Windows the stat's change time is the file's creation time, so a
+same-length rewrite whose modification time is put back is not seen there either.
 
 The migration is resumable, per item. `ensure` returning early on `log.exists()`
 meant a process that died between `create` and the end of the migration left that

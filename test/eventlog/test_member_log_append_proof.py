@@ -18,6 +18,7 @@ import subprocess
 import sys
 import textwrap
 
+import pytest
 from eventlog_helpers import _isolated_home  # noqa: F401 - autouse fixture
 
 from kiro_crew.crew_log.store import CrewLog
@@ -34,15 +35,17 @@ def _wait_for_a_later_timestamp(path) -> None:
     The kernel stamps files on a coarse clock, so an edit made in the same tick as
     the file's last write leaves every timestamp equal. The tests below edit a file
     right after writing it and need that edit to show, so they wait on the signal
-    itself: a probe beside the file is rewritten until its change time passes the
-    file's own.
+    itself: a probe beside the file is rewritten until its modification time passes
+    both of the file's own times. The modification time is the one read from the
+    probe because Windows reports a file's creation time as its change time.
     """
-    held = path.stat().st_ctime_ns
+    stamped = path.stat()
+    held = max(stamped.st_mtime_ns, stamped.st_ctime_ns)
     probe = path.with_name("clock-probe")
 
     def stamped_later() -> bool:
         probe.write_bytes(b"")
-        return probe.stat().st_ctime_ns > held
+        return probe.stat().st_mtime_ns > held
 
     wait_until(stamped_later)
     probe.unlink()
@@ -183,6 +186,7 @@ def test_a_record_inserted_by_another_os_process_in_the_write_window(monkeypatch
         subprocess.run(
             [sys.executable, str(script), "erin"],
             env=env,
+            cwd=tmp_path,
             check=True,
             timeout=FALLBACK_TIMEOUT_SECS,
         )
@@ -210,6 +214,10 @@ def test_an_older_record_rewritten_before_the_append(monkeypatch):
     assert log.events[4]["data"]["project"] == "q05"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows reports a file's creation time as its change time, so nothing shows this rewrite",
+)
 def test_an_older_record_rewritten_with_its_modification_time_put_back():
     """Size and mtime as loaded: only the change time gives the rewrite away."""
     log = _seeded("gina")
