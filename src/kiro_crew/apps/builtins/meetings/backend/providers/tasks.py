@@ -36,14 +36,16 @@ import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.builtins.meetings.backend import store
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry, replace_with_retry
 from kiro_crew.security import redact
 from kiro_crew.sel import sel
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger("kirocrew.app.meetings")
 
@@ -170,6 +172,43 @@ class LocalTaskProvider(TaskProvider):
         entries = doc.get("tasks") if isinstance(doc, dict) else None
         return entries if isinstance(entries, list) else []
 
+    def _read_for_update(self) -> list[dict[str, Any]]:
+        """The ledger a filing starts from; unlike :meth:`_read`, never a guess.
+
+        :meth:`_read` shows a ledger it cannot use as empty, which is right for a
+        list on screen. A write that starts there saves one task over every task
+        in the file. Here a missing ledger is empty, a present one that does not
+        parse as a ledger is moved aside to ``task-ledger.json.corrupt-<utc>`` first
+        so its bytes outlive the save, and a failed read raises with the file as
+        it is.
+        """
+        path = self._path()
+        try:
+            doc = loads_user_json(read_bytes_with_retry(path).decode("utf-8"))
+        except FileNotFoundError:
+            return []
+        except ValueError as exc:
+            self._set_aside(path, exc)
+            return []
+        entries = doc.get("tasks") if isinstance(doc, dict) else None
+        if not isinstance(entries, list):
+            self._set_aside(path, "not a task ledger: no tasks list")
+            return []
+        return entries
+
+    @staticmethod
+    def _set_aside(path: Path, reason: object) -> None:
+        """Move a ledger that does not parse to ``<name>.corrupt-<utc>``; raise if it cannot move."""
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        aside = path.with_name(f"{path.name}.corrupt-{stamp}")
+        replace_with_retry(path, aside)
+        logger.warning(
+            "meetings: %s could not be used (%s); moved it to %s before filing",
+            path,
+            reason,
+            aside.name,
+        )
+
     def create(self, draft: TaskDraft) -> TaskRef:
         # The whole read-append-write is under one lock. `create` runs on the
         # subprocess executor (see `handle_file_task`), so two filings genuinely
@@ -186,7 +225,7 @@ class LocalTaskProvider(TaskProvider):
 
     def _create_locked(self, draft: TaskDraft) -> TaskRef:
         """Append one task to the ledger. Caller MUST hold :data:`_LEDGER_LOCK`."""
-        entries = self._read()
+        entries = self._read_for_update()
         ref = TaskRef(
             provider=self.provider_id,
             id=f"mt-{uuid.uuid4().hex[:12]}",
