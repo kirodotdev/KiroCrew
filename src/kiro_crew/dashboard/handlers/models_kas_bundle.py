@@ -7,7 +7,9 @@ may have no kiro-cli at all, so that path answered a permanent degraded 503 and
 the picker stayed on ``auto`` with no context windows and no credit multipliers.
 This module is the bundle route's answer, dispatched BEFORE the kiro-cli path on
 ``agent_sdk.kas_bundle.kas_bundle_route`` so that path is not changed and never
-spawns here:
+spawns here. It also answers KAS's relay when that spawn starts on Crew's sign-in
+alone and kiro-cli's gate refuses (:func:`api_models_kas_crew_relay`): the same
+recording, with no cold probe, so nothing is spawned there either.
 
 * **Readiness is the bundle's**: the installed engine
   (``kas_bundle.installed_bundle``) and Crew's own sign-in vault
@@ -138,15 +140,46 @@ async def api_models_kas_bundle(request: web.Request) -> web.Response:
             },
             status=503,
         )
+    return await _serve_recording(request, start_probe=True)
+
+
+def _crew_sign_in_starts_spawn() -> bool:
+    """Blocking (vault, config and kiro-cli reads); call off the loop. Never raises."""
+    from kiro_crew.agent_sdk import kas_bundle
+
+    return kas_bundle.crew_sign_in_starts_spawn()
+
+
+async def api_models_kas_crew_relay(request: web.Request, backend: str) -> web.Response | None:
+    """The answer for KAS's relay started on Crew's sign-in alone, else ``None``.
+
+    ``agents.api_models`` asks this only once kiro-cli's gate has refused. That
+    relay enters through ``kiro-cli-chat`` and draws its credential from Crew's
+    vault, so kiro-cli's refusal does not decide its list: this serves the
+    recording instead. Nothing is spawned: a cold read answers ``auto``, and the
+    dashboard refetches the list when the first chat spawns. The launcher relay
+    and every other harness keep the gate's refusal (``None``).
+    """
+    if backend == ACP_BACKEND_KAS and await asyncio.to_thread(_crew_sign_in_starts_spawn):
+        return await _serve_recording(request, start_probe=False)
+    return None
+
+
+async def _serve_recording(request: web.Request, *, start_probe: bool) -> web.Response:
+    """The recorded select for the account the vault names, or ``auto`` while cold.
+
+    *start_probe* starts a background session to record a cold account's list.
+    """
     # Which account the vault names NOW, whichever process wrote it last: the
     # recording is served only to the account it was recorded for.
     identity = await asyncio.to_thread(kas_model_catalog.vault_identity)
     rows = kas_model_catalog.recorded_catalog_snapshot(identity)
     if rows is None:
-        # Answer now, and let a background session record this account's list.
-        from kiro_crew.dashboard.handlers.models_cold_probe import start_cold_model_probe
+        if start_probe:
+            # Answer now, and let a background session record this account's list.
+            from kiro_crew.dashboard.handlers.models_cold_probe import start_cold_model_probe
 
-        start_cold_model_probe(request.app.get("state"), ACP_BACKEND_KAS)
+            start_cold_model_probe(request.app.get("state"), ACP_BACKEND_KAS)
         return _cold_response()
     # The same admission the kiro-cli catalog goes through, into the same ``acp``
     # bucket (kiro and KAS share it): ids for the pin verdicts, prices for the

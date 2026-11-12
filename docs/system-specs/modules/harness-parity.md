@@ -347,7 +347,9 @@ put the relay route (kiro-cli present, catalog printable) and the bundle route
 would change the Kiro path's own machinery (Group C). What is per HARNESS stays in
 a set: the fact that KAS's `model` select is its catalog is recorded on positive
 KAS identity in `agent_sdk/kas_model_catalog.py`, whichever route the session runs
-on; only the bundle route's picker reads the recording.
+on; the bundle route's picker reads the recording, and so does a KAS relay started
+on Crew's sign-in alone, but only where kiro-cli's gate has already refused, behind
+`backend == "kas"`, so the Kiro path answers as before.
 
 ### Where the vocabulary is defined
 
