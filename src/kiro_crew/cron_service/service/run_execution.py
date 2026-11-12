@@ -230,6 +230,7 @@ async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -
                     summary=run_result or row_error,
                     trace=run_result or "",
                     error=row_error,
+                    idle=terminal.idle_run and status == "success",
                 )
                 if not quiet:
                     await self._history.append(record)
@@ -377,6 +378,7 @@ async def _execute(self: CronService, job: CronJob, claim: _RunClaim | None = No
     job.run_never_started = False
     job.refusal_cannot_clear = False
     job.quiet_run = False
+    job.idle_run = False
     # The callback only increments `_transient_attempts`; this method reads,
     # clears and persists it, in a `finally` so a cancelled run cannot leak a
     # half-spent retry budget into the next run.
