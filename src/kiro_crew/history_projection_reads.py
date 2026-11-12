@@ -86,9 +86,9 @@ class TranscriptReadProjection:
             messages = messages[:-exclude_last_n]
         messages = [message for message in messages if not is_warm_task_brief_message(message)]
         if roles:
-            messages = [message for message in messages if message["role"] in roles]
+            messages = [message for message in messages if message.get("role") in roles]
         return [
-            {"role": message["role"], "content": message["content"]}
+            {"role": message.get("role"), "content": message.get("content", "")}
             for message in messages[-max_messages:]
         ]
 
@@ -106,9 +106,9 @@ class TranscriptReadProjection:
             messages = messages[:-exclude_last_n]
         messages = [message for message in messages if not is_warm_task_brief_message(message)]
         if roles:
-            messages = [message for message in messages if message["role"] in roles]
+            messages = [message for message in messages if message.get("role") in roles]
         return [
-            {"role": message["role"], "content": message["content"]}
+            {"role": message.get("role"), "content": message.get("content", "")}
             for message in messages[-max_messages:]
         ]
 
@@ -138,7 +138,7 @@ class TranscriptReadProjection:
             and not is_warm_task_brief_message(item)
         ]
         for message in cited[-max_messages:]:
-            content = message["content"]
+            content = message.get("content") or ""
             snippet = content[:150] + "…" if len(content) > 150 else content
             result.append(
                 {
@@ -199,7 +199,7 @@ class TranscriptReadProjection:
         candidates = [message for message in candidates if not is_warm_task_brief_message(message)]
         candidates.sort(key=lambda message: message.get("ts", ""))
         return [
-            {"role": message["role"], "content": message["content"]}
+            {"role": message.get("role"), "content": message.get("content", "")}
             for message in candidates[-max_messages:]
         ]
 
@@ -1180,7 +1180,7 @@ class TranscriptReadProjection:
                 break
             wanted += max_messages - len(kept)
         formatted = [
-            {"role": message["role"], "content": message["content"]}
+            {"role": message.get("role"), "content": message.get("content", "")}
             for message in kept[-max_messages:]
         ]
         self._log._publish_if_current(
