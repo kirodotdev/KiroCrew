@@ -489,7 +489,7 @@ class _TaskqBridgeMixin(ManagerComponent):
             return False
         return store.advance(agent_id, state, generation=generation)
 
-    async def await_pending_defer(self, agent_id: str, *, dispatch: bool = False) -> None:
+    async def await_pending_defer(self, agent_id: str, *, dispatch: bool = False) -> bool:
         """Wait for the write :meth:`taskq_defer_posted` or :meth:`taskq_fail`
         retained for *agent_id*, so the row carries it before the pump may
         refill it or the caller hears the verdict. The wait is SHIELDED: the
@@ -524,11 +524,18 @@ class _TaskqBridgeMixin(ManagerComponent):
         keeps retrying behind the dispatcher -- nothing is published over the
         unlanded write; the pump just stops waiting on it. A caller's own wait
         (``spawn_async``) is the one that publishes, and keeps the full hold.
+        Stop all takes the dispatcher's wait for each row its cancel left
+        settling and counts only the rows whose hold released
+        (:meth:`settled_within_bound`).
+
+        Returns whether the hold released: False only for a *dispatch* wait
+        that ended at the read bound, so a report gate on the full hold always
+        opens.
         """
         pending = getattr(self._manager, "_pending_defers", None)
         task = pending.get(agent_id) if pending else None
         if task is None:
-            return
+            return True
         bound = (getattr(self._manager, "_settle_read_bounds", None) or {}).get(agent_id)
         try:
             if dispatch and bound is not None:
@@ -546,6 +553,14 @@ class _TaskqBridgeMixin(ManagerComponent):
             pass
         if task.done() and pending is not None and pending.get(agent_id) is task:
             pending.pop(agent_id, None)
+        return task.done()
+
+    async def settled_within_bound(self, agent_ids: Collection[str]) -> int:
+        """How many of *agent_ids*, rows a stop left settling, settle within the
+        dispatcher's bounded wait (:meth:`await_pending_defer` with *dispatch*).
+        A row past the bound is published only by its own gated report."""
+        waits = (self.await_pending_defer(a, dispatch=True) for a in agent_ids)
+        return sum(await _asyncio.gather(*waits))
 
     def register_refused(self, info: SubagentInfo) -> None:
         """Register *info* as its run's terminal record once the row's settle has landed.
