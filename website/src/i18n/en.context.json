@@ -1101,7 +1101,7 @@
     "pages.membersPage.on_its_own": "Section header on a Bot's Schedules tab, over what wakes the Bot WITHOUT a schedule the user set (its patrol over tasks it handed out). 'Its' refers to the Bot; keep it short, title-like.",
     "pages.membersPage.your_schedules": "Section header over the list of schedules the user set for this Bot, shown under the 'On its own' header. 'Your' is the user.",
     "pages.membersPage.patrol_name": "Row title: the Bot is keeping watch over the tasks it handed out to helpers. 'Its' refers to the Bot.",
-    "pages.membersPage.patrol_wakes": "Second line of that row: the Bot wakes when one of its tasks reports back, and otherwise at most every {{interval}} (a short duration like '15m').",
+    "pages.membersPage.patrol_wakes": "Second line of that row: the Bot wakes when one of its tasks reports back, and otherwise at most every {{interval}} (a duration in unit words, like '15 min' or '1 hr 30 min').",
     "pages.membersPage.patrol_pause": "Verb on a button: pause the Bot's watch over its tasks. Not the noun.",
     "pages.membersPage.patrol_resume": "Verb on a button: resume a paused watch. Not the noun.",
     "pages.membersPage.patrol_stopped_runtime": "One-phrase reason the watch stopped: it ran up to its time budget of {{limit}} (a short duration like '7d').",

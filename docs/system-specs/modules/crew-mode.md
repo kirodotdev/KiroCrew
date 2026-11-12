@@ -2556,8 +2556,9 @@ row), the tab's **On its own** header holds one more row after the Heartbeat row
 **Watching its tasks** (the Heartbeat keeps the first row, decided 2026-10-22);
 with no such loop the Heartbeat row alone sits under that header. The row is in the
 schedule row's grammar: the state pill reads **Running** or **Paused**; line two
-says what wakes it ("Wakes when a task reports back, or every 15m", the
-loop's interval); line three is the facts a person acts on -- last check (or
+says what wakes it ("Wakes when a task reports back, or every 15 min", the
+loop's interval in short unit words, so a translation reads `15 分ごと`, never
+`15mごと`); line three is the facts a person acts on -- last check (or
 "Has not checked yet"), "Next in" only while the next due time is still
 ahead (a late loop promises nothing), and the open-item count from the masked
 crew-board read (`GET /api/crew-board`, omitted while unread or when the slot
