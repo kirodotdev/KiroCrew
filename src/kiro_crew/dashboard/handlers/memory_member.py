@@ -10,6 +10,7 @@ from typing import Any, Callable
 from aiohttp import web
 
 from kiro_crew._sqlite_compat import sqlite3
+from kiro_crew.embeddings import enter_work_phase
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.memory_recall import bound_recall_payload, recall_json, recall_terms
 from kiro_crew.metrics.feature_usage import recall_payload_hit, record_memory_recalled
@@ -206,6 +207,7 @@ async def api_memory_recall(request: web.Request) -> web.Response:
     query = request.query.get("q", "").strip()
     if not query or len(query) > MAX_RECALL_QUERY:
         return _error("A query of 1–2000 characters is required.", "invalid_memory_query")
+    enter_work_phase("store_open")
     try:
         vector_unavailable = False
         try:
@@ -244,6 +246,7 @@ async def api_memory_recall(request: web.Request) -> web.Response:
         # discarded -- and a retried recall would leave two rows for one tool call.
         decision_pending: list = []
         session = request.headers.get("X-Session-Key", "")
+        enter_work_phase("admission")
         result = (
             await run_in_embed_pool(
                 tier.recall,
@@ -259,6 +262,7 @@ async def api_memory_recall(request: web.Request) -> web.Response:
         if vector_unavailable:
             result["vector_status"] = "unavailable"
         if markdown is not None and markdown._memory_version == 1:
+            enter_work_phase("notebook")
             rows = []
             index_count = await asyncio.to_thread(markdown.index_row_count)
             if not index_count:
@@ -328,6 +332,7 @@ async def api_memory_recall(request: web.Request) -> web.Response:
             result["retrieval"] = retrieval
     except (ValueError, OSError, sqlite3.Error):
         return _store_unavailable(name)
+    enter_work_phase("respond")
     # Bounded BEFORE the commit, not inside the serializer, because bounding is the last
     # thing that changes what the caller receives. `bound_recall_payload` clips the
     # largest text and then drops whole rows off the tail to hold the transport budget,

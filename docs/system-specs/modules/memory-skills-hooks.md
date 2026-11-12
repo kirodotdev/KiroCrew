@@ -2378,7 +2378,13 @@ This change does not add process isolation or guarantee prompt progress when a
 prompt itself requires the same wedged native model. The registered
 `api_memory_recall` handler applies `memory_recall_deadline` before authorization,
 cold store opening, admission and retrieval; expiry returns HTTP 504 with
-`memory_recall_timeout` without changing caller-authority checks.
+`memory_recall_timeout` without changing caller-authority checks. The deadline's
+owner seeds the recall's `EmbeddingWork` with a first step, `authorize`, and the
+recall records each step it enters after that (`store_open`, `admission`, `search`,
+`embed`, `decision`, `notebook`, `respond`); an acquire of the store lock that has
+to wait records `store_lock` for the wait and then resumes the step it interrupted.
+On expiry the owner logs one WARNING naming the step the recall was in and the
+seconds spent in each. Work no owner seeded records nothing.
 `get_context_preview()` uses the same result for V2 and keeps V1's response.
 The `member_v2` harness report also carries the V2 classifier's admission confusion
 per mode on the same measured pair cosines, separately from its ranking and
