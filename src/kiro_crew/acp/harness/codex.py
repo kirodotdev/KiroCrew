@@ -165,6 +165,7 @@ from kiro_crew.acp.types import (
     METHOD_SESSION_CLOSE,
     METHOD_SESSION_UPDATE,
 )
+from kiro_crew.agent_sdk.codex_transcripts import delete_codex_session_files
 from kiro_crew.providers.mirrors.codex import drop_unadvertised_transports
 from kiro_crew.sandbox import detect_backend, wrap_argv, wrap_argv_async
 
@@ -993,7 +994,11 @@ class CodexHarness(MembershipHarness):
         Evict, not delete: the thread record survives under ``CODEX_HOME``, and
         ``session/load`` on the closed id replays the conversation, also from a
         restarted adapter. ``ACP_BACKENDS_SESSION_SHARING`` membership rests on
-        this. ``session/delete`` would ARCHIVE the thread and make later loads fail.
+        this. ``session/delete`` would ARCHIVE the thread and make later loads fail,
+        and the archive still keeps the rollout on disk under ``archived_sessions/``.
+        So Crew deletes a disposable session's rollout files itself, after the
+        teardown: ``delete_disposable_record`` names ``agent_sdk.codex_transcripts``,
+        which reads ``CODEX_HOME`` from the runtime's ``extra_env`` over the gateway's.
 
         Must be a REQUEST (``notification=False``): sent as a notification the
         adapter ignores it silently and every session leaks. Bounded by
@@ -1001,7 +1006,11 @@ class CodexHarness(MembershipHarness):
         ``test_codex_session_mcp.py::test_real_codex_acp_session_close_evicts``
         repeats the measurement against each installed adapter.
         """
-        return TeardownPolicy(method=METHOD_SESSION_CLOSE, notification=False)
+        return TeardownPolicy(
+            method=METHOD_SESSION_CLOSE,
+            notification=False,
+            delete_disposable_record=delete_codex_session_files,
+        )
 
     # ── Seam 9: recycle ──
 

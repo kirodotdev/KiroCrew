@@ -372,8 +372,17 @@ def capture_cleanup_identity(
     # acquisition. Every later step can fail and tombstone the run, so
     # delaying this until the state write leaves provider files unidentified.
     try:
+        from kiro_crew.agent_sdk.codex_transcripts import (
+            is_codex_provider_label,
+            recorded_codex_home,
+        )
+
         cleanup_session_id = str(client.session_id or "") if hasattr(client, "session_id") else ""
         cleanup_provider = self._manager._provider_label_of(client)
+        # The prune and spawn_release have no session, so a Codex run records its store now.
+        cleanup_codex_home = (
+            recorded_codex_home(client) if is_codex_provider_label(cleanup_provider) else ""
+        )
         # Continuations use this record to recover their project on every
         # backend, even when continuing a follow-up after gateway restart.
         provider_cwd = getattr(client, "cwd", "")
@@ -386,6 +395,7 @@ def capture_cleanup_identity(
         setattr(info, "_session_id", cleanup_session_id)
         setattr(info, "_session_provider", cleanup_provider)
         setattr(info, "_session_cwd", cleanup_cwd)
+        setattr(info, "_session_codex_home", cleanup_codex_home)
         self._publish_identity(
             info.id,
             session_id=cleanup_session_id,
@@ -393,6 +403,7 @@ def capture_cleanup_identity(
             cwd=cleanup_cwd,
             keep=info.keep,
             conversation_key=session_key if info.keep else "",
+            codex_home=cleanup_codex_home,
         )
     except Exception:
         _sa.logger.debug("Failed to capture live cleanup identity for %s", info.id, exc_info=True)
@@ -548,6 +559,7 @@ async def persist_spawn_records(
             cwd=str(getattr(info, "_session_cwd", "")),
             keep=info.keep,
             conversation_key=session_key if info.keep else "",
+            codex_home=str(getattr(info, "_session_codex_home", "")),
         )
     except Exception:
         _sa.logger.debug("Failed to persist cleanup identity for %s", info.id, exc_info=True)

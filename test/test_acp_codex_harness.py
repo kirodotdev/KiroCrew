@@ -498,7 +498,13 @@ class TestTeardown:
         A ``session/close`` sent as a notification is ignored, so ``notification=False``
         is the load-bearing half.
         """
-        assert adapter.teardown == TeardownPolicy(method=METHOD_SESSION_CLOSE, notification=False)
+        from kiro_crew.agent_sdk.codex_transcripts import delete_codex_session_files
+
+        assert adapter.teardown == TeardownPolicy(
+            method=METHOD_SESSION_CLOSE,
+            notification=False,
+            delete_disposable_record=delete_codex_session_files,
+        )
 
     def test_teardown_evicts_one_session_and_leaves_the_other_running(self, adapter):
         """The property the eviction set is built on, against the peer's model of
@@ -971,7 +977,13 @@ class TestOneFactReadThreeWays:
         assert _build_provider(ACP_BACKEND_CODEX).is_session_sharing_eligible is True
         # Membership does NOT soften the teardown: the verb is the disposing one.
         assert ACP_BACKEND_CODEX in ACP_BACKENDS_SESSION_EVICTION
-        assert adapter.teardown == TeardownPolicy(method=METHOD_SESSION_CLOSE, notification=False)
+        from kiro_crew.agent_sdk.codex_transcripts import delete_codex_session_files
+
+        assert adapter.teardown == TeardownPolicy(
+            method=METHOD_SESSION_CLOSE,
+            notification=False,
+            delete_disposable_record=delete_codex_session_files,
+        )
         # And the restore is resolved from the sessionId alone, with no Crew-side
         # transcript -- the property that makes a closed session continuable.
         assert ACP_BACKEND_CODEX in ACP_BACKENDS_HARNESS_OWNED_SESSIONS

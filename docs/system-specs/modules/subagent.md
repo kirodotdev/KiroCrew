@@ -4654,12 +4654,19 @@ the hint the parent re-spawns from scratch and pays for the same tool calls twic
   retention and owner from the latest valid durable cleanup generation instead of
   treating the record as non-retained. Provider cleanup runs before lock release;
   folder and protected-record removal follow only when every trusted generation
-  reports success. kiro-cli and Claude Code are the supported providers; a Claude
+  reports success. kiro-cli, Claude Code and Codex are the supported providers; a Claude
   run's cleanup deletes Claude Code's own store at the generation's recorded cwd
   (`agent_sdk/claude_transcripts.py`), and a missing cwd counts as not done. The same
   route answers `spawn_release`, whose disk half reads that cwd from the trusted
   cleanup record, so a Claude release answers `released` rather than
-  `not_disposed`. Unsupported providers and transient deletion failures preserve
+  `not_disposed`. A Codex run's cleanup deletes every rollout file for the thread
+  under the `CODEX_HOME` its child ran with (`agent_sdk/codex_transcripts.py`). A
+  run on the shared runtime takes its parent's `extra_env`, which can set that
+  variable, so the generation records the resolved root as `codex_home` at spawn and
+  the prune and `spawn_release` delete under it. A Codex generation without
+  `codex_home`, a refused delete or a failed delete answers not done, and a release
+  then answers `not_disposed`. Unsupported providers and transient deletion
+  failures preserve
   both retry surfaces for later sweeps, capped at 90 days so a permanently missing
   cleanup route cannot accumulate private run folders forever. A sweep does not
   evaluate such a run again while nothing about it changed: for a run that is its

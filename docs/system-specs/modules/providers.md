@@ -1689,9 +1689,11 @@ closed id succeeds and the session then answers a question about the first turn,
 and the same load succeeds from a RESTARTED adapter process over the same
 `CODEX_HOME` — which is the shape a continuation actually takes, since the runtime
 that served the subagent is usually gone. `session/delete` archives the thread and
-a load afterwards refuses, so release has a verb that genuinely disposes and
-`close` is not it. `ACP_BACKENDS_HARNESS_OWNED_SESSIONS` is what carries the
-restore: codex resolves a load from the sessionId alone.
+a load afterwards refuses, but on codex-acp 2.3.0 the archive only moves the
+rollout to `CODEX_HOME/archived_sessions/`, so the text stays on disk. Crew does
+not send `session/delete`. A release or prune deletes the rollout files itself
+(`agent_sdk/codex_transcripts.py`). `ACP_BACKENDS_HARNESS_OWNED_SESSIONS` is
+what carries the restore: codex resolves a load from the sessionId alone.
 
 KAS answers no, and that is the whole of its exclusion: `_kiro/session/delete`
 REMOVES the persisted record, so there is nothing for a load to restore and a
