@@ -55,7 +55,7 @@ export const selectSendAccepted = (state: RootState, slot: string, sendId: strin
   selectSendConfirmed(state, slot, sendId) || selectSlotMessages(state, slot).some(m =>
     m.role === 'queued' && m.meta?.sendId === sendId && !m.meta?.optimistic)
 export const selectSlotStreamState = (state: RootState, slot: string): SlotState =>
-  slot === state.chat.activeSlot ? state.chat.slotState : (state.chat.slotRun[slot]?.state ?? 'idle')
+  slot === state.chat.activeSlot ? state.chat.slotState : (state.chat.slotRun?.[slot]?.state ?? 'idle')
 /** The turn-start count for `slot` (see `ChatState.runEpoch`): the identity a
  *  settlement captures so a late answer about one turn cannot idle the next. */
 export const selectSlotRunEpoch = (state: RootState, slot: string): number =>
