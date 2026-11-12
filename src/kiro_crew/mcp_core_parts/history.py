@@ -184,13 +184,16 @@ def _extract_history_snippet(messages: list[dict], needle: str) -> str:
     # folds (ß→ss), leaving a selected-but-unwrapped snippet with no
     # <<<...>>>.
     span = _casefold_match_span(seg, needle_cf)
+    lead = "…" if start > 0 else ""
     if span:
         s, e = span
         seg = seg[:s] + "<<<" + seg[s:e] + ">>>" + seg[e:]
-    seg = ("…" if start > 0 else "") + seg + ("…" if end < len(content) else "")
+    seg = lead + seg + ("…" if end < len(content) else "")
     result = seg[:_SNIPPET_MAX_LEN]
     # If the hard cap sliced through the match delimiters (possible with a
     # long query), re-close so the consumer never sees a dangling "<<<".
-    if "<<<" in result and ">>>" not in result:
+    # Judged from where the markers were inserted, not by searching the
+    # text: the transcript may hold its own "<<<" or ">>>".
+    if span and len(lead) + s + 3 <= _SNIPPET_MAX_LEN < len(lead) + e + 6:
         result = result[: _SNIPPET_MAX_LEN - 3] + ">>>"
     return result
