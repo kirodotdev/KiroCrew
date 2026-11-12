@@ -2513,14 +2513,19 @@ consent flow:
   `beacon.PRIVACY_NOTICE_VERSION` are both 2 and a backend test pins them
   together. An existing user whose stored version is lower sees the chapter once
   at the next dashboard load, decided once per page load, and only while local
-  recording is on; a heartbeat-only or already-off user does not see it. When the
-  status cannot be read, the chapter opens in its neutral form ("What can be
-  collected", no on/off claim, the read error on screen, "Continue without
-  changes" instead of Keep on), and that button records no version, so an
-  existing user whose status read keeps failing sees the neutral chapter again
-  at each dashboard load until a read succeeds. That repeat is deliberate: a
-  screen that could not say what is on has not told the user that recording is
-  on.
+  recording is on; a heartbeat-only or already-off user does not see it. Only a
+  status read that answered opens the chapter for an existing user. A read that
+  failed opens nothing and stores nothing, so the next dashboard load decides
+  again: a failed read says nothing about what is on, and the first load after
+  the dashboard sign-in runs out fails this way, so opening the chapter on it
+  would put the chapter on screen once a day. `useUsageDataState` reads a
+  status route once more when the gateway refused it for that reason (403 with
+  `X-Auth-Required`), after the sign-in renewal that the refusal started has
+  answered; a renewal that failed, a second refusal, or any other failure
+  leaves the read failed. On a first run, where the chapter is mandatory, a
+  failed read still opens it in its neutral form ("What can be collected", no
+  on/off claim, the read error on screen, "Continue without changes" instead
+  of Keep on), and that button records no version.
 - **The first heartbeat is withheld until that chapter is acknowledged.** The
   gateway starts the beacon thread at boot, before the dashboard has rendered, so
   an ungated fresh install would ping before the user could decline: an opt-out
