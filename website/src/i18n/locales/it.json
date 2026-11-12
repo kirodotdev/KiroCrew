@@ -19297,6 +19297,8 @@
         "update_check_error_version_unparseable": "Non è stato possibile confrontare i numeri di versione.",
         "update_check_managed_by_app": "Questa build si aggiorna tramite l'app, non tramite il gateway.",
         "update_check_managed_by_image": "Questo container si aggiorna scaricando un'immagine più recente.",
+        "update_check_image_available": "La versione {{version}} è disponibile come immagine container.",
+        "update_check_image_release_notes": "Note di rilascio",
         "update_error_install_unknown": "Si è verificato un errore durante l'installazione dell'aggiornamento.",
         "update_error_gateway_still_running": "Il gateway in background che {{productName}} ha avviato in precedenza sta ancora usando i file che questo aggiornamento sostituisce. Per installare l'aggiornamento, chiudi {{productName}}, esegui il comando qui sotto nel Terminale, quindi riapri {{productName}}. Il comando arresta solo quel gateway in background; le tue chat e impostazioni vengono conservate.",
         "update_error_integrity": "Il download non ha superato il controllo di integrità ed è stato scartato.",

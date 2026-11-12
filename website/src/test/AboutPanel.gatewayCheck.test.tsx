@@ -522,6 +522,45 @@ describe('AboutPanel gateway update check', () => {
     expect(screen.queryByTestId('check-failed')).toBeNull()
   })
 
+  it('a container names the newer pullable image and links its notes, with no Update button', async () => {
+    stubFetch({
+      check_status: 'deferred',
+      update_available: null,
+      error_code: null,
+      unavailable_reason: 'managed_by_image',
+      managed_by: 'container',
+      can_apply: false,
+      image_available_version: '0.12.2',
+      image_release_notes_url: 'https://github.com/kirodotdev/KiroCrew/releases/tag/v0.12.2',
+    })
+    mountWeb()
+    await pressCheck()
+
+    const note = await screen.findByTestId('container-image-available')
+    expect(note.textContent).toContain('0.12.2')
+    const link = within(note).getByRole('link', { name: /release notes/i })
+    expect(link.getAttribute('href')).toBe('https://github.com/kirodotdev/KiroCrew/releases/tag/v0.12.2')
+    // The action stays "pull a newer image"; nothing offers to apply.
+    expect((await screen.findByTestId('check-not-applicable')).textContent).toContain('newer image')
+    expect(screen.queryByRole('button', { name: /^Update(?! the gateway)/ })).toBeNull()
+  })
+
+  it('a container with no confirmed image keeps only today\'s line, and an off-site notes link is dropped', async () => {
+    stubFetch({
+      check_status: 'deferred',
+      update_available: null,
+      unavailable_reason: 'managed_by_image',
+      managed_by: 'container',
+      image_release_notes_url: 'https://evil.example/notes',
+    })
+    mountWeb()
+    await pressCheck()
+
+    await screen.findByTestId('check-not-applicable')
+    expect(screen.queryByTestId('container-image-available')).toBeNull()
+    expect(screen.queryByRole('link', { name: /release notes/i })).toBeNull()
+  })
+
   it('a git checkout still gets the Update button', async () => {
     stubFetch({
       check_status: 'succeeded',

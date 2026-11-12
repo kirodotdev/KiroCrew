@@ -18803,6 +18803,8 @@
         "update_check_error_version_unparseable": "संस्करण संख्याओं की तुलना नहीं कर सके।",
         "update_check_managed_by_app": "यह बिल्ड ऐप के ज़रिए अपडेट होता है, गेटवे के ज़रिए नहीं।",
         "update_check_managed_by_image": "यह कंटेनर नई इमेज खींचकर अपडेट होता है।",
+        "update_check_image_available": "संस्करण {{version}} कंटेनर इमेज के रूप में उपलब्ध है।",
+        "update_check_image_release_notes": "रिलीज़ नोट्स",
         "update_error_install_unknown": "अपडेट इंस्टॉल करते समय कुछ गड़बड़ हो गई।",
         "update_error_gateway_still_running": "{{productName}} ने पहले जो बैकग्राउंड गेटवे शुरू किया था, वह अब भी उन फ़ाइलों का इस्तेमाल कर रहा है जिन्हें यह अपडेट बदलता है। अपडेट इंस्टॉल करने के लिए {{productName}} बंद करो, टर्मिनल में नीचे दी गई कमांड चलाओ, फिर {{productName}} दोबारा खोलो। यह कमांड सिर्फ़ उसी बैकग्राउंड गेटवे को रोकती है; तुम्हारी चैट और सेटिंग्स बनी रहती हैं।",
         "update_error_integrity": "डाउनलोड अखंडता जाँच में विफल रहा और उसे रद्द कर दिया गया।",

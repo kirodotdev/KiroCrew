@@ -18309,6 +18309,8 @@
         "update_check_error_version_unparseable": "버전 번호를 비교할 수 없습니다.",
         "update_check_managed_by_app": "이 빌드는 게이트웨이가 아니라 앱을 통해 업데이트합니다.",
         "update_check_managed_by_image": "이 컨테이너는 새 이미지를 받아 업데이트합니다.",
+        "update_check_image_available": "버전 {{version}} 컨테이너 이미지를 사용할 수 있습니다.",
+        "update_check_image_release_notes": "릴리스 노트",
         "update_error_install_unknown": "업데이트를 설치하는 중 문제가 발생했습니다.",
         "update_error_gateway_still_running": "{{productName}}이(가) 이전에 시작한 백그라운드 게이트웨이가 이 업데이트로 교체되는 파일을 아직 사용하고 있습니다. 업데이트를 설치하려면 {{productName}}을(를) 종료하고 터미널에서 아래 명령을 실행한 후 {{productName}}을(를) 다시 여세요. 이 명령은 해당 백그라운드 게이트웨이만 중지하며, 채팅과 설정은 그대로 유지됩니다.",
         "update_error_integrity": "다운로드가 무결성 검사를 통과하지 못해 폐기되었습니다.",
