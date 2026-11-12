@@ -177,6 +177,17 @@ class TestSearchChatHistoryHandler:
         out = mcp_core._call_tool_inner("get_chat_session", {"session_key": "dashboard_chat-1"})
         assert "redis.timeout" in out
 
+    def test_get_chat_session_shows_a_blank_message_as_blank(self, tmp_path, monkeypatch):
+        # A null or missing content is an empty message, never the text "None".
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        cl = _seed_sessions(tmp_path)
+        path = cl._path("dashboard_chat-1")
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write('{"role": "assistant", "content": null}\n{"role": "user"}\n')
+        out = mcp_core._call_tool_inner("get_chat_session", {"session_key": "dashboard_chat-1"})
+        assert "redis.timeout" in out
+        assert "None" not in out
+
     def test_get_chat_session_reads_recall_roles(self, tmp_path, monkeypatch):
         """An inject-role breadcrumb is readable here, and a system-role one is not.
 
