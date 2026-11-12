@@ -84,7 +84,7 @@ describe('hi tone (style/hi.md §4)', () => {
     // Baselined: the existing catalog uses आप extensively. Each block migrated
     // to तुम lowers this ceiling by the strings it converts, so the count can
     // only go down.
-    expect(bad.length, report(bad)).toBeLessThanOrEqual(117)
+    expect(bad.length, report(bad)).toBeLessThanOrEqual(113)
   })
 })
 
@@ -155,5 +155,14 @@ describe('hi register (style/hi.md §4)', () => {
       .map(([key, value]) => `${key}: ${JSON.stringify(value.slice(0, 60))}`)
     expect(bad, `${report(bad)}\n\nThere is no ceiling to raise for these — the value is yours.`)
       .toEqual([])
+  })
+
+  // The Kiro CLI setup screen mixed both registers side by side (#34956); its block is all तुम.
+  it('addresses the reader as तुम throughout components.kiroPrerequisiteGate', () => {
+    const bad = Object.entries(hi)
+      .filter(([key]) => key.startsWith('components.kiroPrerequisiteGate.'))
+      .filter(([, value]) => hasFormalPronoun(value) || FORMAL_IMPERATIVE.test(value))
+      .map(([key, value]) => `${key}: ${JSON.stringify(value.slice(0, 60))}`)
+    expect(bad, report(bad)).toEqual([])
   })
 })
