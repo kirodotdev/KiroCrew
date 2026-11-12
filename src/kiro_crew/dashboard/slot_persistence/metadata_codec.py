@@ -781,6 +781,15 @@ def _read_memory_mode(r: _Read) -> None:
         r.state._restricted_keys.add(restricted)
     elif isinstance(r.purpose, Resume):
         r.state._restricted_keys.discard(restricted)
+    link = r.slot.linked_session_key if isinstance(r.purpose, Resume) else ""
+    admitted = getattr(getattr(r.state, "context_builder", None), "_session_memory_modes", None)
+    if mode != "persistent" and link.startswith("taskrunner:") and isinstance(admitted, dict):
+        # No ``dashboard:`` mark names the review session ``slot_args`` bound the tab
+        # to, so its mode is admitted for that key, as the runner admits its own.
+        # Function-local: the chat_persistence facade's import closure stays unchanged.
+        from kiro_crew.messaging.privacy_mode import strictest
+
+        admitted[link] = strictest((mode, admitted.get(link, mode))) or mode
 
 
 def _restore_fork_lineage(slot: _ChatSlot, meta: dict) -> None:
@@ -1333,10 +1342,11 @@ FIELDS: tuple[Field, ...] = (
         merge=_truthy(lambda s: s.linked_session_key),
         read=_read_linked_session_key,
         why=(
-            "RESUME binds a cron transcript's own key at construction (``slot_args``) "
-            "and restores the rest in the resume core from the fresher post-await "
-            "snapshot, beside the crew-log-class record a bare table read cannot "
-            "make (a hooked revive and a channel History resume both land there)"
+            "RESUME binds a cron or task-runner transcript's own key at construction "
+            "(``slot_args``) and restores the rest in the resume core from the "
+            "fresher post-await snapshot, beside the crew-log-class record a bare "
+            "table read cannot make (a hooked revive and a channel History resume "
+            "both land there)"
         ),
     ),
     # Durable provenance: a name is not evidence, so this flag is what tells a
@@ -1544,11 +1554,16 @@ def encode(slot: _ChatSlot, *, folds: SaveFolds, merge: bool = False) -> dict:
     return out
 
 
-def own_cron_link(meta: Mapping[str, Any], history_key: str) -> str:
-    """The line's ``cron:`` link when it names *history_key*'s own file, else ``""``."""
+def _own_link(meta: Mapping[str, Any], history_key: str, prefix: str | tuple[str, ...]) -> str:
+    """The line's *prefix* link when it names *history_key*'s own file, else ``""``."""
     link = str(meta.get("linked_session_key") or "")
     same_file = transcript_stem(link) == transcript_stem(history_key)
-    return link if link.startswith("cron:") and same_file else ""
+    return link if link.startswith(prefix) and same_file else ""
+
+
+def own_cron_link(meta: Mapping[str, Any], history_key: str) -> str:
+    """The line's ``cron:`` link when it names *history_key*'s own file, else ``""``."""
+    return _own_link(meta, history_key, "cron:")
 
 
 def slot_args(meta: dict[str, Any], purpose: Purpose) -> dict[str, Any]:
@@ -1569,8 +1584,10 @@ def slot_args(meta: dict[str, Any], purpose: Purpose) -> dict[str, Any]:
         # Resuming a channel transcript adopts that conversation, so the tab is
         # channel-origin even when the session map cannot name its session.
         args["channel_origin"] = is_channel_session_key(purpose.history_key)
-        # Unbound, a cron transcript's slot would save to a second ``dashboard:`` file.
-        if link := own_cron_link(meta, purpose.history_key):
+        # Unbound, the slot of a cron transcript, or of a task-runner review
+        # transcript the dashboard user reopens, saves to a second ``dashboard:`` file.
+        kinds = ("cron:",) if purpose.app else ("cron:", "taskrunner:")
+        if link := _own_link(meta, purpose.history_key, kinds):
             args["linked_session_key"] = link
     else:
         args["app"] = meta.get("app", "")

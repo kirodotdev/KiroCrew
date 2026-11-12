@@ -513,6 +513,19 @@ def test_slot_args_take_each_purposes_construction_inputs():
     assert codec.slot_args({}, codec.Resume(history_key="dashboard:x"))["channel_origin"] is False
 
 
+def test_resume_binds_a_review_transcripts_own_link_for_the_dashboard_user_only():
+    """An app's resume stays unbound: its stem-named tab's own session is ``dashboard:``.
+
+    Bound, the ownership rule would read the tab as running on a foreign session and
+    refuse the app every route on the tab it just reopened.
+    """
+    meta = {"linked_session_key": "taskrunner:t1:chat:abc"}
+    user = codec.slot_args(meta, codec.Resume(history_key="taskrunner_t1_chat_abc"))
+    app = codec.slot_args(meta, codec.Resume(app="a", history_key="taskrunner_t1_chat_abc"))
+    assert user["linked_session_key"] == "taskrunner:t1:chat:abc"
+    assert "linked_session_key" not in app
+
+
 @pytest.mark.parametrize("purpose", sorted(codec.PURPOSES))
 def test_a_null_origin_reads_as_no_origin(purpose):
     """A JSON ``null`` origin is no origin, never the string ``"None"``."""

@@ -1594,11 +1594,11 @@ async def _resume_slot_from_history_noted(
             # the way the restart path restores it, and the hook's app check is a
             # real read rather than a constant. From the fresh re-read, as below.
             slot._app = str(post_read_meta["app"])
-        # The channel link: construction binds only a cron transcript's own
-        # ``linked_session_key`` (``slot_args``), so the resume core hydrates the
-        # rest itself (the codec table leaves it to RESUME's core because the
-        # restriction class must be recorded beside the assignment, which a bare
-        # table read cannot do).
+        # The channel link: construction binds only a cron or task-runner
+        # transcript's own ``linked_session_key`` (``slot_args``), so the resume
+        # core hydrates the rest itself (the codec table leaves it to RESUME's
+        # core because the restriction class must be recorded beside the
+        # assignment, which a bare table read cannot do).
         # Without it a channel conversation resumed from the History tab comes back
         # unbound, and its next full save clears the persisted key. Restored
         # from the FRESH re-read (``post_read_meta``), not the pre-transcript
