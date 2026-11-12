@@ -441,9 +441,15 @@ listener and PKCE verifier live in it. The watcher marks the row `granted` once 
 the server's `kiro.mcp.<hash>.tokens` entry from this sign-in: its appearing is the proof when
 none was there as the sign-in began, and with stale tokens already there the session must also
 report the server connected. The vault key is the MOUNTED entry's own `url` (a trailing slash
-makes a distinct key), not the registry url the start was asked with. The engine ends a sign-in with its connect attempt (60 s by
-default), and with it the listener, so a sign-in that ends without saved tokens is `expired`
-rather than left showing a URL nothing can redeem; the TTL still bounds the rest. That expiry
+makes a distinct key), not the registry url the start was asked with. The engine ends a sign-in with its connect attempt (the server's
+`timeout`, 300 s for a remote entry with none; see [acp-client](acp-client.md#kas-mcp-oauth-sign-in)),
+and with it the listener. It answers the reset at most 60 s in, while the attempt may still
+run, and the consent URL's own frame keeps the server `awaiting_auth`, so the watcher reads an
+answered sign-in as ended only once the report has the server `failed` (a timed-out or denied
+attempt). Such a sign-in without saved tokens is `expired` rather than left showing a URL
+nothing can redeem. An attempt that ends with no `failed` report (stale tokens and a 401 after
+consent, or a reset the engine skips) waits for the TTL, which bounds the rest; a new Connect
+replaces the row. That expiry
 carries no reason, so the card reads it as the sign-in window running out ("Sign-in timed
 out"), as for the kiro-cli mint. How the start ends (a URL published, granted at once, refused
 or failed) is audited on the mint's own SEL line with `route=kas`; the watcher's later

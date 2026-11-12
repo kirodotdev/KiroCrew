@@ -15,7 +15,7 @@ here closes one of those gaps from the Crew side; KAS is not changed.
   ``mcp.json`` servers the agent does not declare are excluded unless the agent
   opted in, the glob ``disabledTools`` of the ones it reaches are carried as
   ``@server/<pattern>``, and every declared server without a ``timeout`` gets
-  kiro-cli's 120 s default instead of KAS's 60 s.
+  kiro-cli's 120 s default instead of KAS's 60 s, or 300 s for a remote one.
 
 "Opted in" means the spec states the flag ``true``, under either spelling. The
 wire never carries that ``true`` (:func:`kiro_crew.acp.kas_agents.to_client_custom_agent`),
@@ -58,6 +58,10 @@ logger = logging.getLogger(__name__)
 KIRO_CLI_MCP_TIMEOUT_MS = 120_000
 #: KAS clamps a larger ``timeout`` to this (``MAX_MCP_TIMEOUT_MS``).
 KAS_MAX_MCP_TIMEOUT_MS = 600_000
+#: A remote server's floor when none is set: KAS's own sign-in wait
+#: (``LAZY_AUTH_TIMEOUT_MS``). KAS closes an OAuth sign-in's callback listener
+#: when the server's ``timeout`` runs out, so this is the user's time to consent.
+KAS_REMOTE_MCP_TIMEOUT_MS = 300_000
 
 #: KAS's always-started servers (``ASBX_KIRO_MANDATORY_MCPS``). KAS starts them
 #: whatever the agent says, so an exclusion would only hide their tools.
@@ -139,12 +143,18 @@ def _default_timeout_ms(work_dir: str | Path | None) -> int:
 
 
 def _with_timeout(entry: Any, default_ms: int) -> Any:
-    """*entry* with ``timeout`` set: its ``timeoutMs`` alias, else *default_ms*."""
+    """*entry* with ``timeout`` set: its ``timeoutMs`` alias, else *default_ms*.
+
+    For a server the engine reaches by url, *default_ms* is at least
+    :data:`KAS_REMOTE_MCP_TIMEOUT_MS`.
+    """
     if not isinstance(entry, dict):
         return entry
     timeout = entry.get("timeout")
     if isinstance(timeout, int) and not isinstance(timeout, bool):
         return entry
+    if entry.get("url") and not entry.get("command"):
+        default_ms = max(default_ms, KAS_REMOTE_MCP_TIMEOUT_MS)
     out = {k: v for k, v in entry.items() if k != "timeoutMs"}
     alias = entry.get("timeoutMs")
     valid_alias = isinstance(alias, int) and not isinstance(alias, bool) and alias >= 0
@@ -232,7 +242,8 @@ def finish_settings_mcp(agent: dict[str, Any]) -> dict[str, Any]:
     """*agent* finished against its stamp, for the wire envelope.
 
     Pure. Every server left in the block without a ``timeout`` gets the stamped
-    default (after the hoist, so a managed server is not kept off the array).
+    default, at least 300 s for a remote one (after the hoist, so a managed
+    server is not kept off the array).
     A mcp.json server the agent does not declare (:func:`excluded_whole`) is
     excluded whole unless the agent opted in: kiro-cli never loads it, and KAS
     would start it for ``tools: ["*"]``. A server KAS still starts has its

@@ -138,7 +138,13 @@ class _Engine:
         self.signing_in = False
 
     def give_up(self) -> None:
-        """The engine's connect attempt timed out with no consent."""
+        """The engine's connect attempt timed out with no consent: it reports ``failed``."""
+        assert self.handle is not None
+        self.handle.place("failed")
+        self.signing_in = False
+
+    def answer_reset(self) -> None:
+        """The engine answers the reset at its 60 s ceiling while the connect still runs."""
         self.signing_in = False
 
     async def kill(self, **_kw: Any) -> None:
@@ -310,6 +316,30 @@ async def test_a_sign_in_the_engine_ends_without_consent_expires_the_row():
     # out ("Sign-in timed out"); the URL it showed was real.
     assert row == {"state": "expired", "token": row["token"]}
     assert _saved_tokens() is None
+
+
+@pytest.mark.asyncio
+async def test_a_reset_answered_before_consent_keeps_the_sign_in_open():
+    # The engine answers the reset 60 s in while its callback listener runs on to
+    # the server's timeout; the consent URL keeps the server ``awaiting_auth``.
+    await _sign_in()
+    await _until_state("waiting")
+    [engine] = _Engine.instances
+    engine.answer_reset()
+    polled = engine.sign_in_checks
+    await async_wait_until(
+        lambda: engine.sign_in_checks >= polled + 5 or _row().get("state") != "waiting",
+        describe=_row,
+    )
+
+    assert _row()["state"] == "waiting", _row()
+    assert engine.kills == 0 and engine.handle is not None and not engine.handle.destroyed
+
+    await _consent()
+    granted = await _until_state("granted", "expired", "failed")
+
+    assert granted["state"] == "granted"
+    assert _saved_tokens() == _TOKENS
 
 
 @pytest.mark.asyncio
