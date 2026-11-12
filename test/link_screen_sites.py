@@ -32,6 +32,7 @@ DECLARED_SITES = frozenset(
         ("acp/prompt_blocks.py", "build_prompt_blocks"),
         ("acp/skill_projection_parts/alias_reclaim.py", "_sweep_orphan_alias_locks"),
         ("acp/skill_projection_parts/alias_reclaim.py", "_sweep_orphan_sidecars_in"),
+        ("acp/skill_projection_parts/inheritance_overlay.py", "_settings_with_mtime.read_once"),
         ("acp/skill_projection_parts/side_files.py", "_ensure_real_directory"),
         ("acp/skill_projection_parts/side_files.py", "_probe_orphan_projection_holder"),
         ("acp/skill_projection_parts/side_files.py", "_probe_projection_lease"),

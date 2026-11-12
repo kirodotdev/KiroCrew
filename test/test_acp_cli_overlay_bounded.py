@@ -5,7 +5,8 @@ constructor runs on the gateway event loop, and every overlay writer reads and
 rewrites the whole file under the shared settings lock, so an unbounded file blocked
 every session and grew the process by a multiple of its size. A file past the ceiling
 is now left unread and unchanged: no key of Kiro Crew's lands in it, and the writers
-say so instead of replacing the person's settings.
+say so instead of replacing the person's settings. The provider never reads the
+file back into its effort map, so nothing here starts a session from it.
 """
 
 from __future__ import annotations
@@ -21,16 +22,18 @@ from unittest.mock import patch
 import pytest
 
 from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
+from kiro_crew.providers import acp as acp_provider
 from kiro_crew.providers import acp_cli_overlay
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.acp_cli_overlay import (
     _CLI_JSON_MAX_BYTES,
     _clear_cli_overlay_effort,
     _OverlayTooLarge,
-    _read_cli_overlay,
+    _read_cli_overlay_document,
     _write_cli_overlay,
     _write_tool_search_overlay,
 )
+from kiro_crew.workspace_cli_settings import locked_workspace_cli_settings
 
 MODEL = "claude-opus-4.7"
 HUGE = 256 * 1024 * 1024
@@ -58,6 +61,22 @@ def _padded(work_dir: Path, size: int, document: dict) -> Path:
     return path
 
 
+def _read_document(work_dir: Path) -> dict:
+    with locked_workspace_cli_settings(work_dir) as settings:
+        document, _mtime, _version = _read_cli_overlay_document(settings)
+    return document
+
+
+def _efforts(work_dir: Path) -> dict[str, str]:
+    defaults = _read_document(work_dir).get("chat.modelDefaults", {})
+    return {
+        model: effort
+        for model, config in defaults.items()
+        for key in ("output_config", "reasoning")
+        if isinstance(config.get(key), dict) and (effort := config[key].get("effort"))
+    }
+
+
 def _fingerprint(path: Path) -> tuple[int, int]:
     stat = path.stat()
     return stat.st_size, stat.st_mtime_ns
@@ -76,11 +95,12 @@ def test_the_ceiling_is_one_mebibyte() -> None:
 
 
 class TestReaderIsBounded:
-    def test_a_file_past_the_ceiling_reads_as_empty_without_being_read(self, tmp_path):
+    def test_a_file_past_the_ceiling_is_refused_without_being_read(self, tmp_path):
         _sparse(tmp_path, HUGE)
         tracemalloc.start()
         try:
-            assert _read_cli_overlay(tmp_path) == {}
+            with pytest.raises(_OverlayTooLarge):
+                _read_document(tmp_path)
             _current, peak = tracemalloc.get_traced_memory()
         finally:
             tracemalloc.stop()
@@ -90,19 +110,20 @@ class TestReaderIsBounded:
     def test_a_file_exactly_at_the_ceiling_is_still_read(self, tmp_path):
         doc = {"chat.modelDefaults": {MODEL: {"output_config": {"effort": "max"}}}}
         _padded(tmp_path, _CLI_JSON_MAX_BYTES, doc)
-        assert _read_cli_overlay(tmp_path) == {MODEL: "max"}
+        assert _efforts(tmp_path) == {MODEL: "max"}
 
     def test_one_byte_past_the_ceiling_is_refused(self, tmp_path):
         doc = {"chat.modelDefaults": {MODEL: {"output_config": {"effort": "max"}}}}
         _padded(tmp_path, _CLI_JSON_MAX_BYTES + 1, doc)
-        assert _read_cli_overlay(tmp_path) == {}
+        with pytest.raises(_OverlayTooLarge):
+            _read_document(tmp_path)
 
     def test_a_byte_order_mark_still_decodes(self, tmp_path):
         path = _overlay(tmp_path)
         path.parent.mkdir(parents=True)
         doc = {"chat.modelDefaults": {MODEL: {"reasoning": {"effort": "low"}}}}
         path.write_bytes(b"\xef\xbb\xbf" + json.dumps(doc).encode())
-        assert _read_cli_overlay(tmp_path) == {MODEL: "low"}
+        assert _efforts(tmp_path) == {MODEL: "low"}
 
 
 class TestWritersLeaveAnOversizedFileUnchanged:
@@ -187,13 +208,6 @@ class TestProviderLeavesAnOversizedFileAlone:
         provider._apply_tool_search_overlay()
         assert _fingerprint(path) == before
 
-    @pytest.mark.asyncio
-    async def test_recovery_seeds_nothing_from_an_oversized_file(self, tmp_path):
-        _sparse(tmp_path, HUGE)
-        provider = _provider(tmp_path)
-        await provider._recover_effort_overlay()
-        assert provider._effort_per_model == {}
-
 
 class TestConstructionOpensNoFile:
     @pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_KAS])
@@ -230,7 +244,7 @@ class TestConstructionOpensNoFile:
 
 class TestStartWritesOffTheLoop:
     @pytest.mark.asyncio
-    async def test_the_recovery_read_and_both_writes_run_in_worker_threads(self, tmp_path):
+    async def test_both_writes_run_in_worker_threads(self, tmp_path):
         provider = _provider(tmp_path, effort_per_model={MODEL: "max"}, tool_search=True)
         loop_thread = threading.get_ident()
         seen: dict[str, int] = {}
@@ -244,12 +258,7 @@ class TestStartWritesOffTheLoop:
 
         with (
             patch.object(
-                acp_cli_overlay,
-                "_read_cli_overlay",
-                _track("read", acp_cli_overlay._read_cli_overlay),
-            ),
-            patch.object(
-                acp_cli_overlay,
+                acp_provider,
                 "_write_cli_overlay",
                 _track("effort", acp_cli_overlay._write_cli_overlay),
             ),
@@ -265,7 +274,7 @@ class TestStartWritesOffTheLoop:
         ):
             await provider.start()
 
-        assert set(seen) == {"read", "effort", "search"}
+        assert set(seen) == {"effort", "search"}
         assert loop_thread not in seen.values()
         assert asyncio.get_running_loop() is not None
 

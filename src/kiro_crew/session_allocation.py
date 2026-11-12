@@ -185,6 +185,11 @@ class SessionRegistryState:
     #: Reservation tokens in flight when their key's cwd was retracted: the
     #: session each one registers stores no cwd. A token leaves with its reservation.
     cwd_retracted_reservations: set[object] = field(default_factory=set)
+    #: Per canonical key: the allocation task holding the pending explicit Default,
+    #: the event its waiters wait on, and that allocation's reservation token.
+    explicit_effort_default_reservations: dict[
+        str, tuple[asyncio.Task[Any], asyncio.Event, object]
+    ] = field(default_factory=dict)
     inbound_callback_reservations: set[object] = field(default_factory=set)
     ownership_generations: dict[str, int] = field(default_factory=dict)
     #: Per key, bucketed like ``ownership_generations``: the stamp of the write that last
@@ -239,10 +244,18 @@ class SessionRegistryState:
     speculative_starts: dict[str, tuple[asyncio.Event, StartPriority, bool, object]] = field(
         default_factory=dict
     )
-    #: Tokens of BACKGROUND resume prefetches a person's claim found short of
-    #: their spawn door and started itself: each stands down at that door
+    #: Tokens of BACKGROUND eager starts a person's claim found short of their
+    #: spawn door and started itself: a resume prefetch, or one whose pending
+    #: explicit Default the claim took over. Each stands down at that door
     #: (``SpeculativeResumeRefused``). Removed with the announcement.
     superseded_speculative_starts: set[object] = field(default_factory=set)
+    #: Reservation tokens of calls on the cold-start path: marked when
+    #: ``get_or_create`` finds no live session to claim, before the start reads
+    #: the key's effort basis, and removed with the reservation. A claim waiting
+    #: on a live session's lease or joining an eager start is never here: it
+    #: reads no basis, so an effort pick it overlaps has nothing to race. Read by
+    #: ``has_cold_start_reservation``.
+    cold_start_reservations: set[object] = field(default_factory=set)
     #: Per fenced key, a receipt for every start the fence caught past its spawn
     #: door and whose reservation was then removed WHILE the fence was still up:
     #: the start returned during the ending caller's passes, its registration
@@ -291,6 +304,18 @@ class _AllocationOwner(Protocol):
     def _fold_key(self, key: str) -> str: ...
 
     def _bg_backend_supports_runtime(self) -> bool: ...
+
+    def explicit_effort_default_pending(self, key: str) -> bool: ...
+
+    def set_explicit_effort_default(self, key: str, pending: bool) -> bool: ...
+
+    def hold_explicit_effort_default(self, key: str) -> contextlib.AbstractContextManager[None]: ...
+
+    async def wait_for_effort_intent_writes(self, key: str) -> None: ...
+
+    def fence_effort_overlay_rewrite(self) -> contextlib.AbstractContextManager[None]: ...
+
+    async def aflush(self) -> None: ...
 
     async def await_replay_gap(self, key: str) -> None: ...
 
@@ -342,11 +367,17 @@ class _AllocationOwner(Protocol):
 
     async def _drain_and_claim(self, agent: str | None) -> LLMProvider | None: ...
 
+    def _take_claim_spawn_time(self, provider: LLMProvider) -> float | None: ...
+
+    def _may_predate_effort_overlay_rewrite(self, spawn_time: float) -> bool: ...
+
     def _record_pool_decision(self, decision: str, key: str) -> None: ...
 
     def _schedule_replenish(self) -> None: ...
 
     def _dispatch_hard_kill(self, provider: LLMProvider) -> None: ...
+
+    async def _discard_pool_provider(self, provider: LLMProvider, context: str) -> None: ...
 
     def _resolve_agent_model(self, agent: str) -> str: ...
 
@@ -545,6 +576,15 @@ class SessionAllocationService:
         """Mark every allocation in flight under *key* so the session it registers stores no cwd."""
         folded = self._owner._fold_key(key)
         self.state.cwd_retracted_reservations.update(self._allocation_reservations.get(folded, ()))
+
+    def has_cold_start_reservation(self, key: str) -> bool:
+        """Return whether a folded alias has a cold start in flight.
+
+        Marked from before the start's effort basis read until registration.
+        """
+        cold = self.state.cold_start_reservations
+        reserved = self._allocation_reservations.get(self._owner._fold_key(key), ())
+        return bool(cold) and any(token in cold for token in reserved)
 
     def spawn_in_flight(self, key: str) -> str | None:
         """Why a cold start under *key* is a process the ending caller must name, or None.
@@ -1138,6 +1178,72 @@ class SessionAllocationService:
     def mapped_session_keys(self) -> frozenset[str]:
         return frozenset(self._owner._session_map.mapped_sids_by_key())
 
+    def _reserve_explicit_effort_default(
+        self,
+        key: str,
+        reservation: object = None,
+        start_priority: StartPriority = StartPriority.BACKGROUND,
+    ) -> bool:
+        """Reserve *key*'s pending explicit Default through registration.
+
+        A competing allocation waits on the reservation's completion event before
+        constructing or starting a provider. The durable flag stays armed until the
+        reserving provider's projection applies it, so a process death before that
+        clear is saved leaves the next cold start to apply the Default again. The
+        reservation is process-local and canonical-keyed so two spellings of one
+        conversation cannot both arm, and owned by the allocation task so a
+        same-task retry keeps it. Call it from a running allocation task.
+
+        A FOREGROUND allocation takes the reservation over from a BACKGROUND eager
+        start still short of its spawn door. That start may be queued behind
+        unrelated background cold starts, and a person's turn must not wait for
+        them. The start is marked superseded, so it stands down at its door without
+        arming the Default, and its exit leaves the reservation alone because only
+        the owning task releases.
+        """
+        reservation_key = self._deps.canonical_key(key)
+        reservations = self.state.explicit_effort_default_reservations
+        current = reservations.get(reservation_key)
+        allocation = asyncio.current_task()
+        if allocation is None:  # pragma: no cover - called only from allocation tasks
+            raise RuntimeError("explicit Default reservation has no allocation task")
+        if current is not None:
+            if current[0] is allocation:
+                return True
+            if not self._takes_over_queued_background_default(key, current[2], start_priority):
+                return False
+            self.state.superseded_speculative_starts.add(current[2])
+            reservations[reservation_key] = (allocation, current[1], reservation)
+            return True
+        if not self._owner.explicit_effort_default_pending(key):
+            return False
+        reservations[reservation_key] = (allocation, asyncio.Event(), reservation)
+        return True
+
+    def _takes_over_queued_background_default(
+        self, key: str, holder: object, start_priority: StartPriority
+    ) -> bool:
+        if start_priority is not StartPriority.FOREGROUND or holder is None:
+            return False
+        if holder in self.state.spawning_reservations:
+            return False
+        entry = self.state.speculative_starts.get(key)
+        return entry is not None and entry[3] is holder and entry[1] is StartPriority.BACKGROUND
+
+    def _release_explicit_effort_default(self, key: str) -> None:
+        """Release an owned explicit Default reservation and wake its waiters.
+
+        Only the owning task releases, so a waiter's exit and a nested same-task
+        retry's exit cannot drop a reservation another frame still relies on.
+        """
+        reservation_key = self._deps.canonical_key(key)
+        reservations = self.state.explicit_effort_default_reservations
+        current = reservations.get(reservation_key)
+        if current is None or current[0] is not asyncio.current_task():
+            return
+        del reservations[reservation_key]
+        current[1].set()
+
     def seed_conversation(
         self,
         key: str,
@@ -1572,6 +1678,7 @@ _SERVED_NAMES: frozenset[str] = frozenset(
         "START_QUEUE_LOG_MIN_MS",
         "SessionBusyError",
         "SpeculativeResumeRefused",
+        "_WarmPoolEffortRewriteDiscard",
         "_collect_parent_runtime_kwargs",
         "acquire_session_lease",
         "bound_profile_env",
@@ -1621,6 +1728,7 @@ if TYPE_CHECKING:  # the names in _SERVED_NAMES, for type checkers and IDEs
     from kiro_crew.session_allocation_parts.errors import (  # noqa: F401
         SessionBusyError,
         SpeculativeResumeRefused,
+        _WarmPoolEffortRewriteDiscard,
     )
     from kiro_crew.start_priority import (  # noqa: F401
         START_QUEUE_COLD_START,

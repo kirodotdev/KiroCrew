@@ -11,7 +11,7 @@ import os  # noqa: F401
 import sys as _sys
 import time  # noqa: F401
 from collections.abc import AsyncIterator, Callable  # noqa: F401
-from contextlib import aclosing  # noqa: F401
+from contextlib import AbstractContextManager, aclosing, nullcontext  # noqa: F401
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncContextManager
 
@@ -139,6 +139,7 @@ from kiro_crew.workspace_cli_settings import (  # noqa: F401
     CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS,
     CLI_SETTINGS_LOCK_TIMEOUT_SECS,
     locked_workspace_cli_settings,
+    workspace_cli_settings_fence_key,
     workspace_cli_settings_lock,
 )
 
@@ -313,6 +314,12 @@ class AcpProvider(LLMProvider):
         self._effort_defaults = effort_defaults
         # The spelling the factory keyed ``effort_per_model`` under.
         self._configured_model: str = model or ""
+        self._explicit_effort_default_pending = False
+        self._explicit_effort_default_applied = False
+        self._explicit_effort_default_projected = False
+        self._fence_explicit_effort_default_rewrite: Callable[
+            [], AbstractContextManager[object]
+        ] = nullcontext
         # MCP Tool Search toggle (kiro-cli backend only). None = caller did not
         # specify (e.g. claude_code factory), so leave the overlay untouched.
         # True/False = write the kiro settings overlay deterministically so the
@@ -328,11 +335,6 @@ class AcpProvider(LLMProvider):
             if tool_search_min_tokens is None
             else tool_search_min_tokens
         )
-        # The workspace ``cli.json`` is not touched here. This constructor runs on
-        # the gateway event loop, and the file is the user's own settings file that
-        # a repository can track at any size. ``start()`` recovers the levels the
-        # overlay holds and writes the effort and Tool Search keys, off the loop.
-        self._effort_overlay_recovered = False
 
     @property
     def client(self) -> AcpClient:
@@ -457,12 +459,21 @@ class AcpProvider(LLMProvider):
         The ``"auto"`` sentinel is filtered to ``""`` (= unknown/inconclusive)
         on both paths.
         """
+        model = self._backend_reported_model
+        return "" if model == DEFAULT_MODEL else model
+
+    @property
+    def _backend_reported_model(self) -> str:
+        """The model id the backend reported, before :attr:`served_model` filters ``"auto"``.
+
+        The same per-shape reads as :attr:`served_model`, stripped, with the
+        ``"auto"`` sentinel kept: a caller that must tell a session the backend
+        reported as ``auto`` from one whose backend reported no model reads this.
+        """
         client = self._client
         if isinstance(client, AcpSessionProvider):
-            model = str(client.served_model or "").strip()
-        else:
-            model = str(getattr(client, "_resolved_model_id", "") or "").strip()
-        return "" if model == DEFAULT_MODEL else model
+            return str(client.served_model or "").strip()
+        return str(getattr(client, "_resolved_model_id", "") or "").strip()
 
     @property
     def _effort_model(self) -> str:
@@ -1153,16 +1164,21 @@ class AcpProvider(LLMProvider):
     async def new_conversation(self) -> None:
         """Clean-slate reset on the SAME warm process (no cold start).
 
-        Delegates to the backing client, which issues a fresh ``session/new`` on the
-        already-running process, skipping subprocess spawn + the ``initialize``
-        handshake. This is the primitive a warm session pool uses to reuse one worker
-        across independent tasks without leaking context between them. A member of
-        ``ACP_BACKENDS_ACP_RUNTIME`` gets ``AcpSessionProvider`` as ``self._client``
-        from ``start()``; any other backend keeps its own ``AcpClient``, whose reset
-        runs only for a member of ``ACP_BACKENDS_CLIENT_NEW_CONVERSATION`` (claude).
-        On that arm the steps ``start()`` runs after the client is ready follow: the
-        resolved effort, and, for a session that keeps no transcript, the deletion of
-        the replaced session's files, as ``shutdown`` deletes them.
+        Delegates to the backing client. A member of ``ACP_BACKENDS_ACP_RUNTIME``
+        gets ``AcpSessionProvider`` as ``self._client`` from ``start()``; it issues a
+        fresh ``session/new`` on the already-running process, skipping subprocess
+        spawn + the ``initialize`` handshake. This is the primitive a warm session
+        pool uses to reuse one worker across independent tasks without leaking
+        context between them. After the fresh session exists, it binds a level
+        requested with nothing pinned to the model that session serves, because a
+        changed backend default can make it a different model, then reasserts a
+        resolved kiro effort because the warm process may have read an operator or
+        peer projection at its own spawn. Any other backend keeps its own
+        ``AcpClient``, whose reset runs only for a member of
+        ``ACP_BACKENDS_CLIENT_NEW_CONVERSATION`` (claude). On that arm the steps
+        ``start()`` runs after the client is ready follow: the effort binding and
+        the resolved effort, and, for a session that keeps no transcript, the
+        deletion of the replaced session's files, as ``shutdown`` deletes them.
 
         Every other backend on its own ``AcpClient`` raises ``NotImplementedError``
         naming it, and the caller falls back to killing and respawning the process
@@ -1177,6 +1193,8 @@ class AcpProvider(LLMProvider):
                 # that ended its process, no other id names it for ``shutdown``.
                 if self.session_id != replaced and self.memory_mode != "persistent":
                     await self.cleanup_session(replaced)
+            await self._bind_unbound_effort()
+            await self._reassert_projected_effort()
             await self._apply_initial_effort()
             return
         if isinstance(self._client, AcpSessionProvider):
@@ -1190,9 +1208,13 @@ class AcpProvider(LLMProvider):
                 channel_id=self._owning_channel_id() or "",
             )
             self.essential_delivery.invalidate()
+            await self._bind_unbound_effort()
+            await self._reassert_projected_effort()
             await self._apply_initial_effort()
             return
         await self._client.new_conversation()
+        await self._bind_unbound_effort()
+        await self._reassert_projected_effort()
 
     @property
     def swaps_conversation_in_place(self) -> bool:
@@ -1350,11 +1372,20 @@ class AcpProvider(LLMProvider):
 
     # The workspace ``cli.json`` overlay a spawn reads: ``kiro_crew.providers.acp_cli_overlay``.
     _apply_effort_overlay = _acp_cli_overlay._apply_effort_overlay
-    _recover_effort_overlay = _acp_cli_overlay._recover_effort_overlay
+    _effort_overlay_fence_mode = _acp_cli_overlay._effort_overlay_fence_mode
+    _log_effort_overlay_projection_skipped = _acp_cli_overlay._log_effort_overlay_projection_skipped
+    _project_explicit_effort_default = _acp_cli_overlay._project_explicit_effort_default
+    _spawn_effort_model = property(_acp_cli_overlay._spawn_effort_model)
+    _write_effort_overlay = _acp_cli_overlay._write_effort_overlay
+    arm_explicit_effort_default = _acp_cli_overlay.arm_explicit_effort_default
+    explicit_effort_default_applied = property(
+        _acp_cli_overlay.explicit_effort_default_applied
+    )  # type: ignore[assignment]
     _apply_tool_search_overlay = _acp_cli_overlay._apply_tool_search_overlay
     # The model and reasoning effort the session runs at: ``kiro_crew.providers.acp_model_effort``.
     maybe_refresh_available_models = _acp_model_effort.maybe_refresh_available_models
     _bind_unbound_effort = _acp_model_effort._bind_unbound_effort
+    _reassert_projected_effort = _acp_model_effort._reassert_projected_effort
     _advertised_effort_levels = _acp_model_effort._advertised_effort_levels
     accepts_effort_level = _acp_model_effort.accepts_effort_level
     supports_effort = _acp_model_effort.supports_effort
@@ -1520,24 +1551,48 @@ for _owner in _ACP_PROVIDER_OWNERS:
 #: Module-level names this module bound before the split that only owner code reads.
 _SERVED: frozenset[str] = frozenset(
     {
+        "_BoundedCliEffortPairs",
         "_CLI_JSON_ENCODING",
         "_CLI_JSON_MAX_BYTES",
+        "_CliJsonVersion",
+        "_EFFORT_OVERLAY_AUTO_CLEAR_WARNING",
+        "_EFFORT_OVERLAY_DEFAULT_CLEAR_WARNING",
+        "_EFFORT_OVERLAY_MODEL_OVERRIDE",
+        "_KIROCREW_EFFORT_OWNED_KEY",
+        "_KIROCREW_EFFORT_OWNED_STAMP_KEY",
+        "_OverlayParentNotAnObject",
         "_OverlayTooLarge",
         "_RESUME_BACKOFF_BASE_S",
         "_RESUME_MAX_ATTEMPTS",
         "_RESUME_TRANSIENT_LOCK_MARKERS",
         "_SETUP_FAILURE_LOG_CAP",
+        "_WARN_UNOWNED_MAX_CHARS",
+        "_WARN_UNOWNED_MAX_ITEMS",
+        "_WORKSPACE_EFFORT_FENCES",
+        "_WORKSPACE_EFFORT_OVERLAY_FENCE_WINDOW_TIMEOUT_SECS",
+        "_WorkspaceEffortOverlayFence",
         "_ZERO_TOOL_CHECK_TIMEOUT_SECS",
+        "_await_overlay_write",
         "_clamp_min_pct",
         "_clamp_min_tokens",
         "_clear_cli_overlay_effort",
+        "_cli_effort_is_owned",
+        "_cli_json_version",
+        "_current_cli_json_version",
+        "_hold_workspace_effort_overlay_fence",
         "_is_transient_resume_lock_error",
+        "_log_atom",
+        "_log_effort_level",
+        "_log_model_key",
+        "_owned_cli_effort",
+        "_pinned_settings_fd",
         "_publish_cli_overlay",
-        "_read_cli_overlay",
         "_read_cli_overlay_document",
         "_read_named_cli_json",
         "_read_pinned_cli_json",
         "_unlink_dead_session_lock",
+        "_warn_unowned_cli_effort",
+        "_workspace_effort_overlay_fence",
         "_write_cli_overlay",
         "_write_tool_search_overlay",
     }
@@ -1557,15 +1612,39 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.providers.acp_cli_overlay import (  # noqa: F401
         _CLI_JSON_ENCODING,
         _CLI_JSON_MAX_BYTES,
+        _EFFORT_OVERLAY_AUTO_CLEAR_WARNING,
+        _EFFORT_OVERLAY_DEFAULT_CLEAR_WARNING,
+        _EFFORT_OVERLAY_MODEL_OVERRIDE,
+        _KIROCREW_EFFORT_OWNED_KEY,
+        _KIROCREW_EFFORT_OWNED_STAMP_KEY,
+        _WARN_UNOWNED_MAX_CHARS,
+        _WARN_UNOWNED_MAX_ITEMS,
+        _WORKSPACE_EFFORT_FENCES,
+        _WORKSPACE_EFFORT_OVERLAY_FENCE_WINDOW_TIMEOUT_SECS,
+        _await_overlay_write,
+        _BoundedCliEffortPairs,
         _clamp_min_pct,
         _clamp_min_tokens,
         _clear_cli_overlay_effort,
+        _cli_effort_is_owned,
+        _cli_json_version,
+        _CliJsonVersion,
+        _current_cli_json_version,
+        _hold_workspace_effort_overlay_fence,
+        _log_atom,
+        _log_effort_level,
+        _log_model_key,
+        _OverlayParentNotAnObject,
         _OverlayTooLarge,
+        _owned_cli_effort,
+        _pinned_settings_fd,
         _publish_cli_overlay,
-        _read_cli_overlay,
         _read_cli_overlay_document,
         _read_named_cli_json,
         _read_pinned_cli_json,
+        _warn_unowned_cli_effort,
+        _workspace_effort_overlay_fence,
+        _WorkspaceEffortOverlayFence,
         _write_cli_overlay,
         _write_tool_search_overlay,
     )
