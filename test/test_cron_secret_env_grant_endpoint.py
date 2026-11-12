@@ -729,6 +729,56 @@ class TestGrantEndpointPendingFlow:
         assert job.secret_env == {}
 
     @pytest.mark.asyncio
+    async def test_deny_with_a_bool_expected_ts_is_a_400_not_a_silent_or_stale_deny(
+        self, cron_home
+    ):
+        """A JSON bool ``expected_ts`` is not a timestamp. Without the guard it
+        is compared as ``float(True)==1.0`` / ``float(False)==0.0``, which misses
+        a real timestamp (a misleading 409) or matches it by accident (a silent
+        deny). It is refused 400 ``invalid_secret_env`` like the approve path,
+        and the pending request is left intact."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        app, svc = self._app_and_svc()
+        jid = self._request_pending(svc, cron_home)
+        with patch("kiro_crew.dashboard.handlers.cron._sel"):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.put(
+                    f"/api/crons/{jid}/secrets",
+                    json={"deny_pending": True, "expected_ts": True},
+                )
+                body = await resp.json()
+        assert resp.status == 400
+        assert body["code"] == "invalid_secret_env"
+        job = CronService(base_dir=svc._dir).get_job(jid)
+        assert job is not None and job.secret_env_pending == {"MY_TOKEN": "slack-sandbox"}
+
+    @pytest.mark.asyncio
+    async def test_deny_warns_job_not_found_when_the_job_vanished(self, cron_home):
+        """The job is removed between the pending read and the deny write, so
+        ``update_job_async`` returns ``None``. Main answered ``ok`` here, so the
+        route keeps the 200 (a 404 would newly fail a call that succeeds today)
+        and names the no-op in a ``warnings`` entry."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        app, svc = self._app_and_svc()
+        jid = self._request_pending(svc, cron_home)
+
+        async def _gone(*args: object, **kwargs: object):
+            return None
+
+        with (
+            patch("kiro_crew.dashboard.handlers.cron._sel"),
+            patch.object(svc, "update_job_async", _gone),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.put(f"/api/crons/{jid}/secrets", json={"deny_pending": True})
+                body = await resp.json()
+        assert resp.status == 200
+        assert body["ok"] is True
+        assert any("job_not_found" in w for w in body.get("warnings", []))
+
+    @pytest.mark.asyncio
     async def test_compensation_never_resurrects_concurrent_revoke(self, cron_home):
         """Epoch commit fails AND a concurrent revoke cleared the grant in
         the gap: the compensating restore must yield to the revocation — the
