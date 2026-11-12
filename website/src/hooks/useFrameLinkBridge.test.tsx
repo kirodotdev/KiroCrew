@@ -7,6 +7,7 @@ import {
 } from './useFrameLinkBridge'
 import { FrameLinkChip } from '../components/FrameLinkChip'
 import { LocalOverlayRoot } from '../components/overlayRoot'
+import { setInternalNavHandler } from '../utils/internalNav'
 
 const URL_A = 'https://github.com/example-org/repo/pull/7'
 
@@ -58,6 +59,7 @@ beforeEach(() => {
   frameInputs.clear()
   focusEntry.frame = null
   focusEntry.pointer = null
+  focusEntry.pointerAt = -Infinity
   // Stops a watch an earlier test left running, so each test starts its own.
   checkEntry()
 })
@@ -253,6 +255,110 @@ describe('tying the click to the asking frame', () => {
     expect(chip()).not.toBeNull()
   })
 
+  describe('a dashboard page clicked just after a click in the dashboard', () => {
+    let uninstall: (() => void) | null = null
+    afterEach(() => { uninstall?.(); uninstall = null })
+
+    /** A click in the dashboard (its tab, say), then the pointer onto the frame and a
+     *  click there: the dashboard's click is still within an activation's lifespan. */
+    function clickTabThenFrame(frame: HTMLIFrameElement) {
+      hostInput.lastAt = performance.now()
+      frame.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }))
+      // The entry came after the dashboard's click, by whatever the clock says.
+      hostInput.lastAt = focusEntry.pointerAt - 1
+      enter(frame)
+    }
+
+    it('opens in place on the first click', () => {
+      const navigate = vi.fn()
+      uninstall = setInternalNavHandler({ origins: [], open: navigate })
+      const { frame, win } = realFrame()
+      const open = vi.fn()
+      render(<Real frame={frame} open={open} />)
+      clickTabThenFrame(frame)
+      post({ type: OPEN_MESSAGE_TYPE, url: '/schedule' }, win)
+      expect(navigate).toHaveBeenCalledWith('/schedule')
+      expect(open).not.toHaveBeenCalled()
+      expect(screen.queryByRole('button', { name: /^Open / })).toBeNull()
+    })
+
+    it('still offers the button for a web URL, which opens a new tab', () => {
+      uninstall = setInternalNavHandler({ origins: [], open: vi.fn() })
+      const { frame, win } = realFrame()
+      const open = vi.fn()
+      render(<Real frame={frame} open={open} />)
+      clickTabThenFrame(frame)
+      post({ type: OPEN_MESSAGE_TYPE, url: URL_A }, win)
+      expect(open).not.toHaveBeenCalled()
+      expect(chip()).not.toBeNull()
+    })
+
+    it('still offers the button for a new-tab request', () => {
+      const navigate = vi.fn()
+      uninstall = setInternalNavHandler({ origins: [], open: navigate })
+      const { frame, win } = realFrame()
+      const open = vi.fn()
+      render(<LocalOverlayRoot><Real frame={frame} open={open} /></LocalOverlayRoot>)
+      clickTabThenFrame(frame)
+      post({ type: OPEN_MESSAGE_TYPE, url: '/schedule', tab: true }, win)
+      expect(navigate).not.toHaveBeenCalled()
+      expect(open).not.toHaveBeenCalled()
+      expect(screen.queryByRole('button', { name: /^Open / })).not.toBeNull()
+    })
+
+    it('does not tie when the dashboard\'s key came after the pointer rested on the frame', () => {
+      const navigate = vi.fn()
+      uninstall = setInternalNavHandler({ origins: [], open: navigate })
+      const { frame, win } = realFrame()
+      render(<LocalOverlayRoot><Real frame={frame} open={vi.fn()} /></LocalOverlayRoot>)
+      frame.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }))
+      // A key in the dashboard, then the page focuses itself: no click in the frame.
+      hostInput.lastAt = focusEntry.pointerAt + 1
+      enter(frame)
+      post({ type: OPEN_MESSAGE_TYPE, url: '/schedule' }, win)
+      expect(navigate).not.toHaveBeenCalled()
+      expect(screen.queryByRole('button', { name: /^Open / })).not.toBeNull()
+    })
+
+    it('does not tie when the pointer is not over the frame', () => {
+      const navigate = vi.fn()
+      uninstall = setInternalNavHandler({ origins: [], open: navigate })
+      const { frame, win } = realFrame()
+      render(<LocalOverlayRoot><Real frame={frame} open={vi.fn()} /></LocalOverlayRoot>)
+      hostInput.lastAt = performance.now()
+      enter(frame)
+      post({ type: OPEN_MESSAGE_TYPE, url: '/schedule' }, win)
+      expect(navigate).not.toHaveBeenCalled()
+      expect(screen.queryByRole('button', { name: /^Open / })).not.toBeNull()
+    })
+
+    it('does not tie when a sibling frame reported a click', () => {
+      const navigate = vi.fn()
+      uninstall = setInternalNavHandler({ origins: [], open: navigate })
+      const { frame, win } = realFrame()
+      render(<LocalOverlayRoot><Real frame={frame} open={vi.fn()} /></LocalOverlayRoot>)
+      clickTabThenFrame(frame)
+      post({ type: INPUT_MESSAGE_TYPE }, {} as Window)
+      post({ type: OPEN_MESSAGE_TYPE, url: '/schedule' }, win)
+      expect(navigate).not.toHaveBeenCalled()
+      expect(screen.queryByRole('button', { name: /^Open / })).not.toBeNull()
+    })
+
+    it('opens nothing without a gesture in the frame', () => {
+      const navigate = vi.fn()
+      uninstall = setInternalNavHandler({ origins: [], open: navigate })
+      const { frame, win } = realFrame()
+      function NoGesture() {
+        const ref = useRef<HTMLIFrameElement | null>(frame)
+        return <>{useFrameLinkBridge([ref], vi.fn(), () => false)}</>
+      }
+      render(<NoGesture />)
+      clickTabThenFrame(frame)
+      post({ type: OPEN_MESSAGE_TYPE, url: '/schedule' }, win)
+      expect(navigate).not.toHaveBeenCalled()
+    })
+  })
+
   it('does not count the frame\'s own reported input against it', () => {
     const { frame, win } = realFrame()
     const open = vi.fn()
@@ -347,6 +453,77 @@ describe('tying the click to the asking frame', () => {
     act(() => { fireEvent.keyDown(chip()!, { key: 'Escape' }) })
     expect(chip()).toBeNull()
     expect(document.activeElement).toBe(holder)
+    expect(open).not.toHaveBeenCalled()
+  })
+})
+
+describe('a page of this dashboard', () => {
+  let uninstall: (() => void) | null = null
+  afterEach(() => { uninstall?.(); uninstall = null })
+
+  it('opens in place through the in-app navigator, not in a new tab', () => {
+    const navigate = vi.fn()
+    uninstall = setInternalNavHandler({ origins: [], open: navigate })
+    const frame = fakeFrame()
+    const open = vi.fn()
+    render(<Host frame={frame} open={open} />)
+    post({ type: OPEN_MESSAGE_TYPE, url: '/settings/security/rules?highlight=security.denied-commands' }, frame.contentWindow)
+    expect(navigate).toHaveBeenCalledWith('/settings/security/rules?highlight=security.denied-commands')
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it('opens a session link in place as a canonical chat path', () => {
+    const navigate = vi.fn()
+    uninstall = setInternalNavHandler({ origins: [], open: navigate })
+    const frame = fakeFrame()
+    const open = vi.fn()
+    render(<Host frame={frame} open={open} />)
+    post({ type: OPEN_MESSAGE_TYPE, url: '/chat?sid=chat-448-1793224442' }, frame.contentWindow)
+    expect(navigate).toHaveBeenCalledWith('/chat?sid=chat-448-1793224442')
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it('still opens in a new tab when the click asked for one', () => {
+    const navigate = vi.fn()
+    uninstall = setInternalNavHandler({ origins: [], open: navigate })
+    const frame = fakeFrame()
+    const open = vi.fn()
+    render(<Host frame={frame} open={open} />)
+    post({ type: OPEN_MESSAGE_TYPE, url: '/schedule', tab: true }, frame.contentWindow)
+    expect(navigate).not.toHaveBeenCalled()
+    expect(open).toHaveBeenCalledWith(`${window.location.origin}/schedule`)
+  })
+
+  it('opens a refused dashboard path, and any other site, in a new tab', () => {
+    const navigate = vi.fn()
+    uninstall = setInternalNavHandler({ origins: [], open: navigate })
+    const frame = fakeFrame()
+    const open = vi.fn()
+    render(<Host frame={frame} open={open} />)
+    post({ type: OPEN_MESSAGE_TYPE, url: '/projects?run=1' }, frame.contentWindow)
+    post({ type: OPEN_MESSAGE_TYPE, url: URL_A }, frame.contentWindow)
+    expect(navigate).not.toHaveBeenCalled()
+    expect(open.mock.calls).toEqual([[`${window.location.origin}/projects?run=1`], [URL_A]])
+  })
+
+  it('opens in a new tab when no in-app navigator is installed (a popout window)', () => {
+    const frame = fakeFrame()
+    const open = vi.fn()
+    render(<Host frame={frame} open={open} />)
+    post({ type: OPEN_MESSAGE_TYPE, url: '/schedule' }, frame.contentWindow)
+    expect(open).toHaveBeenCalledWith(`${window.location.origin}/schedule`)
+  })
+
+  it('opens in place from the "Open" button when the click was not tied to the frame', () => {
+    const navigate = vi.fn()
+    uninstall = setInternalNavHandler({ origins: [], open: navigate })
+    const { frame, win } = realFrame()
+    const open = vi.fn()
+    render(<LocalOverlayRoot><Host frame={frame} open={open} tied={() => false} /></LocalOverlayRoot>)
+    post({ type: OPEN_MESSAGE_TYPE, url: '/schedule' }, win)
+    expect(navigate).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: /^Open / }))
+    expect(navigate).toHaveBeenCalledWith('/schedule')
     expect(open).not.toHaveBeenCalled()
   })
 })

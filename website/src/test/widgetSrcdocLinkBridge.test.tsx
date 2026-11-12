@@ -131,12 +131,13 @@ describe('link-bridge shim', () => {
     expect(posted).toEqual([{ type: OPEN, url: 'https://code.example.test/reviews/CR-1' }])
   })
 
-  it.each([['ctrlKey'], ['metaKey'], ['shiftKey']])('cancels a %s click at once, since it opens a tab even in the sandbox', async (key) => {
+  it.each([['ctrlKey'], ['metaKey'], ['shiftKey'], ['altKey']])('cancels a %s click at once, since it opens a tab even in the sandbox', async (key) => {
     const { posted } = install()
     const host = mount('<a id="t" href="https://example.test/m">x</a>')
     expect(click(host, '#t', { [key]: true })).toBe(true)
     await settle()
-    expect(posted).toEqual([{ type: OPEN, url: 'https://example.test/m' }])
+    // Marked as a new-tab request, so the host never opens it in place.
+    expect(posted).toEqual([{ type: OPEN, url: 'https://example.test/m', tab: true }])
   })
 
   it.each([
@@ -273,6 +274,28 @@ describe('link-bridge shim', () => {
     expect(posted).toEqual([{ type: OPEN, url: '/chat?sid=chat-1#end' }])
   })
 
+  it('marks a modified or middle click on a dashboard path as a new-tab request, and a plain one not', async () => {
+    const { posted } = install()
+    const host = mount('<a id="t" href="/schedule" target="_blank">schedule</a>')
+    click(host, '#t')
+    click(host, '#t', { metaKey: true })
+    middle(host, '#t')
+    await settle()
+    expect(posted).toEqual([
+      { type: OPEN, url: '/schedule', tab: true },
+      { type: OPEN, url: '/schedule', tab: true },
+      { type: OPEN, url: '/schedule' },
+    ])
+  })
+
+  it('marks an Alt-click on a dashboard path as a new-tab request, as the chat side does', async () => {
+    const { posted } = install()
+    const host = mount('<a id="t" href="/schedule" target="_blank">schedule</a>')
+    expect(click(host, '#t', { altKey: true })).toBe(true)
+    await settle()
+    expect(posted).toEqual([{ type: OPEN, url: '/schedule', tab: true }])
+  })
+
   it.each([
     ['fragment', '<a id="t" href="#part-2">jump</a>'],
     ['relative path', '<a id="t" href="/artifacts/slug">open</a>'],
@@ -302,7 +325,7 @@ describe('link-bridge shim', () => {
     // Cancelled at once: a middle-click opens a tab even in the sandbox.
     expect(middle(host, '#t')).toBe(true)
     await settle()
-    expect(posted).toEqual([{ type: OPEN, url: 'https://example.test/m' }])
+    expect(posted).toEqual([{ type: OPEN, url: 'https://example.test/m', tab: true }])
   })
 
   it('leaves a middle-clicked fragment link and a right-click alone', async () => {

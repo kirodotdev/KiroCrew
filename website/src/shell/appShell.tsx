@@ -5,7 +5,6 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, useAppStore } from '../store'
 import { fetchSlots, sseStatus, setEnabledAppIds } from '../store/dashboardSlice'
 import { offlineReason } from '../utils/offlineReason'
-import { prefillCrewAddForm, setActiveId } from '../store/instancesSlice'
 import { selectAllSurfacesAttention, surfaceLabel, surfaceMachineValue } from '../surfaces/registry'
 import { switchSlot, selectActiveSlotProject, stageToMainComposer, setPendingInput } from '../store/chatSlice'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from '../utils/artifactPopout'
@@ -15,8 +14,6 @@ import { appPopoutRouteOf } from '../utils/appPopoutRoute'
 import type { NavIntent } from '../utils/popoutController'
 import {
   applyNavIntentInMain,
-  chatDeepLinkSlot,
-  isAppDetailPath,
   takeDeferredPendingInput,
   type DeferredPendingInput,
 } from '../utils/navIntent'
@@ -27,6 +24,8 @@ import { useDashboardHealthProbe } from '../hooks/useDashboardHealthProbe'
 import { useGatewayConnecting } from '../hooks/useConnected'
 import { useConfigAutolinkRules } from '../hooks/useConfigAutolinkRules'
 import { usePreviewFlagServerSync } from '../hooks/usePreviewFlagServerSync'
+import { useInternalNavHandler } from '../hooks/useInternalNavHandler'
+import { useOpenInAppPath } from './nav/openInAppPath'
 import { useTheme } from '../hooks/useTheme'
 import { useShellBranding } from './branding'
 import { useRumPageView } from '../hooks/useRumPageView'
@@ -57,9 +56,8 @@ import { useTopbarCollapse } from '../lib/useTopbarCollapse'
 import { usePersistedBool } from '../hooks/usePersistedBool'
 import { usePaletteShortcutsEnabled } from '../hooks/useCommandPalette'
 import { showNativeDevTools, subscribeNativeNavigate, useMacFullscreen } from './platform/electronBridge'
-import { REMOTE_CREW_SETTINGS_PATH, remoteCrewAddFromPath } from '../lib/remoteCrewAddLink'
 import { useNativeHistoryStep } from './platform/nativeHistoryStep'
-import { useCrewDeepLink, usePaneOpenSlot } from '../lib/crewDeepLink'
+import { usePaneOpenSlot } from '../lib/crewDeepLink'
 import { labelCurrentRouteEntry } from '../lib/routeHistoryLabels'
 import AppIcon from '../components/AppIcon'
 import AppNavStateIcon from './nav/AppNavStateIcon'
@@ -856,64 +854,15 @@ export function useAppShell() {
   // Native app-menu navigation (Settings…, About) and the Crew Companion's "Open
   // session" CTA: the Electron main process sends an in-app path; route to it.
   // The bridge hands over plain absolute app paths only (see
-  // `subscribeNativeNavigate`).
-  //
-  // A session deep link takes the same route a popout's nav intent does — select
-  // the session, then navigate — rather than a bare navigate. `?sid=` is read by
-  // ChatPage only while it MOUNTS, so from an already-open /chat a bare navigate
-  // would surface the dashboard with the previous session still on screen: the
-  // window comes forward and the notification appears to have opened nothing.
-  //
-  // A crew link (`kirocrew://chat?crew=`) is read HERE only, never off the URL.
-  const openCrewLink = useCrewDeepLink()
+  // `subscribeNativeNavigate`). An in-app link (`utils/internalNav`) opens
+  // through the same function (`useOpenInAppPath`).
+  // A crew link (`kirocrew://chat?crew=`) is read in `openInAppPath` only, never off the URL.
   usePaneOpenSlot({ navigate, mayLeave: mayLeaveForNavigation })
-  useEffect(() => {
-    return subscribeNativeNavigate(path => {
-      if (openCrewLink(path)) return
-      const slotKey = chatDeepLinkSlot(path)
-      if (slotKey) {
-        // The session lives in the local Crew. Over a Remote Crew pane, bring
-        // the local Crew forward first (as the notification banner does), so
-        // the leave prompt and the switched session are both on screen.
-        if (appStore.getState().instances?.activeId != null) dispatch(setActiveId(null))
-        applyNavIntentInMain(
-          // `path` is deliberately dropped in favour of the bare route: a
-          // NavIntent carries no query string, and ChatPage writes `?sid=` back
-          // into the URL itself once the session is active.
-          { path: '/chat', slotKey },
-          {
-            navigate,
-            switchSlot: (key) => { dispatch(switchSlot({ key, announceOnMissing: true })) },
-            mayLeave: mayLeaveForNavigation,
-          },
-        )
-        return
-      }
-      // A Remote Crew add link (`kirocrew://remote-crew/add`) only fills in the
-      // local Crew's add form; the user still presses Add. Like an app link it
-      // brings the local Crew forward first. The values travel in the store and
-      // the route is the bare page, so the dashboard's own URL never carries them.
-      const addCrew = remoteCrewAddFromPath(path)
-      if (addCrew) {
-        if (appStore.getState().instances?.activeId != null) dispatch(setActiveId(null))
-        if (!mayLeaveForNavigation()) return
-        dispatch(prefillCrewAddForm(addCrew))
-        navigate(REMOTE_CREW_SETTINGS_PATH)
-        return
-      }
-      // An app detail link names an app installed in the local Crew. Over a
-      // Remote Crew pane a bare navigate would route the hidden local pane, so
-      // bring the local Crew forward first, as a session link does: the leave
-      // prompt then sits over the draft it is asking about.
-      if (isAppDetailPath(path) && appStore.getState().instances?.activeId != null) {
-        dispatch(setActiveId(null))
-      }
-      // Same leave check as every other in-app exit: a native menu entry
-      // replaces the page on screen just like a sidebar click does.
-      if (!mayLeaveForNavigation()) return
-      navigate(path)
-    })
-  }, [navigate, dispatch, mayLeaveForNavigation, appStore, openCrewLink])
+  const openInAppPath = useOpenInAppPath()
+  useEffect(() => subscribeNativeNavigate(openInAppPath), [openInAppPath])
+  // Popout and embed windows install no in-app link navigator: a dashboard path
+  // there keeps its previous behavior.
+  useInternalNavHandler(!isPopout && !isEmbed, openInAppPath)
   // A mouse's Back/Forward buttons on macOS: raw presses and the shell's relayed swipe.
   useNativeHistoryStep(isMobile)
 
