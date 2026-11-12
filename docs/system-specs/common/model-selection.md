@@ -756,6 +756,32 @@ its own once the cache refreshes with a list that carries it.
   wins. A copied model the picker guard refuses, or one the worker's harness
   does not serve, is dropped and the session starts on the default; the full
   rule is in [session-control](../modules/session-control.md).
+- **A Bot's own chat follows the person's latest choice.** Its `slot.model` and
+  `slot.reasoning_effort` outrank the Bot's profile on every turn, and that chat
+  shows no model or effort control, so a save of the Bot's `model` clears the
+  chat's own model (with `jev_route` and a deferred switch) and a save of its
+  `reasoning_effort` clears the chat's own effort (`dashboard/bot_chat_follow.py`).
+  A queued `session_set_model` pick stays queued: each save moves only its own
+  field's pick generation, so `apply_pending_model_pick` drops that half and keeps
+  the other. `PUT /api/agents/{name}` clears on every save
+  whose body carries the field, an unchanged value included, after it has
+  rebuilt the session defaults for a changed effort or a changed model, so a turn
+  that consumes the queued reset restarts on the saved values (a Bot that
+  inherits a model reaches its session through the session manager's own
+  config, which that rebuild replaces); the Bot editor sends
+  both fields on every save, renaming included, and the Bot's `set_model` card
+  goes through the same route. That route is the only caller: a change of a
+  Bot's model or effort from `kirocrew agent update --model` or a hand edit of
+  `config.json` does not clear the chat's own value yet (#36614), and a fix must
+  not let a dashboard save clear twice through the config watcher. A
+  cleared value that differed from the Bot's, or a save of the Bot's model while
+  a throttle or refusal fallback serves the chat (whether or not the chat keeps a
+  model of its own), queues the reset a model pick queues, so a
+  live session started on the old value restarts at the chat's next turn and
+  never during one. A closed chat has its line patched. A
+  pick made in the chat afterwards wins until the next save. Only `mode="member"`
+  slots on that Bot change: other chats, the sessions the Bot dispatches and a
+  save of `worker_model` or `worker_reasoning_effort` leave every pick alone.
 - **A served context window** is declared only through `agent.model_context_tokens`, one
   entry per EXACT model id as `agent.model` carries it (`model_registry.model_window`
   matches it as written, so two servers of the same weights stay distinct). It is an
