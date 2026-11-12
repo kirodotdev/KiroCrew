@@ -1622,3 +1622,105 @@ async def test_a_history_resume_that_restores_the_link_joins_the_live_alias(tmp_
         "hold separate project cells for one shared session"
     )
     assert slot.project == str(tmp_path / "chosen")
+
+
+@pytest.mark.asyncio
+async def test_a_tag_deleted_during_the_resume_tail_is_not_published(tmp_path, monkeypatch):
+    """A reserved resume holds its slot out of ``_slots`` across the tail's awaits, so
+    a tag delete landing there strips nothing on it. Publishing the tags the build
+    read before those awaits would put the deleted id back on the tab, and its next
+    save would make it durable. The delete runs inside the containment hook, one of
+    the tail's own awaits; a tag that still exists stays on the published slot."""
+    from chat_test_helpers import _make_tags_app
+
+    from kiro_crew.dashboard.chat_handlers import resume_slot_from_history
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    state.load_tags()  # as a boot does: the vocabulary is KNOWN, so it prunes
+    log = state.conversation_log
+    key = "dashboard:tagtail1"
+    log.append(key, "user", "history-1")
+    seen: list[tuple[bool, list[str], int]] = []
+    async with TestClient(TestServer(_make_tags_app(state))) as client:
+        doomed = (await (await client.post("/api/chat/tags", json={"name": "Doomed"})).json())["id"]
+        kept = (await (await client.post("/api/chat/tags", json={"name": "Kept"})).json())["id"]
+        await asyncio.to_thread(log.update_metadata, key, {"tags": [doomed, kept]})
+
+        async def _containment(slot):
+            if not seen:
+                retracted, tags = "tagtail1" not in state._slots, list(slot.tags)
+                status = (await client.delete(f"/api/chat/tags/{doomed}")).status
+                seen.append((retracted, tags, status))
+            return None
+
+        outcome = await resume_slot_from_history(
+            state, name="tagtail1", history_key=key, containment=_containment, rebind_manager=False
+        )
+
+    assert seen == [(True, [doomed, kept], 200)], f"the delete did not land in the tail: {seen}"
+    assert outcome.refusal is None, outcome
+    assert state._slots["tagtail1"].tags == [kept], "a tag deleted in the tail was published"
+
+
+@pytest.mark.asyncio
+async def test_a_tag_delete_that_fails_during_the_resume_tail_leaves_the_tag_published(
+    tmp_path, monkeypatch
+):
+    """A tag delete removes the tag from memory BEFORE its commit, so a resume that
+    publishes while that commit is pending must not strip the tag on its own: when the
+    commit then fails the tag is restored to the vocabulary, and the tab must still
+    carry it, or its next metadata save makes the loss durable."""
+    from chat_test_helpers import _make_tags_app
+
+    from kiro_crew.dashboard import chat_tags
+    from kiro_crew.dashboard.chat_handlers import resume_slot_from_history
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    state.load_tags()  # as a boot does: the vocabulary is KNOWN, so a prune would apply
+    log = state.conversation_log
+    key = "dashboard:tagfail1"
+    log.append(key, "user", "history-1")
+    parked, release = asyncio.Event(), asyncio.Event()
+
+    async def _held_then_failed_commit(*_args, **_kwargs):
+        parked.set()
+        await release.wait()
+        raise OSError("tags.json write failed")
+
+    deleting: list[asyncio.Task] = []
+    seen: list[tuple[bool, bool]] = []
+    async with TestClient(TestServer(_make_tags_app(state))) as client:
+        doomed = (await (await client.post("/api/chat/tags", json={"name": "Doomed"})).json())["id"]
+        kept = (await (await client.post("/api/chat/tags", json={"name": "Kept"})).json())["id"]
+        await asyncio.to_thread(log.update_metadata, key, {"tags": [doomed, kept]})
+        monkeypatch.setattr(chat_tags, "_commit_tags_snapshot", _held_then_failed_commit)
+
+        async def _containment(slot):
+            if not deleting:
+                deleting.append(asyncio.create_task(client.delete(f"/api/chat/tags/{doomed}")))
+                await await_until(parked, what="the delete parked in its commit")
+                removed = all(t.get("id") != doomed for t in state._tags)
+                seen.append(("tagfail1" not in state._slots, removed))
+            return None
+
+        try:
+            outcome = await resume_slot_from_history(
+                state,
+                name="tagfail1",
+                history_key=key,
+                containment=_containment,
+                rebind_manager=False,
+            )
+            published = list(state._slots["tagfail1"].tags)
+        finally:
+            release.set()
+            status = (await await_until(deleting[0], what="delete")).status if deleting else None
+
+    assert seen == [(True, True)], f"the delete was not parked in its commit in the tail: {seen}"
+    assert outcome.refusal is None, outcome
+    assert status == 500
+    assert any(t.get("id") == doomed for t in state._tags), "the failed delete kept the tag gone"
+    assert published == [doomed, kept], "the resume stripped a tag whose delete had not committed"
+    assert state._slots["tagfail1"].tags == [doomed, kept], "the failed delete stripped the tab"

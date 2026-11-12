@@ -2432,9 +2432,10 @@ shared by both vocabulary stores.
   restores the same object still naming the deleted id, which the periodic flush makes
   durable with no later pass able to reach it. EVERY path that pops a slot and may put it
   back therefore wraps its whole frame, restore included, in `close_in_flight` — the
-  single-tab close and the bulk stale-tab archive alike — and both sweeps iterate that
-  registry alongside `state._slots`. A second popping path left unwrapped reopens the hole
-  in full, so the pairing is pop-with-restore, not close-the-tab.
+  single-tab close, the bulk stale-tab archive and History resume's reserved build alike —
+  and both sweeps iterate that registry alongside `state._slots`. A second popping path
+  left unwrapped reopens the hole in full, so the pairing is pop-with-restore, not
+  close-the-tab.
   The registry is keyed per REGISTRATION rather than by slot name or by object: by name,
   because a same-key recreate can put a replacement on the name while the original is
   still closing; by object, because two closes can overlap on ONE slot, and whichever left
@@ -2445,6 +2446,10 @@ shared by both vocabulary stores.
   and a discarded state's entry is collected with it. The in-memory strip is what matters
   here: the durable save is refused by the name pin above while the object is out of the
   map, and the restore then puts back an object already stripped.
+  History resume's reserved build is held out of `state._slots` across its tail's
+  awaits (the containment hook, the reopen write), so it registers from the retraction
+  until the publish or its refusal's discard: a delete that commits in that window strips
+  it before it is published, and one whose write fails strips nothing.
 - **Scope beyond the two deletes.** Because the shield-and-drain protocol lives in the
   commit helper both stores call, every tag create and update and every folder edit now
   holds its store lock until a cancelled disk write finishes, rather than returning
