@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 from opener_helpers import answer_with, redirect_to
+from redaction_structured_cases import github_classic
 from spawn_test_helpers import (
     LONG_CHILD_WITH_GRANDCHILD,
     await_gone,
@@ -676,7 +677,7 @@ class TestRunHelper:
     @pytest.mark.parametrize(
         "secret",
         [
-            "AKIAIOSFODNN7EXAMPLE",
+            github_classic(seed=61),
             "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8",
         ],
     )

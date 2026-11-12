@@ -22,10 +22,15 @@ from aws_control_app_helpers import (  # noqa: F401 -- fixtures are used by name
     _registered,
     _request,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew import aws_consent
 from kiro_crew.apps.builtins.aws_control.backend import accounts as accounts_mod
 from kiro_crew.apps.builtins.aws_control.backend import routes as routes_mod
+
+# An AWS key ID is an Identifier with the structured detectors on, so the
+# credential these tests expect to be redacted is a GitHub token.
+SECRET = github_classic(seed=14)
 
 
 class TestStateShapeGuards:
@@ -144,7 +149,7 @@ class TestRound16Hardening:
     def test_profile_and_account_names_are_redacted_on_the_way_out(self):
         # The profile registry is an agent-writable store, so a planted
         # credential in a profile NAME must not reach the dashboard verbatim.
-        planted = "prof-AKIAIOSFODNN7EXAMPLE"
+        planted = f"prof-{SECRET}"
         view = accounts_mod.ProfileView(
             name=planted,
             region="us-west-2",
@@ -155,11 +160,11 @@ class TestRound16Hardening:
             detail=f"probe failed for {planted}",
         )
         out = view.to_dict()
-        assert "AKIAIOSFODNN7EXAMPLE" not in out["name"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in out["detail"]
+        assert SECRET not in out["name"]
+        assert SECRET not in out["detail"]
 
         acct = accounts_mod.AccountView(account=ACCOUNT, profiles=[view])
-        assert "AKIAIOSFODNN7EXAMPLE" not in acct.to_dict()["name"]
+        assert SECRET not in acct.to_dict()["name"]
 
     def test_corrupt_runs_map_does_not_lose_a_completed_upload(self, tmp_path, monkeypatch):
         # The archive is already in S3 by the time the ledger is written: a
@@ -363,7 +368,7 @@ class TestRound17Hardening:
             assert Path(path).read_text(encoding="utf-8") == key
 
     def test_every_string_display_field_is_redacted(self):
-        planted = "AKIAIOSFODNN7EXAMPLE"
+        planted = SECRET
         view = accounts_mod.ProfileView(
             name=f"p-{planted}",
             region=f"us-west-2-{planted}",
@@ -865,7 +870,7 @@ class TestRound24Hardening:
         # secret is placed so that a naive `err[:200]` would split it.
         from kiro_crew.deploy import engine
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = SECRET
         padded = "x" * 190 + secret + " trailing context"
         out = engine._trimmed_stderr(padded)
 
@@ -1118,11 +1123,11 @@ class TestRound36Hardening:
 
     def test_a_credential_shaped_profile_name_is_redacted_in_the_reconnect_command(self):
         # _PROFILE_RE is a shell-safety gate, not a secret gate: it admits
-        # [A-Za-z0-9._@=+-] up to 128 chars, so an access key id passes it and
+        # [A-Za-z0-9._@=+-] up to 128 chars, so a GitHub token passes it and
         # would render verbatim into the guidance card and the clipboard.
         from kiro_crew.apps.builtins.aws_control.backend import accounts
 
-        key = "AKIAIOSFODNN7EXAMPLE"
+        key = SECRET
         plan = accounts.reconnect_plan(accounts.KIND_SSO, key)
         assert key not in plan["command"]
         # Still a usable command shape, not an empty string.

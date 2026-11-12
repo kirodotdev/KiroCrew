@@ -194,9 +194,12 @@ def test_datetime_and_nonfinite_floats_serialize_json_safe():
 def test_cell_text_is_credential_redacted():
     # Workbook text leaves the host through the dashboard -- the same egress
     # class as api_file_read, so the same redaction pass must apply.
+    from redaction_structured_cases import github_classic
+
     from kiro_crew.platform import redact_via_context
 
-    sample = "aws key AKIA" + "IOSFODNN7EXAMPLE"
+    token = github_classic(seed=52)
+    sample = f"github key {token}"
     assert redact_via_context(sample) != sample  # fixture must be redactable
 
     def populate(wb):
@@ -206,7 +209,7 @@ def test_cell_text_is_credential_redacted():
     grid = _parse_workbook_grid(_workbook_bytes(populate))
     cell = grid["sheets"][0]["rows"][0][0]
     assert cell == redact_via_context(sample)
-    assert "IOSFODNN7EXAMPLE" not in cell
+    assert token not in cell
 
 
 def test_zip_expansion_cap_refuses_before_parse(tmp_path):

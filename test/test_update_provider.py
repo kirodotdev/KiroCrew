@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.platform import update_provider
 from kiro_crew.platform.governance import UpdatePins
@@ -24,6 +25,8 @@ from kiro_crew.platform.update_provider import (
     _trusted_path_env,
     resolve_provider,
 )
+
+_KEY = github_classic(seed=20)  # a token the credential plan redacts
 
 #: A pid NO supported OS can allocate, so a mock carrying it cannot make a real
 #: process the target of a real signal. Every mock subprocess in this file uses
@@ -774,7 +777,7 @@ class TestCommandProviderNoShellAndTimeout:
         try:
             with caplog.at_level(logging.ERROR):
                 await self._apply_with_stderr(
-                    b"fetch rejected SSO-COOKIE=abc123 key=AKIAIOSFODNN7EXAMPLE"
+                    f"fetch rejected SSO-COOKIE=abc123 key={_KEY}".encode()
                 )
         finally:
             reset_context()
@@ -783,7 +786,7 @@ class TestCommandProviderNoShellAndTimeout:
         # The companion's extra reach -- the whole point of routing via context.
         assert "SSO-COOKIE" not in logged
         # ...without losing the baseline pass underneath it.
-        assert "AKIAIOSFODNN7EXAMPLE" not in logged
+        assert _KEY not in logged
 
     @pytest.mark.asyncio
     async def test_apply_failure_withholds_stderr_when_composition_fails(
@@ -1860,8 +1863,8 @@ class TestRedactionHappensBeforeTruncation:
 
     @pytest.mark.asyncio
     async def test_a_credential_straddling_the_cap_is_not_leaked(self, caplog) -> None:
-        # An AWS-key-shaped secret positioned so the 500-char cap would bisect it.
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        # A credential positioned so the 500-char cap would bisect it.
+        secret = _KEY
         padding = "x" * (500 - len(secret) // 2)
         stderr = (padding + secret + " trailing").encode()
 

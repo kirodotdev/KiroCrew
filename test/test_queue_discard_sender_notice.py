@@ -140,7 +140,10 @@ def test_cancel_notice_excerpt_in_meta_is_redacted(tmp_path):
     state = _make_state(tmp_path)
     caller = state.get_or_create_slot("chat-1")
     target = _busy(state.get_or_create_slot("chat-2"))
-    message = "summarize this AKIAIOSFODNN7EXAMPLE run"
+    from redaction_structured_cases import github_classic
+
+    planted = github_classic(seed=113)
+    message = f"summarize this {planted} run"
     _send(state, caller, "chat-2", message)
     queue_id = target._queue[0]["id"]
 
@@ -151,10 +154,10 @@ def test_cancel_notice_excerpt_in_meta_is_redacted(tmp_path):
     excerpt = meta.get("notice_args", {}).get("excerpt", "")
     # The bare excerpt now rides in notice_args (the frontend owns the
     # ``Text: "…"`` label); whichever scrub ran, the credential is gone from it.
-    assert "AKIAIOSFODNN7EXAMPLE" not in excerpt
+    assert planted not in excerpt
     assert "[REDACTED" in excerpt
     # The content the dashboard renders carries the same scrubbed excerpt.
-    assert "AKIAIOSFODNN7EXAMPLE" not in (row.get("content") or "")
+    assert planted not in (row.get("content") or "")
 
 
 def test_cancelling_one_entry_tells_only_its_own_sender(tmp_path):

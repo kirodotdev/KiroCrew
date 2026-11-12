@@ -8,6 +8,7 @@ import json
 import sys
 
 import pytest
+from redaction_structured_cases import github_classic
 
 import kiro_crew.dashboard.chat_utils as chat_utils
 from kiro_crew.dashboard import display_battery
@@ -25,24 +26,27 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.security.exfil import scoped_exempt_hosts
 from kiro_crew.trust_patterns import extract_bash_command
 
+# An AWS key ID is an Identifier with the structured detectors on, so the
+# credential these tests expect to be redacted is a GitHub token.
+SECRET = github_classic(seed=11)
+
 
 class TestRedactDeep:
     def test_string(self):
-        # AKIAIOSFODNN7EXAMPLE is a well-known test AWS key
-        result = _redact_deep("key AKIAIOSFODNN7EXAMPLE here")
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        result = _redact_deep(f"key {SECRET} here")
+        assert SECRET not in result
 
     def test_dict(self):
-        result = _redact_deep({"a": "AKIAIOSFODNN7EXAMPLE"})
-        assert "AKIAIOSFODNN7EXAMPLE" not in result["a"]
+        result = _redact_deep({"a": SECRET})
+        assert SECRET not in result["a"]
 
     def test_list(self):
-        result = _redact_deep(["AKIAIOSFODNN7EXAMPLE"])
-        assert "AKIAIOSFODNN7EXAMPLE" not in result[0]
+        result = _redact_deep([SECRET])
+        assert SECRET not in result[0]
 
     def test_nested(self):
-        result = _redact_deep({"a": [{"b": "AKIAIOSFODNN7EXAMPLE"}]})
-        assert "AKIAIOSFODNN7EXAMPLE" not in result["a"][0]["b"]
+        result = _redact_deep({"a": [{"b": SECRET}]})
+        assert SECRET not in result["a"][0]["b"]
 
     def test_non_string_passthrough(self):
         assert _redact_deep(42) == 42
@@ -235,8 +239,8 @@ class TestPrepareMessages:
 
 class TestRedactForDisplay:
     def test_redacts_credentials(self):
-        result = _redact_for_display("key AKIAIOSFODNN7EXAMPLE here")
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        result = _redact_for_display(f"key {SECRET} here")
+        assert SECRET not in result
 
     def test_content_cache_misses_when_exempt_host_set_changes(self, monkeypatch):
         """The exempt-host set is an input to the battery, so it is part of the key."""
@@ -284,7 +288,7 @@ class TestRedactForDisplay:
         monkeypatch.setattr(chat_utils, "redact_credentials", counted_credentials)
         monkeypatch.setattr(display_battery, "redact_exfiltration_urls", counted_exfiltration)
         monkeypatch.setattr(display_battery, "redact_credentials", counted_credentials)
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = SECRET
         messages = [
             {
                 "role": "assistant",
@@ -319,7 +323,7 @@ class TestRedactForDisplay:
         the byte cap. So the key footprint must not move with the size of that set,
         and the accounted bytes must cover the digest and the redacted output.
         """
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = SECRET
         texts = [f"row {i} carries {secret}" for i in range(64)]
 
         def key_footprint(hosts: frozenset[str]) -> int:
@@ -373,7 +377,7 @@ class TestRedactForDisplay:
         monkeypatch.setattr(chat_utils, "redact_credentials", counted_credentials)
         monkeypatch.setattr(display_battery, "redact_exfiltration_urls", counted_exfiltration)
         monkeypatch.setattr(display_battery, "redact_credentials", counted_credentials)
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = SECRET
         rows = chat_utils.SLOT_DETAIL_MAX_LIMIT
         messages = [
             {
@@ -432,7 +436,7 @@ class TestRedactForDisplay:
         monkeypatch.setattr(chat_utils, "redact_credentials", counted_credentials)
         monkeypatch.setattr(display_battery, "redact_exfiltration_urls", counted_exfiltration)
         monkeypatch.setattr(display_battery, "redact_credentials", counted_credentials)
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = SECRET
         rows = 12_000
         messages = [
             {
@@ -513,7 +517,7 @@ class TestRedactForDisplay:
         """
         hosts = frozenset({"docs.contoso.sharepoint.com"})
         monkeypatch.setattr(chat_utils, "_exempt_exact_hosts", lambda: hosts)
-        text = "key AKIAIOSFODNN7EXAMPLE here"
+        text = f"key {SECRET} here"
         raw = text.encode("utf-8")
         hosts_bytes = "\0".join(sorted(hosts)).encode("utf-8")
         (digest, length), input_bytes = chat_utils._display_redaction_cache_key(text)
@@ -544,8 +548,8 @@ class TestRedactToolField:
         assert result == "hello world"
 
     def test_redacts_credentials(self):
-        result = _redact_tool_field("key AKIAIOSFODNN7EXAMPLE here")
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        result = _redact_tool_field(f"key {SECRET} here")
+        assert SECRET not in result
 
     def test_ascii_truncation(self):
         # ASCII: 1 byte per char, so 200 chars = 200 bytes; cap at 50.

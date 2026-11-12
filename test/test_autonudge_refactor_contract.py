@@ -36,6 +36,7 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+from redaction_structured_cases import github_classic
 
 import kiro_crew.autonudge as autonudge
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop, _AutoNudgeMaintenanceView
@@ -364,8 +365,9 @@ _BASE_NUDGELOOP_FIELDS: list[tuple[str, str | None]] = [
 
 
 _FIXED_NOW = 1_790_000_000.0
-#: AWS's documented example key: credential-shaped, so the loader holds its row aside.
-_HELD_ID = "AKIAIOSFODNN7EXAMPLE"
+#: A GitHub token with a valid checksum: credential-shaped, so the loader holds its
+#: row aside. (An AWS key ID is an identifier to the redactor and stays visible.)
+_HELD_ID = github_classic(seed=181)
 
 #: ``autonudge.json`` as the golden scenario writes it, each ``monitor`` object folded
 #: to ``<MONITOR>``: those bytes belong to ``monitoring.models.monitor_state_to_dict``,
@@ -538,12 +540,12 @@ _GOLDEN_SIDECAR = """\
   "version": 1,
   "quarantined": [
     {
-      "id": "AKIAIOSFODNN7EXAMPLE",
+      "id": "<HELD_ID>",
       "slot_key": "chat-3-300",
       "message": "held aside"
     }
   ]
-}"""
+}""".replace("<HELD_ID>", _HELD_ID)
 
 _MONITOR_OBJECT = re.compile(r'(?ms)^      "monitor": \{\n.*?^      \},\n')
 

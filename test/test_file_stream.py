@@ -16,6 +16,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.handlers import api_file_stream
 from kiro_crew.dashboard.handlers.files import (
@@ -334,7 +335,7 @@ async def test_invalid_utf8_magic_cannot_skip_the_scan(tmp_path, mock_sel):
     The probe then takes the shared binary scan, so the credential scan still
     runs and the file is refused -- a prepended byte is not a bypass."""
     f = tmp_path / "secrets2.mp3"
-    key_id = "AKIA" + "IOSFODNN7" + "EXAMPLE"  # built so no literal key sits here
+    key_id = github_classic()
     f.write_bytes(b"\xff\xfb" + f"key {key_id}\n".encode() * 10)
 
     with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):

@@ -11,6 +11,7 @@ import pytest
 
 from kiro_crew import platform_compat, skill_trust
 from kiro_crew.skill_usage import SkillUsageLedger
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -867,7 +868,7 @@ class TestNameIsRedacted:
 
         # Only meaningful if the redactor actually matches this shape -- assert
         # that first, so the test cannot pass by redacting nothing.
-        planted = "aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        planted = f"aws_secret_access_key={SAMPLE_AWS_SECRET}"
         cleaned, warnings = redact_credentials(planted)
         assert (
             cleaned != planted and warnings

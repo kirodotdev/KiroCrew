@@ -9,9 +9,13 @@ import re
 import subprocess
 
 import pytest
+from redaction_structured_cases import synth
 
 from kiro_crew import platform_compat
 from kiro_crew.testing.wait import await_until
+
+# A synthetic 40-character secret the redactor removes; an AWS key ID stays visible.
+_SECRET = synth(40, seed=200)
 
 
 class TestTokenMint:
@@ -740,7 +744,7 @@ class TestTokenMintGeneric:
             returncode = 255
 
             async def communicate(self):
-                return b"", b"WSSH error AKIAIOSFODNN7EXAMPLE banner"
+                return b"", f"WSSH error {_SECRET} banner".encode()
 
         async def fake_exec(*a, **k):
             return FakeProc()
@@ -748,7 +752,7 @@ class TestTokenMintGeneric:
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
         rc, err = asyncio.run(tm.run_remote_kirocrew("cd-1", "restart"))
         assert rc == 255
-        assert "AKIAIOSFODNN7EXAMPLE" not in err
+        assert _SECRET not in err
         assert "[REDACTED: credential]" in err
 
     def test_run_remote_kirocrew_redacts_urls_before_credentials(self, monkeypatch):
@@ -768,7 +772,7 @@ class TestTokenMintGeneric:
             returncode = 255
 
             async def communicate(self):
-                return b"", b"banner https://evil.example.com/x?token=AKIAIOSFODNN7EXAMPLE end"
+                return b"", f"banner https://evil.example.com/x?token={_SECRET} end".encode()
 
         async def fake_exec(*a, **k):
             return FakeProc()
@@ -781,7 +785,7 @@ class TestTokenMintGeneric:
         # order the URL survives as https://evil.example.com/x?token=[...].
         assert "https://evil.example.com" not in err
         assert "[REDACTED: suspicious URL" in err
-        assert "AKIAIOSFODNN7EXAMPLE" not in err
+        assert _SECRET not in err
 
     def test_stdout_tail_url_pass_not_disarmed_by_token_prescrub(self, monkeypatch):
         """The stdout-tail site has a second disarm path — its own
@@ -793,7 +797,7 @@ class TestTokenMintGeneric:
         """
         from kiro_crew.instances import token_mint as tm
 
-        stdout = b"fail: see https://evil.example.com/x?token=AKIAIOSFODNN7EXAMPLE now"
+        stdout = f"fail: see https://evil.example.com/x?token={_SECRET} now".encode()
 
         class FakeProc:
             returncode = 1
@@ -810,7 +814,7 @@ class TestTokenMintGeneric:
         msg = str(excinfo.value)
         assert "https://evil.example.com" not in msg
         assert "[REDACTED: suspicious URL" in msg
-        assert "AKIAIOSFODNN7EXAMPLE" not in msg
+        assert _SECRET not in msg
 
     class _HangProc:
         """First ``communicate`` times out; the reap (a SECOND communicate)

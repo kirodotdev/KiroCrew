@@ -64,6 +64,16 @@ def test_match_sequence_equals_the_plain_search_loop_on_random_text() -> None:
         assert _linear_loop(text) == _search_loop(text), text
 
 
+@pytest.fixture
+def _structured_detectors_off():
+    from kiro_crew.security.redaction_structured import compat
+
+    before = compat.use_rule_table()
+    compat.publish_use_rule_table(False)
+    yield
+    compat.publish_use_rule_table(before)
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -80,7 +90,11 @@ def test_match_sequence_equals_the_plain_search_loop_on_random_text() -> None:
     ],
     ids=lambda text: f"len{len(text)}",
 )
+@pytest.mark.usefixtures("_structured_detectors_off")
 def test_every_credential_shape_is_still_redacted(text: str) -> None:
+    """Covers the plan with the structured detectors off: the fixtures are the
+    pass-1 JWT and key-ID shapes, which the structured detectors decide by
+    structure instead."""
     assert _linear_loop(text) == _search_loop(text)
     out = redact(text)
     for secret in (_JWS, _JWE_DIR, _LINK, _AWS):

@@ -19,6 +19,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from overload_fakes import Clock, open_task_store
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard import session_health
 from kiro_crew.dashboard.handlers import spawn_resume
@@ -289,7 +290,9 @@ async def test_detail_404_for_unknown_id(store: TaskStore) -> None:
 #: A credential the redaction table matches, and an exfiltration URL whose
 #: payload is that same credential. Real shapes, not placeholders: a pin over
 #: a string the redactor does not match would pass on an unredacted surface.
-_CRED = "AKIAIOSFODNN7EXAMPLE"
+#: An AWS key ID is an Identifier with the structured detectors on, so the
+#: credential is a GitHub token.
+_CRED = github_classic(seed=20)
 _EXFIL_HOST = "collector.example.invalid"
 _EXFIL_URL = f"https://{_EXFIL_HOST}/ingest?token={_CRED}"
 

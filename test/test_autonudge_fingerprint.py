@@ -12,9 +12,11 @@ import re
 from types import SimpleNamespace
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import autonudge_authz as authz
 from kiro_crew.autonudge import AutoNudgeService, AutoNudgeStaleBaseline
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 
 class TestTheRedactedProjectionCannotOverwriteTheStoredMessage:
@@ -26,7 +28,7 @@ class TestTheRedactedProjectionCannotOverwriteTheStoredMessage:
     cannot drift apart. These are its non-regression arms.
     """
 
-    SECRET = "AKIAIOSFODNN7EXAMPLE"
+    SECRET = github_classic(seed=24)
 
     @pytest.fixture()
     def audits(self, monkeypatch: pytest.MonkeyPatch) -> list[dict]:
@@ -137,7 +139,7 @@ class TestAnEchoedBannerDoesNotOverwriteTheStoredOne:
     replaced the operator's stored banner with its own redaction -- irreversibly.
     """
 
-    SECRET = "AKIAIOSFODNN7EXAMPLE"
+    SECRET = github_classic(seed=24)
 
     class _Svc:
         def __init__(self, row: object) -> None:
@@ -256,7 +258,7 @@ class TestAConfirmedGoalIsNotOverwrittenByAStaleClient:
         """
         # One key-shaped literal, and a distinct same-shape variant derived from it, so
         # the two goals differ only inside the mask.
-        key_seen = "AKIAIOSFODNN7EXAMPLE"
+        key_seen = SAMPLE_AWS_SECRET
         seen = f"deploy with {key_seen} now"
         rotated = f"deploy with {key_seen[:-1] + 'F'} now"
         svc = AutoNudgeService(base_dir=tmp_path)

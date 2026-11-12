@@ -104,11 +104,12 @@ class TestHandleCronListNextRun:
         # Unmocked, so it exercises the real scanner rather than a stub that
         # returns whatever the test wanted.
         job = _make_job()
-        job.message = "token=AKIA" + "IOSFODNN7EXAMPLE"
+        secret = "Qh4Tm2Vx9KpRc/Z8Nw3Hd/" + "Jf1Lb5Gs0Ye9Ua2WkE"
+        job.message = "secret=" + secret
         cron_service._jobs = [job]
         result = asyncio.run(_handle_cron_command("cron list", cron_service, "C123", "t123"))
         assert result is not None
-        assert "AKIA" + "IOSFODNN7EXAMPLE" not in result
+        assert secret not in result
         assert "REDACTED" in result
 
     def test_remove_all_redacts_name(self, cron_service: CronService) -> None:

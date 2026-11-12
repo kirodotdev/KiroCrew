@@ -19,6 +19,7 @@ from kiro_crew.dashboard.slot_projection import resolved_row_identity
 from kiro_crew.dashboard.state import MAX_LIVE_SLOTS, _ChatSlot
 from kiro_crew.instances.constants import PEER_SLOTS_REPLY_MAX_BYTES
 from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 
 class _Req:
@@ -222,12 +223,12 @@ class TestPeerTextIsRedactedAndAllowlisted:
     async def test_a_credential_shaped_title_never_reaches_the_browser(self, monkeypatch):
         """The finding this pass exists for.
 
-        A peer answering with an access-key id in a session title would have had
+        A peer answering with an AWS secret key in a session title would have had
         it rendered verbatim in the sidebar, and the local slot beside it would
         have been redacted — the same string treated two ways in one list.
         """
         _enable_instances(monkeypatch)
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = SAMPLE_AWS_SECRET
         mgr = _manager(body=json.dumps([{"key": "p1", "title": f"deploy {secret}"}]).encode())
 
         data = await _body(await hi.api_instances_chat_slots(_request(_state(mgr))))
@@ -244,7 +245,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
         alone would remove it and the test would pin nothing.
         """
         _enable_instances(monkeypatch)
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = SAMPLE_AWS_SECRET
         title = "x" * (512 - len(secret) // 2) + secret
         mgr = _manager(body=json.dumps([{"key": "p1", "title": title}]).encode())
 
@@ -433,7 +434,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
         """``parent.key`` goes through the same sink as ``key``: a credential-shaped
         citation never reaches the browser, and an oversized one is clamped."""
         _enable_instances(monkeypatch)
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = SAMPLE_AWS_SECRET
         rows = [
             {"key": "a", "parent": {"key": f"lead {secret}"}},
             {"key": "b", "parent": {"key": "x" * (hi._PEER_FIELD_MAX_CHARS * 3)}},
@@ -692,7 +693,7 @@ class TestAnInterruptedReplyIsRefusedNotDecoded:
         allowlisting or redaction the success path applies.
         """
         _enable_instances(monkeypatch)
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = SAMPLE_AWS_SECRET
         body = json.dumps([{"key": "p1", "title": f"deploy {secret}"}]).encode()
         mgr = _manager(body=body, interrupt=aiohttp.ClientPayloadError())
 

@@ -20,12 +20,17 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp.test_utils import make_mocked_request
 from body_stream_helpers import BodyStreamPayload
+from redaction_structured_cases import synth
 
 from kiro_crew import session_storage as session_storage_module
 from kiro_crew.dashboard.handlers import session_storage as handler
 from kiro_crew.testing.wait import async_wait_until
 
 _DAY = 86400.0
+
+
+# A synthetic 40-character secret the redactor removes; an AWS key ID stays visible.
+_SECRET = synth(40, seed=205)
 
 
 @pytest.fixture(autouse=True)
@@ -876,7 +881,7 @@ class TestEmpty:
         A refusal can quote caller input on a pollable endpoint, so it gets `_redact` and
         a length cap. The AWS docs example key is used because `_redact` is a pattern match.
         """
-        leak = "refused near AKIAIOSFODNN7EXAMPLE " + ("y" * 900)
+        leak = f"refused near {_SECRET} " + ("y" * 900)
 
         def _refuse(batch_ids, on_progress=None, on_skip=None, expect=None):  # type: ignore[no-untyped-def]
             raise session_storage_module.SessionStorageError(leak)
@@ -903,7 +908,7 @@ class TestEmpty:
 
         reported = body["job"]["error"]
         assert len(reported) <= handler._ERROR_TEXT_LIMIT
-        assert "AKIAIOSFODNN7EXAMPLE" not in reported
+        assert _SECRET not in reported
         assert "refused" in reported
 
     @pytest.mark.asyncio
@@ -1399,7 +1404,7 @@ class TestTranscriptContentIsRedacted:
     before they reach the dashboard — the same rule the artifact surface follows.
     """
 
-    SECRET = "AKIAIOSFODNN7EXAMPLE"
+    SECRET = _SECRET
 
     @pytest.mark.asyncio
     async def test_a_credential_in_a_title_never_reaches_the_list(
@@ -1590,7 +1595,7 @@ class TestACredentialInASessionIdIsScrubbed:
         self, stores: tuple[Path, Path]
     ) -> None:
         crew_home, kiro_home = stores
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _SECRET
         # A replay-only unit keyed by the offending id, which is what `_origin`
         # falls back to when there is no transcript stem.
         _retired(kiro_home, secret, age_days=40)

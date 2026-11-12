@@ -26,6 +26,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import mcp_core
 from kiro_crew.mcp_core import (
@@ -44,6 +45,8 @@ from kiro_crew.mcp_core import (
 from kiro_crew.mcp_shared import DeferredTool, drive_deferred
 
 _GOV = "kiro_crew.platform.governance_profiles"
+# A synthetic GitHub token the redaction plan always removes.
+_KEY = github_classic(seed=1)
 
 
 def _learn_add_properties() -> dict[str, Any]:
@@ -640,11 +643,11 @@ class TestWaitTool:
 
     def test_the_reason_is_redacted_before_it_reaches_the_transcript(self) -> None:
         out, _clock, _rec, _ = self._run(
-            {"seconds": 60, "reason": "creds AKIAIOSFODNN7EXAMPLE in the log"},
+            {"seconds": 60, "reason": "creds " + _KEY + " in the log"},
             strict_key="",
             post=lambda *a, **k: {},
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        assert _KEY not in out
         assert out.startswith("Waited 60s. Resuming: ")
 
 
@@ -789,10 +792,10 @@ class TestSpawnStatusTool:
         assert body == "line-a\nline-b"
 
     def test_the_transcript_is_redacted(self) -> None:
-        payload = {"result": "token AKIAIOSFODNN7EXAMPLE leaked"}
+        payload = {"result": "token " + _KEY + " leaked"}
         with patch.object(mcp_core, "_get", return_value=payload):
             out = _call_tool_inner("spawn_status", {"agent_id": "a1"})
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        assert _KEY not in out
 
     def test_a_run_that_ended_with_an_error_keeps_its_transcript(self) -> None:
         # A finished run reports why it ended badly in ``error``, next to the
@@ -843,11 +846,11 @@ class TestSpawnStatusTool:
         assert out == "[ENDED WITH ERROR · Orphaned (unknown cause)]\n_No result._"
 
     def test_the_ending_reason_is_redacted(self) -> None:
-        payload = {"done": True, "result": "x", "error": "provider said AKIAIOSFODNN7EXAMPLE"}
+        payload = {"done": True, "result": "x", "error": "provider said " + _KEY}
         with patch.object(mcp_core, "_get", return_value=payload):
             out = _call_tool_inner("spawn_status", {"agent_id": "a1"})
         assert out.startswith("[ENDED WITH ERROR · ")
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        assert _KEY not in out
 
 
 class TestLearnAddTool:

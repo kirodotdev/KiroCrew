@@ -29,6 +29,7 @@ from chat_runner_coverage_helpers import (
     _slot,
     _state,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew.acp.types import EVENT_TEXT_CHUNK
 from kiro_crew.config.sections import ResolvedBindings
@@ -721,10 +722,9 @@ class TestExpandDollarSkills:
 
     def test_resolved_skill_body_is_appended_and_redacted(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
+        secret = github_classic(seed=17)  # a checksummed GitHub token, redacted
         skills = MagicMock()
-        skills.resolve_dollar_skills.return_value = [
-            ("$deploy", "deploy", "step one AKIAIOSFODNN7EXAMPLE")
-        ]
+        skills.resolve_dollar_skills.return_value = [("$deploy", "deploy", f"step one {secret}")]
 
         with patch.object(chat_runner, "_get_skills", return_value=skills):
             expanded, count = chat_runner._expand_dollar_skills(
@@ -733,7 +733,7 @@ class TestExpandDollarSkills:
 
         assert count == 1
         assert "[Skill: deploy]" in expanded
-        assert "AKIAIOSFODNN7EXAMPLE" not in expanded
+        assert secret not in expanded
         assert slot.messages[-1]["role"] == "system"
 
 

@@ -28,6 +28,7 @@ import itertools
 from datetime import datetime
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.testing.wait import await_until, finished
 from kiro_crew.workflows.registry import (
@@ -522,7 +523,7 @@ def test_mcp_result_exposes_redacted_finished_agent_outputs(monkeypatch, aggrega
     from kiro_crew import mcp_core
     from kiro_crew.mcp_tools import workflows
 
-    token = "AKIA" + "L" * 16
+    token = github_classic(seed=160)
     handle = RunHandle(run_id="wf_mcp", name="example", status=STATUS_FINISHED)
     handle.result = aggregate
     handle.agent_results = {0: {"answer": "kept", "credential": token}, 1: None}

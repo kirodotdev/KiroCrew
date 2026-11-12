@@ -32,6 +32,7 @@ from issue_radar_agent_tools_helpers import (
     listed,
     shipped,
 )
+from redaction_structured_cases import github_classic
 from turn_harness import SlotSpec, TurnScript, run_turn
 
 from kiro_crew import mcp_core
@@ -40,6 +41,7 @@ from kiro_crew.apps.builtins.issue_radar.backend import agent_tools
 from kiro_crew.dashboard.token_auth import token_auth_middleware
 from kiro_crew.validation import ValidationError
 
+_CREDENTIAL = github_classic(seed=9)
 READ_PATH = "/api/apps/issue-radar/crew"
 WORK_PATH = "/api/apps/issue-radar/crew/work"
 
@@ -703,10 +705,10 @@ class TestPublicStringsAreSanitizedOnTheWayIn(unittest.TestCase):
 
     def test_a_credential_quoted_into_a_progress_line_is_not_published(self):
         captured, _ = _record(
-            event="log had AKIAIOSFODNN7EXAMPLE in it",
+            event=f"log had {_CREDENTIAL} in it",
             event_kind="investigate",
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in captured["body"]["event"]
+        assert _CREDENTIAL not in captured["body"]["event"]
 
     def test_a_credential_in_the_pass_reason_is_not_stored(self):
         """``why`` is what the shared skip index keeps as the reason.
@@ -717,11 +719,11 @@ class TestPublicStringsAreSanitizedOnTheWayIn(unittest.TestCase):
         captured, _ = _record(
             phase="skipped",
             skip_scope="needs-decision",
-            why="the failing config had AKIAIOSFODNN7EXAMPLE hardcoded",
+            why=f"the failing config had {_CREDENTIAL} hardcoded",
             event="passed: needs a decision on the credential",
             event_kind="skip",
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in captured["body"]["why"]
+        assert _CREDENTIAL not in captured["body"]["why"]
 
     def test_the_home_directory_is_scrubbed_from_a_progress_line(self):
         # Redaction alone covers credentials and exfil URLs, NOT paths — and a
@@ -784,8 +786,8 @@ class TestPublicStringsAreSanitizedOnTheWayIn(unittest.TestCase):
         assert captured["body"]["worktree"] == worktree
 
     def test_a_label_carrying_a_credential_is_not_persisted(self):
-        captured, _ = _record(labels_applied=["crew: in progress", "AKIAIOSFODNN7EXAMPLE"])
-        assert "AKIAIOSFODNN7EXAMPLE" not in captured["body"]["labels_applied"][1]
+        captured, _ = _record(labels_applied=["crew: in progress", _CREDENTIAL])
+        assert _CREDENTIAL not in captured["body"]["labels_applied"][1]
 
     def test_removing_the_last_label_is_forwarded_as_an_empty_list(self):
         """`labels_applied: []` means "I now hold none", not "I did not say".

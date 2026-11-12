@@ -29,6 +29,7 @@ from dashboard_approval_helpers import (
     _set_stream,
 )
 from named_cases_helpers import named_cases
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat import _run_chat
@@ -724,14 +725,12 @@ class TestPreToolUseHookBlockRecovery:
         ``event.title`` is LLM-controlled (``_select_tool_title``) and must be redacted
         (``_safe_reject_title``) before the broadcast, persisted row and the audit.
         """
-        # Assembled at runtime, never written as one literal: the redactor only
+        # Built at runtime, never written as one literal: the redactor only
         # fires on credential-SHAPED input (a plain sentinel passes through
-        # untouched, so this test would prove nothing), but a real key shape
-        # sitting in the source trips the source-text scanners --
-        # internal-content-scan and Semgrep's
-        # `detected-aws-access-key-id-value`. Splitting satisfies both, and
-        # matches the existing sentinels in code_review_sage's tests.
-        secret = "AKIA" + "1234567890ABCDEF"
+        # untouched, so this test would prove nothing), but a real token shape
+        # sitting in the source trips the source-text scanners. A GitHub token
+        # with a valid checksum is redacted; an AWS key ID would stay visible.
+        secret = github_classic(seed=11)
         state, client = _make_state(
             tmp_path,
             context_builder=_context_builder(),
@@ -875,10 +874,10 @@ class TestDenyRowTitleRedaction:
     Triggers: a title over ``MAX_TOOL_NAME_LEN``, and a PreToolUse hook that raises.
     """
 
-    # Assembled at runtime, never as one literal: the redactor only fires on
-    # credential-SHAPED input, and a real key shape in the source trips the
-    # source-text scanners (internal-content-scan, Semgrep).
-    _SECRET = "AKIA" + "1234567890ABCDEF"
+    # Built at runtime, never as one literal: the redactor only fires on
+    # credential-SHAPED input, and a real token shape in the source trips the
+    # source-text scanners. A GitHub token with a valid checksum is redacted.
+    _SECRET = github_classic(seed=12)
 
     def _invalid_title(self) -> str:
         # Over MAX_TOOL_NAME_LEN with is_shell False, so _validate_tool_name

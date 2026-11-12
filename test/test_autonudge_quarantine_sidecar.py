@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import autonudge as _an
 from kiro_crew.autonudge import AutoNudgeService, AutoNudgeStoreUnvetted
@@ -32,7 +33,7 @@ class TestTheQuarantineSidecarIsWrittenSafely:
     consistent file. Shape: a non-object sidecar is ignored rather than fatal.
     """
 
-    SECRET = "AKIAIOSFODNN7EXAMPLE"
+    SECRET = github_classic(seed=31)
 
     def _store_with_one_unusable_row(self, tmp_path):
         good = {"id": "keep", "slot_key": "chat-1-1", "message": "fine", "idle_secs": 300}

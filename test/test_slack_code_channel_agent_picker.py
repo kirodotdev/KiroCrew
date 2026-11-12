@@ -409,25 +409,30 @@ def test_a_switch_that_raises_is_answered_audited_and_redrawn(
 def test_a_refusal_reason_is_redacted_before_it_reaches_slack(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from redaction_structured_cases import github_classic
+
+    from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN as slack_token
+
     _bind(env)
-    key = "AKIA" + "QWERTYUIOPASDFGH"
+    key = github_classic(seed=121)
     url = (
         "https://attacker.example/collect?data="
         + "c2VjcmV0LXRva2VuLXZhbHVlLWhlcmUtMTIzNDU2Nzg5MA=="
     )
     # Split by markup: only the display sink's display-form scan finds it.
-    split = "AKIA**" + "ZXCVBNMASDFGHJKL**"
+    split = f"{slack_token[:5]}**{slack_token[5:]}**"
+    body = slack_token[5:19]
     env.switches.answers.append(
         (503, {"error": f"unavailable: {key} {split} {url}", "code": "store_unavailable"})
     )
     assert asyncio.run(agent_picker.handle_select(env.orch, _pick("builder")))
     [(_, _, text)] = env.slack.ephemerals
-    for secret in (key, "ZXCVBNMASDFGHJKL", "attacker.example/collect"):
+    for secret in (key, body, "attacker.example/collect"):
         assert secret not in text
     assert "[REDACTED" in text
     # The audit row carries the same redacted reason.
     [row] = [r for r in _rows(env) if "store_unavailable" in r["resources"]]
-    assert "[REDACTED" in row["error"] and "ZXCVBNMASDFGHJKL" not in row["error"]
+    assert "[REDACTED" in row["error"] and body not in row["error"]
 
 
 def test_a_pick_during_a_turn_is_refused_with_try_again(env: Env) -> None:
@@ -1074,10 +1079,14 @@ def test_the_switch_row_goes_through_the_display_sink(
 ) -> None:
     """The dashboard row a switch writes passes the shared display sink: a
     secret-shaped string in it is redacted, with no Slack mention defang."""
+    from redaction_structured_cases import github_classic
+
     from kiro_crew import agent_switch_command
+    from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN as slack_token
 
     slot = _bind(env)
-    key = "AKIA" + "QWERTYUIOPASDFGH"
+    key = github_classic(seed=122)
+    body = slack_token[5:19]
 
     async def loaded(_slot: Any) -> bool:
         return True
@@ -1086,9 +1095,9 @@ def test_the_switch_row_goes_through_the_display_sink(
     monkeypatch.setattr(
         agent_switch_command,
         "switch_announcement",
-        lambda a, w: f"@{a} switched {key} AKIA**ZXCVBNMASDFGHJKL** {w}",
+        lambda a, w: f"@{a} switched {key} {slack_token[:5]}**{slack_token[5:]}** {w}",
     )
     asyncio.run(agent_picker._announce(env.state, slot, "builder", ""))
     [row] = env.transcript
-    assert key not in row and "ZXCVBNMASDFGHJKL" not in row and "[REDACTED" in row
+    assert key not in row and body not in row and "[REDACTED" in row
     assert "@builder" in row  # a transcript row: no Slack mention defang

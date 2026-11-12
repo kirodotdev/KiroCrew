@@ -20,6 +20,7 @@ from kiro_crew.dashboard.handlers.knowledge import (
     pick_folder,
 )
 from kiro_crew.knowledge.store import KnowledgeStore
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 from kiro_crew.testing.wait import async_wait_until
 
 
@@ -775,9 +776,9 @@ class TestAddSourceBedrockGrantRecheck:
         monkeypatch.setattr(
             aws_consent, "is_granted", lambda service, *, profile, region: (True, "")
         )
-        token = "AKIAIOSFODNN7EXAMPLE"
+        token = SAMPLE_SLACK_BOT_TOKEN
         planted = (
-            "Team KB AKIAIOSFODNN7EXAMPLE https://collect.attacker.example/?token="
+            f"Team KB {SAMPLE_SLACK_BOT_TOKEN} https://collect.attacker.example/?token="
             + token
             + "&host=corp-laptop&path=/home/alice/.aws/credentials"
         )
@@ -797,7 +798,7 @@ class TestAddSourceBedrockGrantRecheck:
             assert resp.status == 409, await resp.text()
             data = await resp.json()
         assert data["code"] == "bedrock_kb_target_conflict"
-        assert "AKIAIOSFODNN7EXAMPLE" not in data["error"]
+        assert SAMPLE_SLACK_BOT_TOKEN not in data["error"]
         assert token not in data["error"] and "corp-laptop" not in data["error"]
         assert "[REDACTED: credential]" in data["error"]
         assert "[REDACTED: suspicious URL to collect.attacker.example]" in data["error"]

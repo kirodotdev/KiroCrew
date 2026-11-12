@@ -20,6 +20,7 @@ from dashboard_owner_helpers import as_owner
 from gateway_appkit_endpoints_helpers import (  # noqa: F401 -- the fixture is requested by name
     app_env_fixture,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew.apps.manager import APP_MANIFEST_FILENAME
 from kiro_crew.apps.routes import register_app_routes
@@ -586,15 +587,15 @@ class TestRegistryInstallStreamSecurity:
     ) -> None:
         """Each streamed log line should be redacted for credentials.
 
-        Uses an AWS access key pattern which redact_credentials catches.
+        Uses a synthetic GitHub token, which redact_credentials catches.
         """
+        key = github_classic(seed=7)
 
         async def _fake_install(
             name: str, log_lines: list[str] | None = None, **_: Any
         ) -> dict[str, Any]:
             if log_lines is not None:
-                # AWS access key ID pattern — caught by redact_credentials
-                log_lines.append("Found key AKIAIOSFODNN7EXAMPLE in config")
+                log_lines.append(f"Found key {key} in config")
             return {"ok": True, "name": name, "message": "ok", "log": "\n".join(log_lines or [])}
 
         monkeypatch.setattr(
@@ -612,7 +613,7 @@ class TestRegistryInstallStreamSecurity:
                 json={"name": "test-app"},
             )
             body = await resp.text()
-            # The raw AWS key should NOT appear in the streamed output
-            assert "AKIAIOSFODNN7EXAMPLE" not in body
+            # The raw key should NOT appear in the streamed output
+            assert key not in body
             # But the redaction marker should be present
             assert "REDACTED" in body

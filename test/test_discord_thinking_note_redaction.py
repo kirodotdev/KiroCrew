@@ -12,11 +12,13 @@ from typing import Any
 import pytest
 from discord_helpers import _drop_live_config_snapshot  # noqa: F401
 from discord_helpers import FakeClient
+from redaction_structured_cases import github_classic
 
 from kiro_crew.discord.renderer import DiscordRenderer
 from kiro_crew.discord.transport import DISCORD_CAPABILITIES
 
-_KEY = "AKIAIOSFODNN7EXAMPLE"
+#: A synthetic GitHub classic token (valid checksum) the redaction plan removes.
+_KEY = github_classic(seed=91)
 
 
 class _NoteSendFails(FakeClient):

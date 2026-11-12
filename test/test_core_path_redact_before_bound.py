@@ -27,6 +27,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from redaction_structured_cases import github_classic, session_token
+
 from kiro_crew.acp import _dispatch as acp_dispatch
 from kiro_crew.dashboard.handlers import artifacts as artifacts_handlers
 from kiro_crew.security import redact_credentials
@@ -34,8 +36,9 @@ from kiro_crew.telegram import renderer as tg_renderer
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# A fake AWS access key id: matches (?:AKIA|ASIA)[A-Z0-9]{16}, asserted absent.
-_TOKEN = "AKIA" + "STRADDLE0123456A"
+# A fake GitHub classic token with a valid checksum, asserted absent. Not an AWS
+# key ID: those are kept visible as identifiers.
+_TOKEN = github_classic(seed=11)
 
 
 class TestTelegramOptionLabelStraddle:
@@ -75,7 +78,8 @@ class TestArtifactSnippetStraddle:
         """
         max_len = artifacts_handlers._SNIPPET_MAX_LEN
         window = max_len * 3
-        secret_label = "SecretAccessKey=" + "A1b2" * 100
+        # A long labelled session token: a valid shape that redacts to the tag.
+        secret_label = "SessionToken=" + session_token(length=400)
         pad = "x" * (window - 10 - len(secret_label) - 1)
         stripped = f"{secret_label} {pad}{_TOKEN} tail text"
 

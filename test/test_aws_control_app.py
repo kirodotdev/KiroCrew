@@ -27,6 +27,7 @@ from aws_control_app_helpers import (  # noqa: F401 -- fixtures are used by name
     _registered,
     _request,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew import aws_consent
 from kiro_crew.apps.builtins.aws_control.backend import accounts as accounts_mod
@@ -559,7 +560,7 @@ class TestConsentTargetTracksTheOperation:
         from kiro_crew.dashboard.handlers import aws_consent as consent_handlers
         from kiro_crew.deploy import profiles as deploy_profiles
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = github_classic(seed=131)
         snapshot = _snapshot_of(
             _registry([_entry(secret, account=self.ACCOUNT)], default=secret),
             {secret: _identity(False, detail="ExpiredToken")},

@@ -68,6 +68,7 @@ from channel_turns_helpers import governance_fixture  # noqa: F401
 from channel_turns_helpers import published_fixture  # noqa: F401
 from channel_turns_helpers import spooled_fixture  # noqa: F401
 from channel_turns_helpers import _ROOM, CONV, KEY, ROUTE, _answer, _asker, _bound_as_room, _turns
+from redaction_structured_cases import github_classic
 
 from kiro_crew.acp.types import (
     STOP_REASON_CANCELLED,
@@ -534,7 +535,7 @@ class TestAShutdownBetweenTheClaimAndTheDispatch:
 )
 @pytest.mark.parametrize("drift", DRIFTS)
 def test_a_memory_refusal_hides_paths_and_credentials(monkeypatch, path, drift) -> None:
-    secret = "ghp_" + "x" * 36
+    secret = github_classic(seed=131)
 
     async def _refuse(_ctx: Any, _key: str) -> str:
         raise UnknownMemoryStore(
