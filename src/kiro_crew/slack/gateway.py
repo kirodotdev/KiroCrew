@@ -441,6 +441,7 @@ from kiro_crew.session import (
     SessionClosingError,
     SessionManager,
 )
+from kiro_crew.session_map import SessionMap
 from kiro_crew.session_start_sizing import resolve_session_start_sizing
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.slack.client import RealSlackClient

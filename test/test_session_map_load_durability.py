@@ -379,3 +379,32 @@ def test_the_re_read_after_a_failed_load_rides_out_a_sharing_violation(
 
     assert calls["n"] == 3
     assert entries["dashboard:alice"]["sid"] == "sid-ALICE"
+
+
+@pytest.mark.asyncio
+async def test_the_gateway_builds_its_map_off_the_loop_so_a_sharing_violation_is_retried(
+    map_dir, monkeypatch
+) -> None:
+    """On the loop the read gets one attempt; the gateway builds its map in a worker thread."""
+    import inspect
+
+    from kiro_crew.config import KiroCrewConfig
+    from kiro_crew.session import SessionManager
+    from kiro_crew.slack.gateway import GatewayOrchestrator
+
+    calls = _sharing_violation(monkeypatch, times=1)
+    assert SessionMap()._load_failed, "on the loop the read is not retried"
+
+    calls["n"] = 0
+    built = await asyncio.to_thread(SessionMap)
+    assert calls["n"] == 2
+    assert not built._load_failed
+
+    manager = SessionManager(
+        KiroCrewConfig(), provider_factory=lambda *a, **k: object(), session_map=built
+    )
+    assert manager._session_map is built
+
+    init_services = inspect.getsource(GatewayOrchestrator._init_services)
+    assert "await asyncio.to_thread(SessionMap)" in init_services
+    assert "session_map=session_map" in init_services
