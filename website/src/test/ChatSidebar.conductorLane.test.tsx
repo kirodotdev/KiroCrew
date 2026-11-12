@@ -430,6 +430,16 @@ describe('chat sidebar — conductor lane', () => {
     expect(queryByTestId('crew-root-attention')).toBeNull()
   })
 
+  it('keeps the unread dot beside Done when the finished crew has an unread reply', async () => {
+    mocks.crewWorkersRows = [
+      { key: 'k-w1', title: 'W1', agent: '', status: 'idle', group: 'done', last_activity: '', ledger_item: '', created_by: 'k-root' },
+    ]
+    const slots = [{ key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 2, running: false, modified: 4000, crew_mode_root: true, last_message: 'All set.' }]
+    const { getByTestId } = renderSidebar(slots, [], null, {}, ['k-root'], slots)
+    await waitFor(() => expect(getByTestId('crew-root-done')).toHaveTextContent(/^Done$/))
+    expect(within(getByTestId('crew-root-summary')).getByRole('img', { name: 'Agent finished — your turn' })).toBeInTheDocument()
+  })
+
   it('never reads Done while the main chat itself is interrupted or still running', async () => {
     mocks.crewWorkersRows = [
       { key: 'k-w1', title: 'W1', agent: '', status: 'idle', group: 'done', last_activity: '', ledger_item: '', created_by: 'k-root' },
