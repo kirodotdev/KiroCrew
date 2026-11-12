@@ -10,8 +10,11 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.deploy import engine, handlers, pending
+
+_KEY = github_classic(seed=11)  # a token the credential plan redacts
 
 SCRIPTS_DIR = (
     Path(__file__).parent.parent
@@ -182,7 +185,7 @@ class TestF2PendingRedaction:
     """GET /api/deploy/pending redacts credential strings in entries."""
 
     def test_pending_list_redacts_akia_in_scan_summary(self, tmp_path):
-        """A fake AKIA key in scan_summary must be redacted in the response."""
+        """A credential in scan_summary must be redacted in the response."""
         pending.add_pending({
             "site_id": "test-site",
             "local_dir": "/home/user/project",
@@ -190,7 +193,7 @@ class TestF2PendingRedaction:
             "profile": "my-profile",
             "region": "us-east-1",
             "ttl_hours": 72,
-            "scan_summary": "Found key: AKIAIOSFODNN7EXAMPLE in config.js",
+            "scan_summary": f"Found key: {_KEY} in config.js",
             "content_digest": "",
         })
 
@@ -200,12 +203,12 @@ class TestF2PendingRedaction:
         entries = body["pending"]
         assert len(entries) == 1
         summary = entries[0]["scan_summary"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in summary
+        assert _KEY not in summary
 
     def test_pending_list_redacts_in_site_id(self, tmp_path):
         """Credential patterns embedded in any field are redacted."""
         pending.add_pending({
-            "site_id": "site-AKIAIOSFODNN7EXAMPLE",
+            "site_id": f"site-{_KEY}",
             "local_dir": "",
             "artifact_slug": "",
             "profile": "",
@@ -218,7 +221,7 @@ class TestF2PendingRedaction:
         resp = _run(handlers._handle_pending_list(_FakeReq()))
         body = json.loads(resp.body)
         site_id_val = body["pending"][0]["site_id"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in site_id_val
+        assert _KEY not in site_id_val
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

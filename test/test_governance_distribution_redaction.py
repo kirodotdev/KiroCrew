@@ -31,6 +31,7 @@ from governance_distribution_helpers import (
     _static_fetcher,
     pd_format_exc,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew.platform import governance
 from kiro_crew.platform import policy_distribution as pd
@@ -121,11 +122,13 @@ class TestEndpointAuthoredTextIsSanitised:
     def test_the_sanitiser_runs_both_passes(self):
         """The source elision AND the shared credential chain, not one or the other."""
         source = "https://config.corp.example/p.json"
-        text = f"fetching {source} returned AKIAIOSFODNN7EXAMPLE"
+        # A GitHub classic token, since an AWS key ID is kept visible as an identifier.
+        token = github_classic(seed=7)
+        text = f"fetching {source} returned {token}"
         clean = pd._sanitize_detail(text, source)
         assert source not in clean
         assert "config.corp.example" not in clean
-        assert "AKIAIOSFODNN7EXAMPLE" not in clean
+        assert token not in clean
 
 
 class TestTheSignatureAuditLabelIsRedacted:

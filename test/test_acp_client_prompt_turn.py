@@ -15,6 +15,7 @@ from acp_client_helpers import _pin_the_installed_kiro_cli_version  # noqa: F401
 
 from kiro_crew.acp.client import AcpClient, AcpError, AcpProcessDied
 from kiro_crew.acp.types import ACP_BACKEND_OPENCODE, AcpPromptStats
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 # ── Phase 1: stop_reason and turn_done tests ──
 
@@ -873,7 +874,7 @@ class TestDispatchSubagentEvents:
                         "update": {
                             "sessionUpdate": "tool_call_chunk",
                             "toolCallId": "tc-1",
-                            "title": "leak AKIAIOSFODNN7EXAMPLE now",
+                            "title": f"leak {SAMPLE_AWS_SECRET} now",
                         },
                     }
                 ),
@@ -886,7 +887,7 @@ class TestDispatchSubagentEvents:
                         "sessionId": "s1",
                         "update": {
                             "sessionUpdate": "agent_message_chunk",
-                            "content": {"text": "secret AKIAIOSFODNN7EXAMPLE here"},
+                            "content": {"text": f"secret {SAMPLE_AWS_SECRET} here"},
                         },
                     }
                 ),
@@ -907,13 +908,13 @@ class TestDispatchSubagentEvents:
         acts = [e for e in events if e.kind == EVENT_SUBAGENT_ACTIVITY]
         tc = [a for a in acts if a.tool_call_id == "tc-1"]
         txt = [a for a in acts if a.text]
-        # Title redacted (credential scrubbed, no raw AKIA leaks through).
+        # Title redacted (credential scrubbed, no raw secret leaks through).
         assert len(tc) == 1
-        assert "AKIAIOSFODNN7EXAMPLE" not in tc[0].title
+        assert SAMPLE_AWS_SECRET not in tc[0].title
         assert "[REDACTED" in tc[0].title
         # Nested content.text was extracted (robustness) AND redacted (security).
         assert len(txt) == 1 and txt[0].sub_session_id == "s1"
-        assert "AKIAIOSFODNN7EXAMPLE" not in txt[0].text
+        assert SAMPLE_AWS_SECRET not in txt[0].text
         assert "[REDACTED" in txt[0].text
 
     @pytest.mark.asyncio

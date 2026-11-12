@@ -19,11 +19,15 @@ from aiohttp.test_utils import make_mocked_request
 from dashboard_owner_helpers import NoConfiguredOwner
 from issue_radar_agent_tools_helpers import INVESTIGATION_TOOL as TOOL
 from issue_radar_agent_tools_helpers import call, clean, descriptor, forwarded, listed, shipped
+from redaction_structured_cases import github_classic
 
 from kiro_crew import mcp_core
 from kiro_crew.apps.builtins.issue_radar.backend import routes as ir_routes
 from kiro_crew.dashboard.token_auth import token_auth_middleware
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 from kiro_crew.validation import ValidationError
+
+_KEY = github_classic(seed=13)  # a token the credential plan redacts
 
 RECORD_PATH = "/api/apps/issue-radar/investigation"
 
@@ -258,15 +262,15 @@ class TestTheToolsAnswer:
     def test_findings_and_labels_are_redacted_on_the_way_in(self) -> None:
         args = dict(
             self._BASE,
-            verdict="leaks AKIAIOSFODNN7EXAMPLE",
-            suggested_labels=["", "bug AKIAIOSFODNN7EXAMPLE"],
+            verdict="leaks " + _KEY,
+            suggested_labels=["", "bug " + _KEY],
         )
         captured, _ = self._run(args)
         findings = captured["body"]["findings"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in findings["verdict"]
+        assert _KEY not in findings["verdict"]
         # The falsy label is dropped, the redacted one survives.
         assert len(findings["suggested_labels"]) == 1
-        assert "AKIAIOSFODNN7EXAMPLE" not in findings["suggested_labels"][0]
+        assert _KEY not in findings["suggested_labels"][0]
 
     def test_a_gitlab_merge_request_is_referenced_with_a_bang(self) -> None:
         args = dict(self._BASE, provider="gitlab", host="gitlab.com", kind="pull", verdict="ok")
@@ -299,16 +303,16 @@ class TestFindingsAreRedactedBeforePersisting(unittest.TestCase):
 
     def test_a_credential_quoted_into_a_finding_is_not_persisted(self):
         captured, _ = self._call(
-            root_cause="the issue pasted AKIAIOSFODNN7EXAMPLE into the log",
-            summary="aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            root_cause=f"the issue pasted {_KEY} into the log",
+            summary=f"aws_secret_access_key = {SAMPLE_AWS_SECRET}",
         )
         findings = captured["body"]["findings"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in findings["root_cause"]
-        assert "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" not in findings["summary"]
+        assert _KEY not in findings["root_cause"]
+        assert SAMPLE_AWS_SECRET not in findings["summary"]
 
     def test_a_credential_in_a_label_is_not_persisted(self):
-        captured, _ = self._call(suggested_labels=["AKIAIOSFODNN7EXAMPLE"])
-        assert "AKIAIOSFODNN7EXAMPLE" not in captured["body"]["findings"]["suggested_labels"][0]
+        captured, _ = self._call(suggested_labels=[_KEY])
+        assert _KEY not in captured["body"]["findings"]["suggested_labels"][0]
 
     def test_ordinary_prose_is_left_alone(self):
         # Redaction must not mangle a legitimate finding: only suspicious URLs

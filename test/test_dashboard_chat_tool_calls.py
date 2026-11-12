@@ -9,6 +9,7 @@ from chat_test_helpers import _make_state
 from dashboard_chat_helpers import _provider_mock
 
 from kiro_crew.dashboard.chat_runner import _tool_call_ws_payload
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 
 def test_tool_call_ws_payload_preserves_shell_capability_signal():
@@ -677,7 +678,7 @@ class TestRunChatToolCallUpdate:
                 kind=EVENT_TOOL_CALL_UPDATE,
                 title="echo secret",
                 tool_kind="execute",
-                tool_input='{"command":"echo AKIAIOSFODNN7EXAMPLE"}',
+                tool_input='{"command":"echo ' + SAMPLE_AWS_SECRET + '"}',
                 tool_call_id="tc-cred",
             ),
             LLMEvent(kind=EVENT_COMPLETE),
@@ -691,10 +692,10 @@ class TestRunChatToolCallUpdate:
 
         tool_msgs = [m for m in slot.messages if m.get("role") == "tool"]
         # Credential must not appear in the persisted meta.
-        assert "AKIAIOSFODNN7EXAMPLE" not in tool_msgs[0]["meta"].get("input", "")
+        assert SAMPLE_AWS_SECRET not in tool_msgs[0]["meta"].get("input", "")
         # Or in any of the broadcast payloads.
         for call in state.broadcast_ws.call_args_list:
-            assert "AKIAIOSFODNN7EXAMPLE" not in str(call.args[1])
+            assert SAMPLE_AWS_SECRET not in str(call.args[1])
 
     @pytest.mark.asyncio
     async def test_refinement_handler_swallows_exceptions(self, tmp_path, monkeypatch):

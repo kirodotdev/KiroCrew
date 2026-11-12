@@ -483,10 +483,11 @@ class TestStartDevProc:
         monkeypatch.setattr(server, "_resolve_bin", lambda n: Path("/usr/bin/npm"))
         monkeypatch.setattr(server, "DATA_DIR", tmp_path)
 
-        # Build the AWS-access-key-shaped fixture by concatenation so no
-        # real-looking token literal sits in the source (the content scanner
-        # reads added lines).
-        secret = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+        # Build a synthetic GitHub token at runtime so no real-looking token
+        # literal sits in the source (the content scanner reads added lines).
+        from redaction_structured_cases import github_classic
+
+        secret = github_classic(seed=51)
         payload = f"config error near key {secret} while starting"
         fake = FakePopen(pid=202, returncode=1)
 

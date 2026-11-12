@@ -17,6 +17,7 @@ import os
 from unittest.mock import MagicMock
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import name_grant
 from kiro_crew.acp.types import AcpEvent
@@ -586,17 +587,18 @@ class TestHeartbeatApproval:
 
         sel_mock = MagicMock()
         monkeypatch.setattr("kiro_crew.slack.gateway.sel", lambda: sel_mock)
-        # Title carries an AWS access key (a polled CR comment or ticket
+        # Title carries a GitHub token (a polled CR comment or ticket
         # body could mention one, and the tool-name path is LLM-controlled).
-        bad_title = "tool_with_secret AKIAIOSFODNN7EXAMPLE inside"
+        token = github_classic(seed=162)
+        bad_title = f"tool_with_secret {token} inside"
         event = _make_event(bad_title)
         with caplog.at_level(logging.WARNING, logger="kiro_crew.slack.gateway"):
             await orchestrator._heartbeat_approval(event)
-        # The raw AWS key body must NOT appear in any log record produced
+        # The raw token must NOT appear in any log record produced
         # by this callback — redact_credentials should have replaced it.
         for record in caplog.records:
             assert (
-                "AKIAIOSFODNN7EXAMPLE" not in record.getMessage()
+                token not in record.getMessage()
             ), f"Unredacted credential leaked into log: {record.getMessage()}"
 
     @pytest.mark.asyncio

@@ -564,8 +564,10 @@ async def test_every_decision_is_written_to_the_audit_log(env, monkeypatch):
 @pytest.mark.asyncio
 async def test_a_credential_shaped_run_in_a_pages_text_is_redacted_before_it_is_stored(env):
     """The row is served as a user row, which is otherwise exempt from redaction."""
+    from redaction_structured_cases import github_classic
+
     state, slot, _, turns, app = env
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = github_classic(seed=114)
     async with TestClient(TestServer(app)) as client:
         resp = await client.post("/api/chat?ws=1", json=_card(slot, f"key {secret} please"))
         assert resp.status == 200

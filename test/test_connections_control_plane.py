@@ -13,6 +13,7 @@ import pathlib
 import re
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import connections
 from kiro_crew.connections import control_plane as cp
@@ -257,9 +258,11 @@ def test_declared_modes_are_the_outer_bound_a_selection_stays_within() -> None:
 
 
 def test_reflected_credential_in_detail_is_redacted() -> None:
-    leaked = "github pat ghp_" + "a" * 40 + " was rejected"
+    # A classic token with a valid checksum and length, as GitHub issues them.
+    token = github_classic(seed=151)
+    leaked = f"github pat {token} was rejected"
     error = operation_error("auth", leaked)
-    assert "ghp_" + "a" * 40 not in error["detail"]
+    assert token not in error["detail"]
     assert error["error_class"] == "auth"
 
 

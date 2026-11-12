@@ -16,13 +16,11 @@ from types import FrameType
 from typing import Any
 
 import kiro_crew.security.redaction_structured as _package
-from kiro_crew.security.redaction_structured.checks import base62_crc32
+from kiro_crew.testing.synthetic_credentials import ALNUM, B64, aws_secret, github_classic, synth
 
 _PACKAGE_DIR = str(pathlib.Path(_package.__file__).parent)
 
 UPPER_DIGITS = string.ascii_uppercase + string.digits
-ALNUM = string.ascii_letters + string.digits
-B64 = ALNUM + "+/"
 B64URL = ALNUM + "-_"
 HEX = "0123456789abcdef"
 
@@ -65,20 +63,9 @@ def assert_linear_work(build: Callable[[int], str], run: Callable[[str], object]
     assert large <= small * 5 // 2 + 1000, (small, large)
 
 
-def synth(n: int, alphabet: str = ALNUM, seed: int = 0) -> str:
-    """A deterministic string of ``n`` characters that mixes the alphabet's classes."""
-    step = 7 if len(alphabet) % 7 else 11
-    return "".join(alphabet[(seed * 13 + i * step) % len(alphabet)] for i in range(n))
-
-
 def b64url_json(obj: dict[str, object]) -> str:
     raw = json.dumps(obj, separators=(",", ":")).encode()
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
-
-
-def github_classic(prefix: str = "ghp_", seed: int = 1) -> str:
-    body = synth(30, ALNUM, seed)
-    return prefix + body + base62_crc32(body)
 
 
 def github_fine_grained(seed: int = 2) -> str:
@@ -87,10 +74,6 @@ def github_fine_grained(seed: int = 2) -> str:
 
 def aws_key_id(prefix: str = "AKIA", seed: int = 2) -> str:
     return prefix + synth(16, UPPER_DIGITS, seed)
-
-
-def aws_secret(seed: int = 3) -> str:
-    return synth(40, B64, seed)
 
 
 def session_token(length: int = 360, seed: int = 4) -> str:

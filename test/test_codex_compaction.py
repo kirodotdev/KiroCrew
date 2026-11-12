@@ -71,6 +71,7 @@ from kiro_crew.messaging.commands import compact_unsupported_backend
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.session import SessionManager
 from kiro_crew.session_compaction import CompactionCoordinator, _compact_unsupported_backend
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, await_until
 
 
@@ -947,7 +948,7 @@ def test_native_compaction_failure_preserves_counts(transport: str) -> None:
     [
         ("too_few_groups", "too_few_groups"),
         (
-            "too_few_groups: key AKIAIOSFODNN7EXAMPLE rejected",
+            f"too_few_groups: key {github_classic(seed=111)} rejected",
             "too_few_groups: key [REDACTED: credential] rejected",
         ),
     ],

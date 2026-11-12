@@ -23,6 +23,7 @@ import logging
 from pathlib import Path
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import acp_backends
 from kiro_crew.acp import client as acp_client
@@ -1156,7 +1157,7 @@ def test_the_mode_tripwire_log_scrubs_the_reported_mode(caplog) -> None:
 
     from kiro_crew.acp.types import JsonRpcMessage
 
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = github_classic(seed=16)
     client = _stub()
     client._session_id = "goose-session-1"
 

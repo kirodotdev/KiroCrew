@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from auto_research_helpers import isolate_fixture  # noqa: F401 - fixture
+from redaction_structured_cases import github_classic
 
 from conftest import requires_symlinks
 from kiro_crew.apps.builtins.auto_research.handlers import (
@@ -51,6 +52,10 @@ from kiro_crew.apps.builtins.auto_research.handlers import (
     write_guidance,
     write_status,
 )
+
+# A GitHub token with a valid checksum: the plan redacts it, while an AWS key ID
+# stays visible as an identifier.
+_SECRET = github_classic(seed=71)
 
 
 class TestPathValidation:
@@ -333,14 +338,14 @@ class TestCycleFileMatching:
             (d / "cycle-1.json").write_text(json.dumps({
                 "cycle": 1,
                 "new_findings_count": 1,
-                "summary": "key AKIAIOSFODNN7EXAMPLE leaked",
+                "summary": f"key {_SECRET} leaked",
                 "sources_checked": [exfil_url],
             }))
             findings = get_findings("a1b2c3d4")
             assert len(findings) == 1
             blob = json.dumps(findings[0])
             # Leg 1: the raw credential must not survive into the surfaced payload.
-            assert "AKIAIOSFODNN7EXAMPLE" not in blob
+            assert _SECRET not in blob
             # Leg 2: the exfil-shaped URL must be redacted wholesale — path and
             # payload gone, replaced by the redaction marker. (The marker itself
             # names the domain by design, so assert on the URL body, not the domain.)
@@ -1125,7 +1130,7 @@ class TestGrillHTTP:
 
         class _FakePool:
             async def send(self, prompt: str, timeout: float = 0) -> str:
-                return '[{"kind":"research","text":"key AKIAIOSFODNN7EXAMPLE leaked"}]'
+                return json.dumps([{"kind": "research", "text": f"key {_SECRET} leaked"}])
 
             async def shutdown(self) -> None:
                 pass
@@ -1141,7 +1146,7 @@ class TestGrillHTTP:
                     "mode": "generate",
                 },
             )
-            assert "AKIAIOSFODNN7EXAMPLE" not in (await r.text())
+            assert _SECRET not in (await r.text())
 
     @pytest.mark.asyncio
     async def test_expand_requires_auth(self):

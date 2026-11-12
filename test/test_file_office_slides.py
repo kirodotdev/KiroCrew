@@ -25,6 +25,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.handlers import office_slides as mod
 from kiro_crew.dashboard.handlers.office_slides import (
@@ -600,7 +601,7 @@ async def test_a_deck_whose_slides_show_a_credential_is_not_rendered(tmp_path, m
         _validated(f),
         patch(f"{_MOD}.soffice_path", return_value="/usr/bin/soffice"),
         patch(f"{_MOD}._run_soffice", soffice),
-        patch(f"{_MOD}._deck_text", return_value=("rotate me: AKIAIOSFODNN7EXAMPLE", False)),
+        patch(f"{_MOD}._deck_text", return_value=(f"rotate me: {github_classic(seed=32)}", False)),
     ):
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get(f"/api/file-office-slides?path={f}")

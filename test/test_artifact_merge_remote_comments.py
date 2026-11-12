@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from kiro_crew.artifacts import ArtifactComment, ArtifactStore
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 _PROVIDER = "prov-a"
 
@@ -102,7 +103,7 @@ class TestMergeRemoteComments:
         assert len(result) == 1 and result[0].id == "r1"
 
 
-_AKIA = "AKIAIOSFODNN7EXAMPLE"  # canonical AWS access-key-id shaped test token
+_SECRET = SAMPLE_AWS_SECRET  # synthetic 40-char AWS secret
 
 
 class TestRemoteCommentAnchorRedaction:
@@ -119,18 +120,18 @@ class TestRemoteCommentAnchorRedaction:
             remote_id="c1",
             thread_id="c1",
             author="alice",
-            body=f"body {_AKIA}",
+            body=f"body {_SECRET}",
             anchor=CommentAnchor(
-                quote=f"quote {_AKIA}",
-                prefix=f"prefix {_AKIA}",
-                suffix=f"suffix {_AKIA}",
+                quote=f"quote {_SECRET}",
+                prefix=f"prefix {_SECRET}",
+                suffix=f"suffix {_SECRET}",
             ),
         )
         entry = _serialize_remote_comment(rc, _PROVIDER)
-        assert _AKIA not in entry["body"]
-        assert _AKIA not in entry["anchor"]["quote"]
-        assert _AKIA not in entry["anchor"]["prefix"]
-        assert _AKIA not in entry["anchor"]["suffix"]
+        assert _SECRET not in entry["body"]
+        assert _SECRET not in entry["anchor"]["quote"]
+        assert _SECRET not in entry["anchor"]["prefix"]
+        assert _SECRET not in entry["anchor"]["suffix"]
 
     def test_serialize_remote_comment_preserves_none_anchor_parts(self):
         from kiro_crew.dashboard.handlers.artifacts import _serialize_remote_comment

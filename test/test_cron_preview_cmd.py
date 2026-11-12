@@ -20,6 +20,7 @@ from test_cron_call_tool_scan import (
 
 from conftest import forget_env_at_teardown
 from kiro_crew.cli_commands import _cron_preview
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 
 @pytest.fixture(autouse=True)
@@ -414,16 +415,16 @@ class TestCronPreviewNotifyParity:
             "s.py",
             "from kiro_crew.cron_script import Report\n"
             "def run(ctx):\n"
-            "    ctx.notify('leak aws_secret_access_key=AKIAIOSFODNN7EXAMPLE',\n"
-            "               detail='aws_secret_access_key=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY')\n"
+            "    ctx.notify('leak aws_secret_access_key=" "Qh4Tm2Vx9KpRc/Z8Nw3Hd/" "Jf1Lb5Gs0Ye9Ua2WkE',\n"
+            "               detail='aws_secret_access_key=" "Qh4Tm2Vx9KpRcZ8Nw3Hd" "Jf1Lb5Gs0Ye9Ua2WkEQ2')\n"
             "    raise Report('done')\n",
         )
         with _patch_resolve(tmp_path):
             _cron_preview(_make_args(f"{tmp_path / 's.py'}:run"))
         out = capsys.readouterr().out
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        assert SAMPLE_AWS_SECRET not in out
         # The kwarg value is redacted too, not just the text.
-        assert "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY" not in out
+        assert "Qh4Tm2Vx9KpRcZ8Nw3Hd" "Jf1Lb5Gs0Ye9Ua2WkEQ2" not in out
         assert "REDACTED" in out
 
 
@@ -460,7 +461,7 @@ class TestCronPreviewMatchesScriptContext:
             "    folders = ctx.list_session_folders()\n"
             "    folder = ctx.create_session_folder('Reports')\n"
             "    slot = ctx.open_session('Daily', folder_id=folder['id'])\n"
-            "    key = 'aws_secret_access_key=' + 'wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY'\n"
+            "    key = 'aws_secret_access_key=' + 'Qh4Tm2Vx9KpRc/Z8Nw3Hd/' 'Jf1Lb5Gs0Ye9Ua2WkE'\n"
             "    sent = ctx.send_to_session(slot, key)['ok']\n"
             "    mode = ctx.set_session_mode(slot, 'trust_reads')['mode']\n"
             "    logged = ctx.crew_log_append('note', {'text': key}, max_age_s=120)\n"
@@ -479,6 +480,6 @@ class TestCronPreviewMatchesScriptContext:
             "crew_log_append",
         ):
             assert f"[{method} suppressed]" in out, out
-        assert "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY" not in out
+        assert SAMPLE_AWS_SECRET not in out
         assert "REDACTED" in out
         assert "0 preview-dry-run-slot True trust_reads note" in out, out
