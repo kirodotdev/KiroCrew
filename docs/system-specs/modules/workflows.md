@@ -588,7 +588,10 @@ Static rejections:
   rejected with a specific error. The runner calls `workflow(ctx)` only, so any
   further parameter, positional or keyword-only, must have a default
   (`*args` / `**kwargs` are fine); one without is refused by name.
-- **Size:** `MAX_SCRIPT_BYTES` = 262144 bytes of UTF-8.
+- **Size:** `MAX_SCRIPT_BYTES` = 262144 bytes of UTF-8. A source holding an unpaired
+  surrogate (JSON allows `"\ud800"`) cannot be encoded at all, so it is a
+  validation error, `script contains an unpaired surrogate character`, rather than
+  a `UnicodeEncodeError` the routes would turn into a 500.
 - **Undefined names** (`_check_undefined_names`, via `symtable`): any referenced
   global that is not a safe builtin, not `ctx`, and not bound at module level is
   reported, so a script using `json` or an unlisted exception type is caught at
