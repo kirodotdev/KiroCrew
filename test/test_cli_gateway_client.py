@@ -7,6 +7,7 @@ commands that call the gateway with it: ``logout``, ``status``, ``spawn`` and ``
 
 import argparse
 import asyncio
+import http.client
 import io
 import json
 import os
@@ -299,6 +300,46 @@ class TestStatus:
         assert exc.value.code == 1
         out = capsys.readouterr().out
         assert out == "Kiro Crew gateway is not running.\n  Start it with: kirocrew gateway\n"
+
+    @pytest.mark.parametrize(
+        "side_effect",
+        [
+            ConnectionResetError(104, "Connection reset by peer"),
+            http.client.RemoteDisconnected("Remote end closed connection without response"),
+            urllib.error.URLError(ConnectionResetError(104, "Connection reset by peer")),
+            urllib.error.URLError(BrokenPipeError(32, "Broken pipe")),
+        ],
+        ids=["read-reset", "remote-disconnected", "send-reset", "broken-pipe"],
+    )
+    def test_status_a_dropped_connection_is_not_reported_as_down(self, side_effect, capsys):
+        """A gateway that accepts the connection and then drops it is listening:
+        `status` must not say "not running" or exit 1."""
+        from kiro_crew.cli_server import _status
+
+        with patch("kiro_crew.cli_server.loopback_urlopen", side_effect=side_effect):
+            try:
+                _status(self._make_args())
+            except SystemExit as exc:
+                pytest.fail(f"status exited {exc.code} for a dropped connection")
+        out = capsys.readouterr().out
+        assert "not running" not in out
+        assert "closed the connection without answering" in out
+
+    @pytest.mark.parametrize(
+        "side_effect",
+        [
+            urllib.error.URLError(ConnectionRefusedError(111, "Connection refused")),
+            ConnectionRefusedError(111, "Connection refused"),
+        ],
+        ids=["wrapped", "bare"],
+    )
+    def test_status_a_refused_connection_still_exits_one(self, side_effect):
+        from kiro_crew.cli_server import _status
+
+        with patch("kiro_crew.cli_server.loopback_urlopen", side_effect=side_effect):
+            with pytest.raises(SystemExit) as exc:
+                _status(self._make_args())
+        assert exc.value.code == 1
 
     @pytest.mark.parametrize(
         "side_effect",
