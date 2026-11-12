@@ -25,6 +25,7 @@ import urllib.request
 from pathlib import Path
 
 from kiro_crew import dep_sync, platform_compat
+from kiro_crew._bootstrap import _source_checkout_root
 from kiro_crew.beacon import distribution
 from kiro_crew.cli_server_peer import (
     _CLI_LOOPBACK,
@@ -250,7 +251,9 @@ def _update(force: bool = False) -> None:
             sys.exit(1)
         return
 
-    proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
+    # Run outside the clone with no saved project dir, a source install has no
+    # KIROCREW_PROJECT_DIR; the checkout its code loads from is still the one to update.
+    proj = os.environ.get("KIROCREW_PROJECT_DIR", "") or str(_source_checkout_root() or "")
     # Dispatch on the shared derivation, not on the git probe alone. The probe
     # answers "is this a working tree", which is NOT the same question as "who
     # owns updating this install": a container or a desktop bundle pointed at a
@@ -836,8 +839,8 @@ def _refresh_agent_config(proj: str) -> None:
 def _update_wheel(layout) -> None:
     """Update a wheel/cli.sh install by checking the release feed and re-running the installer.
 
-    This is the path taken when KIROCREW_PROJECT_DIR is unset or has no .git —
-    the standard state for ``curl | sh`` installs where the venv at
+    This is the path taken when ``derive_capability`` hands the update to Kiro Crew's
+    own installer — the standard state for ``curl | sh`` installs where the venv at
     ``~/.kiro/crew-venv`` has no source tree.
     """
 

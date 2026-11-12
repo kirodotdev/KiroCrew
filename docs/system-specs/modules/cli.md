@@ -1827,7 +1827,9 @@ One flag is a MODE rather than a check and short-circuits before the list above 
 
 `kirocrew update` pulls the latest source and rebuilds:
 
-1. `git fetch`, then `git reset --hard <oid>` from `KIROCREW_PROJECT_DIR`, where
+1. `git fetch`, then `git reset --hard <oid>` from `KIROCREW_PROJECT_DIR`, or, when
+   it is unset (run outside the clone with no saved project dir), from the checkout
+   the running package loads from (`_bootstrap._source_checkout_root()`), where
    `<oid>` is `origin/<branch>` resolved ONCE right after the fetch (`git
    rev-parse --verify origin/<branch>^{commit}`). Every later judgment — "already
    up to date", the divergence counts, the interpreter floor below — and the

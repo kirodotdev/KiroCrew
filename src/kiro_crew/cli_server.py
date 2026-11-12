@@ -834,6 +834,7 @@ sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew import update_next_start  # noqa: F401
+    from kiro_crew._bootstrap import _source_checkout_root  # noqa: F401
     from kiro_crew.cli_server_peer import (  # noqa: F401
         _CLI_LOOPBACK,
         _PEER_RESOLVE_RETRY_INTERVAL,
