@@ -382,10 +382,16 @@ ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KA
 # the same session without the options ran all three unasked.
 #
 # codex is NOT a member: its sessions are served by ``AcpRuntime`` /
-# ``AcpSessionHandle`` (``acp/runtime_class.py``, ``acp/session_handle_class.py``), which carry
-# ``spec_denied_tools`` but no ``zero_tools`` and no ``_deny_zero_tools`` equivalent
-# -- the refusal exists only on ``AcpClient``, so nothing refuses on a codex session
-# even though its ``Routing.SESSION_CONFIG`` is itself enforced.
+# ``AcpSessionHandle`` (``acp/runtime_class.py``, ``acp/session_handle_class.py``). The
+# runtime copies the mirror's ``zero_tools`` onto the handle as ``spec_zero_tools`` on
+# ``session/new`` and ``session/load``, and ``AcpSessionHandle._deny_zero_tools`` then
+# refuses every ``session/request_permission`` (a command, a file change, an MCP call, a
+# native child's request) before any consumer sees it. That ban is partial: in
+# ``mode=read-only`` codex-acp 2.3.0 asks nothing before a passive read, a hosted web
+# search or a command its sandbox allows, and codex runs a tool from an MCP server in the operator's own
+# ``config.toml`` that it approves itself, so those calls run and a total ban cannot be
+# honoured. A new session
+# says so in a notice (``AcpSessionHandle.zero_tool_ban_notice``).
 #
 # copilot is NOT a member although it is mirrored, ``AcpClient``-served and its
 # ``Routing.SESSION_CONFIG`` is enforced: Copilot CLI 1.0.100 reads a file inside the

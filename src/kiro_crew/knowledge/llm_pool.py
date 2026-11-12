@@ -253,7 +253,8 @@ def _get_acp_backend(config: Optional[dict] = None) -> str:
     ``SessionCapabilities.honors_zero_tool_ban`` (kiro-cli/KAS natively, claude
     because a zero-tool session there mounts no tool at all, plus
     opencode/goose/deepseek/pi via ``AcpClient._deny_zero_tools``; not codex, whose
-    sessions run on ``AcpRuntime`` with no such refusal) and
+    ``AcpRuntime`` sessions refuse every permission request but still read files
+    without asking) and
     ``.acp_client_spawnable`` (not
     kas/codex, which need ``AcpRuntime`` and have no arm in ``AcpClient._spawn``).
 

@@ -204,10 +204,19 @@ entirely, so claude closes the gap before any call exists: a session whose
 built-in is mounted), `strictMcpConfig` (no user, project or plugin server) and
 bypass off, an empty wire array is required, and an adapter below the
 session-options floor is stopped before its first prompt. `codex` is served by
-`AcpRuntime` / `AcpSessionHandle` rather than `AcpClient`, which carries
-`spec_denied_tools` but no `zero_tools` and no equivalent refusal, so nothing
-closes the gap on a codex session. An agent spec relying on `tools: []` on codex
-is not enforced at all.
+`AcpRuntime` / `AcpSessionHandle` rather than `AcpClient`. The runtime copies
+`zero_tools` onto the handle on `session/new` and `session/load`, and
+`AcpSessionHandle._deny_zero_tools` refuses EVERY permission request on such a
+session: a command, a file change, an MCP call and a native child's request.
+The refusal comes before any hook, trust grant or auto-approve can answer the
+request. On codex the ban is partial. In `mode=read-only` codex-acp asks nothing
+before a passive read, a hosted web search or a command its sandbox allows, so
+those calls still run.
+codex also starts the MCP servers in your own Codex `config.toml`, whatever Crew
+mounts, and runs a tool of theirs without asking when codex approves it itself
+(`readOnlyHint`, `default_tools_approval_mode` or a trusted entry).
+A new codex session with `tools: []` gets a notice that says so, and codex is
+not in `ACP_BACKENDS_HONOR_ZERO_TOOL_BAN`.
 
 The knowledge and research pool spawns zero-tool agents and does not rely on the
 native ban alone. On kiro-cli, `--agent` resolves against the project checkout

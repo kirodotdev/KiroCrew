@@ -91,8 +91,9 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_answer_unroutable_permission": ("function", True, "3c88fb3b5f4d", "runtime_host_requests"),
     "_audit_denied_off_loop": ("function", False, "bc403500636d", "runtime_host_requests"),
     # Both take ``request_identity``: the vault identity the ``session/new`` went out
-    # under, for the KAS catalog recorder (``kas_model_catalog``).
-    "_collect_late_start": ("function", False, "52e41b8027d5", "runtime_session_create"),
+    # under, for the KAS catalog recorder (``kas_model_catalog``), and ``zero_tools``:
+    # the mirror's ``"tools": []`` answer the handle refuses every permission request on.
+    "_collect_late_start": ("function", False, "06d7a01b4c51", "runtime_session_create"),
     "_compose_death_summary": ("function", False, "d296f1f5d821", "runtime_liveness"),
     "_confirm_member_projection": ("function", True, "c694d7c95d1b", "runtime_session_setup"),
     "_copy_native_launch_sources": ("function", False, "b4bc0bbb71ed", "runtime_session_setup"),
@@ -103,7 +104,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_exit_reason": ("function", False, "5ea8f751c789", "runtime_liveness"),
     "_exit_watch_loop": ("function", True, "b60c5fea256e", "runtime_liveness"),
     "_failed_start_cleanup": ("function", True, "b60c5fea256e", "runtime_spawn_launch"),
-    "_finish_create_session": ("function", True, "0c17bc8d458e", "runtime_session_create"),
+    "_finish_create_session": ("function", True, "f7fd06c3ffde", "runtime_session_create"),
     "_finish_session_init": ("function", False, "eb69f6ac3aa6", "runtime_session_registry"),
     "_flush_dropped_frames": ("function", False, "bc10f150ea47", "runtime_frame_accounting"),
     "_flush_roster_overflow": ("function", False, "bc10f150ea47", "runtime_frame_accounting"),

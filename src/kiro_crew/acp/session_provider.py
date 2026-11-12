@@ -579,6 +579,13 @@ class AcpSessionProvider(LLMProvider):
         return value if isinstance(value, str) else ""
 
     @property
+    def zero_tool_ban_notice(self) -> str:
+        """See ``AcpSessionHandle.zero_tool_ban_notice``."""
+        read = getattr(self._handle, "zero_tool_ban_notice", None)
+        value = read() if callable(read) else ""
+        return value if isinstance(value, str) else ""
+
+    @property
     def work_scratch_dir(self) -> Path | None:
         """The session tree's ``$KIROCREW_SCRATCH`` directory (see ``AcpRuntime.work_scratch_dir``)."""
         return self._runtime.work_scratch_dir

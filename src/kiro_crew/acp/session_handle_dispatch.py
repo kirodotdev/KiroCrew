@@ -924,6 +924,9 @@ async def _dispatch_events(
                 # refused whether or not this consumer opted into the child
                 # contract, and naming that reason in the audit is more use
                 # than naming the fidelity one for the same rejected call.
+                # A zero-tool spec refuses every request first, a child's too.
+                if await self._deny_zero_tools(_perm_event):
+                    continue
                 if await self._deny_spec_disabled_tool(_perm_event):
                     continue
                 if await self._refuse_unidentifiable_mcp_approval(msg, _perm_event):
