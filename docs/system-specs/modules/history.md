@@ -1763,7 +1763,8 @@ no longer destroy older turns.
   a slot linked only after it observed its file (a reused slot a cron or workflow
   injection binds, a hooked revive) resolves another file B with its own
   `created_at`. (A History resume of a cron transcript binds its own `cron:` key
-  in `metadata_codec.slot_args`, so it does not drift.) Comparing B's identity
+  in `metadata_codec.slot_args`, and a task-runner review transcript its own
+  `taskrunner:<task_id>:chat:<token>` key, so neither drifts.) Comparing B's identity
   against the observation from file A would read "different file" as "deleted and
   recreated" and skip every save of a live
   session. So when the keys differ the witnesses do NOT compare the target: they
