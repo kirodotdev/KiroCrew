@@ -2299,6 +2299,33 @@ sandbox seal, so a shell write can. A governance ceiling still strips the key: a
 ceiling has an opinion about keeps no `autoApprove`, whatever the setting says, and neither does
 a server a `hooks.confirm_tools` pattern names. Turning `mcp.honour_auto_approve` off puts those
 tools back through the gate: after a restart, every verb no server spec declares is dropped.
+
+**kiro-cli's tool auto-approve rules (`permissions.yaml` / `permissions.json`): the agent's
+file-edit tools cannot write them once the owner opts in.** The engine behind the `kiro` and
+`kas` harnesses reads permission rules from these two file names in two places under its user
+directory: `~/.kiro/settings/` (the user's rules) and `~/.kiro/workspace-roots/<bucket>/` (one
+folder per workspace, which also records that workspace's trust answer). A rule with
+`effect: allow` runs its tool with no permission request, so the call skips Kiro Crew's tool
+gate. The fence is opt-in: `mcp.protect_kiro_permission_rules` is off by default, so the agent
+may edit these files as it always could, and the owner's switch is the control, as
+`mcp.honour_auto_approve` is for the registry leaf. While the setting is on,
+`security.paths._permission_rule_rows` adds `_KIRO_PERMISSION_RULE_LEAVES` (the two user files
+and the whole workspace folder) to the write tier, both for the file-edit gate and in
+`write_protected_home_paths()`. The gate reads the setting at each check (the live config
+snapshot, else a load), so no restart is needed; a config file that cannot be parsed keeps the
+fence on because the owner's choice cannot be established. A malformed `mcp` section is
+repaired to defaults as on main, so the other `mcp.*` settings behave exactly as before.
+The leaves stay in `_KIRO_CLI_WRITE_TIER_LEAVES`, which re-anchors a leaf under `KIRO_HOME`
+only when the leaf is in the list being built, so a `KIRO_HOME` move and a symlink below
+`$HOME` are covered while it is on, and nothing is added while it is off. Reads are unchanged (`kiro_cli_workspace_trust` reads the
+workspace file). Every other file in `settings` stays writable. The fence is the same tier as
+the registry leaf and has the same reach. The writers that keep working write with their own
+file calls and never ask the gate: the engine saving a rule the user chose, and the user's own
+editor. Kiro Crew itself writes none of these files. `push_policy` never masks these leaves'
+parents, whatever the setting. A refusal from the hook gate (`modification of write-protected
+config path`) gets the existing `deny_guidance.DENY_CLASS_TRUST_ROOT` guidance (say what needs
+changing and let the user edit it); the edit gate's refusal keeps the classification it has on
+main, because its wording is shared with credential paths.
 How a kept verb is granted: [mcp](../../architecture/mcp.md), "Managed servers".
 
 **This install's `kirocrew` link** (`<data home>/kirocrew-bin/kirocrew`) is how an agent shell's `kirocrew` reaches the gateway it runs under rather than an older install's launcher in `~/.local/bin` (#24087: a 0.1.2 CLI found there rewrote `config.json` without the member identity fields). `env.augmented_path` lists the directory ahead of `~/.local/bin` and keeps the interpreter directory last, so `python` and `pip` resolve as before; the directory holds that one link and nothing else. The gateway repoints it on every start (`agent.refresh_own_kirocrew_link`), so it names whatever install that gateway runs. On Windows the entry is `kirocrew.cmd`, a one-line forwarder to the running launcher by absolute path, because a symlink needs a privilege an ordinary session lacks; PATH order outranks PATHEXT order across directories, so it beats a `kirocrew.exe` later on PATH. The forwarder is ASCII and carries no `!`, so every console reads the same path whatever its code page (`chcp 65001`) or delayed-expansion setting (`cmd /V:ON`); a launcher under a non-ASCII directory is named by its 8.3 short name. A forwarder is found even when its target is gone, so a start that cannot write one for this install removes the old one. A write would choose the `kirocrew` every later lookup runs, so the leaf is in `_WRITE_PROTECTED_HOME_PATHS` for the file-edit tool and is a `READONLY`, precreated, no-follow leaf for every OS sandbox, the same treatment as `models` below. `test/test_own_kirocrew_link.py` pins the lookup and the seals.

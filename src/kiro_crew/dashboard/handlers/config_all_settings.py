@@ -63,6 +63,7 @@ READONLY_REASONS: dict[str, str] = {
     # (0..SUBAGENT_TIMEOUT_MAX) would let this page save one.
     "agent.subagent_timeout_secs": WHY_SAFETY,
     "mcp.honour_auto_approve": WHY_SAFETY,
+    "mcp.protect_kiro_permission_rules": WHY_SAFETY,
     "hooks.batch_write_guard": WHY_SAFETY,
     "skills.project_skills_enabled": WHY_SAFETY,
     "skills.generate_scripts": WHY_SAFETY,

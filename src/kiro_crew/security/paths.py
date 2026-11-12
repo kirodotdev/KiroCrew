@@ -410,6 +410,8 @@ def sensitive_write_path_refusal(path_str: str, base_dir: str | None = None) -> 
         matched = matched or _path_in_home_dirs(
             path_str, _app_readonly_dir_rows(), base_dir, strict=True
         )
+        if not matched and (rule_rows := _permission_rule_rows()):
+            matched = _path_in_home_dirs(path_str, rule_rows, base_dir, strict=True)
         matched = matched or _native_store_write(path_str, base_dir)
         matched = matched or _install_root_write(path_str, base_dir)
     except PathResolutionStalled as exc:
@@ -533,7 +535,33 @@ def write_protected_home_paths() -> tuple[str, ...]:
     Companion to :func:`sensitive_home_dirs` — these stay readable but must not
     be written by an agent tool, the app-declared rows after the core ones.
     """
-    return (*_WRITE_PROTECTED_HOME_PATHS, *_app_readonly_dir_rows())
+    return (*_WRITE_PROTECTED_HOME_PATHS, *_permission_rule_rows(), *_app_readonly_dir_rows())
+
+
+def _permission_rule_rows() -> list[str]:
+    """kiro-cli's permission rule leaves while their write fence is on.
+
+    Off by default, so the agent may edit them as before; read live at each check, like
+    ``mcp.honour_auto_approve`` is. A degraded read that cannot establish the owner's
+    choice keeps the fence on.
+    """
+    try:
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = live.snapshot() or KiroCrewConfig.load()
+        if cfg._base_unreadable or cfg._overlay_unreadable or "mcp" in cfg.degraded_sections:
+            logger.warning(
+                "could not establish mcp.protect_kiro_permission_rules from degraded config; "
+                "fencing"
+            )
+            on = True
+        else:
+            on = cfg.mcp.protect_kiro_permission_rules
+    except Exception:  # noqa: BLE001 (an unreadable config must not drop an opted-in fence)
+        logger.warning("could not read mcp.protect_kiro_permission_rules; fencing", exc_info=True)
+        on = True
+    return list(_KIRO_PERMISSION_RULE_LEAVES) if on is True else []
 
 
 def crew_home_prefixes() -> tuple[str, ...]:
@@ -725,6 +753,7 @@ from .paths_lists import (  # noqa: E402
     _CREW_HOME_PREFIXES,
     _KEYSTONE_ARTIFACT_PARENTS,
     _KEYSTONE_ARTIFACT_SUFFIXES,
+    _KIRO_PERMISSION_RULE_LEAVES,
     _SENSITIVE_HOME_DIRS,
     _WRITE_PROTECTED_HOME_PATHS,
     _leaf_segments,

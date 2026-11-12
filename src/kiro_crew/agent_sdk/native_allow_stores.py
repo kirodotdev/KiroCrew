@@ -103,9 +103,11 @@ NATIVE_ALLOW_STORES: Mapping[str, tuple[NativeAllowStore, ...]] = {
 
 #: Harnesses with no row above, and why.
 NATIVE_ALLOW_STORES_NONE: Mapping[str, str] = {
-    ACP_BACKEND_KIRO: "its stores, ~/.kiro/agents and ~/.kiro/settings/mcp.json, are "
-    "fenced by name in security.paths_lists",
-    ACP_BACKEND_KAS: "it runs kiro-cli's engine and reads the same stores as kiro",
+    ACP_BACKEND_KIRO: "its stores, ~/.kiro/agents, ~/.kiro/settings/mcp.json and the "
+    "permissions.yaml / permissions.json rule files under ~/.kiro/settings and "
+    "~/.kiro/workspace-roots, are fenced by name in security.paths_lists",
+    ACP_BACKEND_KAS: "it runs kiro-cli's engine and reads the same stores as kiro, "
+    "the permissions rule files included",
     ACP_BACKEND_DEEPSEEK: "no on-disk allow list is known; every call goes through "
     "Crew's gate extension",
     ACP_BACKEND_STRANDS: "in the Python-project ACP mode Crew runs, the CLI consults "
