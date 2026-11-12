@@ -40,6 +40,7 @@ import io
 import json
 import logging
 import os
+import time
 import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
@@ -763,6 +764,24 @@ class TestAcquisitionBeforeTheAnnounce:
         monkeypatch.setenv("MC_MCP_TARGET_KIROCREW_CORE", "kirocrew mcp-core")
         resolver = MagicMock(side_effect=AssertionError("resolved without a port"))
         writer = _FakeWriter()
+
+        async def wait_for_at_least(aw, timeout):
+            # Windows' coarse timer can fire a hair before *timeout*, which lets
+            # one keepalive out before the refusal. Hold the timeout to its full
+            # length so the frame sequence is deterministic.
+            end = time.monotonic() + timeout
+            try:
+                return await asyncio.wait_for(aw, timeout)
+            except asyncio.TimeoutError:
+                while time.monotonic() < end:
+                    await asyncio.sleep(end - time.monotonic())
+                raise
+
+        monkeypatch.setattr(
+            daemon_launch,
+            "asyncio",
+            SimpleNamespace(**{**vars(asyncio), "wait_for": wait_for_at_least}),
+        )
         await _within_ceiling(
             gw._handle_connection(
                 _ScriptedReader(
