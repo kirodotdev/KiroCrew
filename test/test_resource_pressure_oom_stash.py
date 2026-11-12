@@ -154,3 +154,32 @@ async def test_a_pushed_report_is_not_pushed_again(monkeypatch) -> None:
     await notifier.maybe_sample()
 
     assert len(_oom_notes(notes)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_oom_push_still_lets_the_tick_raise_its_critical_alert(monkeypatch) -> None:
+    from kiro_crew.resource_status import POSTURE_CRITICAL
+
+    notes: list[dict[str, Any]] = []
+
+    def critical() -> ResourceStatus:
+        return ResourceStatus(
+            available_gb=1.0,
+            cpu_count=8,
+            load_per_cpu=0.5,
+            posture=POSTURE_CRITICAL,
+            pressure_gb=4.0,
+            critical_gb=2.0,
+        )
+
+    notifier = ResourcePressureNotifier(NotificationBus(sink=notes.append), probe_fn=critical)
+    _checks(monkeypatch)
+    monkeypatch.setattr(resource_pressure, "reclaim_agents_slice_page_cache", lambda: None)
+    _waiting(notifier, _KILL_A)
+    monkeypatch.setattr(notifier, "_push_slice_oom", lambda _body: (_ for _ in ()).throw(OSError))
+
+    await notifier.maybe_sample()
+
+    alerts = [n for n in notes if n.get("group_key") != "agents-slice-oom"]
+    assert [n["priority"] for n in alerts] == ["critical"], "the memory alert is not lost"
+    assert notifier._slice_oom_reports == [_KILL_A], "the report waits for the next tick"
