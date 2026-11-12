@@ -37,6 +37,7 @@ import { fmtMessageTime, fmtMessageTimeFull } from '../messageTime'
 import type { useActiveSlotState } from './activeSlotState'
 import type { RefusedPressAction } from './turnActions'
 import { usePersistedBool } from '../../../hooks/usePersistedBool'
+import { continuesAuthorRun } from '../../../api/sharedCrewUi'
 import type { SteerRetractAction, SteerRetractRefusalNotice } from '../../../hooks/useSteerRetract'
 
 /** ChatPage's tool rows derive their auto-denied state inside ToolCallLine;
@@ -359,6 +360,7 @@ export function useTranscriptRendering({
               canEdit={!slotRunning && !regenerating && !!activeSlot && !activeSlotRemoteBound}
               slotRunning={slotRunning}
               showQueuedSend={queuedSendRow(ctx.messages) === i}
+              continuesRun={continuesAuthorRun(ctx.messages, i)}
               messageIndex={i}
               messageTs={m.ts || ''}
               onEditResend={stableEditResend}

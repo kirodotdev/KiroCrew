@@ -1,7 +1,7 @@
 import { memo, useState, useRef, useEffect, useCallback, useContext, useSyncExternalStore, type ReactNode } from 'react'
 import { ReactReduxContext } from 'react-redux'
 import { parseSessionSeed, seedSender, type SeedRow, type SeedSender } from '../../lib/crewSeed'
-import { AppSenderByline, MessageByline } from './shared-crew/MessageByline'
+import { AppSenderByline, MessageByline, OtherSenderBubble } from './shared-crew/MessageByline'
 import { QueuedSendLabel } from './shared-crew/QueuedSendLabel'
 import { readRelay, withoutRelayEnvelope } from './sessionRelay'
 import SenderAvatar from './SenderAvatar'
@@ -131,6 +131,9 @@ interface UserMessageProps {
    *  The host passes it only while the session has no queue-stack rows: a busy
    *  session's queued sends are those rows instead. */
   showQueuedSend?: boolean
+  /** Shared Crew: the message above is the same person's, so this one's byline
+   *  is left off and the run is named once (`continuesAuthorRun`). */
+  continuesRun?: boolean
   /** Draw a steer as an ORDINARY user message in every lifecycle state: no
    *  "Steered into the running turn" badge, no accent tint, no entrance ring,
    *  no "Steering…" pulse, no requeued note. For a surface that
@@ -180,7 +183,7 @@ interface UserMessageProps {
   steerActionRequestFailed?: boolean
 }
 
-const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, editSkillPicker, sessions, onSessionOpen, mode, pinned, onTogglePin, onReplyInThread, slotRunning, showQueuedSend, hideSteerBadge, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote, onSteerAction, steerActionPending, steerActionRefusal, steerActionRequestFailed }: UserMessageProps) {
+const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, editSkillPicker, sessions, onSessionOpen, mode, pinned, onTogglePin, onReplyInThread, slotRunning, showQueuedSend, continuesRun, hideSteerBadge, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote, onSteerAction, steerActionPending, steerActionRefusal, steerActionRequestFailed }: UserMessageProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [editing, setEditing] = useState(false)
   const ime = useImeGuard()
@@ -723,7 +726,10 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     ...(canEditResend && !standIn ? [{ id: 'edit', label: i18nT('pages.chat.userMessage.edit_resend'), icon: <Pencil size={14} />, onSelect: startEdit }] : []),
   ] : []
 
-  const bubble = (
+  // `other`: a Shared Crew teammate wrote this (`OtherSenderBubble`, the byline's
+  // own rule), so the bubble is outlined rather than filled and reads apart from
+  // the viewer's. It wins over the accent fill; a steer keeps its own surface.
+  const bubble = (other: boolean) => (
     // 'message-bubble' is a stable theming hook — see website/docs/theming-contract.md
     // `max-w-full`, not a pixel cap: the bubble's maximum is the content column
     // the transcript row clamps to --mc-content-width, so Settings → Chat →
@@ -738,7 +744,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     // Disable is safe: the keyboard-accessible edit path is the aria-labelled
     // pencil button in the action row below, not this bubble.
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions
-    <div ref={userRef} onCopy={handleCopy} onDoubleClick={dblClickEdits ? handleDoubleClick : undefined} onAnimationEnd={landedFlash ? endLandedFlash : undefined} data-landed-from-steer={landedFlash ? '' : undefined} className={`message-bubble mc-message-font-scope msg-content px-4 py-2 leading-relaxed rounded-xl overflow-hidden min-w-0 w-fit max-w-full ${carriedQuote ? 'min-w-64' : ''} ${landedFlash ? 'animate-steer-landed' : ''} ${isSteer ? 'bg-accent-subtle text-text' : tone === 'accent' ? 'user-bubble user-bubble-accent bg-accent text-accent-fg' : 'user-bubble bg-card text-card-fg'}`} style={{ overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)' }}>
+    <div ref={userRef} onCopy={handleCopy} onDoubleClick={dblClickEdits ? handleDoubleClick : undefined} onAnimationEnd={landedFlash ? endLandedFlash : undefined} data-landed-from-steer={landedFlash ? '' : undefined} className={`message-bubble mc-message-font-scope msg-content px-4 py-2 leading-relaxed rounded-xl overflow-hidden min-w-0 w-fit max-w-full ${carriedQuote ? 'min-w-64' : ''} ${landedFlash ? 'animate-steer-landed' : ''} ${isSteer ? 'bg-accent-subtle text-text' : other ? 'user-bubble user-bubble-other text-text ring-1 ring-inset ring-border-strong forced-colors:border' : tone === 'accent' ? 'user-bubble user-bubble-accent bg-accent text-accent-fg' : 'user-bubble bg-card text-card-fg'}`} style={{ overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)' }}>
       {/* `messageTs` FIRST, `clientTs` only as a fallback. The opposite order is
           correct for the audio key above, which wants the optimistic bubble's own
           identity, but this value is COMPARED against server-clock slot mint
@@ -760,7 +766,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
                 // A link at rest, not only on hover: underlined, and in the accent
                 // colour except on the accent-filled bubble, where it keeps the
                 // bubble's own text colour so it stays readable.
-                className={`inline max-w-full break-all text-left normal-case tracking-normal bg-transparent border-none p-0 font-semibold cursor-pointer underline underline-offset-2 hover:decoration-2 focus-visible:decoration-2 ${tone === 'accent' && !isSteer ? '' : 'text-accent'}`}
+                className={`inline max-w-full break-all text-left normal-case tracking-normal bg-transparent border-none p-0 font-semibold cursor-pointer underline underline-offset-2 hover:decoration-2 focus-visible:decoration-2 ${tone === 'accent' && !isSteer && !other ? '' : 'text-accent'}`}
                 onClick={() => onSessionOpen(relay.senderKey)}
                 title={i18nT('pages.chat.sessionMessageCard.open_session', { name: senderTitle })}
                 aria-label={i18nT('pages.chat.sessionMessageCard.open_session', { name: senderTitle })}
@@ -800,7 +806,11 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   // The right-click menu wraps the bubble only when Quote is offered (the
   // menu's reason to exist) on a pointer device; otherwise `MessageContextMenu`
   // renders the bubble bare.
-  const bubbleWithMenu = <MessageContextMenu items={menuItems} onOpenChange={readStandIn} onCopyFailed={() => setCopyFailed(true)}>{bubble}</MessageContextMenu>
+  const bubbleWithMenu = (
+    <OtherSenderBubble meta={meta} slotKey={slotKey}>
+      {other => <MessageContextMenu items={menuItems} onOpenChange={readStandIn} onCopyFailed={() => setCopyFailed(true)}>{bubble(other)}</MessageContextMenu>}
+    </OtherSenderBubble>
+  )
 
   return (
     // Every box between the content column and the bubble is a fit-content flex
@@ -867,7 +877,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
               badge's slot keeps the pending -> consumed / requeued hand-off a
               content change in one place rather than a layout jump. */}
           {/* Shared Crew: who sent this, when it was someone other than the viewer. */}
-          <MessageByline meta={meta} slotKey={slotKey} />
+          <MessageByline meta={meta} slotKey={slotKey} continuesRun={continuesRun} />
           {/* Shared Crew: the host is holding this send for capacity. */}
           {showQueuedSend && slotKey && <QueuedSendLabel slotKey={slotKey} />}
           {pendingSend && (

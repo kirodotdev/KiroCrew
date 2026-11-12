@@ -10,6 +10,7 @@ import {
   messageAuthor,
   bylineFor,
   bylineSelfId,
+  continuesAuthorRun,
   setupPathStates,
   sharedAccessConfigured,
   ALL_UNAVAILABLE,
@@ -170,6 +171,44 @@ describe('message bylines', () => {
     expect(bylineSelfId(null, attribution('unknown', 'unknown'))).toBe('')
     expect(bylineFor(person('p_bob'), '')).toBeNull()
     expect(bylineFor(null, 'p_viewer')).toBeNull()
+  })
+
+  describe('continuesAuthorRun', () => {
+    const user = (id: string | null, kind: 'human' | 'unknown' = 'human') => ({ role: 'user', meta: id ? { author: person(id, kind) } : {} })
+    const row = (role: string, extra: Record<string, unknown> = {}) => ({ role, ...extra })
+    const at = (rows: Array<{ role: string; meta?: Record<string, unknown> }>) => rows.map((_, i) => continuesAuthorRun(rows, i))
+
+    it('continues on the same author and breaks on a new one', () => {
+      expect(at([user('p_a'), user('p_a'), user('p_b'), user('p_a'), user('p_a')])).toEqual([false, true, false, false, true])
+    })
+
+    it('breaks on any drawn row between: an agent reply, a tool line, a notice, a system card', () => {
+      for (const between of [row('assistant'), row('tool'), row('notice'), row('system', { kind: 'stop_event' }), row('system', { meta: { kind: 'skill_load' } })]) {
+        expect(at([user('p_a'), between, user('p_a')])[2]).toBe(false)
+      }
+    })
+
+    it('reads past state rows no surface draws', () => {
+      expect(at([user('p_a'), row('done'), row('queued'), user('p_a')])[3]).toBe(true)
+    })
+
+    it('never continues an unstamped or an Unknown author', () => {
+      expect(at([user(null), user(null)])).toEqual([false, false])
+      expect(at([user('unknown', 'unknown'), user('unknown', 'unknown')])).toEqual([false, false])
+      expect(at([user(null), user('p_a')])).toEqual([false, false])
+    })
+
+    it('a steer above, retracted or confirmed, draws no byline, so the next message names its sender', () => {
+      const steer = (steerState: string) => ({ role: 'user', meta: { author: person('p_a'), steer: true, steerState } })
+      for (const state of ['retracted', 'settled', 'written']) {
+        expect(at([steer(state), user('p_a')])[1]).toBe(false)
+      }
+    })
+
+    it('an app\'s send above is labelled with the app, so the next message names its sender', () => {
+      const appSend = { role: 'user', meta: { author: person('p_a'), turnActor: 'app', appLabel: 'notes/1' } }
+      expect(at([appSend, user('p_a')])[1]).toBe(false)
+    })
   })
 })
 

@@ -22,6 +22,7 @@ import UserMessage from '../UserMessage'
 import { renderUserContent } from '../ChatPageMessageContent'
 import { fmtMessageTimeFull } from '../messageTime'
 import { createTranscriptRenderers } from '../transcriptRenderers'
+import { continuesAuthorRun } from '../../../api/sharedCrewUi'
 import type { ChatMessage } from '../../../types'
 
 /** The slot key the window's shared rows and composer are mounted under. It
@@ -75,6 +76,7 @@ export function createCrewWindowRenderers(o: {
           canEdit={o.canRewind(m)}
           slotRunning={ctx.running}
           messageIndex={ctx.index}
+          continuesRun={continuesAuthorRun(ctx.messages, ctx.index)}
           messageTs={m.ts || ''}
           onEditResend={(_i, ts, content) => o.onRewind(ts, content)}
           onQuoteMessage={quoteMessageFor(m, ctx, 'user')}
