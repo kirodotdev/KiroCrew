@@ -74,13 +74,16 @@ export function resumeAllPendingCeilingMs(total: number): number {
 export const RESUME_ALL_RUNNING_CODE = 'resume_all_running'
 
 /** The sessions the server will act on, read from the same slots payload the
- *  rows render: idle AND flagged interrupted by the transcript scan. Peer rows
+ *  rows render: idle AND flagged interrupted by the transcript scan, unless the
+ *  interruption is older than the server's bulk-Resume window
+ *  (`interrupted_stale`): such a session keeps its row cue and its own Resume
+ *  button but is not offered here. Peer rows
  *  (`peer_id`) belong to another gateway and never count -- the request goes to
  *  this one. A row still reporting live sub-agents is left out here and by the
  *  server's candidate set alike, so the count on the button is the `total` the
  *  server answers. */
 export function interruptedIdleSlots(slots: Slot[]): Slot[] {
-  return slots.filter(s => !!s.interrupted && !s.running && !s.subagents_running && !s.peer_id && s.executor !== 'remote')
+  return slots.filter(s => !!s.interrupted && !s.interrupted_stale && !s.running && !s.subagents_running && !s.peer_id && s.executor !== 'remote')
 }
 
 export type ResumeAllResult = {
