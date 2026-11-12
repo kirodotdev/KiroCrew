@@ -152,6 +152,16 @@ function createManagedLane({
   // failed leaves the arm in place, and the next app start finishes it before
   // the gateway spawns (startup-apply.js).
   const managedInstallOnQuit = (event) => {
+    // A further quit request while the apply is in progress (main.js is already
+    // stopping the gateway, and a second Cmd+Q, tray Quit or window close lands
+    // here): hold it. The listener was registered with app.once, so without the
+    // re-arm below Electron would exit mid-stop and skip the apply. Every end of
+    // the apply is an explicit app.exit, so nothing needs to release the hold.
+    if (managedInstalling) {
+      event.preventDefault();
+      app.once("before-quit", managedInstallOnQuit);
+      return;
+    }
     const appliedVersion = versionToApplyOnQuit();
     // Nothing pending (a later check cleared it, or it was already applied):
     // let the quit proceed normally.
@@ -167,8 +177,9 @@ function createManagedLane({
       return;
     }
     event.preventDefault();
+    managedInstalling = true;
+    app.once("before-quit", managedInstallOnQuit);
     (async () => {
-      managedInstalling = true;
       emit("installing", { version: appliedVersion });
       try { if (onInstallDispatched) onInstallDispatched(); } catch { /* advisory */ }
       // Read the gateway's own armed record while it is still up, so an arm made
