@@ -13716,6 +13716,7 @@
         "copy_preview": "Copiar texto",
         "copied": "Copiado",
         "copy_link": "Copiar link da mensagem",
+        "put_in_composer": "Colocar no campo de mensagem",
         "unpin": "Desafixar",
         "copy_text_failed": "Não foi possível copiar o texto. Vá até a mensagem e selecione o texto para copiá-lo.",
         "copy_link_failed": "Não foi possível copiar o link. Verifique se esta página pode usar a área de transferência e tente de novo.",

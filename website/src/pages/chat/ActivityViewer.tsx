@@ -1102,7 +1102,7 @@ function ArtifactListRow({ row, busy, onOpen, onSave }: {
   )
 }
 
-export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, onFileOpen, onArtifactOpen, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onReconcileSource, onDismissSource, issues, selectedIssueUrl, onSelectIssue, onReconcileIssue, onAddToChat, pins, pinsLoading, onJumpToPin, onUnpin, slotTitle, chatMode, remoteEnvironmentName }: {
+export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, onFileOpen, onArtifactOpen, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onReconcileSource, onDismissSource, issues, selectedIssueUrl, onSelectIssue, onReconcileIssue, onAddToChat, pins, pinsLoading, onJumpToPin, onPutPinInComposer, onUnpin, slotTitle, chatMode, remoteEnvironmentName }: {
   /** Set when the session runs on a remote environment: the Git view then
    *  shows the guest's checkout instead of the gateway's local one. */
   remoteEnvironmentName?: string
@@ -1119,6 +1119,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   pins?: ChatPin[]
   pinsLoading?: boolean
   onJumpToPin?: (messageTs: string, mid?: string) => void
+  onPutPinInComposer?: (messageTs: string, mid?: string) => void
   onUnpin?: (id: string) => void
   slotTitle?: string
   chatMode?: string
@@ -1511,6 +1512,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
             slotTitle={slotTitle}
             mode={chatMode}
             onJumpToMessage={onJumpToPin ?? (() => {})}
+            onPutInComposer={onPutPinInComposer}
             onUnpin={onUnpin ?? (() => {})}
           />
         </div>

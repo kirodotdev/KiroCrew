@@ -3,7 +3,8 @@ import { ReactReduxContext } from 'react-redux'
 import { parseSessionSeed, seedSender, type SeedRow, type SeedSender } from '../../lib/crewSeed'
 import { AppSenderByline, MessageByline, OtherSenderBubble } from './shared-crew/MessageByline'
 import { QueuedSendLabel } from './shared-crew/QueuedSendLabel'
-import { readRelay, withoutRelayEnvelope } from './sessionRelay'
+import { readRelay } from './sessionRelay'
+import { pasteBlocksOf, unseededUserText } from './userMessageText'
 import SenderAvatar from './SenderAvatar'
 import { motion } from 'framer-motion'
 import { Pencil, Send, Copy, Check, Link2, MessageSquare, Target, Pin, PinOff, X, Clock, Quote, MoreHorizontal, Undo2, ArrowUpFromLine, ChevronRight, type LucideIcon } from 'lucide-react'
@@ -371,7 +372,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   const senderKey = relay?.senderKey ?? seed?.sender
   const seedFrom = useSeedSender(senderKey, slotKey)
   const senderTitle = relay && sessions && onSessionOpen ? sessions.get(relay.senderKey) : undefined
-  const unseeded = (!(meta as { human?: unknown } | undefined)?.human ? withoutRelayEnvelope(content, relay) : null) ?? (seed ? seed.body : content)
+  const unseeded = unseededUserText(content, meta)
   const startEdit = useCallback(() => {
     // Expand any collapsed paste tokens into their original content so the
     // user can actually edit the pasted text. Once edited, the message is
@@ -664,10 +665,8 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   }
 
   // Collapsed pastes expanded: the text this bubble stands for, which is what
-  // Copy copies and what Quote quotes. Only well-formed blocks expand; anything
-  // else on `meta.pastes` is ignored and the content stays as written.
-  const pasteBlocks = (Array.isArray(meta?.pastes) ? meta.pastes : []).filter((b): b is PasteBlock =>
-    !!b && typeof b === 'object' && typeof (b as PasteBlock).seq === 'number' && typeof (b as PasteBlock).content === 'string')
+  // Copy copies and what Quote quotes.
+  const pasteBlocks = pasteBlocksOf(meta)
   const shownContent = pasteBlocks.length ? expandPasteTokens(content, pasteBlocks) : content
   const renderedBody = carriedQuote ? stripQuoteBlock(unseeded, carriedQuote) : unseeded
   // What Quote quotes: the body as shown -- a carried quote's block excluded,

@@ -13084,6 +13084,7 @@
         "copy_preview": "Copy text",
         "copied": "복사됨",
         "copy_link": "Copy link to message",
+        "put_in_composer": "작성창에 넣기",
         "unpin": "Unpin",
         "copy_text_failed": "텍스트를 복사하지 못했습니다. 메시지로 이동해 텍스트를 선택해서 복사하세요.",
         "copy_link_failed": "링크를 복사하지 못했습니다. 이 페이지가 클립보드를 사용할 수 있는지 확인한 뒤 다시 시도하세요.",
