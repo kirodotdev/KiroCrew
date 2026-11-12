@@ -355,6 +355,7 @@ from kiro_crew.slack.handler_runtime.inbound import (  # noqa: F401
     _read_thread_overrides,
     _recorded_selection,
     _set_default_agent,
+    adopt_dashboard_thread_agent,
     adopt_default_agent,
     channel_agent_mismatch,
     channel_pinned_agent,
