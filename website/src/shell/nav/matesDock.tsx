@@ -5,7 +5,8 @@
  * Rows are the rail's own `NavItem`, so a mate row looks, lights and collapses
  * like every other destination; the face sits in the same 16px icon box the
  * page and app icons use. Dragging reuses the app list's sortable row and
- * sensors, so the two lists reorder with one gesture.
+ * sensors, so the two lists reorder with one gesture. A drop writes through
+ * `useStarOrderReorder`, the write path the Bots panel's moves share.
  */
 import { isRelayHostOffline } from '../../utils/relayHostOffline'
 import { useOutageFailure } from '../../hooks/useOutageFailure'
@@ -14,7 +15,7 @@ import { DndContext, DragOverlay, closestCenter, type DragEndEvent, type DragSta
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronRight } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from 'react'
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type ComponentProps } from 'react'
 import { shallowEqual } from 'react-redux'
 import { useLocation } from 'react-router-dom'
 
@@ -28,9 +29,9 @@ import { OverlayPortal } from '../../components/overlayRoot'
 import { useDndSensors } from '../../hooks/useDndSensors'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { railWidthFor } from '../../hooks/useRailWidth'
+import { useStarOrderReorder } from '../../hooks/useStarOrderReorder'
 import { busySlotKeys } from '../../lib/crewMode'
-import { haptic } from '../../lib/haptic'
-import { DOCK_MATES_LIMIT, dockMateOrder, starOrderWrites } from '../../lib/dockMates'
+import { DOCK_MATES_LIMIT, dockMateOrder } from '../../lib/dockMates'
 import { i18nT } from '../../i18n/t'
 import { useAppSelector } from '../../store'
 import { reportForError, type ErrorReport } from '../../utils/errorReport'
@@ -259,31 +260,9 @@ export function DockMatesSection({ collapsed, isMobile, sectionOpen, onToggleSec
   // An unmount mid-drag must not leave the rail's fade switched off.
   useEffect(() => () => onDragActiveChange?.(false), [onDragActiveChange])
   const loadNotice = useDockMatesLoadNotice({ errorUpdatedAt, dataUpdatedAt })
-  // Also closes the gap before React publishes the pending mutation state.
-  const reorderInFlight = useRef(false)
-
-  const reorder = useMutation({
-    // One write per moved row, in order: each is its own crew-record save
-    // under the config lock, so running them in parallel would only queue.
-    mutationFn: async (writes: { name: string; star_order: number }[]) => {
-      for (const w of writes) await api.updateKirocrewAgent(w.name, { star_order: w.star_order })
-    },
-    onMutate: async (writes) => {
-      await queryClient.cancelQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY })
-      const byName = new Map(writes.map(w => [w.name, w.star_order]))
-      queryClient.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, rows =>
-        rows?.map(r => (byName.has(r.name) ? { ...r, star_order: byName.get(r.name) } : r)))
-    },
-    // Some writes may have landed before a failure. Keep drops blocked until
-    // the roster has reconciled with the server on either outcome.
-    onSettled: async () => {
-      try {
-        await queryClient.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY })
-      } finally {
-        reorderInFlight.current = false
-      }
-    },
-  })
+  // Drops are ignored while a reorder from the dock or the Bots panel saves.
+  const reorder = useStarOrderReorder()
+  const { saving, move } = reorder
 
   // "Remove from the sidebar" on a row's menu: the dock's own unstar, written
   // the way `reorder` writes. It zeroes `star_order` as the server does, so the
@@ -306,27 +285,20 @@ export function DockMatesSection({ collapsed, isMobile, sectionOpen, onToggleSec
   const removeFromDock = unstar.mutate
 
   const onDragStart = useCallback((e: DragStartEvent) => {
-    if (reorder.isPending || reorderInFlight.current) return
+    if (saving()) return
     setDragId(String(e.active.id))
-  }, [reorder.isPending])
+  }, [saving])
   const onDragCancel = useCallback(() => setDragId(null), [])
   const onDragEnd = useCallback((e: DragEndEvent) => {
     setDragId(null)
-    if (reorder.isPending || reorderInFlight.current) return
     const { active, over } = e
     if (!over || active.id === over.id) return
-    const from = ordered.findIndex(m => m.name === active.id)
-    const to = ordered.findIndex(m => m.name === over.id)
-    const writes = starOrderWrites(ordered, from, to)
-    if (writes.length === 0) return
-    reorderInFlight.current = true
-    haptic('light')
-    reorder.mutate(writes)
-  }, [ordered, reorder])
+    move(ordered, ordered.findIndex(m => m.name === active.id), ordered.findIndex(m => m.name === over.id))
+  }, [ordered, move])
 
   const notice = loadFailed && loadNotice.visible
     ? <DockMatesNotice collapsed={collapsed} isMobile={isMobile} message={i18nT('components.matesDock.load_failed')} report={reportForError(loadError)} testId="dock-mates-load-error" onDismiss={loadNotice.dismiss} />
-    : reorder.isError
+    : reorder.error
       ? <DockMatesNotice collapsed={collapsed} isMobile={isMobile} message={i18nT('components.matesDock.reorder_failed')} report={reportForError(reorder.error)} testId="dock-mates-reorder-error" onDismiss={() => reorder.reset()} />
       : unstar.isError
         ? <DockMatesNotice collapsed={collapsed} isMobile={isMobile} message={i18nT('components.matesDock.unstar_failed')} report={reportForError(unstar.error)} testId="dock-mates-unstar-error" onDismiss={() => unstar.reset()} />
@@ -352,7 +324,7 @@ export function DockMatesSection({ collapsed, isMobile, sectionOpen, onToggleSec
   const dragged = dragId ? ordered.find(m => m.name === dragId) : undefined
 
   return (
-    <div data-testid="dock-mates" aria-busy={reorder.isPending} className="shrink-0 flex flex-col gap-0.5 px-2 [&_.app-icon-nav]:opacity-100">
+    <div data-testid="dock-mates" aria-busy={reorder.busy} className="shrink-0 flex flex-col gap-0.5 px-2 [&_.app-icon-nav]:opacity-100">
       {collapsed
         ? <div aria-hidden="true" className="h-px bg-border mx-2 my-2" />
         : (
