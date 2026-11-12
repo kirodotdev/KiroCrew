@@ -58,7 +58,7 @@ import kiro_crew.agent as _agent_module  # noqa: F401
 # Bindings below that only the ``context_assembly`` owners read stay bound here:
 # callers rebind them on this module, and the owners read them through it at call
 # time, so such a patch still reaches the code that moved.
-from kiro_crew import model_registry, resource_status  # noqa: F401
+from kiro_crew import model_registry, redaction_seams, resource_status  # noqa: F401
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.agent import _prompt_path, _shipped_prompt, is_managed_prompt  # noqa: F401
 from kiro_crew.agent_discovery import WHOLE_CATALOG_TEMPLATES, agent_skill_globs
@@ -1293,7 +1293,9 @@ def build_session_replay(
 
     replay = _replay.replay_text(messages, model_window, budget_chars=budget_chars)
     replay, _ = redact_exfiltration_urls(replay)
-    replay, _ = redact_credentials(replay)
+    # An output seam: the owner's seams switch may stand the credential pass down here.
+    with redaction_seams.output_seam(redaction_seams.ACP_PROMPT):
+        replay, _ = redact_credentials(replay)
     return replay.translate(_MULTIBYTE_TABLE)
 
 

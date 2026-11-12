@@ -124,6 +124,7 @@ export type {
   ConfigPendingChange,
   ConfigPendingData,
   ConfigPendingLeaf,
+  CredentialRedactionEngine,
   CredentialRedactionState,
   DeniedCommandsData,
   GovernanceScopeDetail,

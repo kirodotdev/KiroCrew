@@ -21,14 +21,23 @@ import json
 import random
 import re
 import string
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from redaction_structured_cases import aws_secret, github_classic, structured_engine
 
 from kiro_crew import security
 from kiro_crew.platform.context import redact_code_via_context, redact_via_context
 from kiro_crew.security import redaction, redaction_switch
 from kiro_crew.testing.wait import await_until
+
+
+@pytest.fixture(autouse=True)
+def _structured_engine() -> Iterator[None]:
+    """These cases assert the structured engine's output: keep it selected under a legacy run."""
+    with structured_engine():
+        yield
 
 
 def _digest(seed: str, length: int, *, upper: bool = False) -> str:
@@ -65,8 +74,7 @@ def _encoded_key_id() -> str:
 
 #: One literal per pass that is keyed on a fixed format, each as a script would hold it.
 _FIXED_FORMATS = {
-    "key id": "var id = '" + "A" + "KIA" + _digest("kc-akia", 16, upper=True) + "';",
-    "labelled secret": "var c = 'aws_secret_access_key=" + _digest("kc-label", 40) + "';",
+    "labelled secret": "var c = 'aws_secret_access_key=" + aws_secret(seed=41) + "';",
     "pem block": "var k = `" + _pem() + "`;",
     "jwt": "var t = '" + _jwt() + "';",
     "prefixed token": "var t = '" + "gh" + "p_" + _digest("kc-ghp", 36) + "';",
@@ -169,6 +177,8 @@ class TestPassThreeStandsDown:
     def test_a_base64_data_uri_is_served_as_written(self) -> None:
         blob = base64.b64encode(hashlib.sha256(b"kc-png").digest() * 12).decode()
         css = f".a {{ background: url(data:image/png;base64,{blob}) }}"
+        # No bitmap signature, so the structured detectors do not vouch for it as an
+        # image: the full pass judges it as with the switch off.
         assert redact_via_context(css) != css, "the control does not trip"
         assert redact_code_via_context(css) == css
 
@@ -190,6 +200,8 @@ class TestPassThreeStandsDown:
     @pytest.mark.parametrize("header", _DATA_URI_HEADERS)
     def test_a_data_uri_payload_is_served_as_written(self, header: str) -> None:
         code = f"var u = '{header}{_blob()}';"
+        # The blob opens with no bitmap signature, so the full pass judges it under
+        # every header, an image media type included.
         assert redact_via_context(code) != code, "the control does not trip"
         assert redact_code_via_context(code) == code
 
@@ -199,6 +211,12 @@ class TestPassThreeStandsDown:
         out = redact_code_via_context(code)
         assert out != code, f"{name} is served as written inside the scope"
         assert out == redact_via_context(code), f"{name}: the scope changed a pass it does not own"
+
+    def test_a_key_id_is_served_as_written_inside_and_outside_the_scope(self) -> None:
+        # An AWS key ID is an Identifier with the structured detectors on.
+        code = "var id = '" + "A" + "KIA" + _digest("kc-akia", 16, upper=True) + "';"
+        assert redact_code_via_context(code) == code
+        assert redact_via_context(code) == code
 
     def test_a_url_carrying_data_out_is_still_replaced_inside_the_scope(self) -> None:
         blob = hashlib.sha256(b"kc-exfil").hexdigest() * 4
@@ -319,7 +337,7 @@ class TestTheScopeIsNarrow:
 
     def test_the_owner_view_scope_is_a_different_thing(self) -> None:
         """Code text is not the owner's switch: the credential pass still runs in it."""
-        key = "A" + "KIA" + _digest("kc-owner", 16, upper=True)
+        key = github_classic(seed=42)
         with redaction_switch.code_text():
             assert redaction_switch.credential_pass_bypassed() is False
             assert security.redact_credentials(key)[0] != key

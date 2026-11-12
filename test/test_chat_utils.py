@@ -513,13 +513,16 @@ class TestRedactForDisplay:
         """The retained digest is keyed on a per-process secret, not a bare hash.
 
         The text may hold credentials, and a bare hash can be checked offline against a
-        guessed plaintext. The host set stays inside the MAC input.
+        guessed plaintext. The host set and the credential engine's mark stay inside the
+        MAC input.
         """
+        from kiro_crew.dashboard import display_verdicts
+
         hosts = frozenset({"docs.contoso.sharepoint.com"})
         monkeypatch.setattr(chat_utils, "_exempt_exact_hosts", lambda: hosts)
         text = f"key {SECRET} here"
         raw = text.encode("utf-8")
-        hosts_bytes = "\0".join(sorted(hosts)).encode("utf-8")
+        hosts_bytes = "\0".join(sorted(hosts)).encode("utf-8") + display_verdicts.engine_mark()
         (digest, length), input_bytes = chat_utils._display_redaction_cache_key(text)
         assert len(digest) == 32 and length == len(raw) == input_bytes
         assert digest != hashlib.sha256(raw + b"\0" + hosts_bytes).digest()

@@ -17,11 +17,16 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from git_maintenance_helpers import git_maintenance_off_entries
+from redaction_structured_cases import github_classic
 
 from kiro_crew import pinned_fs
 from kiro_crew.dashboard.handlers import api_project_tree
 from kiro_crew.security.redaction import _PATH_SEGMENT_DISCRIMINATOR_SEP, _path_segment_label
 from kiro_crew.testing.links import make_dir_link
+
+# Credential-shaped path segments: GitHub tokens with valid checksums.
+_KEY_A = github_classic(seed=21)
+_KEY_B = github_classic(seed=22)
 
 
 @contextlib.contextmanager
@@ -349,14 +354,14 @@ class TestProjectTree:
         """
         from kiro_crew.dashboard.handlers import files as files_mod
 
-        known = tmp_path / "AKIAIOSFODNN7EXAMPLE"
+        known = tmp_path / _KEY_A
         known.mkdir()
         monkeypatch.setattr(files_mod.os.path, "isdir", lambda p: False)
         async with TestClient(TestServer(_make_app(str(known)))) as client:
             resp = await client.get(f"/api/project/tree?path={known}")
             data = await resp.json()
         assert data["paths"] == []
-        assert "AKIAIOSFODNN7EXAMPLE" not in data["root"]
+        assert _KEY_A not in data["root"]
 
     @pytest.mark.asyncio
     async def test_not_a_directory_root_takes_the_path_aware_redactor(
@@ -713,8 +718,7 @@ class TestProjectTree:
         must BOTH appear in the listing, as two distinct redacted entries.
 
         Uses a real ls-files collision: two files whose only differing segment is
-        a credential-shaped token (distinct AKIA... ids, each 4-letter prefix +
-        16 uppercase alphanumerics) both flatten to
+        a credential-shaped token (two distinct GitHub tokens) both flatten to
         ``[REDACTED: credential]_model.txt`` under the whole-string redact().
         Each path is redacted with ``redact_path_segments`` so each member of
         the collision carries an opaque label keyed per gateway process --
@@ -723,14 +727,9 @@ class TestProjectTree:
         raw tokens never leak.
         """
         # Two DISTINCT keys are the point: the test proves two different
-        # credential-shaped names collapse to ONE placeholder. key_a is the
-        # documented example id Semgrep allowlists; key_b must stay a split
-        # literal because detected-aws-access-key-id-value matches an
-        # AKIA-shaped literal and cannot tell a fixture from a real leak. Do
-        # not re-join it -- the runtime value is identical and CI, not the
-        # test, is what breaks.
-        key_a = "AKIAIOSFODNN7EXAMPLE"
-        key_b = "AKIA" + "JKLMNOPQRSTUVWXY"
+        # credential-shaped names collapse to ONE placeholder.
+        key_a = _KEY_A
+        key_b = _KEY_B
         (repo / f"{key_a}_model.txt").write_text("one\n")
         (repo / f"{key_b}_model.txt").write_text("two\n")
         async with TestClient(TestServer(_make_app(str(repo)))) as client:
@@ -759,8 +758,8 @@ class TestProjectTree:
         by path, so a redacted path must carry the same label in every response
         this process serves -- here, two tree responses, one of which lists a
         colliding neighbour and one of which does not."""
-        key_a = "AKIAIOSFODNN7EXAMPLE"
-        key_b = "AKIA" + "JKLMNOPQRSTUVWXY"
+        key_a = _KEY_A
+        key_b = _KEY_B
         (repo / f"{key_a}_model.txt").write_text("one\n")
         async with TestClient(TestServer(_make_app(str(repo)))) as client:
             resp = await client.get(f"/api/project/tree?path={repo}")
@@ -1686,13 +1685,13 @@ class TestProjectTree:
         longer matches its own redacted row, so the folder would be called empty.
         """
         plain = plain_project
-        (plain / "AKIAIOSFODNN7EXAMPLE" / ".git").mkdir(parents=True)
+        (plain / _KEY_A / ".git").mkdir(parents=True)
 
         async with TestClient(TestServer(_make_app(str(plain)))) as client:
             resp = await client.get(f"/api/project/tree?path={plain}")
             data = await resp.json()
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(data)
+        assert _KEY_A not in json.dumps(data)
         assert len(data["directories"]) == 1
         assert data["directories"][0].startswith("[REDACTED: credential]")
         # The join the tree performs: the marker IS the redacted row.
@@ -1708,7 +1707,7 @@ class TestProjectTree:
         name must appear nowhere in the body.
         """
         plain = plain_project
-        link = plain / "AKIAIOSFODNN7EXAMPLE"
+        link = plain / _KEY_A
         link.mkdir(parents=True)
         _pretend_directory_symlink(monkeypatch, link)
 
@@ -1716,7 +1715,7 @@ class TestProjectTree:
             resp = await client.get(f"/api/project/tree?path={plain}")
             data = await resp.json()
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(data)
+        assert _KEY_A not in json.dumps(data)
         assert len(data["directories"]) == 1
         assert data["directories"][0].startswith("[REDACTED: credential]")
         assert data["linkedDirectories"] == data["directories"]
@@ -1733,7 +1732,7 @@ class TestProjectTree:
         credential-shaped name must appear nowhere in the body.
         """
         plain = plain_project
-        locked = plain / "AKIAIOSFODNN7EXAMPLE"
+        locked = plain / _KEY_A
         locked.mkdir(parents=True)
         _deny_directory_read(monkeypatch, locked)
 
@@ -1741,7 +1740,7 @@ class TestProjectTree:
             resp = await client.get(f"/api/project/tree?path={plain}")
             data = await resp.json()
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(data)
+        assert _KEY_A not in json.dumps(data)
         assert len(data["directories"]) == 1
         assert data["directories"][0].startswith("[REDACTED: credential]")
         assert data["unreadableDirectories"] == data["directories"]

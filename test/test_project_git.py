@@ -13,12 +13,14 @@ import os
 import shutil
 import subprocess
 import threading
+from collections.abc import Iterator
 from unittest.mock import MagicMock, patch
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from git_maintenance_helpers import git_maintenance_off_entries
+from redaction_structured_cases import structured_engine
 
 import kiro_crew.dashboard.handlers.files as files_mod
 from conftest import requires_symlinks
@@ -37,6 +39,14 @@ from kiro_crew.dashboard.handlers.files import (
 )
 from kiro_crew.security import _looks_like_secret_key, redact
 from kiro_crew.security.redaction import _SECRET_MAX_SLASHES
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+
+
+@pytest.fixture(autouse=True)
+def _structured_engine() -> Iterator[None]:
+    """These cases assert the structured engine's output: keep it selected under a legacy run."""
+    with structured_engine():
+        yield
 
 
 @pytest.fixture
@@ -55,6 +65,16 @@ def as_darwin(monkeypatch):
 def as_not_darwin(monkeypatch):
     """The complement: no exemption exists off Darwin."""
     monkeypatch.setattr(platform_compat, "IS_MACOS", False)
+
+
+@pytest.fixture
+def _structured_detectors_off():
+    from kiro_crew.security.redaction_structured import compat
+
+    before = compat.use_rule_table()
+    compat.publish_use_rule_table(False)
+    yield
+    compat.publish_use_rule_table(before)
 
 
 class _Slot:
@@ -477,7 +497,9 @@ class TestNoGitSubprocess:
 
 class TestMatchKnownProjectOffLoop:
     def test_matches_via_the_worker_thread_helper(self, repo):
-        assert _match_known_project_for(_slot_project_snapshot(_State(str(repo))), str(repo)) == str(repo)
+        assert _match_known_project_for(
+            _slot_project_snapshot(_State(str(repo))), str(repo)
+        ) == str(repo)
 
     def test_tilde_form_is_matched_without_touching_the_loop(self):
         """`expanduser` on a ~user form does a passwd lookup; it must run in the
@@ -512,14 +534,12 @@ class TestBranchRedaction:
         exempt = "/private/var/folders/6r/54rts88h7yebke7n6clhoq9d0roaen/T/project"
         for path in (exempt, "/srv/project", "/private/var/folders/6r/T"):
             assert files_mod._redact_project_path(path) == redact(path)
-        # And the self-flagged id is redacted here rather than preserved: this is
-        # the behaviour difference the platform gate creates.
+        # The macOS temp directory is an Identifier with the structured detectors
+        # on, so the canonical redactor keeps it here too.
         flagged = "/private/var/folders/6r/54rts88h7yebke7n6clhoq9d0roaen/T"
-        assert files_mod._redact_project_path(flagged) != flagged
+        assert files_mod._redact_project_path(flagged) == flagged
 
-    def test_a_credential_in_the_withheld_id_region_is_redacted_off_darwin(
-        self, as_not_darwin
-    ):
+    def test_a_credential_in_the_withheld_id_region_is_redacted_off_darwin(self, as_not_darwin):
         """The leak the gate closes.
 
         A caller who chooses the whole path can put a credential-shaped run in
@@ -528,23 +548,19 @@ class TestBranchRedaction:
         withheld.
         """
         path = "/private/var/folders/6r/54rts88h7yebke7n6clhoq9d0roaen/T"
-        assert redact(path) != path
+        # The macOS temp directory is an Identifier with the structured detectors on.
+        assert redact(path) == path
         assert files_mod._redact_project_path(path) == redact(path)
 
     def test_macos_temp_root_still_redacts_a_secret_in_the_suffix(self, as_darwin):
-        key = "AKIAIOSFODNN7EXAMPLE"
-        path = (
-            "/private/var/folders/6r/54rts88h7yebke7n6clhoq9d0roaen/T/"
-            f"project/{key}"
-        )
+        key = SAMPLE_AWS_SECRET
+        path = "/private/var/folders/6r/54rts88h7yebke7n6clhoq9d0roaen/T/" f"project/{key}"
         redacted = files_mod._redact_project_path(path)
         assert key not in redacted
         assert "[REDACTED:" in redacted
 
     def test_other_paths_still_use_the_canonical_redactor(self):
-        with patch(
-            "kiro_crew.dashboard.handlers.files.redact", return_value="masked"
-        ) as red:
+        with patch("kiro_crew.dashboard.handlers.files.redact", return_value="masked") as red:
             assert files_mod._redact_project_path("/srv/project") == "masked"
         red.assert_called_once_with("/srv/project")
 
@@ -561,12 +577,8 @@ class TestBranchRedaction:
             "/private/var/folders/6r/54rts88h7yebke7n6clhoq9d0roaen/Tevil",
         ],
     )
-    def test_a_similar_path_that_is_not_the_temp_root_is_not_exempt(
-        self, as_darwin, path
-    ):
-        with patch(
-            "kiro_crew.dashboard.handlers.files.redact", return_value="masked"
-        ) as red:
+    def test_a_similar_path_that_is_not_the_temp_root_is_not_exempt(self, as_darwin, path):
+        with patch("kiro_crew.dashboard.handlers.files.redact", return_value="masked") as red:
             assert files_mod._redact_project_path(path) == "masked"
         red.assert_called_once_with(path)
 
@@ -582,18 +594,14 @@ class TestBranchRedaction:
 
     def test_detached_head_sha_is_routed_through_redaction(self, repo):
         _git(repo, "checkout", "-q", "--detach", "HEAD")
-        with patch(
-            "kiro_crew.dashboard.handlers.files.redact", side_effect=lambda t: f"<{t}>"
-        ):
+        with patch("kiro_crew.dashboard.handlers.files.redact", side_effect=lambda t: f"<{t}>"):
             info = _project_git_branch(os.path.realpath(str(repo)))
         assert info["detached"] is True
         assert info["head"].startswith("<") and info["head"].endswith(">")
 
     def test_repo_root_is_routed_through_redaction(self, repo):
         """A directory NAME is agent-influenceable via set_project and is echoed."""
-        with patch(
-            "kiro_crew.dashboard.handlers.files.redact", side_effect=lambda t: f"<{t}>"
-        ):
+        with patch("kiro_crew.dashboard.handlers.files.redact", side_effect=lambda t: f"<{t}>"):
             info = _project_git_branch(os.path.realpath(str(repo)))
         assert info["repoRoot"].startswith("<") and info["repoRoot"].endswith(">")
 
@@ -601,9 +609,7 @@ class TestBranchRedaction:
     async def test_not_a_directory_response_path_is_redacted(self, repo, mock_sel):
         """Reachable whenever a known project is deleted between match and stat."""
         f = repo / "f.txt"
-        with patch(
-            "kiro_crew.dashboard.handlers.files.redact", side_effect=lambda t: f"<{t}>"
-        ):
+        with patch("kiro_crew.dashboard.handlers.files.redact", side_effect=lambda t: f"<{t}>"):
             async with TestClient(TestServer(_make_app(str(f)))) as client:
                 resp = await client.get(f"/api/project/git?path={f}")
                 assert resp.status == 400
@@ -618,14 +624,12 @@ class TestBranchRedaction:
         """
         marker = "REDACTED-SENTINEL"
         cases = [
-            (str(repo), f"/api/project/git?path={repo}"),                 # 200
+            (str(repo), f"/api/project/git?path={repo}"),  # 200
             (str(repo / "f.txt"), f"/api/project/git?path={repo / 'f.txt'}"),  # 400
-            (str(repo), f"/api/project/git?path={tmp_path / 'nope'}"),    # 403 unknown
+            (str(repo), f"/api/project/git?path={tmp_path / 'nope'}"),  # 403 unknown
         ]
         for known, url in cases:
-            with patch(
-                "kiro_crew.dashboard.handlers.files.redact", return_value=marker
-            ):
+            with patch("kiro_crew.dashboard.handlers.files.redact", return_value=marker):
                 async with TestClient(TestServer(_make_app(known))) as client:
                     resp = await client.get(url)
                     body = await resp.text()
@@ -634,29 +638,26 @@ class TestBranchRedaction:
 
     @pytest.mark.asyncio
     async def test_response_path_is_routed_through_redaction(self, repo, mock_sel):
-        with patch(
-            "kiro_crew.dashboard.handlers.files.redact", side_effect=lambda t: f"<{t}>"
-        ):
+        with patch("kiro_crew.dashboard.handlers.files.redact", side_effect=lambda t: f"<{t}>"):
             async with TestClient(TestServer(_make_app(str(repo)))) as client:
                 resp = await client.get(f"/api/project/git?path={repo}")
                 data = await resp.json()
         assert data["path"].startswith("<") and data["path"].endswith(">")
         # The SEL audit still records the real, unredacted path.
-        assert mock_sel.log_api_access.call_args.kwargs["resources"] == os.path.realpath(
-            str(repo)
-        )
+        assert mock_sel.log_api_access.call_args.kwargs["resources"] == os.path.realpath(str(repo))
 
 
 class TestMacosPrefixBoundary:
     """What the macOS exemption may and may not cost the bare-secret detector.
 
-    The exemption withholds the OS-owned ``[a-z0-9]{2}/[a-z0-9_]{30}`` id from
-    the scan -- that is what stops it lending its entropy to a window and
-    reviving the false positive. It does NOT withhold the trailing ``T``: an AWS
-    secret key may contain ``/``, so ``T/`` plus 38 user-controlled characters is
-    a well-formed 40-byte key rather than a window that merely borrows OS bytes.
-    These pin the resulting property -- the canonical output policy is preserved
-    over the whole egress string, while the id itself is never scanned.
+    The path-aware helper's exemption withholds the OS-owned
+    ``[a-z0-9]{2}/[a-z0-9_]{30}`` id from its scan -- that is what stops it
+    lending its entropy to a window and reviving the false positive. The helper
+    does NOT withhold the trailing ``T``: an AWS secret key may contain ``/``, so
+    ``T/`` plus 38 user-controlled characters is a well-formed 40-byte key to it.
+    With the structured detectors on, ``redact()`` protects the whole temp
+    directory, ``T`` included, so no window there can borrow those bytes. These
+    pin both behaviours, and that the id itself is never scanned.
 
     Every case here describes the Darwin arm, so the class flips
     ``platform_compat.IS_MACOS`` rather than asserting a branch that only runs on
@@ -690,8 +691,11 @@ class TestMacosPrefixBoundary:
     # composed entirely of fixed or user-controlled bytes and both must be seen.
     SLASH_BOUNDARY_KEY = "/T/EqV8ib8HDy88YtDtXbiufMdI8X2Y4rUmer/BH"
 
+    @pytest.mark.usefixtures("_structured_detectors_off")
     def test_a_credential_spanning_the_prefix_boundary_is_redacted(self):
-        """The blocking finding, pinned.
+        """The blocking finding, pinned. Covers the plan with the structured
+        detectors off: with them on, the temp directory (``T`` included) is an
+        Identifier and no window can borrow its bytes.
 
         Splitting the scan at ``match.end()`` produced a class where the
         canonical redactor removed a value and the path-aware helper did not --
@@ -703,9 +707,9 @@ class TestMacosPrefixBoundary:
             (self.BOUNDARY_KEY, "T/"),
             (self.SLASH_BOUNDARY_KEY, "/T/"),
         ):
-            assert _looks_like_secret_key(key), (
-                "fixture must be a credential by the canonical classifier"
-            )
+            assert _looks_like_secret_key(
+                key
+            ), "fixture must be a credential by the canonical classifier"
             tail = key[len(lead) :]
             assert len(key) == 40 and len(tail) == 40 - len(lead)
             for prefix in (self.CLEAN, self.SELF_FLAGGED):
@@ -717,7 +721,8 @@ class TestMacosPrefixBoundary:
 
     def test_the_two_fixture_prefixes_behave_as_documented(self):
         assert redact(self.CLEAN) == self.CLEAN
-        assert redact(self.SELF_FLAGGED) != self.SELF_FLAGGED
+        # The macOS temp directory is an Identifier with the structured detectors on.
+        assert redact(self.SELF_FLAGGED) == self.SELF_FLAGGED
         assert files_mod._redact_project_path(self.SELF_FLAGGED) == self.SELF_FLAGGED
 
     def test_neither_boundary_name_is_a_secret_standing_alone(self):
@@ -735,30 +740,27 @@ class TestMacosPrefixBoundary:
         assert redact(f"/{self.NAME_38}") == f"/{self.NAME_38}"
         assert redact(f"/{self.NAME_39}") != f"/{self.NAME_39}"
 
-    def test_a_38_char_name_is_judged_on_its_own_boundary_window(self):
-        """Being under 40 characters is NOT what decides a 38-char name.
+    def test_a_38_char_name_after_the_temp_directory_stays_visible(self):
+        """A 38-char name right after ``/T/`` is a path component, and the
+        canonical redactor keeps it.
 
-        The earlier contract kept every such name on the reasoning that it sits
-        below the classifier's exact-40 minimum. That reasoning does not hold:
-        the window the classifier actually evaluates is ``T/`` plus the name, and
-        whether THAT is a credential is a per-value question. So the name is
-        handed to the canonical classifier with its boundary and judged there --
-        this fixture clears the gates and is removed.
+        The structured detectors protect the temp directory, ``T`` included, so
+        no 40-character window can borrow its ``T/``. The name reaches 40
+        characters only joined to that ``T``; on its own it is under the length
+        of an AWS secret, so the whole path stays visible, the directory id
+        included. The path-aware helper still judges the ``T/`` window itself
+        and removes the name.
         """
-        assert _looks_like_secret_key(f"T/{self.NAME_38}")
         path = f"{self.CLEAN}/{self.NAME_38}"
-        assert redact(path) != path
+        assert redact(path) == path
         out = files_mod._redact_project_path(path)
         assert self.NAME_38 not in out
-        # And the exemption is still doing its job: the OS-owned id above the
-        # boundary is preserved byte-for-byte, never scanned.
         assert out.startswith(self.CLEAN[: -len("/T")])
-        assert "[REDACTED:" in out
 
     def test_ordinary_project_names_survive_under_both_prefixes(self):
         """The false positive this helper removes, including the boundary itself.
 
-        The ``T`` enters the scan, so this is the assertion that would break if
+        The ``T`` enters the path-aware helper's scan, so this is the assertion that would break if
         the boundary context were widened any further -- one more character
         drags the high-entropy OS id in with it.
         """
@@ -787,7 +789,8 @@ class TestMacosPrefixBoundary:
         redactor removes on its own account. Withholding it is the whole fix; if
         a future change fed it to the scan, this fails.
         """
-        assert redact(self.SELF_FLAGGED) != self.SELF_FLAGGED
+        # The macOS temp directory is an Identifier with the structured detectors on.
+        assert redact(self.SELF_FLAGGED) == self.SELF_FLAGGED
         assert files_mod._redact_project_path(self.SELF_FLAGGED) == self.SELF_FLAGGED
         assert (
             files_mod._redact_project_path(f"{self.SELF_FLAGGED}/project")
@@ -809,14 +812,11 @@ class TestMacosPrefixBoundary:
     @pytest.mark.parametrize(
         "value",
         [
-            "AKIAIOSFODNN7EXAMPLE",
-            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            SAMPLE_AWS_SECRET,
             "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
         ],
     )
-    @pytest.mark.parametrize(
-        "layout", ["{v}", "project/{v}", "{v}/sub", "a/b/{v}/c"]
-    )
+    @pytest.mark.parametrize("layout", ["{v}", "project/{v}", "{v}/sub", "a/b/{v}/c"])
     def test_a_real_credential_never_survives_the_split(self, value, layout):
         """The invariant the exemption must not break, at every placement."""
         assert redact(value) != value, "fixture must be detectable standing alone"
@@ -850,9 +850,7 @@ class TestMacosPrefixBoundary:
                 "/wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
             ):
                 path = prefix + tail
-                assert files_mod._redact_project_path(path) == head + redact(
-                    boundary + tail
-                )
+                assert files_mod._redact_project_path(path) == head + redact(boundary + tail)
 
     # A real 40-char key that carries MORE separators than the detector's
     # ceiling. Drawn by sampling the classifier itself rather than hand-written,
@@ -912,9 +910,7 @@ class TestSlotSnapshotOffLoop:
         assert _slot_project_snapshot(Bare()) == []
 
     @pytest.mark.asyncio
-    async def test_snapshot_is_taken_on_the_event_loop_not_the_worker(
-        self, repo, mock_sel
-    ):
+    async def test_snapshot_is_taken_on_the_event_loop_not_the_worker(self, repo, mock_sel):
         """Pins WHERE the copy happens, which is the whole point of the fix.
 
         Asserting the worker merely receives a list does not discriminate — a

@@ -386,6 +386,17 @@ export function handleCredentialRedactionChanged(queryClient: QueryClient, d: { 
   purgeDocumentBodiesForRedactionChange(queryClient)
 }
 
+/** A credential-redaction setting that reaches no file body moved (the
+ *  prompt-and-logs switch), possibly in ANOTHER browser tab or by a policy
+ *  refresh: this document re-reads the settings so no open Settings card keeps
+ *  showing the old position. Nothing is purged. Owner sockets only receive it. */
+export function handleCredentialRedactionSettingsChanged(queryClient: QueryClient, d: FrameData | undefined): void {
+  if (d && typeof (d as { enabled?: unknown }).enabled === 'boolean') {
+    queryClient.setQueryData(['credential-redaction'], d)
+  }
+  queryClient.invalidateQueries({ queryKey: ['credential-redaction'] })
+}
+
 /** Live artifact refresh: the backend broadcasts from the artifact mutation
  *  funnel (create / content PATCH / revert / relocate / pull / delete).
  *  Invalidate the per-slug queries so any open view — detail page, popout,

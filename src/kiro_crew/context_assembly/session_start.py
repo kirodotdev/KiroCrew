@@ -466,7 +466,8 @@ def build_session_context(
         if compressed_history:
 
             compressed_history, _ = ctx.redact_exfiltration_urls(compressed_history)
-            compressed_history, _ = ctx.redact_credentials(compressed_history)
+            with ctx.redaction_seams.output_seam(ctx.redaction_seams.ACP_PROMPT):
+                compressed_history, _ = ctx.redact_credentials(compressed_history)
             compressed_history = ctx._MODE_IDENTITY_RE.sub("", compressed_history)
             logger.info(
                 "🔍 build_session_context: session_key=%s LLM-compressed " "history (%d chars)",
@@ -492,7 +493,8 @@ def build_session_context(
                 history_block = _replay.thread_history_text(recent, caps)
                 if history_block:
                     history_block, _ = ctx.redact_exfiltration_urls(history_block)
-                    history_block, _ = ctx.redact_credentials(history_block)
+                    with ctx.redaction_seams.output_seam(ctx.redaction_seams.ACP_PROMPT):
+                        history_block, _ = ctx.redact_credentials(history_block)
                     parts.append(_history_header + history_block + "\n[End of thread history]\n\n")
     elif session_key and resumed:
         logger.info(

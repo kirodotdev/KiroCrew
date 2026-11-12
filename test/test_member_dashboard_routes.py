@@ -19,11 +19,13 @@ from types import SimpleNamespace
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import github_classic
 
 from kiro_crew import members as members_mod
 from kiro_crew.dashboard.handlers import member_dashboard as routes
 from kiro_crew.dashboard_templates import catalog, instance
 from kiro_crew.platform.context import redact_via_context
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 #: The REAL resolvers, bound at import time.
 #:
@@ -845,7 +847,7 @@ def test_a_credential_in_a_page_is_redacted_before_it_reaches_the_reader():
     # ASSEMBLED at runtime for the reason the fold-value case above gives: a
     # credential-shaped literal in the diff is a finding against the PR whatever the
     # code around it is for. Do not join these back up.
-    token = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+    token = github_classic(seed=65)
     page = f'<p>key {token}</p><b data-dashboard-field="credits"></b>'
     assert token not in routes._template_text_safe(page), "a page kept its credential"
     assert "credits" in routes._template_text_safe(page), "the redaction ate the bindings"
@@ -916,8 +918,8 @@ def test_a_credential_written_into_a_script_or_stylesheet_is_still_masked():
     dashes = "-" * 5
     kind = "RSA PRIVATE KEY"
     secrets = [
-        "AKIA" + "IOSFODNN7" + "EXAMPLE",
-        "ghp" + "_" + "ZXAMPLEzxampleZXAMPLEzxampleZXAMPLE12",
+        SAMPLE_AWS_SECRET,
+        github_classic(seed=66),
         f"{dashes}BEGIN {kind}{dashes}\nMIIEowIBAAKCAQEA3Zx8kUoTBqQw0hXvPj9mKpLq2yTnVr7\n"
         f"{dashes}END {kind}{dashes}",
     ]
@@ -946,11 +948,11 @@ def test_a_key_id_glued_to_a_partial_key_is_masked_as_one_run_beside_a_style(kee
 
 def test_a_script_holding_a_masked_credential_still_keeps_its_literal():
     """The page changes under the scrub here, so the result is read again before it is served."""
-    key_id = "AKIA" + "IOSFODNN7" + "EXAMPLE"
-    page = f"<script>var A = '{_PALETTE}'; var k = '{key_id}';</script><p>{_bare_key()}</p>"
+    token = github_classic(seed=67)
+    page = f"<script>var A = '{_PALETTE}'; var k = '{token}';</script><p>{_bare_key()}</p>"
     out = routes._template_text_safe(page)
     assert f"var A = '{_PALETTE}';" in out
-    assert key_id not in out
+    assert token not in out
     assert _bare_key() not in out
 
 
@@ -1140,18 +1142,18 @@ def test_past_the_bound_a_scripts_text_gets_every_pass_not_fewer():
     from kiro_crew import dashboard_frame
 
     bound = dashboard_frame.MAX_CODE_PIECES
-    key_id = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+    token = github_classic(seed=68)
     first = f"<script>var FIRST = '{_PALETTE}';</script>"
     spent = "<script></script><script>var a = 1;</script>" * (bound - 1)
     past = "<script>var a = 1;</script>" * 4
-    last = f"<script>var LAST = '{_PALETTE}'; var k = '{key_id}'; var b = '{_bare_key()}';</script>"
+    last = f"<script>var LAST = '{_PALETTE}'; var k = '{token}'; var b = '{_bare_key()}';</script>"
     page = first + spent + past + last
     assert len(dashboard_frame.code_spans(page)) > bound, "the premise: elements past the bound"
 
     out = routes._template_text_safe(page)
 
     assert f"var FIRST = '{_PALETTE}';" in out, "the first element lost its literal"
-    assert key_id not in out, "a credential in the last element was served"
+    assert token not in out, "a credential in the last element was served"
     assert _bare_key() not in out, "the last element kept a key-shaped run the full pass masks"
     assert f"var LAST = '{_PALETTE}'" not in out, "the last element kept its literal"
     assert out.count("<script>") == page.count("<script>"), "a tag was eaten"
@@ -1175,7 +1177,7 @@ def test_a_credential_in_a_manifest_string_is_redacted():
     ``^[a-z][a-z0-9_]{0,63}$``, a grammar no credential survives, and rewriting a key
     would break the page's own bindings.
     """
-    token = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+    token = github_classic(seed=69)
     scrubbed = routes._manifest_text_safe(
         {"title": f"board {token}", "fields": {"credits": {"type": "number"}}}
     )
@@ -1185,7 +1187,7 @@ def test_a_credential_in_a_manifest_string_is_redacted():
 
 def test_the_raw_body_is_scrubbed_beside_the_composed_page():
     """Scrubbing only the rendered half leaves the same credential one key away."""
-    token = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+    token = github_classic(seed=70)
     body = routes._safe_body(
         {
             "html": f"<p>{token}</p>",
