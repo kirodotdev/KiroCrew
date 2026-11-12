@@ -410,7 +410,10 @@ delay the bind past the desktop app's gateway-wait window. A failed revive leave
 `was_connected` true and records the failure reason, so the entry persists showing
 why it is down. A crew whose `disabled` flag is set is skipped with its
 `was_connected` intact, and one chained behind a disabled crew is refused by
-`connect()` and spawns nothing.
+`connect()` and spawns nothing. A gateway restart or stop that lands mid-revive
+stops it at the next instance, with every remaining `was_connected` left set: the
+restart's pre-exec seam and the stop's cleanup hook have already torn the tunnels
+down, so one connected after that would outlive the gateway.
 
 **The same supervisor without a gateway: `kirocrew desktop tunnel`.** The desktop
 app's client-only mode runs no local gateway, so nothing above is running there,

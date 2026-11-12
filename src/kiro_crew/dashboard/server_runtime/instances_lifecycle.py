@@ -21,6 +21,7 @@ if TYPE_CHECKING:
         TunnelState,
         logger,
         register_pre_exec_stop,
+        shutdown_event,
     )
 
 
@@ -94,7 +95,9 @@ async def _revive_intended_instances(
     Stops at the first instance it reaches once a gateway restart has claimed
     ``state``: the restart's pre-exec seam has already stopped every tunnel, and
     one connected now would outlive the exec as an orphaned forwarder. The
-    intent flag is untouched, so the next gateway revives the rest.
+    intent flag is untouched, so the next gateway revives the rest. A gateway
+    shutting down stops it the same way: the cleanup hook tears every tunnel
+    down, and nothing would stop one connected after that.
     """
     # A disabled crew keeps its intent so enabling it brings it back, but it is
     # not revived while it stays disabled.
@@ -103,6 +106,9 @@ async def _revive_intended_instances(
         return
     logger.info("Auto-reconnecting %d instance(s) on startup", len(intended))
     for inst in intended:
+        if shutdown_event.is_set():
+            logger.info("Gateway shutting down; startup auto-reconnect stops")
+            return
         if getattr(state, "_gateway_restart_in_progress", False) is True:
             logger.info("Gateway restart in progress; startup auto-reconnect stops")
             return
