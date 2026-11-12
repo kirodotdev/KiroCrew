@@ -18,6 +18,7 @@ from kiro_crew.agent_sdk.spec_hooks import (
     merge_user_hook_files,
     observer_spec_hooks,
     overlong_spec_hook_commands,
+    post_tool_matchers_no_builtin_meets,
     project_hook_files_present,
     provider_session_key,
     session_agent,
@@ -28,6 +29,7 @@ from kiro_crew.agent_sdk.spec_hooks import (
     spec_steering_resources,
     spec_tools_settings_applied_nowhere,
     spec_tools_settings_unapplied,
+    unmet_post_tool_matchers_sentence,
     withheld_project_spec_hooks,
 )
 from kiro_crew.dashboard.agent_welcome import AGENT_WELCOME_KIND
@@ -195,7 +197,7 @@ async def _prepare_spec_hooks(
     Only for a backend whose capabilities say Crew fires the spec's hooks: kiro-cli
     runs the field itself, and firing it here too would run every hook twice, so
     every other session gets ``([], False, None)``. A backend where Crew fires
-    only the hooks that cannot refuse a call (claude) gets those, from
+    only the hooks that cannot refuse a call (claude, codex) gets those, from
     :func:`_prepare_observer_spec_hooks`.
 
     On a new session, a spec that sets a key nothing carries to this backend gets
@@ -314,8 +316,23 @@ async def _prepare_spec_hooks(
     return hooks, False, work_dir
 
 
-def _pre_tool_hooks_run_nowhere_notice(agent: str) -> str:
-    """The session-start notice for ``preToolUse`` spec hooks on an observer-only backend."""
+def _post_tool_matchers_unmet_notice(agent: str, matchers: list[str]) -> str:
+    """The session-start notice for the ``postToolUse`` matchers no built-in tool meets."""
+    return f"ℹ {unmet_post_tool_matchers_sentence(agent, matchers)}"
+
+
+def _pre_tool_hooks_run_nowhere_notice(agent: str, *, others_run: bool = True) -> str:
+    """The session-start notice for ``preToolUse`` spec hooks on an observer-only backend.
+
+    *others_run* is False when some of the spec's ``postToolUse`` matchers meet no
+    built-in tool (:func:`_post_tool_matchers_unmet_notice` names them), so the
+    notice does not say that the other hooks run.
+    """
+    if not others_run:
+        return (
+            f"ℹ Agent {agent} has hooks on preToolUse. This backend does not "
+            "run an agent's preToolUse hooks, so they have no effect in this session."
+        )
     return (
         f"ℹ️ Agent {agent} has hooks on preToolUse. This backend does not run an "
         "agent's preToolUse hooks, so they have no effect in this session. Its "
@@ -340,7 +357,7 @@ async def _prepare_observer_spec_hooks(
     is_new: bool,
 ) -> tuple[list, bool, str | None]:
     """:func:`_prepare_spec_hooks` on a backend where Crew fires the spec's hooks on
-    the events that cannot refuse a tool call (claude).
+    the events that cannot refuse a tool call (claude, codex).
 
     The spec's ``preToolUse`` hooks are left out: the harness approves some calls
     without a permission request, so such a hook could not gate them, and a new
@@ -379,12 +396,24 @@ async def _prepare_observer_spec_hooks(
         return [], False, work_dir
     observed = observer_spec_hooks(hooks)
     if is_new:
+        unmet = post_tool_matchers_no_builtin_meets(client, observed)
         if len(observed) < len(hooks):
             append_and_surface(
                 state,
                 slot,
                 "notice",
-                _redact_display_text(_pre_tool_hooks_run_nowhere_notice(agent)),
+                _redact_display_text(
+                    _pre_tool_hooks_run_nowhere_notice(agent, others_run=not unmet)
+                ),
+                "msg msg-info",
+                meta={"kind": SPEC_HOOKS_NOTICE_KIND},
+            )
+        if unmet:
+            append_and_surface(
+                state,
+                slot,
+                "notice",
+                _redact_display_text(_post_tool_matchers_unmet_notice(agent, unmet)),
                 "msg msg-info",
                 meta={"kind": SPEC_HOOKS_NOTICE_KIND},
             )

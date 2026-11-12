@@ -297,19 +297,28 @@ ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS = frozenset(
 #: ``userPromptSubmit``, ``agentSpawn`` and ``stop``. Every member of
 #: ``ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS`` is one, since Crew fires all five there.
 #:
-#: claude is a member of this set alone. Its harness is handed no spec, so nothing
-#: else runs the field, and none of these four events needs a permission request to
-#: fire on. ``preToolUse`` does: claude approves some calls inside the harness
-#: without asking, so a gating hook would be skipped on exactly those, and its
-#: ``preToolUse`` entries keep the session-start notice that says they do not run.
-#: That is why claude stays out of the gating set, whose every branch (the
-#: unreadable-spec block, the permission-request gate, the skipped informational
-#: fire) assumes each covered call reaches Crew as a permission request.
+#: claude and codex are members of this set alone. Neither harness is handed the
+#: spec, so nothing else runs the field, and none of these four events needs a
+#: permission request to fire on. ``preToolUse`` does, and each approves some calls
+#: inside the harness without asking: claude its pre-approved tools, codex every
+#: read and every command that stays inside its own sandbox under the ``read-only``
+#: mode Crew sets (the live codex captures needed a command asking to leave that
+#: sandbox to raise a request at all). A gating hook would be skipped on exactly
+#: those, so their ``preToolUse`` entries keep the session-start notice that says
+#: they do not run. That is why both stay out of the gating set, whose every branch
+#: (the unreadable-spec block, the permission-request gate, the skipped
+#: informational fire) assumes each covered call reaches Crew as a permission
+#: request.
+#:
+#: codex runs hooks of its own, but reads them from its own config layers
+#: (``~/.codex/hooks.json``, ``[hooks]`` in ``config.toml``), never from the Kiro
+#: spec, and codex-acp's ``session/new`` has no hooks field, so Crew firing the
+#: spec's hooks runs none of them twice.
 #:
 #: kiro-cli is NOT a member and must never become one: it runs the field itself,
 #: so membership would run every spec hook twice.
 ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS = ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS | frozenset(
-    {ACP_BACKEND_CLAUDE}
+    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX}
 )
 
 #: Backends on the direct ``AcpClient`` whose session never reads the agent spec's
