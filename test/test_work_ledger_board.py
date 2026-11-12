@@ -237,6 +237,17 @@ def test_a_question_whose_ask_cannot_be_dated_is_left_outstanding():
     assert board._is_outstanding(item, events) is True
 
 
+def test_a_peer_stamp_without_an_offset_does_not_fail_the_board():
+    """A remote item's report stamp may carry no offset; an aware/naive compare
+    would raise and take the whole board GET down with it."""
+    item = wl.WorkItem(status="question", last_report_at="2000-01-01T00:00:00")
+    events = [{"ts": "2026-09-22T05:00:00+00:00", "kind": "decision", "status": None}]
+    assert board._is_outstanding(item, events) is False
+    naive_answer = [{"ts": "2000-01-01T00:00:00", "kind": "decision", "status": None}]
+    later = wl.WorkItem(status="question", last_report_at="2026-09-22T05:00:00Z")
+    assert board._is_outstanding(later, naive_answer) is True
+
+
 def test_only_a_question_status_can_be_outstanding():
     for status in ("progress", "done", "blocked"):
         item = wl.WorkItem(status=status)

@@ -142,11 +142,12 @@ def _parse_ts(raw: Any) -> datetime | None:
     text = str(raw or "").strip()
     if not text:
         return None
-    try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
+    # Through ``work_ledger.parse_stamp``, which answers aware datetimes only: a
+    # peer's stamp may carry no offset, and an aware/naive compare raises.
+    stamp = work_ledger.parse_stamp(text.replace("Z", "+00:00"))
+    if stamp is None:
         logger.debug("crew board: unparseable timestamp %r", text)
-        return None
+    return stamp
 
 
 #: Event kinds that answer a worker's question: the conductor's decision, and the
