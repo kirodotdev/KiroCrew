@@ -199,6 +199,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_provision_app_deps_locked",
     "_read_installed",
     "_read_pidfile",
+    "_read_pidfile_for_update",
     "_reap_orphaned_backend_group",
     "_reap_stale_app_backends",
     "_rebind_adopted_owners",
