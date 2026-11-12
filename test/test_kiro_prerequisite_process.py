@@ -22,6 +22,7 @@ from kiro_crew import kiro_prerequisite as prerequisite_module
 from kiro_crew import platform_compat
 from kiro_crew.sandbox import SandboxUnavailableError
 from kiro_crew.testing.ids import UNALLOCATABLE_PID
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 
 class _Stream:
@@ -246,6 +247,123 @@ class TestRunProcessFailureArms:
         assert result.error == "wait broke"
         assert result.timed_out is False
         assert posix_host[0] == (UNALLOCATABLE_PID, platform_compat.SIGTERM)
+
+
+class TestRequireCrewSandbox:
+    """A caller may refuse a spawn the chokepoint did not put in Kiro Crew's own sandbox."""
+
+    @pytest.fixture
+    def spawns(self, monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+        """Every argv handed to the spawn, which then fails: no child is needed here."""
+        seen: list[list[str]] = []
+
+        async def spawn(*argv: str, **_kwargs: Any) -> Any:
+            seen.append(list(argv))
+            raise OSError("spawn reached")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+        monkeypatch.setattr(platform_compat, "trusted_system_bin", lambda name: name)
+        return seen
+
+    @staticmethod
+    def _wrap(monkeypatch: pytest.MonkeyPatch, prefix: list[str], cleanup: str | None) -> None:
+        async def prepare(
+            argv: list[str], **_kwargs: Any
+        ) -> tuple[list[str], dict[str, str], str | None]:
+            return [*prefix, *argv], {}, cleanup
+
+        monkeypatch.setattr(prerequisite_module, "_prepare_sandboxed_spawn", prepare)
+
+    @pytest.mark.asyncio
+    async def test_an_unconfined_wrap_is_refused_before_any_spawn(
+        self,
+        spawns: list[list[str]],
+        posix_host: list[tuple[int, int]],
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Any,
+    ) -> None:
+        leftover = tmp_path / "launcher"
+        leftover.write_text("")
+        self._wrap(monkeypatch, [], str(leftover))
+
+        result = await prerequisite_module._run_process(
+            "/planted/kiro-cli",
+            ["--version"],
+            env={},
+            timeout_secs=FALLBACK_TIMEOUT_SECS,
+            require_crew_sandbox=True,
+        )
+
+        assert spawns == []
+        assert result.ok is False and result.returncode is None
+        assert result.error == prerequisite_module._NOT_IN_CREW_SANDBOX_ERROR
+        assert result.sandbox_failure is None and result.timed_out is False
+        assert not leftover.exists(), "the wrap's launcher is removed"
+
+    @pytest.mark.asyncio
+    async def test_the_default_still_runs_that_spawn(
+        self,
+        spawns: list[list[str]],
+        posix_host: list[tuple[int, int]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Every caller that does not ask keeps the behaviour it had."""
+        self._wrap(monkeypatch, [], None)
+
+        result = await prerequisite_module._run_process(
+            "/fixed/kiro-cli", ["--version"], env={}, timeout_secs=FALLBACK_TIMEOUT_SECS
+        )
+
+        assert len(spawns) == 1 and spawns[0][-3:] == [
+            "/usr/bin/env",
+            "/fixed/kiro-cli",
+            "--version",
+        ]
+        assert result.error == "spawn reached"
+
+    @pytest.mark.asyncio
+    async def test_a_spawn_inside_crew_sandbox_runs(
+        self,
+        spawns: list[list[str]],
+        posix_host: list[tuple[int, int]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._wrap(monkeypatch, ["/bin/sh", "/run/kirocrew_sandbox_1.sh"], None)
+
+        result = await prerequisite_module._run_process(
+            "/planted/kiro-cli",
+            ["--version"],
+            env={},
+            timeout_secs=FALLBACK_TIMEOUT_SECS,
+            require_crew_sandbox=True,
+        )
+
+        assert len(spawns) == 1 and "/run/kirocrew_sandbox_1.sh" in spawns[0]
+        assert result.error == "spawn reached"
+
+    @pytest.mark.asyncio
+    async def test_windows_which_skips_the_wrap_is_refused(
+        self,
+        spawns: list[list[str]],
+        windows_host: list[int],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async def never(*_a: Any, **_k: Any) -> Any:
+            pytest.fail("Windows does not wrap the spawn")
+
+        monkeypatch.setattr(prerequisite_module, "_prepare_sandboxed_spawn", never)
+
+        result = await prerequisite_module._run_process(
+            "C:/planted/kiro-cli.exe",
+            ["--version"],
+            env={},
+            timeout_secs=FALLBACK_TIMEOUT_SECS,
+            require_crew_sandbox=True,
+            _on_private_loop=True,
+        )
+
+        assert spawns == []
+        assert result.error == prerequisite_module._NOT_IN_CREW_SANDBOX_ERROR
 
 
 class TestWindowsDescendantSnapshotFailures:

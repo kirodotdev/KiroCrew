@@ -4710,14 +4710,45 @@ once per session, so a tool listed there spends context in every request of ever
 session for as long as the session lives — whether or not that session will ever
 use it. With `agent.tool_search` on (the default), kiro defers MCP specs once they
 cross `agent.tool_search_min_pct` or `agent.tool_search_min_tokens`, and Crew's own
-servers defer like any other when the spawn runs the pinned kiro-cli install or its
-`kiro-cli-chat`, and both are >= 2.27.0. Both the spawned path and the pin are first
+servers defer like any other when the file the spawn runs is new enough. Three install
+shapes can earn that (`kiro_cli.mandatory_mcps_drop_allowed`):
+
+| The spawn runs | Version read | Defers when |
+|---|---|---|
+| the pinned kiro-cli install or its `kiro-cli-chat` | `kiro_cli_version_at`, on the pinned files only, inside the sandbox at the configured tier | both are >= 2.27.0 |
+| the operator's `KIROCREW_KIRO_BIN` | the same read: an absolute override is the pin | that one file is >= 2.27.0, and >= 3.0.0 when it is a POSIX `kiro-cli` |
+| a kiro-cli found only through `PATH` | `kiro_cli_path_probe`, inside the strict sandbox, in the background | the same, once the answer is in |
+
+The last two derive no sibling: a POSIX `kiro-cli` below 3.0.0 is a launcher that execs
+a `kiro-cli-chat` nobody probed, so it stays resident there. A `PATH` file can sit in a
+directory an agent writes to, so its `--version` never runs unconfined, whatever the
+configured tier: it goes
+through the readiness probe's own runner for an unverified candidate
+(`kiro_prerequisite._run_process`: `sandboxed_spawn_argv(mode="strict")`, entered
+through the system `env`, output captured up to a fixed bound, the process tree ended
+on a timeout), with that probe's credential-free environment,
+and is not run at all when the wrap did not put it in Crew's own sandbox (the runner's
+`require_crew_sandbox`) or on Windows,
+which has no sandbox backend. It is started at gateway boot and on a spawn's first
+miss, and never waited for: a spawn that finds no answer
+keeps the servers resident. The file's own answer is cached by path and mtime; a read
+that did not run or was cut off (a timeout, a sandbox that could not be built, more
+output than the bound) is not
+kept, so the next spawn starts another. Both the spawned path and the pin are first
 passed through the edition's `agent_executable` resolver, the one the OS sandbox applies
-to argv[0], so a managed launcher is judged by the install it runs. For any other executable (a pod bundle, a `kiro-cli`
-found on `PATH`), below that floor, or when the version is unknown, Crew keeps its
+to argv[0], so a managed launcher is judged by the install it runs. For any other executable (a pod bundle,
+a sibling nobody probed), below that floor, or when the version is unknown, Crew keeps its
 servers resident to avoid the thinking-signature
 "tools list differs" rejection that bricks a session. That floor is kiro-cli's own
-engine and the KAS relay, which runs whatever KAS its kiro-cli carries. On Crew's
+engine and the KAS relay, which runs whatever KAS its kiro-cli carries. The floor is
+measured, not promised, so a refusal above it is handled too: the first request refused
+with that reason (`transport_errors._is_tools_list_refusal`, on a kiro-family backend)
+is remembered for the life of the process (`kiro_cli.note_tools_list_refusal`), every
+later spawn keeps the servers resident, a warm-pool process started before it is
+discarded at claim, and the dashboard's one-shot rebuild of the refused conversation
+therefore starts its process with the full list. One case is not covered: with the
+`chat_runtime_sharing` preview on (off by default), the rebuilt conversation can be
+placed on a shared process that started before the refusal and still defers. On Crew's
 own KAS engine bundle (a spawn whose program sits under `<data home>/engines/kas` or the desktop app's
 staged engine copy),
 Crew's servers always defer: `tool_load` returns a tool's schema as a tool result and the call runs
