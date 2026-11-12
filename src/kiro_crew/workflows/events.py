@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Iterable, Optional
 
-from kiro_crew.strict_json import json_portable
+from kiro_crew.strict_json import json_plain
 
 from . import EVENT_TYPES, WorkflowEvent
 
@@ -87,7 +87,7 @@ class EventStream:
     def _emit(self, ts: str, type_: str, data: dict[str, Any]) -> WorkflowEvent:
         stamp = self._clock() if self._clock is not None else ts
         event = WorkflowEvent(
-            run_id=self.run_id, seq=self._seq, ts=stamp, type=type_, data=json_portable(data)
+            run_id=self.run_id, seq=self._seq, ts=stamp, type=type_, data=json_plain(data)
         )
         validate_event(event)
         self._seq += 1

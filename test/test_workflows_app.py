@@ -117,6 +117,18 @@ def test_handle_run_happy_path_returns_event_stream() -> None:
     assert "log" in types
 
 
+def test_handle_run_returns_a_result_json_cannot_write_as_strict_json() -> None:
+    script = (
+        'META = {"name": "non-json"}\n'
+        "async def workflow(ctx):\n"
+        '    return {"tags": {"a"}, "r": float("inf")}\n'
+    )
+    out = handle_run({"source": script, "run_id": "wf_t", "now": "2026-06-18T00:00:00Z"})
+    assert out["ok"] is True, out
+    assert out["result"] == {"tags": "{'a'}", "r": None}
+    json.dumps(out, allow_nan=False)
+
+
 def test_handle_run_invalid_script_fails_at_validate() -> None:
     out = handle_run({"source": "import os\n" + GOOD_SCRIPT})
     assert out["ok"] is False
