@@ -12,11 +12,10 @@ empty; anything else in it stays.
 from __future__ import annotations
 
 import json
-import os
 
 import pytest
 
-from kiro_crew import platform_compat
+from kiro_crew.testing.links import make_dir_link
 
 LEGACY_DIR = ".kirocrew-skill-projection-metadata"
 VIEW = "kirocrew-skill-view-" + "a" * 24
@@ -76,14 +75,13 @@ def test_drain_keeps_a_file_crew_did_not_write(agents, name, body):
     assert sorted(entry.name for entry in legacy.iterdir()) == [name]
 
 
-@pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="symlinks need privileges on Windows")
 def test_drain_does_not_follow_a_linked_legacy_directory(agents, tmp_path):
     from kiro_crew.acp import skill_projection as projection
 
     target = tmp_path / "elsewhere"
     target.mkdir()
     (target / LEDGER).write_text(json.dumps({VIEW: "docs-author"}), encoding="utf-8")
-    os.symlink(target, agents / LEGACY_DIR)
+    make_dir_link(agents / LEGACY_DIR, target)
 
     projection.drain_stale_aliases()
 
