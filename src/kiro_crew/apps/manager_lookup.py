@@ -28,6 +28,7 @@ from kiro_crew.apps.manager_records import (
     APP_MANIFEST_FILENAME,
     INSTALLED_META_FILENAME,
     InstalledApp,
+    InstalledRecordShapeError,
     _approved_grants_row,
     _is_sidecar_entry,
     _read_installed,
@@ -376,7 +377,13 @@ def list_apps() -> list[dict[str, Any]]:
     for entry in sorted(root.iterdir()):
         if _is_sidecar_entry(entry.name) or not entry.is_dir():
             continue
-        meta = _read_installed(entry.name)
+        try:
+            meta = _read_installed(entry.name)
+        except InstalledRecordShapeError as exc:
+            # One damaged record must not take the whole listing down; it is left
+            # on disk untouched and named in the log.
+            logger.warning("Skipping app %s in the listing: %s", entry.name, exc)
+            continue
         if not meta:
             continue
         # Also load manifest for full info

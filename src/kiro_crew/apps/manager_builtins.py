@@ -29,6 +29,7 @@ from kiro_crew.apps.manager_records import (
     INSTALLED_META_FILENAME,
     AppResult,
     InstalledApp,
+    InstalledRecordShapeError,
     _declared_grant_entries,
     _is_sidecar_entry,
     _now_iso,
@@ -970,7 +971,13 @@ def detect_orphaned_builtins(*, force_refresh: bool = False) -> set[str]:
     for entry in root.iterdir():
         if _is_sidecar_entry(entry.name) or not entry.is_dir():
             continue
-        meta = _read_installed(entry.name)
+        try:
+            meta = _read_installed(entry.name)
+        except InstalledRecordShapeError as exc:
+            # Never an orphan: an orphan is torn down, and a damaged record says
+            # nothing about whether this app is one.
+            logger.warning("Skipping app %s in the orphan scan: %s", entry.name, exc)
+            continue
         if (
             meta
             and meta.origin == "builtin"
