@@ -26,6 +26,7 @@ from kiro_crew.dashboard.handlers.sessions import api_session_keepalive
 from kiro_crew.mcp_shared import DeferredTool
 from kiro_crew.mcp_tools.control_parts import mcp_wait
 from kiro_crew.testing.clock import ManualClock
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.validation import ValidationError
 
 SESSION = "dashboard:tab-1"
@@ -338,7 +339,8 @@ class TestTheWait:
 
     def test_a_name_in_the_hint_is_read_back_scrubbed(self, parked):
         step, _, replies, _ = parked
-        secret = "AKIA" + "IOSFODNN7EXAMPLE"
+        # A credential the structured engine removes (it keeps AWS key IDs readable).
+        secret = github_classic(seed=120)
         replies.append({"mcp_server_state": "unknown", "mcp_server_names": [f"srv {secret}"]})
 
         answer = step.step()

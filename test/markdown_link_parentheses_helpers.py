@@ -1,6 +1,6 @@
 """Shared link fixtures and readers for the ``test_markdown_link_parentheses*`` modules.
 
-The two parenthesised URLs, the AWS example key the split-key tests hide, Slack's rendering
+The two parenthesised URLs, the synthetic key the split-key tests hide, Slack's rendering
 and what a Slack or Discord reader sees, the regex unit's destination, the screen's
 readings, and the nested-link shape the canonical-form tests build.
 """
@@ -56,9 +56,9 @@ def _regex_destination(rest: str) -> tuple[str | None, int]:
     return match.group(1), match.end() - 1
 
 
-#: The AWS example access key, split by a link so that only a reader who sees the
-#: link rendered away sees it whole.
-_KEY = "AKIAIOSFODNN7EXAMPLE"
+#: A synthetic Google API key (a credential the plan redacts), split by a link so
+#: that only a reader who sees the link rendered away sees it whole.
+_KEY = "AIzaIOSFODNN7Qm2T8kVpL4xR9cWn3B6hJ1uZaE"
 
 
 def _screen_readings(text: str) -> list[str]:
@@ -79,12 +79,12 @@ def _discord_reader_sees(text: str) -> str:
 
 #: The trigger that makes ``redact_for_display`` emit the canonical form: a link
 #: whose url holds the key split by ``**``, whole on a plain-text sink only.
-_URL_SPLIT_TRIGGER = f"[l](https://x/AKIA**{_KEY[4:]}**)"
+_URL_SPLIT_TRIGGER = f"[l](https://x/AIza**{_KEY[4:]}**)"
 
 
 def _nested_link(depth: int) -> str:
-    """``[AKIA](u)`` wrapped in *depth* more ``[...](u)`` links, one level per pass."""
-    link = "[AKIA](u)"
+    """``[AIza](u)`` wrapped in *depth* more ``[...](u)`` links, one level per pass."""
+    link = "[AIza](u)"
     for _ in range(depth):
         link = f"[{link}](u)"
     return link

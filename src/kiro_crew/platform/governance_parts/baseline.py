@@ -81,6 +81,8 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
     "capabilities.kiro_cloud_sessions": _CAPABILITY_OFF,
     # Credential redaction stays on in the Files view.
     "capabilities.credential_redaction_off": _CAPABILITY_OFF,
+    # Credential redaction stays on for the agent's prompt and the server logs.
+    "capabilities.credential_redaction_seams_off": _CAPABILITY_OFF,
 }
 
 #: Inner lists of a capability that keep their baseline when the remote policy

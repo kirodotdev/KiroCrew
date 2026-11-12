@@ -9,6 +9,7 @@ renderer widens.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 
 import pytest
 from markdown_link_parentheses_helpers import (
@@ -20,6 +21,7 @@ from markdown_link_parentheses_helpers import (
     _slack,
     _slack_reader_sees,
 )
+from redaction_structured_cases import structured_engine
 
 from conftest import assert_rejected_without_backtracking
 from kiro_crew.constants import md_link_destination
@@ -31,6 +33,14 @@ from kiro_crew.messaging.renderer import _default_redactor
 from kiro_crew.slack import format as slack_format
 from kiro_crew.telegram.renderer import _md_to_telegram_html, _strip_md
 from kiro_crew.whatsapp.renderer import to_whatsapp_text
+
+
+@pytest.fixture(autouse=True)
+def _structured_engine() -> Iterator[None]:
+    """These cases assert the structured engine's output: keep it selected under a legacy run."""
+    with structured_engine():
+        yield
+
 
 MSDN = "https://learn.microsoft.com/en-us/previous-versions/windows/desktop/ms123401(v=vs.85)"
 
@@ -79,8 +89,8 @@ class TestSlackLinksTheWholeUrl:
     @pytest.mark.parametrize(
         "payload",
         [
-            "AKIA[l](https://x/a|IOSFODNN7EXAMPLE)",
-            "[AKIA](https://x/|IOSFODNN7EXAMPLE)",
+            "AIza[l](https://x/a|IOSFODNN7Qm2T8kVpL4xR9cWn3B6hJ1uZaE)",
+            "[AIza](https://x/|IOSFODNN7Qm2T8kVpL4xR9cWn3B6hJ1uZaE)",
         ],
     )
     def test_a_pipe_destination_cannot_become_a_native_slack_link(self, payload):
@@ -268,27 +278,27 @@ class TestTheScreenCollapsesEveryLinkARendererShows:
 
 
 _MUST_CATCH_LINK_SHAPES = [
-    "[AKIA](https://x/((a)))IOSFODNN7EXAMPLE",
-    "[AKIA](https://x/(((a))))IOSFODNN7EXAMPLE",
-    "[AKIA](https://x/((((a)))))IOSFODNN7EXAMPLE",
-    "[AKIA](https://x/((((((((a)))))))))IOSFODNN7EXAMPLE",
-    r"[AKIA](https://x/p\)q)IOSFODNN7EXAMPLE",
-    "[AKIA](<https://x/)>)IOSFODNN7EXAMPLE",
-    "[AKIA](https://x/((a)))IOSFODNN7EXAMPLE)",
-    "[AKIA](https://x/[y](z))IOSFODNN7EXAMPLE",
+    "[AIza](https://x/((a)))IOSFODNN7Qm2T8kVpL4xR9cWn3B6hJ1uZaE",
+    "[AIza](https://x/(((a))))IOSFODNN7Qm2T8kVpL4xR9cWn3B6hJ1uZaE",
+    "[AIza](https://x/((((a)))))IOSFODNN7Qm2T8kVpL4xR9cWn3B6hJ1uZaE",
+    "[AIza](https://x/((((((((a)))))))))IOSFODNN7Qm2T8kVpL4xR9cWn3B6hJ1uZaE",
+    r"[AIza](https://x/p\)q)IOSFODNN7Qm2T8kVpL4xR9cWn3B6hJ1uZaE",
+    "[AIza](<https://x/)>)IOSFODNN7Qm2T8kVpL4xR9cWn3B6hJ1uZaE",
+    "[AIza](https://x/((a)))IOSFODNN7Qm2T8kVpL4xR9cWn3B6hJ1uZaE)",
+    "[AIza](https://x/[y](z))IOSFODNN7Qm2T8kVpL4xR9cWn3B6hJ1uZaE",
 ]
 
 _MUST_STAY_CAUGHT_LINK_SHAPES = [
-    "[AKIA](https://x/(a))IOSFODNN7EXAMPLE",
-    '[AKIA](https://x "t")IOSFODNN7EXAMPLE',
-    '[AKIA](https://x/(a) "t")IOSFODNN7EXAMPLE',
-    "[x](https://a[AKIA](https://b)IOSFODNN7EXAMPLE)",
-    "[x](https://a [AKIA](https://b)IOSFODNN7EXAMPLE)",
+    "[AIza](https://x/(a))IOSFODNN7Qm2T8kVpL4xR9cWn3B6hJ1uZaE",
+    '[AIza](https://x "t")IOSFODNN7Qm2T8kVpL4xR9cWn3B6hJ1uZaE',
+    '[AIza](https://x/(a) "t")IOSFODNN7Qm2T8kVpL4xR9cWn3B6hJ1uZaE',
+    "[x](https://a[AIza](https://b)IOSFODNN7Qm2T8kVpL4xR9cWn3B6hJ1uZaE)",
+    "[x](https://a [AIza](https://b)IOSFODNN7Qm2T8kVpL4xR9cWn3B6hJ1uZaE)",
 ]
 
 _KEYLESS_LINK_SHAPES = [
     f"See [Python]({WIKI}) and [MSDN]({MSDN}).",
-    "[AKIA](a)(b)IOSFODNN7EXAMPLE",
+    "[AIza](a)(b)IOSFODNN7Qm2T8kVpL4xR9cWn3B6hJ1uZaE",
     "[a](http://x/(y)/(z))",
     "[a](b",
     "[a](<b)",
@@ -308,7 +318,7 @@ class TestBalancedLinkReadings:
     @pytest.mark.parametrize("depth", [2, 3, 4, 8])
     def test_parenthesis_nesting_is_not_depth_bounded(self, depth):
         destination = "https://x/" + "(" * depth + "a" + ")" * depth
-        payload = f"[AKIA]({destination}){_KEY[4:]}"
+        payload = f"[AIza]({destination}){_KEY[4:]}"
         safe, redacted = redact_for_display(payload, _default_redactor)
         assert redacted is True
         assert all(_KEY not in reading for reading in _screen_readings(safe))

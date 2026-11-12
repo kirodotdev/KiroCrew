@@ -14,14 +14,16 @@ import os
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from redaction_structured_cases import github_classic
 
-from kiro_crew import security
+from kiro_crew import redaction_seams, security
 from kiro_crew.security import redaction_switch
 
 
-def _synth_aws_key() -> str:
-    prefix = "A" + "KIA"
-    return prefix + hashlib.sha256(b"kc-redaction-switch").hexdigest().upper()[:16]
+def _synth_github_token() -> str:
+    # A GitHub classic token with a valid checksum. An AWS key ID would not do:
+    # it is an Identifier with the structured detectors on, so it stays visible.
+    return github_classic(seed=11)
 
 
 def _synth_token_url() -> str:
@@ -48,7 +50,7 @@ def _isolated_switch(tmp_path, monkeypatch):
 
 class TestSynthesizedMaterialActuallyTrips:
     def test_aws_key_is_redacted_by_default(self):
-        key = _synth_aws_key()
+        key = _synth_github_token()
         assert security.redact_credentials(key)[0] != key
 
     def test_token_url_value_is_redacted_by_default(self):
@@ -128,19 +130,19 @@ class TestSwitchedOffInsideOwnerView:
 
     def test_owner_view_passes_credentials_through_when_off(self):
         _off()
-        key, url = _synth_aws_key(), _synth_token_url()
+        key, url = _synth_github_token(), _synth_token_url()
         with _owner_view():
             assert security.redact_credentials(key) == (key, [])
             assert security.redact_credentials(url) == (url, [])
 
     def test_owner_view_still_redacts_when_on(self):
-        key = _synth_aws_key()
+        key = _synth_github_token()
         with _owner_view():
             assert security.redact_credentials(key)[0] != key
 
     def test_set_enabled_true_restores_redaction_in_owner_view(self):
         _off()
-        key = _synth_aws_key()
+        key = _synth_github_token()
         with _owner_view():
             assert security.redact_credentials(key)[0] == key
         redaction_switch.set_enabled(True, changed_at="2026-09-24T23:01:00+00:00")
@@ -156,7 +158,7 @@ class TestSwitchedOffInsideOwnerView:
 
     def test_the_verdict_is_the_one_the_scope_was_entered_with(self):
         """One render, one verdict: a flip mid-render is seen by the NEXT request."""
-        key = _synth_aws_key()
+        key = _synth_github_token()
         with _owner_view():  # entered ON
             assert redaction_switch.credential_pass_bypassed() is False
             _off()  # the owner flips the switch while this render is in flight
@@ -171,7 +173,7 @@ class TestSwitchedOffInsideOwnerView:
 
     def test_scope_is_task_local_and_restored_on_exit(self):
         _off()
-        key = _synth_aws_key()
+        key = _synth_github_token()
         assert redaction_switch.credential_pass_bypassed() is False
         with _owner_view():
             assert redaction_switch.credential_pass_bypassed() is True
@@ -184,7 +186,7 @@ class TestSwitchedOffInsideOwnerView:
         import asyncio
 
         _off()
-        key = _synth_aws_key()
+        key = _synth_github_token()
         entered = asyncio.Event()
         release = asyncio.Event()
 
@@ -210,29 +212,29 @@ class TestSwitchedOffOutsideOwnerView:
 
     def test_bare_redact_credentials_is_unconditional(self):
         _off()
-        key = _synth_aws_key()
+        key = _synth_github_token()
         assert security.redact_credentials(key)[0] != key
         assert security.redact(key) != key
         assert security.redact_with_findings(key)[0] != key
 
     def test_stream_redactor_default_is_unconditional(self):
         _off()
-        key = _synth_aws_key()
+        key = _synth_github_token()
         sr = security.StreamRedactor()
         out = sr.feed(key + " ") + sr.flush()
         assert key not in out
 
     def test_request_blocking_predicate_is_untouched(self):
         _off()
-        assert security._contains_fixed_credential(_synth_aws_key()) is True
+        assert security._contains_fixed_credential(_synth_github_token()) is True
 
     def test_diagnostics_bundle_scrubs_regardless(self):
         """The bundle goes to a public issue; it never opens the owner scope."""
         from kiro_crew import diagnostics
 
         _off()
-        clean, count = diagnostics._scrub(_synth_aws_key())
-        assert clean != _synth_aws_key()
+        clean, count = diagnostics._scrub(_synth_github_token())
+        assert clean != _synth_github_token()
         assert count >= 1
 
     def test_channel_renderers_never_open_the_scope(self):
@@ -503,7 +505,14 @@ class TestHandlers:
 
         resp = await api_credential_redaction_get(_request())
         assert resp.status == 200
-        assert json.loads(resp.text) == {"enabled": True, "changed_at": ""}
+        assert json.loads(resp.text) == {
+            "enabled": True,
+            "changed_at": "",
+            "seams_enabled": True,
+            "seams_changed_at": "",
+            "engine": "structured",
+            "engine_changed_at": "",
+        }
 
     @pytest.mark.asyncio
     async def test_put_false_records_and_audits(self, _isolated_switch, _quiet_audit):
@@ -520,8 +529,8 @@ class TestHandlers:
             True,
         ) in _quiet_audit  # synchronous, fail-loud write; REAL subject
         with _owner_view():
-            assert security.redact_credentials(_synth_aws_key())[0] == _synth_aws_key()
-        assert security.redact_credentials(_synth_aws_key())[0] != _synth_aws_key()
+            assert security.redact_credentials(_synth_github_token())[0] == _synth_github_token()
+        assert security.redact_credentials(_synth_github_token())[0] != _synth_github_token()
 
     @pytest.mark.asyncio
     async def test_put_pushes_the_change_to_every_owner_dashboard(
@@ -596,7 +605,7 @@ class TestHandlers:
         assert json.loads(resp.text)["enabled"] is True
         assert ("enabled", "owner-1", True) in _quiet_audit
         with _owner_view():
-            assert security.redact_credentials(_synth_aws_key())[0] != _synth_aws_key()
+            assert security.redact_credentials(_synth_github_token())[0] != _synth_github_token()
 
     def test_write_and_audit_are_one_unit_on_the_worker_thread(self):
         """A cancelled handler cannot skip the audit: both run in the same closure,
@@ -608,9 +617,7 @@ class TestHandlers:
 
         src = inspect.getsource(api_credential_redaction_put)
         closure = src[src.index("def _write_and_audit") : src.index("try:\n        state = await")]
-        assert closure.index('outcome="enabled" if enabled else "disabled"') < closure.index(
-            "set_enabled("
-        )
+        assert closure.index("outcome=outcome,") < closure.index("state = write(")
         assert closure.count("critical=True") == 2
         assert "asyncio.to_thread(_write_and_audit)" in src
         # The whole pair runs under the store lock, so two interleaving PUTs
@@ -751,6 +758,13 @@ class TestHandlers:
 
 _GOVERNED = {"tools": {"mode": "deny", "deny": ["some_tool"]}}
 _OPT_IN = {"capabilities": {"credential_redaction_off": {"enabled": True}}}
+_SEAMS_OPT_IN = {"capabilities": {"credential_redaction_seams_off": {"enabled": True}}}
+_BOTH_OPT_IN = {
+    "capabilities": {
+        "credential_redaction_off": {"enabled": True},
+        "credential_redaction_seams_off": {"enabled": True},
+    }
+}
 
 
 def _host_policy(monkeypatch, controls):
@@ -822,6 +836,68 @@ class TestGovernedHost:
         on = await api_credential_redaction_put(_request(body={"enabled": True}))
         assert on.status == 200
         assert redaction_switch.read_state().enabled is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "controls, files_allowed, seams_allowed",
+        [
+            (_GOVERNED, False, False),
+            # The Files-view opt-in covers the owner's own screen and nothing else.
+            ({**_GOVERNED, **_OPT_IN}, True, False),
+            ({**_GOVERNED, **_SEAMS_OPT_IN}, False, True),
+            ({**_GOVERNED, **_BOTH_OPT_IN}, True, True),
+            ({**_GOVERNED, "capabilities": {"credential_redaction_seams_off": {}}}, False, False),
+            ({}, True, True),
+        ],
+    )
+    async def test_each_switch_answers_to_its_own_capability_row(
+        self, monkeypatch, _isolated_switch, _quiet_audit, controls, files_allowed, seams_allowed
+    ):
+        """The prompt-and-logs switch is not freed by the Files-view opt-in, nor the reverse."""
+        from kiro_crew.dashboard.handlers.credential_redaction import api_credential_redaction_put
+
+        _host_policy(monkeypatch, controls)
+        files = await api_credential_redaction_put(_request(body={"enabled": False}))
+        seams = await api_credential_redaction_put(_request(body={"seams_enabled": False}))
+        assert files.status == (200 if files_allowed else 403)
+        assert seams.status == (200 if seams_allowed else 403)
+        state = redaction_switch.read_state()
+        assert state.enabled is (not files_allowed)
+        assert state.seams_enabled is (not seams_allowed)
+        if not seams_allowed:
+            assert json.loads(seams.text)["code"] == "credential_redaction_locked_by_policy"
+            assert ("credential_redaction.write", redaction_switch.SEAMS_DISABLE_SCOPE) in (
+                _quiet_audit.refusals
+            )
+        redaction_switch.publish_seams(state)
+        try:
+            with redaction_seams.output_seam(redaction_seams.LOGS):
+                assert redaction_switch.credential_pass_bypassed() is seams_allowed
+        finally:
+            redaction_switch.publish_seams(redaction_switch.RedactionState(True, ""))
+
+    def test_a_stored_seams_off_reads_on_under_the_files_view_opt_in(
+        self, monkeypatch, _isolated_switch
+    ):
+        """An OFF the owner stored for the seams does not apply on the strength of the other row."""
+        redaction_switch.set_seams_enabled(False, changed_at="t0")
+        _host_policy(monkeypatch, {**_GOVERNED, **_OPT_IN})
+        assert redaction_switch.owner_may_disable() is True
+        assert redaction_switch.owner_may_disable_seams() is False
+        assert redaction_switch.read_state().seams_enabled is True
+        # The record is kept: the seams opt-in lets the owner's earlier OFF apply again.
+        _host_policy(monkeypatch, {**_GOVERNED, **_SEAMS_OPT_IN})
+        assert redaction_switch.read_state().seams_enabled is False
+
+    @pytest.mark.parametrize(
+        "controls, allowed", [({}, False), (_SEAMS_OPT_IN, True), (_OPT_IN, False)]
+    )
+    def test_an_lts_build_keeps_the_seams_on_without_their_own_opt_in(
+        self, monkeypatch, controls, allowed
+    ):
+        monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
+        _host_policy(monkeypatch, controls)
+        assert redaction_switch.owner_may_disable_seams() is allowed
 
     @pytest.mark.parametrize("controls, allowed", [({}, False), (_OPT_IN, True)])
     def test_an_lts_build_keeps_redaction_on_without_the_opt_in(

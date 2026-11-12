@@ -13,6 +13,7 @@ import asyncio
 import collections
 import json
 import logging
+import threading
 
 from aiohttp import web
 
@@ -134,11 +135,42 @@ class _QueueLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            msg = self.format(record)
+            msg = _stream_safe(self.format(record))
             data = json.dumps({"level": record.levelname, "msg": msg})
             self._queue.put_nowait(data)
         except Exception:
             pass
+
+
+#: Set while this thread runs :func:`_stream_safe`: a line the redactor itself logs
+#: meanwhile (its fail-closed warning) would otherwise redact again, without end.
+_REDACTING = threading.local()
+
+
+def _stream_safe(msg: str) -> str:
+    """*msg* as the live log stream may carry it: redacted, whatever the seams switch says.
+
+    The stream reaches every dashboard-user socket and ``log``-scoped apps, not only
+    the owner, so it is not an output seam. The switch read here would not say how
+    the record was built: one made while the seams were off (the record factory then
+    skips its shape passes) can reach this handler after they are back on. So every
+    line is redacted, in a fresh context so a record logged inside another bypassed
+    seam is redacted too; a line the factory already redacted comes out the same. A
+    line logged while this thread is already redacting one is replaced whole.
+    """
+    import contextvars
+
+    from kiro_crew.log_redaction import redact_log_shapes
+    from kiro_crew.security import redact
+    from kiro_crew.security.redaction import REDACTION_UNAVAILABLE_TAG
+
+    if getattr(_REDACTING, "active", False):
+        return REDACTION_UNAVAILABLE_TAG
+    _REDACTING.active = True
+    try:
+        return contextvars.Context().run(lambda: redact(redact_log_shapes(msg)))
+    finally:
+        _REDACTING.active = False
 
 
 # ── Persistent log ring buffer ──
@@ -207,7 +239,7 @@ class _RingLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            msg = self.format(record)
+            msg = _stream_safe(self.format(record))
             data = json.dumps({"level": record.levelname, "msg": msg})
             self._ring.append(data)
             # Push to WS log subscribers. emit() runs on ARBITRARY threads (any

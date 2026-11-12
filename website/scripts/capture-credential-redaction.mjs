@@ -8,7 +8,9 @@
  * The states worth a frame are the ones a reviewer cannot infer from the diff:
  * the default (ON, no notice), the switch OFF (the loud notice with the time it
  * was switched off), and the READ FAILED state -- an unreadable switch must
- * render as unknown rather than as the reassuring default.
+ * render as unknown rather than as the reassuring default. The two last frames
+ * show the prompt-and-logs card below it: an old file-view OFF with that switch
+ * still on, and that switch off.
  *
  * Usage: node scripts/capture-credential-redaction.mjs [outDir] [prefix]
  */
@@ -33,7 +35,7 @@ async function main() {
   const { srv, base } = await serveDist()
   const browser = await chromium.launch()
 
-  async function shoot(name, { width = 1500, height = 980, theme = 'dark', state, failRead = false, nonOwner = false, failWrite = false }) {
+  async function shoot(name, { width = 1500, height = 980, theme = 'dark', state, failRead = false, nonOwner = false, failWrite = false, fullPage = false }) {
     const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 2 })
     const page = await context.newPage()
     await installApiFixtures(page, {
@@ -90,16 +92,21 @@ async function main() {
       await page.getByTestId('credential-redaction-owner-only').waitFor({ timeout: 8000 })
     } else if (failWrite) {
       await page.getByTestId('credential-redaction-row').waitFor({ timeout: 8000 })
-      await page.getByRole('switch').click()
+      await page.getByTestId('credential-redaction-row').getByRole('switch').click()
       await page.getByTestId('credential-redaction-write-failed').waitFor({ timeout: 8000 })
     } else {
       await page.getByTestId('credential-redaction-row').waitFor({ timeout: 8000 })
       if (state.enabled === false) {
         await page.getByTestId('credential-redaction-off-notice').waitFor({ timeout: 5000 })
       }
+      if (state.seams_enabled === false) {
+        await page.getByTestId('credential-redaction-seams-off-notice').waitFor({ timeout: 5000 })
+      }
     }
+    // The prompt-and-logs card sits below the file-view card; bring it into frame.
+    if (fullPage) await page.getByTestId('credential-redaction-seams-row').scrollIntoViewIfNeeded()
     await page.waitForTimeout(400)
-    await page.screenshot({ path: `${OUT}/${PREFIX}-${name}.png` })
+    await page.screenshot({ path: `${OUT}/${PREFIX}-${name}.png`, fullPage })
     console.log(`${PREFIX}-${name}.png`)
     await context.close()
   }
@@ -112,6 +119,11 @@ async function main() {
   await shoot('on-light', { state: { enabled: true, changed_at: '' }, theme: 'light' })
   // The breakpoint below which the rail stacks above the pane.
   await shoot('narrow', { width: 900, height: 1000, state: { enabled: false, changed_at: '2026-09-24T23:00:00+00:00' } })
+  // The prompt-and-logs switch: an old file-view OFF (its own switch still on),
+  // and the prompt-and-logs switch off with its notice. Full page, so both
+  // cards are in one frame.
+  await shoot('files-off-seams-on', { state: { enabled: false, changed_at: '2026-09-24T23:00:00+00:00' }, fullPage: true })
+  await shoot('seams-off', { state: { enabled: true, changed_at: '', seams_enabled: false, seams_changed_at: '2026-11-11T19:00:00+00:00' }, fullPage: true })
 
   await browser.close()
   srv.close()

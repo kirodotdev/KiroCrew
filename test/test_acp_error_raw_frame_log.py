@@ -148,9 +148,17 @@ class TestRawErrorDetailBounds:
         # its own spelling first.
         secret = "IQoJb3JpZ2luX2VjE" + "A" * 300 + "xyzTOKENEND"
         data = f'HTTP 401 session expired; creds {{"{field}": "{secret}"}}'
-        # Premise guard: a scrub of the escaped form alone misses it.
+        # Premise guard: main's pass 1 alone misses the escaped form (the structured
+        # detectors read it, so the premise is checked with them off).
         escaped = json.dumps({"data": data})
-        assert secret in redact_credentials(escaped)[0]
+        from kiro_crew.security.redaction_structured import compat
+
+        before = compat.use_rule_table()
+        compat.publish_use_rule_table(False)
+        try:
+            assert secret in redact_credentials(escaped)[0]
+        finally:
+            compat.publish_use_rule_table(before)
 
         detail = raw_error_detail({"code": -32000, "message": "m", "data": data})
         assert secret not in detail

@@ -22,9 +22,11 @@ nested-payload extraction -- is pinned in ``test_push_branch_gate_parser.py``.
 """
 
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from redaction_structured_cases import structured_engine
 
 from kiro_crew import platform_compat, security
 from kiro_crew.security import (
@@ -33,6 +35,14 @@ from kiro_crew.security import (
     _schedule_push_allow_audit,
     is_denied,
 )
+
+
+@pytest.fixture(autouse=True)
+def _structured_engine() -> Iterator[None]:
+    """These cases assert the structured engine's output: keep it selected under a legacy run."""
+    with structured_engine():
+        yield
+
 
 # "git pus" + "h" keeps a literal blocked command out of the test source.
 PUSH = "git pus" + "h"
@@ -278,7 +288,9 @@ class TestGitPushEnforcement:
         allow = [e for e in captured_sel_events if e.event_type == "push_allowed"]
         assert len(allow) == 1
         audited = allow[0].metadata["command"]
-        assert "akia" not in audited.lower(), audited
+        # An AWS key ID is an Identifier with the structured detectors on, so its
+        # clipped head stays in the audit.
+        assert planted[: 200 - 190] in audited, audited
         assert "Feature-" in audited, audited
 
     def test_protected_push_blocked_no_audit(self, captured_sel_events) -> None:

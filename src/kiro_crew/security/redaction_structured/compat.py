@@ -7,19 +7,32 @@ every credential entry point splices (``redact_credentials``,
 
 1. the structured detectors (:mod:`.engine`) read the text and resolve their hits;
 2. each Secret hit is replaced by
-   :data:`~kiro_crew.security.redaction.REDACTED_CREDENTIAL_TAG`, and the plan's
-   own passes (pass 1's fixed patterns, then passes 2-4) run on that text,
-   unchanged;
-3. their spans are moved back onto the original text (a span edge inside a tag
-   widens to the whole hit the tag replaced) and merged with the Secret hits.
+   :data:`~kiro_crew.security.redaction.REDACTED_CREDENTIAL_TAG`, and each
+   Identifier value (:func:`.protection.masks_for`) by as many :data:`PLACEHOLDER`
+   characters, which no pass reads as part of a credential;
+3. the plan's own passes run on that text: pass 1 without the branches the
+   detectors cover (:func:`residual_matches`), then passes 2-4 unchanged;
+4. their spans are moved back onto the original text (a span edge inside a tag
+   widens to the whole hit the tag replaced) and merged with the Secret hits. An
+   Identifier value is restored as it was unless a pass's span covers it.
 
 With the switch OFF nothing here runs and the plan is unchanged.
+
+Pass 1 without the covered branches
+-----------------------------------
+With the switch on, pass 1 does not report a match whose rule is in
+:data:`COVERED_RULES` (the detectors read those formats), nor a bare AWS key ID
+(an Identifier), nor a labelled ``AccessKeyId`` whose value holds a
+:data:`PLACEHOLDER` (a protected key ID). Every other branch runs as before,
+including the URL userinfo branch; passes 2-4 are not narrowed. The stream's
+pass-1 holds read the same matches (:func:`kiro_crew.security.redaction._pass1_matches`).
 
 Shapes kept
 -----------
 * spans are ``(start, end, tag)``, sorted and disjoint;
 * one ``Redacted credential pattern (N chars)`` warning per Secret hit, in text
-  order, before the passes' own warnings;
+  order, before the passes' own warnings; a pass-1 warning gives the length of
+  its span on the original text;
 * ``rules`` maps each span's start to ``(rule, label)``. A Secret hit carries the
   old pass-1 rule name for its format (``github_token``, ``aws_secret_access_key``,
   ...), because the source cards read those names; its label is ``""`` and the
@@ -44,24 +57,29 @@ END past its bound) is replaced and the stream drops input to that unit's end
 (:func:`discard_run`). Each committed window is read after the raw text that
 preceded it (:func:`look_behind`), as the whole text reads it.
 
-The switch reads a module flag that only code sets (:func:`publish_use_rule_table`).
-It is OFF and there is no user setting for it.
+The switch reads the owner's engine selector (``engine`` in the credential-redaction
+record, :func:`kiro_crew.security.redaction_switch.read_engine`) once per process;
+the dashboard handler republishes it on a change (:func:`publish_use_rule_table`).
+It is ON (structured) unless the owner chose ``legacy``.
 """
 
 from __future__ import annotations
 
+import bisect
 import contextlib
+import itertools
 import logging
 import threading
-from collections.abc import Collection, Iterator
+from collections.abc import Callable, Collection, Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import kiro_crew.security.redaction as redaction
 
 if TYPE_CHECKING:
     from kiro_crew.security.redaction_structured.model import Hit
+    from kiro_crew.security.redaction_structured.protection import Mask
 
 logger = logging.getLogger(__name__)
 
@@ -100,22 +118,162 @@ def old_rule(rule_id: str) -> str:
     return _OLD_RULE.get(rule_id, "credential_pattern")
 
 
+#: Pass-1 rules whose formats the detectors read; pass 1 does not report them
+#: with the switch on. The URL userinfo branch and the vendor rows the detectors
+#: have no row for are not here and keep running.
+COVERED_RULES = frozenset({"private_key", "jwt", "aws_secret_access_key", "aws_session_token"})
+
+#: What a protected Identifier value is written as while the passes read the
+#: text: one private-use character per original character. No pass reads it as
+#: a word, a base64 or hex character, a separator or white space.
+PLACEHOLDER = "\U000f0000"
+#: What a :data:`PLACEHOLDER` the input itself carries is read as by the passes: the
+#: next private-use character, the same to every pass, so only a mask the plan wrote
+#: is a placeholder (a typed one beside a labelled secret would otherwise exempt it).
+_INPUT_PLACEHOLDER = "\U000f0001"
+
+
+def _passes_view(text: str) -> str:
+    """``text`` as the passes read it: same length, no input-borne :data:`PLACEHOLDER`."""
+    return text.replace(PLACEHOLDER, _INPUT_PLACEHOLDER) if PLACEHOLDER in text else text
+
+
+_KEY_ID_RULE = "aws_access_key_id"
+_JWT_RULE = "jwt"
+#: The Identifier row for the key ID and secret published in the AWS documentation.
+_DOC_EXAMPLE_RULE = "aws.doc_example"
+
+
+def _jose_refusal_ruled(text: str, m: Any) -> bool:
+    """Whether a pass-1 ``jwt`` match is one the detectors refuse by design.
+
+    The plan's passes read text whose detector Secret hits are already tags, so a
+    ``jwt`` match left there is a token the detectors refused. One refusal is by
+    design and stays visible: a first segment that decodes to no JSON object, an
+    ``eyJ`` run that is not a token. Every other refusal leaves the match to pass
+    1, as with the switch off: a signed token whose header names no ``alg`` (a
+    Flask or itsdangerous session cookie), ``alg: none``, a token glued to a
+    base64url character on its left (``session_<jwt>``), a trailing segment such
+    as ``.json``, a segment past a row's length bound, a payload that is not an
+    object.
+    """
+    from kiro_crew.jwt_header import is_jwt_header
+    from kiro_crew.security.redaction_structured.checks import _DECODE_CAP, b64url_json_object
+
+    head = m.group().split(".", 1)[0]
+    if len(head) > _DECODE_CAP:
+        return False
+    # A header Python cannot parse (an integer past its digit limit, nesting too
+    # deep) is still a JSON object to ``is_jwt_header``, which fails closed.
+    return b64url_json_object(head) is None and not is_jwt_header(head)
+
+
+#: Covered pass-1 rules that read a value after an AWS label. The detectors read
+#: that label only in the inputs they parse, so pass 1 keeps every match whose
+#: value the detectors have not ruled on (:func:`_labelled_value_ruled`).
+_LABELLED_RULES = frozenset({"aws_secret_access_key", "aws_session_token"})
+
+
+def _labelled_value_ruled(text: str, m: Any, rule: str, label: str) -> bool:
+    """Whether the detectors already ruled on a labelled AWS match's value.
+
+    They did only when the value is their tag (a Secret hit), holds a
+    :data:`PLACEHOLDER` (a protected Identifier), or is a placeholder they keep
+    visible by design. A value they refused for its shape (an S3-compatible
+    secret that is not 40 characters, a session token under their length floor)
+    or one in a place they never read (mid-line after a word, past a newline,
+    past a wide separator) is kept, and pass 1 removes it as with the switch off.
+    """
+    from kiro_crew.security.redaction_structured.checks import is_placeholder
+
+    if not label:
+        return False
+    vs = m.start() + len(label)
+    if any(text.startswith(tag, vs) for tag in redaction.CREDENTIAL_REDACTION_TAGS):
+        return True
+    value = m.group()[len(label) :].strip("\"'")
+    return PLACEHOLDER in value or is_placeholder(value)
+
+
+def residual_matches(text: str) -> Iterator[Any]:
+    """Pass 1's matches (``re.Match`` objects) over ``text`` without the covered branches.
+
+    Dropped: a match whose rule is in :data:`COVERED_RULES`, a bare AWS key ID
+    (an Identifier the detectors keep visible), and a labelled ``AccessKeyId``
+    whose value holds a :data:`PLACEHOLDER` (its key ID is protected).
+    A ``jwt`` match is dropped only for a refusal the detectors make by design
+    (:func:`_jose_refusal_ruled`), and a labelled AWS secret or session token only
+    when the detectors ruled on its value (:func:`_labelled_value_ruled`); pass 1
+    still removes every other one.
+    """
+    for m in redaction._credential_matches(text):
+        rule, label = redaction._pass1_rule(m.group())
+        if rule in _LABELLED_RULES:
+            if _labelled_value_ruled(text, m, rule, label):
+                continue
+        elif rule in COVERED_RULES and (rule != _JWT_RULE or _jose_refusal_ruled(text, m)):
+            continue
+        if rule == _KEY_ID_RULE and (not label or PLACEHOLDER in m.group()[len(label) :]):
+            continue
+        yield m
+
+
 # ── Switch ──
 
-_USE_RULE_TABLE = False
+#: The engine in force: None until this process first reads the owner's selector.
+_USE_RULE_TABLE: bool | None = None
+#: Bumped on every publish, under the lock, so a reader can tell a round trip
+#: (structured -> legacy -> structured) from no change: the answer is the same,
+#: the generation is not.
+_ENGINE_GENERATION = 0
 _PUBLISH_LOCK = threading.Lock()
 
 
 def publish_use_rule_table(enabled: bool) -> None:
-    """Set what :func:`use_rule_table` answers. Code only; no user setting reads it."""
-    global _USE_RULE_TABLE
+    """Set what :func:`use_rule_table` answers: the dashboard handler on a change, and tests."""
+    global _USE_RULE_TABLE, _ENGINE_GENERATION
     with _PUBLISH_LOCK:
         _USE_RULE_TABLE = bool(enabled)
+        _ENGINE_GENERATION += 1
+
+
+def engine_generation() -> int:
+    """How many times the engine was published in this process; any change, even back."""
+    return _ENGINE_GENERATION
+
+
+def _selected() -> bool:
+    """Whether the owner's record selects the structured engine; any failure reads True."""
+    try:
+        from kiro_crew.security import redaction_switch
+
+        return redaction_switch.read_engine() != redaction_switch.ENGINE_LEGACY
+    except Exception:
+        logger.warning("could not read the redaction engine selector; the structured engine runs")
+        return True
+
+
+def reload_engine_choice() -> bool:
+    """Read the owner's selector now and publish it; returns what :func:`use_rule_table` answers."""
+    enabled = _selected()
+    publish_use_rule_table(enabled)
+    return enabled
 
 
 def use_rule_table() -> bool:
-    """Whether the credential plan reads the structured detectors first (True) or not."""
-    return _USE_RULE_TABLE
+    """Whether the credential plan reads the structured detectors first (True) or not.
+
+    The first call in a process reads the owner's selector; later calls answer from memory.
+    """
+    global _USE_RULE_TABLE
+    enabled = _USE_RULE_TABLE
+    if enabled is None:
+        selected = _selected()
+        with _PUBLISH_LOCK:
+            if _USE_RULE_TABLE is None:
+                _USE_RULE_TABLE = selected
+            enabled = _USE_RULE_TABLE
+    return enabled
 
 
 # ── Detectors ──
@@ -160,34 +318,72 @@ def look_behind(context: str, window: str) -> Iterator[None]:
         _LOOK_BEHIND.reset(token)
 
 
-def _resolved(text: str, final: bool = True) -> tuple[list[Hit], int | None, int]:
-    """``(resolved hits, open_from, base)`` over ``context + text``; offsets in that window."""
+@dataclass(frozen=True, slots=True)
+class _Read:
+    """One detector read of ``context + text``; offsets in that window."""
+
+    window: str
+    hits: list[Hit]
+    resolved: list[Hit]
+    open_from: int | None
+    base: int
+
+
+def _read(text: str, final: bool = True) -> _Read:
     from kiro_crew.security.redaction_structured.engine import resolve, scan
 
     pair = _LOOK_BEHIND.get()
     context = pair[0] if pair is not None and pair[1] == text else ""
     base = len(context)
-    result = scan(context + text, final=final, origin=base)
-    return resolve([h for h in result.hits if h.start >= base]), result.open_from, base
+    window = context + text
+    result = scan(window, final=final, origin=base)
+    hits = [h for h in result.hits if h.start >= base]
+    return _Read(window, hits, resolve(hits), result.open_from, base)
 
 
-def secret_hits(text: str) -> list[Hit]:
-    """The resolved Secret hits over ``text``, in text order, in ``text`` offsets."""
+def _resolved(text: str, final: bool = True) -> tuple[list[Hit], int | None, int]:
+    """``(resolved hits, open_from, base)`` over ``context + text``; offsets in that window."""
+    read = _read(text, final)
+    return read.resolved, read.open_from, read.base
+
+
+def _secrets_of(read: _Read) -> list[Hit]:
     from dataclasses import replace
 
     from kiro_crew.security.redaction_structured.model import SECRET
 
-    resolved, _open, base = _resolved(text)
+    base = read.base
     return [
         replace(h, start=h.start - base, end=h.end - base) if base else h
-        for h in resolved
+        for h in read.resolved
         if h.tier == SECRET
     ]
+
+
+def _masks_of(read: _Read) -> list[Mask]:
+    """The protected Identifier values in ``text`` offsets (none in the look-behind)."""
+    from kiro_crew.security.redaction_structured.protection import masks_for
+
+    base = read.base
+    masks = masks_for(read.window, read.hits, read.resolved)
+    return [(s - base, e - base, r) for s, e, r in masks if s >= base]
+
+
+def secret_hits(text: str) -> list[Hit]:
+    """The resolved Secret hits over ``text``, in text order, in ``text`` offsets."""
+    return _secrets_of(_read(text))
+
+
+def protected_values(text: str) -> list[Mask]:
+    """The Identifier values the plan protects in ``text``, as ``(start, end, rule_id)``."""
+    return _masks_of(_read(text))
 
 
 # ── Plan ──
 
 _counting = threading.local()
+#: Set while :func:`_fail_closed` logs and counts one failure on this thread.
+_reporting = threading.local()
 
 
 def _count_fail_closed() -> None:
@@ -209,9 +405,19 @@ def _count_fail_closed() -> None:
 
 
 def _fail_closed(text: str, exc: BaseException) -> _Plan:
-    # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- logs the exception type only, never the text or a value
-    logger.warning("credential redaction failed (%s); whole text replaced", type(exc).__name__)
-    _count_fail_closed()
+    # A handler that redacts the warning below (the live log stream) fails the same
+    # way; that nested failure still replaces its text but reports nothing more, so
+    # one failure is one warning and one count.
+    if not getattr(_reporting, "active", False):
+        _reporting.active = True
+        try:
+            # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- logs the exception type only, never the text or a value
+            logger.warning(
+                "credential redaction failed (%s); whole text replaced", type(exc).__name__
+            )
+            _count_fail_closed()
+        finally:
+            _reporting.active = False
     return (
         [(0, len(text), redaction.REDACTION_UNAVAILABLE_TAG)],
         ["Redaction unavailable: whole text replaced"],
@@ -231,28 +437,321 @@ def _merge(engine: list[_Span], passes: list[_Span]) -> list[_Span]:
     return out
 
 
+def _with_placeholders(text: str, masks: list[Mask]) -> str:
+    """``text`` with each mask's characters written as :data:`PLACEHOLDER`; same length.
+
+    An input :data:`PLACEHOLDER` is read as :data:`_INPUT_PLACEHOLDER` (:func:`_passes_view`),
+    so every :data:`PLACEHOLDER` the passes see is a mask this plan wrote.
+    """
+    text = _passes_view(text)
+    parts: list[str] = []
+    cursor = 0
+    for start, end, _rule in masks:
+        parts.append(text[cursor:start])
+        parts.append(PLACEHOLDER * (end - start))
+        cursor = end
+    parts.append(text[cursor:])
+    return "".join(parts)
+
+
+def _padded(chunk: str) -> str:
+    """``chunk`` with the ``=`` padding a base64 run may have left off.
+
+    The bitmap check (:func:`well_formed_bitmap_head`) pads before it decodes, so a
+    payload with its padding omitted still reads as a whole picture and keeps its
+    mask. The credential checks beside it must read the run the same way, or a key in
+    that picture's metadata stays hidden under the mask.
+    """
+    return chunk + "=" * (-len(chunk) % 4)
+
+
+def _decodes_to_bare_secret(chunk: str) -> bool:
+    """Whether ``chunk``'s decoded bytes hold an unlabelled 40-character AWS secret.
+
+    Image bytes almost never carry 40 base64-alphabet bytes in a row, so a run that
+    does (text metadata such as a PNG ``tEXt`` chunk) is judged like any text.
+    """
+    import base64
+    import binascii
+
+    try:
+        raw = base64.b64decode(_padded(chunk), validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    return redaction._text_contains_bare_secret(raw.decode("latin-1"))
+
+
+#: The Identifier rows whose mask is a bitmap's base64 payload.
+_IMAGE_MASKS = frozenset({"data_uri", "image.base64"})
+#: Rows whose genuine values never read as a bare secret (a macOS temp id is 28 to
+#: 30 characters of ``[a-z0-9_]``), so a mask over one that does is a typed key.
+_NEVER_BARE_MASKS = frozenset({"macos.temp_path"})
+#: An ``x-amz-id-2`` or ``HostId`` AWS issues is whole-byte base64 of at least 56
+#: characters (40 bytes or more), and an OpenSSH ``SHA256:`` fingerprint is the
+#: unpadded base64 of 32 bytes: both canonical (zero padding bits). A value of
+#: another shape that reads as a bare secret (a 40-character key, alone or glued to
+#: a few characters) is not one, so its mask is dropped and the passes judge it.
+_SHAPED_ID_MIN = {"aws.x_amz_id_2": 56, "ssh.fingerprint": 43}
+
+
+def _issued_id(rule: str, value: str) -> bool:
+    """Whether *value* has the shape the row *rule* names in :data:`_SHAPED_ID_MIN`."""
+    import base64
+    import binascii
+
+    padded = value + "=" * (-len(value) % 4)
+    if len(value) < _SHAPED_ID_MIN[rule] or (rule == "aws.x_amz_id_2" and padded != value):
+        return False
+    try:
+        return base64.b64encode(base64.b64decode(padded, validate=True)).decode() == padded
+    except (binascii.Error, ValueError):
+        return False
+
+
+def _temp_id(span: str) -> str:
+    """The ``<id>`` of a masked ``[/private]/var/folders/<b>/<id>/<T|C|0>``; the whole span
+    is one run of the bare-secret alphabet (``/`` is in it), so only the id is judged."""
+    from kiro_crew.security.redaction_structured.identifier_values import _TMP_PREFIX
+
+    _head, _sep, rest = span.partition(_TMP_PREFIX)
+    _bucket, _sep, rest = rest.partition("/")
+    return rest.partition("/")[0]
+
+
+def _temp_id_is_credential(temp_id: str) -> bool:
+    """Whether a temp-path ``<id>`` reads as a bare secret or decodes to a credential.
+
+    The encoded-credential walk reads the run from ``/var`` with the id inside it,
+    which decodes to nothing, so an encoded credential typed as the id is decoded
+    here on its own. A genuine id (28 to 30 characters of ``[a-z0-9_]``) does neither.
+    """
+    return (
+        redaction._text_contains_bare_secret(temp_id)
+        or bool(redaction._decode_b64_chunk(temp_id))
+        or _decodes_to_bare_secret(temp_id)
+    )
+
+
+def _unmask_encoded_credentials(text: str, masks: list[Mask]) -> list[Mask]:
+    """``masks`` without each one that touches a base64 run decoding to a credential.
+
+    The encoded-credential pass reads the text after the masks are written, so a
+    mask over such a run (an image payload with a key in its metadata, a request id
+    that decodes to one) would hide it. Each run a mask touches is decoded here on
+    the original text; a mask over a credential is dropped, and the pass then reads
+    and removes that run as it does with the switch off. ``masks`` are sorted and
+    disjoint, so one walk serves every run.
+    """
+    if not masks:
+        return masks
+    from kiro_crew.security.redaction_structured.protection import well_formed_bitmap_head
+
+    # A bitmap payload whose bytes do not open with that format's header (no file
+    # signature, or a signature typed in front of other bytes) that reads as a bare
+    # secret is a secret behind an image media type, however long it is padded.
+    dropped: set[int] = {
+        k
+        for k, (s, e, rule) in enumerate(masks)
+        if (
+            rule in _IMAGE_MASKS
+            and not well_formed_bitmap_head(text, s, e)
+            and redaction._text_contains_bare_secret(text[s:e])
+        )
+        or (rule in _NEVER_BARE_MASKS and _temp_id_is_credential(_temp_id(text[s:e])))
+        or (
+            rule in _SHAPED_ID_MIN
+            and not _issued_id(rule, text[s:e])
+            and redaction._text_contains_bare_secret(text[s:e])
+        )
+    }
+    i = 0
+    for m in redaction._B64_CHUNK_RE.finditer(text):
+        while i < len(masks) and masks[i][1] <= m.start():
+            i += 1
+        j = i
+        while j < len(masks) and masks[j][0] < m.end():
+            j += 1
+        if j > i:
+            run = _padded(m.group())
+            if redaction._decode_b64_chunk(run) or _decodes_to_bare_secret(run):
+                dropped.update(range(i, j))
+    return [mask for k, mask in enumerate(masks) if k not in dropped]
+
+
+def _unmask_credential_matches(text: str, masks: list[Mask]) -> list[Mask]:
+    """``masks`` without each one that overlaps a pass-1 match pass 1 still reports.
+
+    A value inside a credential (a hex ``Bearer`` token, a vendor token's hex body)
+    can also read as an Identifier such as a git object name. Hiding it would stop
+    pass 1 from matching the credential, so such a mask is dropped and pass 1
+    removes the credential as with the switch off. The same holds for the value
+    after an AWS secret or session-token label (a 64-character hex S3-compatible
+    secret reads as a git object name), except the published AWS example secret.
+    Matches for the other branches the detectors cover, and an AWS key ID match,
+    keep their masks, except a ``jwt`` match pass 1 keeps (one the detectors
+    refused, :func:`_jose_refusal_ruled`): a mask over it would hide the token.
+    """
+    if not masks:
+        return masks
+    skipped = (COVERED_RULES - _LABELLED_RULES) | {_KEY_ID_RULE}
+    spans: list[tuple[int, int, bool]] = []
+    for m in redaction._credential_matches(text):
+        rule = redaction._pass1_rule(m.group())[0]
+        if rule not in skipped or (rule == _JWT_RULE and not _jose_refusal_ruled(text, m)):
+            spans.append((m.start(), m.end(), rule in _LABELLED_RULES))
+    if not spans:
+        return masks
+    starts = [s for s, _e, _l in spans]
+    out: list[Mask] = []
+    for mask in masks:
+        i = bisect.bisect_right(starts, mask[1] - 1) - 1
+        # Pass-1 matches are disjoint and in order, so only the last one starting
+        # before the mask's end can overlap it.
+        if i >= 0 and spans[i][1] > mask[0]:
+            if not (spans[i][2] and mask[2] == _DOC_EXAMPLE_RULE):
+                continue
+        out.append(mask)
+    return out
+
+
+def _hit_probe(hits: list[Hit]) -> Callable[[int, int], bool]:
+    """A test for "does any hit overlap ``[start, end)``", in log time per call.
+
+    Hits may overlap one another, so the test keeps the furthest end reached by
+    the hits that start at or before each one: some hit starting before ``end``
+    overlaps the range exactly when that furthest end passes ``start``.
+    """
+    ordered = sorted((h.start, h.end) for h in hits)
+    starts = [s for s, _e in ordered]
+    reach = list(itertools.accumulate((e for _s, e in ordered), max))
+
+    def touches(start: int, end: int) -> bool:
+        i = bisect.bisect_left(starts, end) - 1
+        return i >= 0 and reach[i] > start
+
+    return touches
+
+
+def _token_param_gaps(
+    plain: str, hits: list[Hit], spans: list[_Span]
+) -> tuple[list[_Span], list[str]]:
+    """The parts of a ``token=`` value a detector hit only partly covers, still in clear.
+
+    The passes read the text with each hit replaced by the tag, so a value that
+    starts with a hit reads to the token parameter pass as already redacted and
+    is skipped. Main's pass redacts such a value now, gaps and all; this does the
+    same for every value a hit touches. ``plain`` is the text with only the masks
+    written (same length as the input).
+    """
+    tag = redaction.REDACTED_CREDENTIAL_TAG
+    out: list[_Span] = []
+    warnings: list[str] = []
+    touches = _hit_probe(hits)
+    for m in redaction._TOKEN_PARAM_RE.finditer(plain):
+        vs, ve = m.start(1), m.end(1)
+        if not touches(vs, ve):
+            continue
+        gaps = redaction._uncovered(vs, ve, spans)
+        if gaps:
+            out += [(s, e, tag) for s, e in gaps]
+            warnings.append(f"Redacted token parameter value ({ve - vs} chars)")
+    return out, warnings
+
+
+def _bearer_gaps(plain: str, hits: list[Hit], spans: list[_Span]) -> list[_Span]:
+    """The parts of an ``Authorization: Bearer`` value a detector hit only partly covers.
+
+    The passes read the text with each hit already a tag, which the Bearer branch
+    does not read as a value, so what follows the hit in the same value (a
+    selective-disclosure JWT's ``~`` disclosures) would stay in clear. Main's
+    branch removes the whole value; this claims the rest of every value a hit
+    touches. No warning is added: the hit's own warning names the value.
+    """
+    tag = redaction.REDACTED_CREDENTIAL_TAG
+    out: list[_Span] = []
+    touches = _hit_probe(hits)
+    for m in redaction._credential_matches(plain):
+        vs = m.end("bearer_prefix")
+        if vs < 0:
+            continue
+        ve = m.end()
+        if touches(vs, ve):
+            out += [(s, e, tag) for s, e in redaction._uncovered(vs, ve, spans)]
+    return out
+
+
+def _joined(spans: list[_Span], extra: list[_Span]) -> list[_Span]:
+    """``spans`` with each ``extra`` span added, joined to a span it touches.
+
+    A Bearer value's rest shares one tag with the hit it follows, as main's single
+    match does. ``spans`` are sorted and disjoint; ``extra`` spans lie in their gaps.
+    """
+    if not extra:
+        return spans
+    added = set(extra)
+    out: list[_Span] = []
+    for start, end, tag in sorted(spans + extra):
+        if out and start <= out[-1][1] and ((start, end, tag) in added or out[-1] in added):
+            out[-1] = (out[-1][0], max(end, out[-1][1]), out[-1][2])
+            continue
+        out.append((start, end, tag))
+    return out
+
+
 def _combine(
     text: str,
     hits: list[Hit],
+    masks: list[Mask],
     defer_token_param: bool,
     judged_sri_values: Collection[str],
     token_param_prefixes: tuple[str, ...] | None = None,
 ) -> _Plan:
-    """Run the plan's passes on ``text`` with each hit tagged; merge onto ``text``."""
+    """Run the plan's passes with each hit tagged and each mask hidden; merge onto ``text``.
+
+    A mask never overlaps a hit (:func:`.protection.masks_for`), and writing it keeps
+    the text's length, so the hits' offsets hold on the masked text.
+    """
     from kiro_crew.security.pass_compose import _map_back, _splice
 
     tag = redaction.REDACTED_CREDENTIAL_TAG
     hit_spans = [(h.start, h.end, tag) for h in hits]
-    masked, rows = _splice(text, hit_spans)
-    found, pass_warnings, pass_rules = redaction._main_plan(
-        masked, defer_token_param, judged_sri_values, token_param_prefixes
+    masks = _unmask_credential_matches(text, _unmask_encoded_credentials(text, masks))
+    plain = _with_placeholders(text, masks)
+    # A ``token=`` value a hit touches is claimed here, gaps and all, before the
+    # passes read it: they would see it as tags and clear text mixed and size its
+    # warning on that. Its gaps are spliced like hits, so the token parameter
+    # pass skips the value and its one warning is the one written below.
+    gap_spans, gap_warnings = _token_param_gaps(plain, hits, hit_spans)
+    claimed = _joined(
+        sorted(hit_spans + gap_spans), _bearer_gaps(plain, hits, sorted(hit_spans + gap_spans))
+    )
+    masked, rows = _splice(plain, claimed)
+    pass_warnings: list[str] = []
+    pass_rules: dict[int, tuple[str, str]] = {}
+    pass1 = redaction._pattern_pass(masked, pass_warnings, pass_rules, True)
+    # A pass-1 warning gives its span's length on the original text.
+    pass_warnings = [
+        f"Redacted credential pattern ({end - start} chars)"
+        for start, end, _t in _map_back(pass1, rows)
+    ]
+    found, pass_warnings, pass_rules = redaction._later_passes(
+        masked,
+        list(pass1),
+        pass_warnings,
+        pass_rules,
+        defer_token_param,
+        judged_sri_values,
+        token_param_prefixes,
     )
     moved = _map_back(found, rows)
-    spans = _merge(hit_spans, moved)
+    spans = _merge(claimed, moved)
+    pass_warnings += gap_warnings
 
     rules: dict[int, tuple[str, str]] = {}
     for (m_start, _m_end, _t), (start, _end, _tag) in zip(found, moved, strict=True):
         rules.setdefault(start, pass_rules.get(m_start, ("credential_pattern", "")))
+    for start, _end, _tag in gap_spans:
+        rules.setdefault(start, ("token_parameter", ""))
     for h in hits:
         rules[h.start] = (old_rule(h.rule_id), "")
     kept = {s for s, _e, _t in spans}
@@ -278,12 +777,15 @@ def credential_plan_via_table(
         if not isinstance(text, str):
             raise TypeError("text must be a str")
         _load()
-        hits = secret_hits(text)
-        if not hits:
+        read = _read(text)
+        hits, masks = _secrets_of(read), _masks_of(read)
+        if not hits and not masks:
             return redaction._main_plan(
-                text, defer_token_param, judged_sri_values, token_param_prefixes
+                _passes_view(text), defer_token_param, judged_sri_values, token_param_prefixes, True
             )
-        return _combine(text, hits, defer_token_param, judged_sri_values, token_param_prefixes)
+        return _combine(
+            text, hits, masks, defer_token_param, judged_sri_values, token_param_prefixes
+        )
     except Exception as exc:
         return _fail_closed(text if isinstance(text, str) else "", exc)
 
@@ -308,11 +810,38 @@ class StreamRead:
     undecided: bool = False
 
 
-def stream_read(context: str, buf: str) -> StreamRead | None:
+#: How every credential placeholder starts (``[REDACTED: credential]`` and the rest).
+_TAG_HEAD = "[REDACTED"
+
+
+def _tail_cut(buf: str, base: int, cut: int) -> int:
+    """The fixed tail hold, ending at the last word: ``cut`` moved up past the last blank.
+
+    A partial anchor literal is one word (``ghp_``, ``eyJ``, ``https://``, a key
+    spelling); an anchor that spans a blank (a private-key header, a labelled key
+    and its value) is a unit the detectors report undecided, or one the passes'
+    own stream holds keep. So only the last word needs holding.
+    """
+    blank = max(buf.rfind(c) for c in " \t\r\n")
+    if blank == -1:
+        return cut
+    # A redaction tag holds a blank; a cut inside one would hand half a tag to a
+    # pass that reads the whole. Such a blank moves the cut to the tag's start.
+    tag = buf.rfind(_TAG_HEAD, 0, blank)
+    if tag != -1 and buf.find("]", tag, blank) == -1:
+        return max(cut, base + tag)
+    return max(cut, base + blank + 1)
+
+
+def stream_read(context: str, buf: str, *, boundary: bool = False) -> StreamRead | None:
     """The detectors' hold on ``buf`` read after ``context``; None with the switch off.
 
     None also when the detectors cannot load: the batch plan fails closed on the
     same error, so there is nothing to hold for.
+
+    With ``boundary`` (a display boundary: a tool call, a prompt, the turn's end)
+    the fixed :data:`~.stream.TAIL` hold is skipped; every unit still undecided and
+    every hit the cut would split is held as before.
     """
     if not use_rule_table():
         return None
@@ -329,7 +858,7 @@ def stream_read(context: str, buf: str) -> StreamRead | None:
     tail_hit = next((h for h in resolved if h.tier == SECRET and h.tail and h.end == n), None)
     if tail_hit is not None and (open_from is None or open_from >= tail_hit.start):
         return StreamRead(tail_hit.start - base, tail_hit.tail)
-    cut = n - TAIL
+    cut = n if boundary else _tail_cut(buf, base, n - TAIL)
     undecided = open_from is not None
     if open_from is not None:
         cut = min(cut, open_from)

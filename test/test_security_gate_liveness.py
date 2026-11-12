@@ -807,11 +807,23 @@ def _url_payload_command(n: int) -> str:
 #: row only, and ``is_denied`` judges that row on the view while its events keep the
 #: command as submitted. Every other row, an operator's copy, and the rm floor for
 #: ``/`` and ``~`` read the full text. Re-measured.
-#: Raised by 3, from 35,997, for the ``chat_steering_off.json`` leaf on the read-gate
+#: Raised by 3, from 35,997, to 36,000, for the ``chat_steering_off.json`` leaf on the read-gate
 #: floor in ``paths_lists`` (per-chat steering switch-offs). Re-measured.
 #: Raised by 18, from 36,000, to 36,018, for ``paths.py``'s scratch tree-index fence:
 #: artifact reads refuse the canonical index path even during replacement.
-_PACKAGE_LINE_BUDGET = 36_018
+#: Raised by 199, from 36,018, to 36,217, for turning the structured detectors on and
+#: for the owner's two settings in ``redaction_switch``: ``redaction`` reads pass 1
+#: through the detectors' residual matches, ``text_redaction`` holds the detectors'
+#: tail and releases it at a display boundary, and the keystone record carries the
+#: engine selector and the output-seams switch (its field, parse and writer, a
+#: stored-record read every writer shares so each keeps the others' fields, and the
+#: governance rule every writer returns). The detectors and the seams table live
+#: outside the files this budget counts. Re-measured.
+#: Raised by 31, from 36,217, to 36,248, for the output-seams switch's own governance
+#: row (``redaction_switch.owner_may_disable_seams`` and the shared ``_policy_allows``)
+#: and for ``compat._padded``, so the credential decodes read a base64 run with its
+#: padding left off as the bitmap check does. Both only refuse more. Re-measured.
+_PACKAGE_LINE_BUDGET = 36_248
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

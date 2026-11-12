@@ -38,7 +38,7 @@ import posixpath
 import re
 import secrets
 import sys as _sys
-from collections.abc import Callable, Collection, Iterable
+from collections.abc import Callable, Collection, Iterable, Iterator
 from typing import TYPE_CHECKING, NamedTuple
 
 from kiro_crew.credential_patterns import (  # noqa: F401
@@ -962,19 +962,29 @@ def _credential_redaction_plan(
         return compat.credential_plan_via_table(
             text, defer_token_param, judged_sri_values, token_param_prefixes
         )
-    return _main_plan(text, defer_token_param, judged_sri_values, token_param_prefixes)
+    return _main_plan(text, defer_token_param, judged_sri_values, token_param_prefixes, False)
+
+
+def _pass1_matches(text: str, residual: bool | None = None) -> Iterator[re.Match[str]]:
+    """Pass 1's matches: all, or if ``residual`` (None: read the engine) those detectors leave."""
+    from kiro_crew.security.redaction_structured import compat
+
+    if compat.use_rule_table() if residual is None else residual:
+        return compat.residual_matches(text)
+    return _credential_matches(text)
 
 
 def _main_plan(
     text: str,
     defer_token_param: bool,
     judged_sri_values: Collection[str],
-    token_param_prefixes: tuple[str, ...] | None = None,
+    token_param_prefixes: tuple[str, ...] | None,
+    residual: bool,
 ) -> tuple[list[_RedactionSpan], list[str], dict[int, tuple[str, str]]]:
-    """Passes 1-4 over ``text``: the plan without the structured detectors."""
+    """Passes 1-4 over ``text``; ``residual``: the detectors ran and found nothing."""
     warnings: list[str] = []
     rules: dict[int, tuple[str, str]] = {}
-    taken = _pattern_pass(text, warnings, rules)
+    taken = _pattern_pass(text, warnings, rules, residual)
     return _later_passes(
         text, taken, warnings, rules, defer_token_param, judged_sri_values, token_param_prefixes
     )
@@ -987,9 +997,9 @@ REDACTION_UNAVAILABLE_TAG = "[REDACTED: redaction unavailable]"
 
 
 def _pattern_pass(
-    text: str, warnings: list[str], rules: dict[int, tuple[str, str]]
+    text: str, warnings: list[str], rules: dict[int, tuple[str, str]], residual: bool
 ) -> list[_RedactionSpan]:
-    """Pass 1: the fixed patterns. Returns its spans; fills ``warnings``/``rules``."""
+    """Pass 1: the fixed patterns (``residual``: those the detectors leave). Fills both."""
     # 1. Plaintext credential patterns.
     #
     # Gated on the cheap superset pre-filter: when no branch of
@@ -1002,7 +1012,7 @@ def _pattern_pass(
     # disjoint; it is what the later passes subtract from.
     taken: list[_RedactionSpan] = []
     if _might_contain_credential(text):
-        for m in _credential_matches(text):
+        for m in _pass1_matches(text, residual):
             # Keep the Bearer branch's non-secret prefix (end() is -1 elsewhere).
             start = max(m.start(), m.end("bearer_prefix"))
             # Emit ONLY non-sensitive metadata (length). Do NOT slice any part of

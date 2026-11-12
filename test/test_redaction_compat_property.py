@@ -3,7 +3,7 @@
 Covers: arbitrary text never raises; spans stay sorted and disjoint; Secret hits
 are removed and the plan's passes still run after them; a detector failure
 replaces the whole text with a value-free record and a metric; the internal
-switch is off by default; table rule ids reach records under their old names.
+switch is on by default; table rule ids reach records under their old names.
 """
 
 from __future__ import annotations
@@ -13,10 +13,18 @@ from collections.abc import Iterator
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
-from redaction_structured_cases import github_classic, session_token
+from redaction_structured_cases import github_classic, session_token, structured_engine
 
 from kiro_crew.security import redaction
 from kiro_crew.security.redaction_structured import compat
+
+
+@pytest.fixture(autouse=True)
+def _structured_engine() -> Iterator[None]:
+    """These cases assert the structured engine's output: keep it selected under a legacy run."""
+    with structured_engine():
+        yield
+
 
 any_text = st.text(max_size=10_000)
 
@@ -39,7 +47,8 @@ def broken_table(monkeypatch: pytest.MonkeyPatch, table_on: None) -> list[str]:
     def boom(*_a: object, **_k: object) -> list[object]:
         raise ValueError("detectors broke")
 
-    monkeypatch.setattr(compat, "secret_hits", boom)
+    # The plan reads the detectors once through ``_read`` for hits and masks.
+    monkeypatch.setattr(compat, "_read", boom)
     monkeypatch.setattr(compat, "_count_fail_closed", lambda: counted.append("fail_closed"))
     return counted
 
@@ -153,11 +162,18 @@ class TestFailClosed:
 
 
 class TestSetting:
-    def test_off_by_default_and_off_runs_the_passes_alone(self) -> None:
-        assert compat.use_rule_table() is False
+    def test_on_by_default_and_off_runs_the_passes_alone(self) -> None:
+        assert compat.use_rule_table() is True
         token = _github_classic()
         text = f"t {token} AKIAIOSFODNN7EXAMPLE"
-        assert redaction._credential_redaction_plan(text) == redaction._main_plan(text, False, ())
+        # The plan reads the switch once; the legacy plan is pass 1 over every branch.
+        compat.publish_use_rule_table(False)
+        try:
+            off = redaction._credential_redaction_plan(text)
+            alone = redaction._main_plan(text, False, (), None, False)
+        finally:
+            compat.publish_use_rule_table(True)
+        assert off == alone
 
     def test_every_old_rule_name_has_a_tier(self) -> None:
         from kiro_crew.credential_patterns import RULE_TIERS
