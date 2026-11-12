@@ -461,9 +461,8 @@ mimetypes.add_type(
 _INLINE_DISPOSITION_PREFIXES = frozenset({"audio/", "video/", "image/", "application/pdf"})
 
 #: Session-key namespace of a sub-agent run. A sub-agent has no tab of its own, so
-#: its file card belongs to the PARENT's tab — the surface every other sub-agent
-#: output already routes to (``subagent_manager.monitoring``'s completion
-#: injection, ``chat_utils.subagent_event_slot``'s WS frames).
+#: its file card belongs to the tab its ``subagent_*`` WS frames draw in
+#: (``chat_utils.subagent_event_slot``): its PARENT's, or a nested run's root chat's.
 _SUBAGENT_SESSION_PREFIX = "subagent:"
 
 
@@ -477,10 +476,12 @@ is_tracked_channel = _owner_channel_upload.is_tracked_channel
 
 
 def _subagent_parent_session_key(state: DashboardState, session_key: str) -> str:
-    """The parent session key of the sub-agent running under *session_key*, or ``""``.
+    """The session key whose tab shows the sub-agent running under *session_key*, or ``""``.
 
-    Matches on BOTH spellings a run can be keyed by — its ``conversation_key`` (a
-    continuable run) and ``subagent:<id>`` — the same comparison
+    That is the run's parent, or for a nested run the chat its spawn tree started
+    from (``SubagentInfo.root_session_key``). Matches on BOTH spellings a run can
+    be keyed by — its ``conversation_key`` (a continuable run) and
+    ``subagent:<id>`` — the same comparison
     ``subagent_manager.continuation`` makes, because a continuable run's key is not
     derivable from its id. Returns ``""`` when the manager is absent or the run is
     unknown, so the caller SUPPRESSES the card rather than guessing a tab.
@@ -527,10 +528,15 @@ def _subagent_parent_session_key(state: DashboardState, session_key: str) -> str
         )
 
     best = max(matches, key=_rank)
-    parent = getattr(best, "parent_session_key", "")
+    # A nested run's parent is a ``subagent:<id>`` key no tab shows, so the root of
+    # its spawn tree, which admission stamps on the run, comes first; the parent
+    # answers for a record that carries none.
     # isinstance, not truthiness: a stubbed manager can hand back a
     # non-str here and dashboard_slot_key would treat it as a key.
-    return parent if isinstance(parent, str) else ""
+    for key in (getattr(best, "root_session_key", ""), getattr(best, "parent_session_key", "")):
+        if isinstance(key, str) and key:
+            return key
+    return ""
 
 
 def _sel():
