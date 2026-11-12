@@ -19629,6 +19629,8 @@
         "credential_redaction_write_failed": "无法保存更改。{{state}}“打开与智能体的对话”链接只会分享这条错误信息。",
         "credential_redaction_retry": "重试",
         "credential_redaction_desc_intro": "{{productName}} 会在你看到智能体输出之前脱敏任何形似凭证的内容：访问密钥、令牌、私钥。当它脱敏了你确实需要读回的自有值时，按下面四步即可看到该值。",
+        "credential_redaction_desc_intro_locked": "{{productName}} 会在你看到智能体输出之前脱敏任何形似凭证的内容：访问密钥、令牌、私钥。",
+        "credential_redaction_held_on": "开启：仪表板为你打开的文件中，凭据始终保持脱敏。",
         "credential_redaction_step_write": "让智能体把该值写入文件。",
         "credential_redaction_step_off": "关闭下方的开关。",
         "credential_redaction_step_open": "在聊天侧边面板的“文件”标签中打开该文件。",

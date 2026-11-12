@@ -338,16 +338,29 @@ export function refreshServerStateAfterReconnect(queryClient: QueryClient): void
  *  side-panel tabs) and re-read the switch, so no dashboard document keeps
  *  showing raw credentials after redaction is back on. Owner sockets only
  *  receive this frame. */
-export function handleCredentialRedactionChanged(queryClient: QueryClient, d: { enabled?: unknown; changed_at?: unknown } | undefined): void {
+export function handleCredentialRedactionChanged(queryClient: QueryClient, d: { enabled?: unknown; changed_at?: unknown; lock_only?: unknown } | undefined): void {
+  const held = queryClient.getQueryData<{ locked_by_policy?: boolean }>(['credential-redaction'])
+  // Only the server can say a frame moved nothing a document could have read
+  // raw: it marks a policy refresh that changed the lock but not the position
+  // it last pushed with `lock_only: true`. Such a frame re-reads the switch and
+  // keeps file bodies; every other frame purges. The document's own cached
+  // position is NOT evidence, because an ordinary re-read can refresh it before
+  // a delayed frame lands while raw bodies are still held.
+  const positionMoved = d?.lock_only !== true
   // Seed the switch entry from the frame's own payload FIRST, so a
   // document that never mounted the Settings card still knows the
   // position it now runs under (the reconnect heal compares against
-  // it); the invalidate then re-reads the authoritative record.
+  // it); the invalidate then re-reads the authoritative record. The
+  // policy lock this document last read is kept until that re-read lands.
   if (d && typeof d.enabled === 'boolean') {
-    queryClient.setQueryData(['credential-redaction'], { enabled: d.enabled, changed_at: typeof d.changed_at === 'string' ? d.changed_at : '' })
+    queryClient.setQueryData(['credential-redaction'], {
+      enabled: d.enabled,
+      changed_at: typeof d.changed_at === 'string' ? d.changed_at : '',
+      ...(typeof held?.locked_by_policy === 'boolean' ? { locked_by_policy: held.locked_by_policy } : {}),
+    })
   }
   queryClient.invalidateQueries({ queryKey: ['credential-redaction'] })
-  purgeDocumentBodiesForRedactionChange(queryClient)
+  if (positionMoved) purgeDocumentBodiesForRedactionChange(queryClient)
 }
 
 /** Live artifact refresh: the backend broadcasts from the artifact mutation

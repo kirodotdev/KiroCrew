@@ -86,6 +86,30 @@ describe('SecurityPanel - credential redaction switch', () => {
     expect(screen.queryByTestId('credential-redaction-off-notice')).toBeNull()
   })
 
+  it('a switch the governance policy holds ON is drawn held: disabled, with the policy notice and no recipe', async () => {
+    await renderRedaction({ ...ON, locked_by_policy: true })
+    expect(toggle()).toHaveAttribute('aria-checked', 'true')
+    expect(toggle()).toHaveAttribute('aria-disabled', 'true')
+    // The note names the position, not only that a policy holds it.
+    expect(screen.getByTestId('credential-redaction-locked-note').textContent).toMatch(/^Locked by policyOn: credentials stay redacted/)
+    expect(screen.getByTestId('locked-by-policy-badge')).toBeTruthy()
+    expect(screen.queryByRole('list')).toBeNull()
+    // No sentence points at the hidden recipe, and no help line describes an OFF
+    // the owner cannot choose.
+    expect(screen.queryByText(/four steps/i)).toBeNull()
+    expect(screen.queryByText(/Off shows these files/i)).toBeNull()
+    fireEvent.click(toggle())
+    expect(api.setCredentialRedaction).not.toHaveBeenCalled()
+  })
+
+  it('a host whose policy allows OFF offers the switch and the recipe, with no policy notice', async () => {
+    await renderRedaction({ ...ON, locked_by_policy: false })
+    expect(toggle()).not.toHaveAttribute('aria-disabled', 'true')
+    expect(screen.queryByTestId('credential-redaction-locked-note')).toBeNull()
+    expect(screen.getByRole('list')).toBeTruthy()
+    expect(screen.getByText(/four steps/i)).toBeTruthy()
+  })
+
   it('switching off sends exactly {enabled: false} and shows the off-notice with the time', async () => {
     ;(api.setCredentialRedaction as ReturnType<typeof vi.fn>).mockResolvedValue(OFF)
     await renderRedaction(ON)

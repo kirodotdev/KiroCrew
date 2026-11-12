@@ -491,7 +491,11 @@ class TestHandlers:
 
         resp = await api_credential_redaction_get(_request())
         assert resp.status == 200
-        assert json.loads(resp.text) == {"enabled": True, "changed_at": ""}
+        assert json.loads(resp.text) == {
+            "enabled": True,
+            "changed_at": "",
+            "locked_by_policy": False,
+        }
 
     @pytest.mark.asyncio
     async def test_put_false_records_and_audits(self, _isolated_switch, _quiet_audit):
@@ -527,6 +531,7 @@ class TestHandlers:
         msg_type, payload = state.broadcast_ws_owners.call_args.args
         assert msg_type == "credential_redaction_changed"
         assert payload["enabled"] is False and payload["changed_at"]
+        assert "lock_only" not in payload
         state.broadcast_ws.assert_not_called()
 
     def test_a_policy_that_withdraws_the_opt_in_purges_owner_dashboards(
@@ -550,6 +555,28 @@ class TestHandlers:
         app["state"].broadcast_ws_owners.assert_called_once()
         msg_type, payload = app["state"].broadcast_ws_owners.call_args.args
         assert msg_type == "credential_redaction_changed" and payload["enabled"] is True
+        assert "lock_only" not in payload  # the position moved: documents purge
+
+    def test_a_policy_grant_that_leaves_the_switch_on_pushes_the_lock_change(
+        self, _isolated_switch, monkeypatch
+    ):
+        """The position stays ON, but an open card must learn it may now offer OFF."""
+        from kiro_crew.dashboard.handlers import credential_redaction as handlers
+
+        monkeypatch.setattr(redaction_switch, "owner_may_disable", lambda: False)
+        handlers.seed_pushed_switch()
+        app = {"state": MagicMock()}
+        loop = MagicMock()
+        loop.call_soon_threadsafe.side_effect = lambda fn, *args: fn(*args)
+        handlers.push_switch_moved_by_policy(app, loop)  # policy unchanged: no push
+        app["state"].broadcast_ws_owners.assert_not_called()
+
+        monkeypatch.setattr(redaction_switch, "owner_may_disable", lambda: True)
+        handlers.push_switch_moved_by_policy(app, loop)
+        handlers.push_switch_moved_by_policy(app, loop)  # a confirming poll: no repeat
+        app["state"].broadcast_ws_owners.assert_called_once()
+        _msg_type, payload = app["state"].broadcast_ws_owners.call_args.args
+        assert payload["enabled"] is True and payload["lock_only"] is True
 
     def test_a_policy_push_an_owner_put_overtook_is_dropped(self, _isolated_switch, monkeypatch):
         from kiro_crew.dashboard.handlers import credential_redaction as handlers
@@ -562,7 +589,9 @@ class TestHandlers:
         loop = MagicMock()
         loop.call_soon_threadsafe.side_effect = queued.append
         handlers.push_switch_moved_by_policy(app, loop)
-        handlers._push_to_owners(MagicMock(), redaction_switch.RedactionState(True, "t"))  # the PUT
+        handlers._push_to_owners(
+            MagicMock(), redaction_switch.RedactionState(True, "t"), True
+        )  # the PUT
         queued[0]()
         app["state"].broadcast_ws_owners.assert_not_called()
 
@@ -810,6 +839,48 @@ class TestGovernedHost:
         on = await api_credential_redaction_put(_request(body={"enabled": True}))
         assert on.status == 200
         assert redaction_switch.read_state().enabled is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "controls, locked",
+        [
+            ({}, False),
+            ({"sandbox": {"require_isolation": True}}, False),
+            ({**_GOVERNED, **_OPT_IN}, False),
+            (_GOVERNED, True),
+            ({**_GOVERNED, "capabilities": {"credential_redaction_off": {}}}, True),
+        ],
+    )
+    async def test_the_get_and_the_put_say_when_policy_holds_the_switch_on(
+        self, monkeypatch, _isolated_switch, _quiet_audit, controls, locked
+    ):
+        """The card reads ``locked_by_policy`` to draw the switch as held by policy."""
+        from kiro_crew.dashboard.handlers.credential_redaction import (
+            api_credential_redaction_get,
+            api_credential_redaction_put,
+        )
+
+        _off()
+        _host_policy(monkeypatch, controls)
+        got = json.loads((await api_credential_redaction_get(_request())).text)
+        assert got["locked_by_policy"] is locked
+        assert got["enabled"] is locked
+        put = await api_credential_redaction_put(_request(body={"enabled": True}))
+        assert put.status == 200
+        assert json.loads(put.text)["locked_by_policy"] is locked
+
+    def test_an_unreadable_ceiling_reports_the_switch_held_on(self, monkeypatch, _quiet_audit):
+        from kiro_crew.dashboard.handlers import credential_redaction as handlers
+        from kiro_crew.platform import context
+
+        def _broken():
+            raise RuntimeError("policy unreadable")
+
+        monkeypatch.setattr(context, "current_context", _broken)
+        _off()
+        _state, body = handlers._read_body()
+        assert body["enabled"] is True
+        assert body["locked_by_policy"] is True
 
     @pytest.mark.parametrize("controls, allowed", [({}, False), (_OPT_IN, True)])
     def test_an_lts_build_keeps_redaction_on_without_the_opt_in(

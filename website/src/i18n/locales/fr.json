@@ -20645,6 +20645,8 @@
         "credential_redaction_write_failed": "Impossible d'enregistrer la modification. {{state}} Le lien « Ouvrir une discussion avec l'agent » ne partage que ce message d'erreur.",
         "credential_redaction_retry": "Réessayer",
         "credential_redaction_desc_intro": "{{productName}} masque tout ce qui ressemble à un identifiant (clés d'accès, jetons, clés privées) de la sortie de l'agent avant que tu la voies. Lorsqu'il masque une valeur qui t'appartient et que tu dois relire, ces quatre étapes te la font apparaître.",
+        "credential_redaction_desc_intro_locked": "{{productName}} masque tout ce qui ressemble à un identifiant (clés d'accès, jetons, clés privées) de la sortie de l'agent avant que tu la voies.",
+        "credential_redaction_held_on": "Activé : les identifiants restent masqués dans les fichiers que le tableau de bord ouvre pour toi.",
         "credential_redaction_step_write": "Demande à l'agent d'écrire la valeur dans un fichier.",
         "credential_redaction_step_off": "Désactive l'interrupteur ci-dessous.",
         "credential_redaction_step_open": "Ouvre ce fichier depuis l'onglet Fichiers du panneau latéral du chat.",

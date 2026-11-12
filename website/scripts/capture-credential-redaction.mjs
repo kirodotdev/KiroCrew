@@ -8,7 +8,8 @@
  * The states worth a frame are the ones a reviewer cannot infer from the diff:
  * the default (ON, no notice), the switch OFF (the loud notice with the time it
  * was switched off), and the READ FAILED state -- an unreadable switch must
- * render as unknown rather than as the reassuring default.
+ * render as unknown rather than as the reassuring default. On a governed host
+ * whose policy keeps redaction on, the switch is drawn held by policy.
  *
  * Usage: node scripts/capture-credential-redaction.mjs [outDir] [prefix]
  */
@@ -97,6 +98,9 @@ async function main() {
       if (state.enabled === false) {
         await page.getByTestId('credential-redaction-off-notice').waitFor({ timeout: 5000 })
       }
+      if (state.locked_by_policy) {
+        await page.getByTestId('credential-redaction-locked-note').waitFor({ timeout: 5000 })
+      }
     }
     await page.waitForTimeout(400)
     await page.screenshot({ path: `${OUT}/${PREFIX}-${name}.png` })
@@ -110,6 +114,9 @@ async function main() {
   await shoot('non-owner', { nonOwner: true })
   await shoot('save-failed', { state: { enabled: true, changed_at: '' }, failWrite: true })
   await shoot('on-light', { state: { enabled: true, changed_at: '' }, theme: 'light' })
+  // A governed host whose policy keeps redaction on: the switch is drawn held.
+  await shoot('locked-by-policy', { state: { enabled: true, changed_at: '', locked_by_policy: true } })
+  await shoot('locked-by-policy-light', { state: { enabled: true, changed_at: '', locked_by_policy: true }, theme: 'light' })
   // The breakpoint below which the rail stacks above the pane.
   await shoot('narrow', { width: 900, height: 1000, state: { enabled: false, changed_at: '2026-09-24T23:00:00+00:00' } })
 

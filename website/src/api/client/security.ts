@@ -68,6 +68,10 @@ export interface AwsConsentStatus {
 export interface CredentialRedactionState {
   enabled: boolean
   changed_at: string
+  /** The host's governance policy keeps redaction ON, so the owner cannot turn
+   *  it off. Carried by the GET, the PUT and the `credential_redaction_changed`
+   *  push; optional because a frame without it seeds only the position. */
+  locked_by_policy?: boolean
 }
 
 /** Full denied-commands snapshot returned by every denied-commands endpoint. */

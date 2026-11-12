@@ -9823,6 +9823,8 @@
         "credential_redaction_write_failed": "Could not save the change. {{state}} The 'Open a chat with the agent' link shares only this error message.",
         "credential_redaction_retry": "Retry",
         "credential_redaction_desc_intro": "{{productName}} redacts anything that looks like a credential — access keys, tokens, private keys — from agent output before you see it. When it redacts a value of your own that you need to read back, these four steps get it in front of you.",
+        "credential_redaction_desc_intro_locked": "{{productName}} redacts anything that looks like a credential — access keys, tokens, private keys — from agent output before you see it.",
+        "credential_redaction_held_on": "On: credentials stay redacted in files the dashboard opens for you.",
         "credential_redaction_step_write": "Ask the agent to write the value to a file.",
         "credential_redaction_step_off": "Turn off the switch below.",
         "credential_redaction_step_open": "Open that file from the Files tab of the chat side panel.",

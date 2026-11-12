@@ -19629,6 +19629,8 @@
         "credential_redaction_write_failed": "변경 내용을 저장할 수 없습니다. {{state}} '에이전트와 채팅 열기' 링크는 이 오류 메시지만 공유합니다.",
         "credential_redaction_retry": "다시 시도",
         "credential_redaction_desc_intro": "{{productName}}은(는) 에이전트 출력이 사용자에게 도달하기 전에 자격 증명처럼 보이는 모든 항목(액세스 키, 토큰, 개인 키)을 마스킹합니다. 다시 읽어야 하는 본인의 값이 마스킹되면, 다음 네 단계로 그 값을 확인할 수 있습니다.",
+        "credential_redaction_desc_intro_locked": "{{productName}}은(는) 에이전트 출력이 사용자에게 도달하기 전에 자격 증명처럼 보이는 모든 항목(액세스 키, 토큰, 개인 키)을 마스킹합니다.",
+        "credential_redaction_held_on": "켜짐: 대시보드가 열어 주는 파일에서 자격 증명은 계속 마스킹됩니다.",
         "credential_redaction_step_write": "에이전트에게 값을 파일에 쓰게 하세요.",
         "credential_redaction_step_off": "아래 스위치를 끄세요.",
         "credential_redaction_step_open": "채팅 사이드 패널의 파일 탭에서 그 파일을 여세요.",

@@ -20645,6 +20645,8 @@
         "credential_redaction_write_failed": "Impossibile salvare la modifica. {{state}} Il link «Apri una chat con l'agente» condivide solo questo messaggio di errore.",
         "credential_redaction_retry": "Riprova",
         "credential_redaction_desc_intro": "{{productName}} oscura tutto ciò che somiglia a una credenziale (chiavi di accesso, token, chiavi private) dall'output dell'agente prima che tu lo veda. Quando oscura un valore tuo che devi rileggere, questi quattro passaggi te lo mostrano.",
+        "credential_redaction_desc_intro_locked": "{{productName}} oscura tutto ciò che somiglia a una credenziale (chiavi di accesso, token, chiavi private) dall'output dell'agente prima che tu lo veda.",
+        "credential_redaction_held_on": "Attivo: le credenziali restano oscurate nei file che la dashboard apre per te.",
         "credential_redaction_step_write": "Chiedi all'agente di scrivere il valore in un file.",
         "credential_redaction_step_off": "Disattiva l'interruttore qui sotto.",
         "credential_redaction_step_open": "Apri quel file dalla scheda File del pannello laterale della chat.",

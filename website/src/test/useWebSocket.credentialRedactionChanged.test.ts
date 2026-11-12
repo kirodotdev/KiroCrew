@@ -152,6 +152,36 @@ describe('useWebSocket credential_redaction_changed frame', () => {
     expect(tabs.result.current.tabs.find(t => t.id === 'file:/tmp/raw.txt')?.content).toBeUndefined()
   })
 
+  it('a frame equal to the held position but not marked lock-only still purges', () => {
+    // A re-read refreshed the cache to ON before the delayed frame of an ON
+    // write landed; the raw body fetched while OFF must still go.
+    qc.setQueryData(['file-read', '/tmp/raw.txt'], { content: 'AKIA-raw-while-off' })
+    qc.setQueryData(['credential-redaction'], { enabled: true, changed_at: '' })
+    renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+    act(() => { ws.simulateMessage({ type: 'credential_redaction_changed', data: { enabled: true, changed_at: '' } }) })
+    expect(qc.getQueryData(['file-read', '/tmp/raw.txt'])).toBeUndefined()
+  })
+
+  it('a lock-only frame re-reads the switch and keeps every file body', () => {
+    // A policy grant while the switch stays ON: the server marks it lock-only.
+    qc.setQueryData(['file-read', '/tmp/clean.txt'], { content: 'redacted body' })
+    qc.setQueryData(['credential-redaction'], { enabled: true, changed_at: '', locked_by_policy: true })
+    const tabs = renderHook(() => usePanelTabs('slot-a', []))
+    act(() => tabs.result.current.openDiff('/tmp/clean.txt', 'a', 'b'))
+    const invalidateSpy = vi.spyOn(qc, 'invalidateQueries')
+    renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+    act(() => { ws.simulateMessage({ type: 'credential_redaction_changed', data: { enabled: true, changed_at: '', lock_only: true } }) })
+    expect(invalidateSpy.mock.calls.map(c => JSON.stringify(c[0]?.queryKey))).toContain(JSON.stringify(['credential-redaction']))
+    // The lock this document last read stays until the re-read lands.
+    expect(qc.getQueryData(['credential-redaction'])).toEqual({ enabled: true, changed_at: '', locked_by_policy: true })
+    expect(qc.getQueryData(['file-read', '/tmp/clean.txt'])).toEqual({ content: 'redacted body' })
+    expect(tabs.result.current.tabs.some(t => t.kind === 'diff')).toBe(true)
+  })
+
   // A MOUNTED observer -- the Library's SessionDocPreview is a `useQuery` on the
   // same `['file-read', path]` key -- must not keep rendering the raw body it
   // last received: removing the cache entry alone leaves the observer's result
