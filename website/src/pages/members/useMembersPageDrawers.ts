@@ -19,7 +19,7 @@ import { useMotionValue, useTransform } from 'framer-motion'
 import {
   useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft,
 } from '../../hooks/useDrawerSwipe'
-import { idleTrackpadDrag, moveTrackpadDrag, releaseTrackpadDrag, settleTrackpadDrag, speedCommitTrackpadDrag, type TrackpadPanelDrag } from '../../hooks/trackpadPanelDrag'
+import { idleTrackpadDrag, leadTrackpadSamples, moveTrackpadDrag, releaseTrackpadDrag, settleTrackpadDrag, speedCommitTrackpadDrag, type TrackpadPanelDrag } from '../../hooks/trackpadPanelDrag'
 import { useMobileNavRail } from '../../components/MobileNavRailContext'
 import { useVisualViewport } from '../../hooks/useVisualViewport'
 import { isTrapEntry } from '../../lib/routeHistoryPosition'
@@ -591,7 +591,10 @@ export function useMembersPageTrackpadSwipe({
       if (settleTo.current !== null) return true
       return dir === 'left' ? !n.onDashboard : n.panelVisible
     },
-    onDragStart: (dir) => {
+    // A reveal or a Dashboard jump from rest waits for a real swipe; a grab
+    // mid-settle never does.
+    reveals: (dir) => dir === 'left' && settleTo.current === null,
+    onDragStart: (dir, lead) => {
       const n = now.current
       if (settleTo.current !== null) {
         // Grabbed mid-settle: stop the settle where it is presenting the panel
@@ -637,7 +640,8 @@ export function useMembersPageTrackpadSwipe({
       deskTravelRef.current = travel
       sidePanelX.set(startedOpen ? 0 : travel)
       syncDeskSpacer()
-      drag.current = { on: true, startedOpen, travel, base: startedOpen ? 0 : travel, samples: [] }
+      const base = startedOpen ? 0 : travel
+      drag.current = { on: true, startedOpen, travel, base, samples: leadTrackpadSamples(base, lead) }
     },
     onDragMove: (sumX, at) => {
       const d = drag.current
