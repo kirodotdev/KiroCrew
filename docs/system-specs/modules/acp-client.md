@@ -4003,7 +4003,17 @@ starts.** Three in-process queues bound a start, and all three are one primitive
 `kiro_crew.start_priority.PrioritySemaphore`: `SessionManager._start_sem` (cold
 starts, held across the provider's own spawn and `session/new` waits), the
 cold-start admission (`agent.runtime_spawn_concurrency` spawns) and this gate
-(`agent.session_start_concurrency`, collector headroom unchanged). The rule is
+(`agent.session_start_concurrency`, collector headroom unchanged). The MCP gateway
+daemon's spawn gate queues a session's MCP server starts by the same order
+(`StartOrder`, the one definition `PrioritySemaphore` also orders by), at the
+priority `create_session` was given: it travels as `KIROCREW_STUB_START_PRIORITY`
+on the session's stub entries and as `start_priority` on each stub's Register
+frame ([mcp](../../architecture/mcp.md) § SpawnGate). A resumed session
+(`session/load`), a stub launched from an agent file, the direct client's array
+and the array a mirror builds for a mirrored host carry none and are background
+there: a mirror admits one of Kiro Crew's own stubs only when its `env` is exactly
+the session token (`is_session_bound_crew_stub`), so a second pair would withhold
+that server, and the pairs are not added there. The rule is
 owned by the `kiro_crew.start_priority` module docstring; this section lists who
 applies it.
 

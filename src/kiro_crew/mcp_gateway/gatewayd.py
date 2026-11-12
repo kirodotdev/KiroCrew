@@ -363,6 +363,7 @@ from kiro_crew.sandbox import (
 )
 from kiro_crew.security import redact
 from kiro_crew.sel import SecurityEventLog  # noqa: F401
+from kiro_crew.start_priority import StartPriority
 
 logger = logging.getLogger(__name__)
 
@@ -1135,6 +1136,7 @@ async def _acquire_backend(
     wait_deadline: Optional[float] = None,
     on_queued: Optional[OnQueued] = None,
     prewarm: bool = False,
+    priority: StartPriority = StartPriority.BACKGROUND,
 ) -> tuple[Backend, bool]:
     """Return ``(backend, was_spawned)`` for ``pool_key`` — spawning one via
     the resolver if absent.
@@ -1227,7 +1229,7 @@ async def _acquire_backend(
         slot: Any = None
         if admission is not None:
             permit = await admission.gate.acquire(
-                label=label, deadline=wait_deadline, on_queued=on_queued
+                label=label, deadline=wait_deadline, on_queued=on_queued, priority=priority
             )
             try:
                 charge = admission.budget.reserve(label=label, kind=charge_kind)

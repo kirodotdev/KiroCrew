@@ -38,6 +38,7 @@ from kiro_crew.mcp_gateway.hashing import (
     runs_install_code,
 )
 from kiro_crew.mcp_gateway.stub_bridge import logger
+from kiro_crew.start_priority import START_PRIORITY_ENV, StartPriority, priority_from_wire
 
 # Content-hash cap for ``binary_version``. Every shipped MCP is <1 MiB, so
 # 4 MiB covers them with margin. Larger binaries
@@ -414,6 +415,11 @@ def build_register_payload(args: argparse.Namespace) -> dict:
     # launched from a hand-written config or an overlay predating the token: the
     # field is then omitted below and gatewayd keeps its PID-keyed behavior.
     session_token = os.environ.get(STUB_SESSION_TOKEN_ENV, "")
+    # The priority this stub's session start has
+    # (``session_servers.attach_stub_start_priority``). Read once and removed, so
+    # a target this stub later execs itself never inherits it. Absent means
+    # background, and the field is then omitted below.
+    start_priority = priority_from_wire(os.environ.pop(START_PRIORITY_ENV, ""))
 
     payload = {
         "type": "register",
@@ -500,6 +506,9 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         "session_type": caller["session_type"],
         "principal_id": caller["principal_id"],
     }
+    if start_priority is StartPriority.FOREGROUND:
+        # Queue order at the daemon's spawn gate, never a PoolKey dimension.
+        payload["start_priority"] = start_priority.value
     if stub_code_fingerprint and args.server in KIROCREW_BIN_MCP_SERVERS:
         # Compatibility attestation, not a PoolKey dimension. The daemon answers
         # with its own fingerprint in ``registered``; an absent or different

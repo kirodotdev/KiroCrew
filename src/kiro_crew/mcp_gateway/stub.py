@@ -350,6 +350,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         binary_fingerprint,
         pool_binary_version,
     )
+    from kiro_crew.start_priority import (  # noqa: F401
+        START_PRIORITY_ENV,
+        StartPriority,
+        priority_from_wire,
+    )
 
 
 def _install_signal_handlers(
