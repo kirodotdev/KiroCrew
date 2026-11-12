@@ -43,6 +43,9 @@ _CODE_LOCKED_BY_POLICY = "credential_redaction_locked_by_policy"
 
 _SOURCE = "credential-redaction"
 
+#: The two switches a PUT may move, one per request.
+_SWITCH_KEYS = frozenset({"enabled", "seams_enabled"})
+
 
 def _audit(
     *,
@@ -123,18 +126,21 @@ async def api_credential_redaction_get(request: web.Request) -> web.Response:
         outcome="allowed",
         operation="read",
         caller=str(request.get("user") or "owner"),
-        detail=f"enabled={state.enabled}",
+        detail=f"enabled={state.enabled} seams_enabled={state.seams_enabled} engine={state.engine}",
     )
     return web.json_response(state.to_dict())
 
 
 async def api_credential_redaction_put(request: web.Request) -> web.Response:
-    """PUT /api/security/credential-redaction -- record ``{"enabled": bool}``.
+    """PUT /api/security/credential-redaction -- move ONE of the two switches.
 
-    ``enabled`` must be a JSON boolean; anything else is a 400 and nothing is
-    written. The record carries the time of the change so the card can say when
-    redaction was switched off. OFF is a 403 when the governance policy does not
-    allow it (``redaction_switch.owner_may_disable``).
+    The body is ``{"enabled": bool}`` (the Files-view switch) or
+    ``{"seams_enabled": bool}`` (the output-seams switch,
+    ``kiro_crew.redaction_seams``): exactly one key, a JSON boolean, or a 400 and
+    nothing is written. The other switch keeps its stored position. The record
+    carries the time of the change so the card can say when redaction was
+    switched off. OFF is a 403 when the governance policy does not allow it
+    (``redaction_switch.owner_may_disable``).
     """
     denied = await _deny_non_owner(request, "credential_redaction.write")
     if denied:
@@ -143,11 +149,22 @@ async def api_credential_redaction_put(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON", "code": _CODE_INVALID_JSON}, status=400)
-    enabled = body.get("enabled") if isinstance(body, dict) else None
+    if isinstance(body, dict) and "engine" in body:
+        return await _put_engine(request, body)
+    keys = set(body) & _SWITCH_KEYS if isinstance(body, dict) else set()
+    key = next(iter(keys)) if len(keys) == 1 else ""
+    enabled = body.get(key) if key else None
     if not isinstance(enabled, bool):
         return web.json_response(
-            {"error": "enabled must be a boolean", "code": _CODE_INVALID_BODY}, status=400
+            {
+                "error": "send exactly one of enabled or seams_enabled, as a boolean",
+                "code": _CODE_INVALID_BODY,
+            },
+            status=400,
         )
+    seams = key == "seams_enabled"
+    # The SEL outcome names which switch moved; the Files-view one keeps its old names.
+    outcome = ("seams_" if seams else "") + ("enabled" if enabled else "disabled")
     changed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     subject = str(request.get("user") or "owner")
     if not enabled and not await asyncio.to_thread(redaction_switch.owner_may_disable):
@@ -180,15 +197,16 @@ async def api_credential_redaction_put(request: web.Request) -> web.Response:
             # owner check, and this row is the one that must say which one
             # turned the credential pass off.
             recorded = _audit(
-                outcome="enabled" if enabled else "disabled",
+                outcome=outcome,
                 caller=subject,
                 detail=f"changed_at={changed_at}",
                 critical=True,
             )
             if not enabled and not recorded:
                 raise _AuditUnavailable()
+            write = redaction_switch.set_seams_enabled if seams else redaction_switch.set_enabled
             try:
-                return redaction_switch.set_enabled(enabled, changed_at=changed_at)
+                state = write(enabled, changed_at=changed_at)
             except OSError as exc:
                 _audit(
                     outcome="write_failed",
@@ -197,6 +215,8 @@ async def api_credential_redaction_put(request: web.Request) -> web.Response:
                     critical=True,
                 )
                 raise
+            redaction_switch.publish_seams(state)
+            return state
 
     try:
         state = await asyncio.to_thread(_write_and_audit)
@@ -219,29 +239,116 @@ async def api_credential_redaction_put(request: web.Request) -> web.Response:
     # caches and open tabs, and only a push reaches it. Owner sockets only --
     # the switch position is owner posture, and ``_send_ws_owners`` bypasses the
     # app-scope gate by construction, so no app token sees it.
+    # Only the Files-view switch changes what an open document holds; the seams
+    # switch reaches no file body, so it purges nothing, but owner tabs still
+    # re-read the settings so none keeps showing the old position.
+    _broadcast_switch_changed(request, state, purge=not seams)
+    return web.json_response(state.to_dict())
+
+
+async def _put_engine(request: web.Request, body: dict) -> web.Response:
+    """``{"engine": "structured" | "legacy"}``: the engine selector, alone in its body.
+
+    It picks which engine redacts on every path and leaves the switch where it is.
+    Choosing ``legacy`` whose audit record cannot be written does not happen, as a
+    disable does not; going back to ``structured`` proceeds either way. The change
+    is published to this process's credential plan at once.
+    """
+    engine = body.get("engine")
+    if set(body) != {"engine"} or engine not in redaction_switch.ENGINES:
+        return web.json_response(
+            {"error": "engine must be 'structured' or 'legacy', alone", "code": _CODE_INVALID_BODY},
+            status=400,
+        )
+    changed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    subject = str(request.get("user") or "owner")
+
+    def _write_and_audit() -> redaction_switch.RedactionState:
+        with redaction_switch.transaction():
+            recorded = _audit(
+                outcome=f"engine_{engine}",
+                caller=subject,
+                detail=f"changed_at={changed_at}",
+                critical=True,
+            )
+            if engine == redaction_switch.ENGINE_LEGACY and not recorded:
+                raise _AuditUnavailable()
+            try:
+                state = redaction_switch.set_engine(engine, changed_at=changed_at)
+            except OSError as exc:
+                _audit(
+                    outcome="write_failed",
+                    caller=subject,
+                    detail=type(exc).__name__,
+                    critical=True,
+                )
+                raise
+            # Published under the same lock as the write: two overlapping PUTs then
+            # publish in the order they wrote, so the gateway runs the engine the
+            # record names.
+            compat.publish_use_rule_table(state.engine == redaction_switch.ENGINE_STRUCTURED)
+            return state
+
+    from kiro_crew.security.redaction_structured import compat
+
+    try:
+        state = await asyncio.to_thread(_write_and_audit)
+    except _AuditUnavailable:
+        logger.error(
+            "refused to change the redaction engine: the security event log is unavailable"
+        )
+        return web.json_response(
+            {
+                "error": "the security event log is unavailable, so the engine is unchanged",
+                "code": _CODE_AUDIT_UNAVAILABLE,
+            },
+            status=503,
+        )
+    except OSError as exc:
+        logger.error("could not write the redaction engine: %s", exc)
+        return web.json_response(
+            {"error": "could not record the engine", "code": _CODE_WRITE_FAILED}, status=500
+        )
     _broadcast_switch_changed(request, state)
     return web.json_response(state.to_dict())
 
 
-#: The switch position owner dashboards were last told about (None until seeded).
+#: The switch positions owner dashboards were last told about (None until seeded).
 _pushed_enabled: bool | None = None
+_pushed_seams: bool | None = None
 #: Bumped on every push, so a queued policy frame can tell a newer push overtook it.
 _push_count = 0
 
+#: The frame that makes an owner document drop the file bodies it holds and re-read
+#: the settings: the Files-view switch or the engine moved.
+_FRAME_PURGE = "credential_redaction_changed"
+#: The frame that only re-reads the settings: the seams switch reaches no file body.
+_FRAME_SETTINGS = "credential_redaction_settings_changed"
 
-def _broadcast_switch_changed(request: web.Request, state: redaction_switch.RedactionState) -> None:
-    _push_to_owners(request.app["state"], state)
+
+def _broadcast_switch_changed(
+    request: web.Request, state: redaction_switch.RedactionState, *, purge: bool = True
+) -> None:
+    _push_to_owners(request.app["state"], state, purge=purge)
 
 
-def _push_to_owners(dashboard_state, state: redaction_switch.RedactionState) -> None:
-    global _pushed_enabled, _push_count
+def _push_to_owners(
+    dashboard_state, state: redaction_switch.RedactionState, *, purge: bool = True
+) -> None:
+    global _pushed_enabled, _pushed_seams, _push_count
     _pushed_enabled = state.enabled
+    _pushed_seams = state.seams_enabled
     _push_count += 1
+    if purge:
+        frame, payload = _FRAME_PURGE, {
+            "enabled": state.enabled,
+            "changed_at": state.changed_at,
+            "engine": state.engine,
+        }
+    else:
+        frame, payload = _FRAME_SETTINGS, state.to_dict()
     try:
-        dashboard_state.broadcast_ws_owners(
-            "credential_redaction_changed",
-            {"enabled": state.enabled, "changed_at": state.changed_at},
-        )
+        dashboard_state.broadcast_ws_owners(frame, payload)
     except Exception:  # noqa: BLE001 -- the write already landed; a lost push must not fail the PUT
         logger.warning(
             "could not push the redaction switch change to owner dashboards", exc_info=True
@@ -249,26 +356,39 @@ def _push_to_owners(dashboard_state, state: redaction_switch.RedactionState) -> 
 
 
 def seed_pushed_switch() -> None:
-    """Record the switch in force at boot, so the first policy refresh can compare."""
-    global _pushed_enabled
-    _pushed_enabled = redaction_switch.read_state().enabled
+    """Record the switches in force at boot, so the first policy refresh can compare."""
+    global _pushed_enabled, _pushed_seams
+    # Read and publish under the store lock an owner write holds, so a PUT cannot
+    # land between them and be overwritten by this older read.
+    with redaction_switch.transaction():
+        state = redaction_switch.read_state()
+        redaction_switch.publish_seams(state)
+    _pushed_enabled = state.enabled
+    _pushed_seams = state.seams_enabled
 
 
 def push_switch_moved_by_policy(app: web.Application, loop: asyncio.AbstractEventLoop) -> None:
-    """Post-install hook: a refresh that moved the switch in force tells owner dashboards.
+    """Post-install hook: a refresh that moved a switch in force tells owner dashboards.
 
     A policy that withdraws the opt-in turns a stored OFF into ON (``read_state``), and
-    the push is what makes open documents drop the raw file bodies they hold. Runs on
-    the refresher thread on every confirming poll, so it pushes only on a change.
+    the push is what makes open documents drop the raw file bodies they hold, or, for
+    the seams switch alone, re-read the settings they show. Runs on the refresher
+    thread on every confirming poll, so it pushes only on a change.
     """
-    state = redaction_switch.read_state()
-    if state.enabled == _pushed_enabled:
+    # Every poll re-publishes the seams verdict, so a policy that withdraws the
+    # opt-in turns the seams back on in this process within one refresh. The read
+    # and the publish share the owner write's lock, as at boot.
+    with redaction_switch.transaction():
+        state = redaction_switch.read_state()
+        redaction_switch.publish_seams(state)
+    files_moved = state.enabled != _pushed_enabled
+    if not files_moved and state.seams_enabled == _pushed_seams:
         return
     seen = _push_count
 
     def _push_unless_superseded() -> None:
         if _push_count == seen:  # an owner PUT pushed since the read: its frame is newer
-            _push_to_owners(app["state"], state)
+            _push_to_owners(app["state"], state, purge=files_moved)
 
     try:
         loop.call_soon_threadsafe(_push_unless_superseded)

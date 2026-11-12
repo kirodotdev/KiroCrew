@@ -97,12 +97,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.updates_step_up import api_update_disarm  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_streams import _LOG_LEVELS  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_streams import _LOG_RING_SIZE  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_streams import _REDACTING  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_streams import _SSE_INTERVAL_SECS  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_streams import _log_ring  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_streams import _log_ring_handler  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_streams import _QueueLogHandler  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_streams import _RingLogHandler  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_streams import _safe_ws_send  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_streams import _stream_safe  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_streams import _without_pin_ranks  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_streams import api_log_level  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_streams import api_log_level_get  # noqa: F401

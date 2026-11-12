@@ -10,6 +10,7 @@ decides where a cut may fall.
 from __future__ import annotations
 
 import pytest
+from redaction_structured_cases import link_token
 
 from conftest import CREDENTIAL_STRADDLE_SHAPES
 from kiro_crew.messaging.display_safety import (
@@ -25,6 +26,18 @@ from kiro_crew.messaging.display_safety import (
 )
 from kiro_crew.messaging.renderer import _default_redactor
 from kiro_crew.telegram.renderer import _strip_hr
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+
+#: A synthetic 40-character AWS secret (not the documentation example): the plan
+#: redacts it whole, and no piece of it shorter than the whole reads as a credential.
+_KEY = SAMPLE_AWS_SECRET
+#: A bearer value: the plan redacts it only after its ``Authorization: Bearer`` label.
+_BEARER = "Bearer abcdefghijklmnopqrstuvwxyz0123456789"
+#: A synthetic two-segment link token (valid JSON claims, a 43-character signature
+#: with no ``_`` for the canonical form to read as emphasis), and a frame character
+#: that spoils its match on either edge.
+_LINK_TOKEN = link_token(seed=156)
+_SPOILER = "-"
 
 
 class TestTheOracleIsAsStrongAsTheSendPath:
@@ -111,8 +124,8 @@ class TestJoinsToACredential:
             pytest.param("plain prose ending here", " and continuing there", id="prose"),
             pytest.param("emphasis **spanning", " the cut** is harmless", id="emphasis-span"),
             pytest.param("a [link](https://ex.test/a,b) then", " more prose", id="whole-link"),
-            pytest.param("", "AKIAIOSFODNN7EXAMPLE is scrubbed here", id="key-wholly-in-tail"),
-            pytest.param("AKIAIOSFODNN7EXAMPLE is scrubbed here", "", id="key-wholly-in-head"),
+            pytest.param("", f"{_KEY} is scrubbed here", id="key-wholly-in-tail"),
+            pytest.param(f"{_KEY} is scrubbed here", "", id="key-wholly-in-head"),
         ],
     )
     def test_a_harmless_cut_is_allowed(self, head: str, tail: str) -> None:
@@ -126,8 +139,8 @@ class TestJoinsToACredential:
         # Caught ONLY by canonicalising the concatenation: each half alone is an
         # unfinished link, and only together do they form a link that collapses to
         # its label, putting the two halves of the key side by side.
-        head = "[AKIA](https://ex.test/a,b"
-        tail = ")IOSFODNN7EXAMPLE"
+        head = f"[{_KEY[:4]}](https://ex.test/a,b"
+        tail = ")" + _KEY[4:]
         assert joins_to_a_credential(head, tail, _default_redactor)
 
     def test_a_cut_inside_a_link_target_is_reported(self) -> None:
@@ -135,18 +148,24 @@ class TestJoinsToACredential:
         # link makes the concatenation collapse to the label, so the key inside the
         # URL disappears from that reading -- while on screen each half is an
         # unfinished link whose URL text stays visible, and the reader reads through.
-        head = "[l](https://ex.test/x/AKIAIOSF"
-        tail = "ODNN7EXAMPLE)"
+        head = f"[l](https://ex.test/x/{_KEY[:8]}"
+        tail = _KEY[8:] + ")"
         assert joins_to_a_credential(head, tail, _default_redactor)
 
     @pytest.mark.parametrize(
         ("head", "tail", "seen_by_the_join"),
         [
             pytest.param(
-                "[AKIA](https://ex.test/a,b", ")IOSFODNN7EXAMPLE", True, id="cut-closes-a-link"
+                f"[{_KEY[:4]}](https://ex.test/a,b",
+                ")" + _KEY[4:],
+                True,
+                id="cut-closes-a-link",
             ),
             pytest.param(
-                "[l](https://ex.test/x/AKIAIOSF", "ODNN7EXAMPLE)", False, id="cut-inside-a-url"
+                f"[l](https://ex.test/x/{_KEY[:8]}",
+                _KEY[8:] + ")",
+                False,
+                id="cut-inside-a-url",
             ),
         ],
     )
@@ -170,12 +189,12 @@ class TestJoinsToACredential:
 
     def test_a_heading_marker_dropped_after_the_cut_is_reported(self) -> None:
         # Caught ONLY by a further reading, applied per side. Telegram's fallback
-        # and its HTML seal both drop a heading marker, so a field name ending one
-        # message and ``#   : <value>`` opening the next read as the assignment on
+        # and its HTML seal both drop a heading marker, so a header name ending one
+        # message and ``#   Bearer <value>`` opening the next read as the header on
         # screen. The literal join keeps the ``#`` between them, and the canonical
         # form keeps it too, so both scan clean while the reader sees the key.
-        head = "Rotated the key.\n\nSecretAccessKey"
-        tail = "#   : wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY"
+        head = "Rotated the key.\n\nAuthorization:"
+        tail = f"#   {_BEARER}"
         assert _default_redactor(head) == head
         assert _default_redactor(tail) == tail
         assert _default_redactor(head + tail) == head + tail
@@ -203,7 +222,7 @@ class TestSafeSplitOffset:
         assert safe_split_offset("anything", 0, _default_redactor) == 0
 
     def test_the_offset_moves_back_off_a_severed_key(self) -> None:
-        head, tail = "[AKIA](https://ex.test/a,b)", "IOSFODNN7EXAMPLE"
+        head, tail = f"[{_KEY[:4]}](https://ex.test/a,b)", _KEY[4:]
         pad = "x" * 40
         text = pad + head + tail + " tail prose"
         limit = len(pad) + len(head)
@@ -224,7 +243,7 @@ class TestSafeSplitOffset:
             calls += 1
             return _default_redactor(text)
 
-        key = "AKIAIOSFODNN7EXAMPLE"
+        key = _KEY
         text = "x" * 2000 + key[:8] + key[8:] + " tail prose"
         limit = 2000 + 8
 
@@ -247,13 +266,13 @@ class TestSeversACredential:
     """
 
     def test_one_piece_has_no_boundary(self) -> None:
-        assert not severs_a_credential(["AKIAIOSFODNN7EXAMPLE"], _default_redactor)
+        assert not severs_a_credential([_KEY], _default_redactor)
 
     def test_innocent_pieces_stay_clean(self) -> None:
         assert not severs_a_credential(["ordinary ", "prose in ", "three parts"], _default_redactor)
 
     def test_a_key_severed_between_two_pieces_is_caught(self) -> None:
-        key = "AKIAIOSFODNN7EXAMPLE"
+        key = _KEY
         pieces = [key[:8], key[8:]]
         for piece in pieces:
             assert _default_redactor(piece) == piece, "each piece alone must look clean"
@@ -266,31 +285,31 @@ class TestSeversACredential:
         report all three clean. This is why the middle piece being the whole of one
         message is not a defence.
         """
-        key = "AKIAIOSFODNN7EXAMPLE"
+        key = _KEY
         pieces = [key[:6], key[6:13], key[13:]]
         assert severs_a_credential(pieces, _default_redactor)
 
     def test_a_markup_span_covering_a_whole_piece_is_caught(self) -> None:
         """Canonicalising DROPS a link's target, so a piece of any size can vanish.
 
-        Split ``AKIA[label](url)`` so the closing bracket lands in the third piece:
+        Split ``<head>[label](url)`` so the closing bracket lands in the third piece:
         no neighbouring pair canonicalises to anything, while the full join
-        collapses the url away and puts the label straight against ``AKIA``.
+        collapses the url away and puts the label straight against ``<head>``.
         """
-        pieces = ["AKIA", "[IOSFODNN7EXAMPLE](https://ex.test/", "padpadpad)"]
+        pieces = [_KEY[:4], f"[{_KEY[4:]}](https://ex.test/", "padpadpad)"]
         assert severs_a_credential(pieces, _default_redactor)
 
     @pytest.mark.parametrize(
         "pieces",
         [
             [
-                "Rotated the key.\n\nSecretAccessKey",
-                "#   : wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY",
+                "Rotated the key.\n\nAuthorization:",
+                f"#   {_BEARER}",
             ],
             [
-                "Rotated the key.\n\nSecretAccess",
-                "Key",
-                "#   : wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY",
+                "Rotated the key.\n\nAuthori",
+                "zation:",
+                f"#   {_BEARER}",
             ],
         ],
     )
@@ -305,7 +324,7 @@ class TestSeversACredential:
         assert not severs_a_credential(pieces, _default_redactor)
 
     def test_balanced_link_reading_grades_the_full_sequence(self) -> None:
-        pieces = ["[AKIA](https://x/((a)))", "IOSFODNN7EXAMPLE"]
+        pieces = [f"[{_KEY[:4]}](https://x/((a)))", _KEY[4:]]
         assert severs_a_credential(pieces, _default_redactor)
 
     def test_the_pieces_are_graded_as_delivered_not_as_split(self) -> None:
@@ -315,7 +334,7 @@ class TestSeversACredential:
         pattern tolerates; the delivered pair sits flush. Grading the raw form is
         exactly the miss this function's contract warns callers about.
         """
-        key = "AKIAIOSFODNN7EXAMPLE"
+        key = _KEY
         raw = [key[:8] + "\n\n", "   " + key[8:]]
         delivered = [piece.strip() for piece in raw]
 
@@ -325,20 +344,19 @@ class TestSeversACredential:
     def test_a_key_completed_before_the_last_piece_is_caught(self) -> None:
         """A RUN of messages, with a message after it that spoils the pattern.
 
-        The patterns anchor at their edges: this token's second segment is exactly
-        43 characters followed by ``(?![A-Za-z0-9_-])``, so ONE alphanumeric
+        The detectors anchor at their edges: this link token's second segment is
+        exactly 43 characters with no token character after it, so ONE such
         character after it kills the match. The key is complete once the reader has
-        read messages 1 and 2; message 3 starts with a letter. Every reading that
+        read messages 1 and 2; message 3 starts with a ``-``. Every reading that
         runs to the END of the sequence therefore carries that letter and reports
         clean -- the whole join, the per-piece join, and each suffix. Only the run
         that STOPS at the second message sees the key, and on screen the reader has
         a message break exactly there.
         """
-        segment = "eyJ" + "".join("abcdefghi-"[index % 10] for index in range(96))
-        token = segment + "." + "".join("ABCDEFGHI-"[index % 10] for index in range(43))
+        token = _LINK_TOKEN
         assert _default_redactor(token) != token, "fixture is not a credential"
 
-        pieces = [token[:80], token[80:], "x"]
+        pieces = [token[:80], token[80:], _SPOILER]
         for piece in pieces:
             assert _default_redactor(piece) == piece, "each piece alone must look clean"
         whole = canonicalize_display("".join(pieces))
@@ -359,7 +377,7 @@ class TestSafeSplitOffsetGradesTheDeliveredForm:
 
     #: One trailing space is all it takes: the raw halves are separated by it and
     #: the delivered halves are not.
-    _KEY = "AKIAIOSFODNN7EXAMPLE"
+    _KEY = _KEY
 
     def _text(self) -> tuple[str, int]:
         pad = "x" * 40
@@ -401,7 +419,7 @@ class TestTheDeliveredReadingCatchesWhatAPreSplitRedactionCannot:
     """
 
     def test_a_rule_between_the_halves_hides_the_key_from_a_pre_split_scan(self) -> None:
-        key = "AKIAIOSFODNN7EXAMPLE"
+        key = _KEY
         halves = [key[:8] + "\n\n---\n", "\n" + key[8:] + " tail prose"]
         delivered = [_strip_hr(piece).strip() for piece in halves]
 
@@ -431,16 +449,15 @@ class TestAnInteriorRunIsRead:
     splitter rstrips each chunk, so a chunk ending on a letter is the common case.
     """
 
-    #: A link-spanning JWT. Its last segment is a FIXED 43 characters, which is what
-    #: makes an alphanumeric frame on the right genuinely spoil the match: a pattern
-    #: whose tail is open-ended just absorbs the frame and matches anyway, so a
+    #: A link-spanning link token. Its last segment is a FIXED 43 characters, which is
+    #: what makes a token-character frame on the right genuinely spoil the match: a
+    #: pattern whose tail is open-ended just absorbs the frame and matches anyway, so a
     #: variable-length token would be caught by a suffix reading and prove nothing.
-    _FIRST = "eyJ" + "abcdefghij" * 10
-    _LAST = "Z" * 43
+    _FIRST, _LAST = _LINK_TOKEN.split(".")
     #: Two interior pieces whose canonical join is that token: canonicalising DROPS a
     #: link's target, so each label lands against the next one.
     _INTERIOR = [f"[{_FIRST}](https://q/", f"aaa)[.{_LAST}](https://q/bbb)"]
-    _FRAME = "zzz"
+    _FRAME = _SPOILER
 
     def test_an_interior_run_between_two_spoiling_frames_is_read(self) -> None:
         pieces = [self._FRAME, *self._INTERIOR, self._FRAME]

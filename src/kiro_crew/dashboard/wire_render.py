@@ -52,6 +52,7 @@ from collections.abc import Callable
 from threading import Lock
 
 from kiro_crew.dashboard import chat_utils as _cu
+from kiro_crew.dashboard import display_verdicts as _display_verdicts
 from kiro_crew.security.exfil import (
     allowed_host_audit_epoch,
     current_scoped_audit_epoch,
@@ -311,6 +312,7 @@ def prepare_message_rows(
     with _cu.scoped_exempt_hosts(hosts, normalize_workspace(workspace), epoch):
         bypassed = credential_pass_bypassed()
         memo = use_memo and not bypassed
+        generation = _display_verdicts.engine_generation()
         context = b"" if bypassed else _context_digest()
         parts: list[str | None] = []
         identities: list[bytes | None] = []
@@ -342,11 +344,14 @@ def prepare_message_rows(
                 else _render_row(json.loads(source), running, live_child)
             )
             identities.append(digest + context + (b"r" if running else b"-"))
-        if not bypassed and _context_digest() != context:
-            # The exempt sets changed while the rows were rendered: no identity
-            # can say which context a fragment was rendered under. A hit was
-            # filed under the context from before the change, so every row the
-            # memo answered is rendered again against the live one.
+        if not bypassed and (
+            _context_digest() != context or _display_verdicts.engine_generation() != generation
+        ):
+            # The exempt sets changed while the rows were rendered, or the engine was
+            # published (a round trip back to the same engine leaves the digest the
+            # same): no identity can say which context a fragment was rendered under.
+            # A hit was filed under the context from before the change, so every row
+            # the memo answered is rendered again against the live one.
             for i, source in looked_up:
                 parts[i] = _render_row(json.loads(source), running, live_child)
             return parts, [None] * len(identities)

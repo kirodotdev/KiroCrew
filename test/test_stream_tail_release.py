@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,7 @@ from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, STOP_REASON_EN
 from kiro_crew.messaging import TurnDriver
 from kiro_crew.security import REDACTED_CREDENTIAL_TAG, StreamRedactor
 from kiro_crew.security.redaction_structured import compat
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 #: The AWS documentation's example access key id, split so no literal sits here.
 _HEAD, _TAIL = "AKIA", "IOSFODNN7EXAMPLE"
@@ -73,6 +75,21 @@ _GLUED = (
 def detectors_on(monkeypatch: pytest.MonkeyPatch) -> None:
     """Switch the structured detectors on, as only code can, for one test."""
     monkeypatch.setattr(compat, "_USE_RULE_TABLE", True)
+
+
+@pytest.fixture
+def legacy_engine() -> Iterator[None]:
+    """Select main's regex passes alone, for a test that pins one of their patterns.
+
+    The structured engine keeps AWS key IDs readable and reads a two-part run whose
+    head decodes to no JSON object as no credential, so it masks neither.
+    """
+    before = compat.use_rule_table()
+    compat.publish_use_rule_table(False)
+    try:
+        yield
+    finally:
+        compat.publish_use_rule_table(before)
 
 
 def _as_today(*chunks: str) -> str:
@@ -135,6 +152,7 @@ class TestSentenceEndRelease:
 
         assert [piece for piece in pieces if piece in now and piece not in today] == []
 
+    @pytest.mark.usefixtures("legacy_engine")
     def test_a_two_part_run_glued_to_a_released_word_is_masked_whole(self) -> None:
         """The one known difference: a ``.`` on its left switches that pattern off."""
         assert _TWO_PART_HEAD in _as_today("settled.", _TWO_PART)
@@ -225,9 +243,19 @@ class TestTheDashboardTurn:
         assert tail.split()[-1] not in _before_mark(record)
         assert _wire(record) == tail
 
+    @pytest.mark.usefixtures("legacy_engine")
     @pytest.mark.asyncio
     async def test_a_key_split_across_two_chunks_is_masked_whole(self) -> None:
         record = await _run(_text(f"key {_HEAD}"), _text(_TAIL), Do(_mark), _DONE)
+
+        assert _before_mark(record) == "key "
+        assert _wire(record) == f"key {_TAG}"
+        assert _saved(record) == [f"key {_TAG}"]
+
+    @pytest.mark.asyncio
+    async def test_a_secret_split_across_two_chunks_is_masked_whole(self) -> None:
+        secret = github_classic()
+        record = await _run(_text(f"key {secret[:8]}"), _text(secret[8:]), Do(_mark), _DONE)
 
         assert _before_mark(record) == "key "
         assert _wire(record) == f"key {_TAG}"

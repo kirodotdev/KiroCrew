@@ -146,6 +146,29 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     settingId: 'security.config-pending',
   },
   {
+    // The second switch in the same Redaction section (AI model and server logs).
+    // The id is the one the extractor derives from the label, so this entry
+    // replaces the extracted one instead of listing the toggle twice.
+    id: 'security.hide-credentials-from-the-ai-model-and-server-logs',
+    labelKey: 'pages.settings.securityPanel.credential_redaction_seams_toggle',
+    descriptionKey: 'pages.settings.securityPanel.credential_redaction_seams_toggle_help_summary',
+    tab: 'security',
+    type: 'toggle',
+    occurrence: 1,
+    params: { section: 'redaction' },
+  },
+  {
+    // The engine selector, last in the same Redaction section. Same id as the
+    // extracted entry, so it replaces it and adds the section deep link.
+    id: 'security.keep-ids-readable',
+    labelKey: 'pages.settings.securityPanel.credential_redaction_engine_toggle',
+    descriptionKey: 'pages.settings.securityPanel.credential_redaction_engine_toggle_help_summary',
+    tab: 'security',
+    type: 'toggle',
+    occurrence: 1,
+    params: { section: 'redaction' },
+  },
+  {
     id: 'security.trust-this-machine-s-tailnet-name',
     labelKey: 'pages.settings.securityPanel.tailnet_title',
     tab: 'security',

@@ -26,6 +26,8 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, Tuple, TypeVar
 
+from kiro_crew import redaction_seams
+
 if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.platform.governance import GovernanceCeiling
@@ -1323,11 +1325,14 @@ def redact_log_via_context(text: str) -> str:
     slicing a redacted string is what keeps a credential from surviving as an
     unmatchable fragment.
     """
-    if installed_context() is None:
-        from kiro_crew.security import redact as _security_redact
+    # The LOGS output seam (``redaction_seams``): with the owner's seams switch off,
+    # the credential plan stands down inside; the exfiltration-URL pass still runs.
+    with redaction_seams.output_seam(redaction_seams.LOGS):
+        if installed_context() is None:
+            from kiro_crew.security import redact as _security_redact
 
-        return _security_redact(text)
-    try:
-        return redact_via_context(text)
-    except PlatformCompositionError:
-        return LOG_WITHHELD_PLACEHOLDER
+            return _security_redact(text)
+        try:
+            return redact_via_context(text)
+        except PlatformCompositionError:
+            return LOG_WITHHELD_PLACEHOLDER

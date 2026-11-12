@@ -569,14 +569,14 @@ async def test_writer_records_the_owner_choice(layout):
 
 
 def test_notice_command_rows_redact_before_they_cut():
-    # A credential crossing the cut must not survive as an unredacted fragment.
-    import hashlib
-
+    # A credential crossing the cut must not survive as an unredacted fragment. A
+    # GitHub token, not an AWS key ID: the structured detectors keep key IDs readable.
     # chat_runner binds this module's shared names (the dashboard facade), as at runtime.
     import kiro_crew.dashboard.chat_runner  # noqa: F401
     from kiro_crew.dashboard.chat_turn import turn_spec_hooks as tsh
+    from kiro_crew.testing.synthetic_credentials import github_classic
 
-    key = "A" + "KIA" + hashlib.sha256(b"p134-cut").hexdigest().upper()[:16]
+    key = github_classic(seed=134)
     command = "x" * (tsh._PROJECT_HOOK_COMMAND_CHARS - 9) + " " + key
     [row] = tsh._project_hook_rows((("PreToolUse", command),))
     assert key[:8] not in row["command"]

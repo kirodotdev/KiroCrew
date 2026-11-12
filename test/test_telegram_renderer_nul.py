@@ -13,7 +13,6 @@ import asyncio
 
 from telegram_helpers import _drop_live_config_snapshot  # noqa: F401
 from telegram_helpers import FakeClient
-from telegram_parity_helpers import _AWS_KEY
 
 from kiro_crew.telegram.renderer import (
     TelegramRenderer,
@@ -22,6 +21,12 @@ from kiro_crew.telegram.renderer import (
 )
 from kiro_crew.telegram.renderer_display import _strip_hr
 from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
+from kiro_crew.testing.synthetic_credentials import github_classic
+
+# A credential the redactor removes, split by a NUL right after its prefix. A
+# synthetic GitHub token, because an AWS access key ID stays visible as an
+# identifier and would prove nothing here.
+_SPLIT_KEY = github_classic(seed=151)
 
 NUL = "\x00"
 
@@ -60,9 +65,9 @@ def test_a_streamed_reply_with_nul_bytes_still_seals() -> None:
 def test_a_credential_split_by_a_nul_is_redacted_before_the_nul_goes() -> None:
     # Dropping NUL rejoins the two halves, so it has to happen BEFORE the
     # credential scan, which cannot see a key a NUL cuts in two.
-    out = md_to_telegram_html_safe(f"key {_AWS_KEY[:4]}{NUL}{_AWS_KEY[4:]} end")
+    out = md_to_telegram_html_safe(f"key {_SPLIT_KEY[:4]}{NUL}{_SPLIT_KEY[4:]} end")
     assert "[REDACTED" in out
-    assert _AWS_KEY not in out and _AWS_KEY[4:] not in out
+    assert _SPLIT_KEY not in out and _SPLIT_KEY[4:] not in out
 
 
 def test_a_streamed_credential_split_by_a_nul_is_redacted() -> None:
@@ -71,11 +76,11 @@ def test_a_streamed_credential_split_by_a_nul_is_redacted() -> None:
 
     async def _go() -> None:
         await r.on_turn_start()
-        await r.on_text_chunk(f"key {_AWS_KEY[:4]}{NUL}{_AWS_KEY[4:]} end")
+        await r.on_text_chunk(f"key {_SPLIT_KEY[:4]}{NUL}{_SPLIT_KEY[4:]} end")
         await r._stream_live(force=True)
         await r._seal_current()
 
     asyncio.run(_go())
     shown = [text for text, _ in cli.sent] + [text for _, text, _ in cli.edits]
     assert shown
-    assert all(_AWS_KEY not in text for text in shown)
+    assert all(_SPLIT_KEY not in text for text in shown)

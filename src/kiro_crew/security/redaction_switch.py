@@ -64,6 +64,19 @@ What the switch does NOT do
   copy: none of those paths opens the scope, so they are scrubbed whatever the
   owner chose for their own screen.
 
+The second switch: the output seams
+-----------------------------------
+The record carries a second, independent owner switch, ``seams_enabled``, for the
+output seams :mod:`kiro_crew.redaction_seams` lists (the conversation replayed into
+the agent's prompt, and the shape passes over log lines). It is ON by default and
+a record without the field reads ON, so a record written before the field existed
+keeps its meaning: an old ``enabled: false`` still covers the Files view and its
+diff only. ``seams_enabled: false`` is a separate, explicit owner choice. A seam
+opens :func:`kiro_crew.redaction_seams.output_seam`; inside it, with the switch
+off, :func:`credential_pass_bypassed` is True. Refusal gates never open a seam, so
+they keep scanning, and the exfiltration-URL pass keeps running on every seam.
+The governance rule below applies to both switches.
+
 Why the record is a keystone file and not ``config.json``
 ---------------------------------------------------------
 Switching the scrubber off is an authorization, not a preference, and the party
@@ -81,6 +94,17 @@ Fail direction
 Every read that cannot positively establish ``enabled: false`` -- a missing
 file, an unreadable one, malformed JSON, a non-boolean value -- answers
 ``True``. A switch whose record cannot be read is a switch that is ON.
+
+The engine selector
+-------------------
+The same record carries ``engine``: ``structured`` (the default) runs the
+structured credential detectors in front of main's regex passes, ``legacy`` runs
+main's passes alone (identifiers such as AWS key IDs are removed again). It is
+not the switch: the switch decides whether the owner's Files view is redacted at
+all, the selector picks which engine redacts on every path.
+``redaction_structured.compat.use_rule_table`` reads it once per process
+(:func:`read_engine`) and the dashboard handler republishes it on a change. Any
+value but the exact word ``legacy`` reads as structured.
 
 On a governed host
 ------------------
@@ -102,6 +126,7 @@ serves, and the loop never touches the filesystem for it.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import threading
@@ -110,6 +135,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
+
+from kiro_crew import redaction_seams
 
 logger = logging.getLogger(__name__)
 
@@ -146,10 +173,11 @@ def owner_view() -> Iterator[None]:
 def credential_pass_bypassed() -> bool:
     """Whether ``redact_credentials`` should stand down for THIS call.
 
-    True only inside an :func:`owner_view` scope. Constant for the whole scope by
-    construction; outside any scope it is always False and reads nothing.
+    True only inside an :func:`owner_view` scope, or inside a
+    ``redaction_seams.output_seam`` scope opened while the seams switch is off.
+    Outside both it is always False and reads nothing.
     """
-    return _OWNER_VIEW_BYPASS.get()
+    return _OWNER_VIEW_BYPASS.get() or redaction_seams.in_bypassed_seam()
 
 
 #: Whether the calling context is redacting CODE rather than prose. A ContextVar for
@@ -208,15 +236,39 @@ def transaction() -> threading.RLock:
     return _STORE_LOCK
 
 
+#: The engine selector's two values (``engine`` in the same record). The selector picks
+#: which engine redacts on every path; it is not the switch above, which decides
+#: whether the owner's Files view is redacted at all.
+ENGINE_STRUCTURED = "structured"
+ENGINE_LEGACY = "legacy"
+ENGINES = (ENGINE_STRUCTURED, ENGINE_LEGACY)
+
+
 @dataclass(frozen=True)
 class RedactionState:
-    """The recorded switch position and when it was last changed."""
+    """Both recorded switch positions, the engine selector, and when each last changed.
+
+    ``enabled`` is the Files-view switch; ``seams_enabled`` is the output-seams
+    switch (:mod:`kiro_crew.redaction_seams`). Each is ON unless the record holds a
+    literal ``false`` for it. ``engine`` picks which engine redacts on every path.
+    """
 
     enabled: bool
     changed_at: str
+    seams_enabled: bool = True
+    seams_changed_at: str = ""
+    engine: str = ENGINE_STRUCTURED
+    engine_changed_at: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {"enabled": self.enabled, "changed_at": self.changed_at}
+        return {
+            "enabled": self.enabled,
+            "changed_at": self.changed_at,
+            "seams_enabled": self.seams_enabled,
+            "seams_changed_at": self.seams_changed_at,
+            "engine": self.engine,
+            "engine_changed_at": self.engine_changed_at,
+        }
 
 
 def _path():
@@ -227,14 +279,30 @@ def _path():
     return credential_redaction_path()
 
 
+def _engine_of(raw: object) -> str:
+    """The recorded engine; anything but the exact word ``legacy`` is structured."""
+    if isinstance(raw, dict) and raw.get("engine") == ENGINE_LEGACY:
+        return ENGINE_LEGACY
+    return ENGINE_STRUCTURED
+
+
 def _parse(raw: object) -> RedactionState:
-    """Interpret a decoded store; anything not positively ``false`` is ON."""
+    """Interpret a decoded store; anything not positively ``false`` is ON.
+
+    A record without ``seams_enabled`` (every record written before that switch
+    existed) reads the seams ON, so its ``enabled: false`` keeps covering the
+    Files view and its diff only.
+    """
     if not isinstance(raw, dict):
         return RedactionState(enabled=True, changed_at="")
-    enabled = raw.get("enabled")
-    if enabled is not False:
-        return RedactionState(enabled=True, changed_at=str(raw.get("changed_at", "")))
-    return RedactionState(enabled=False, changed_at=str(raw.get("changed_at", "")))
+    return RedactionState(
+        enabled=raw.get("enabled") is not False,
+        changed_at=str(raw.get("changed_at", "")),
+        seams_enabled=raw.get("seams_enabled") is not False,
+        seams_changed_at=str(raw.get("seams_changed_at", "")),
+        engine=_engine_of(raw),
+        engine_changed_at=str(raw.get("engine_changed_at", "")),
+    )
 
 
 #: The governance capability that lets the owner turn redaction off on a governed host.
@@ -277,11 +345,8 @@ def owner_may_disable() -> bool:
     return isinstance(gate, CapabilityGate) and gate.enabled and not folded
 
 
-def read_state() -> RedactionState:
-    """The switch in force, read fresh from disk. Fails soft to ENABLED.
-
-    A stored OFF reads as ON when :func:`owner_may_disable` says no.
-    """
+def _read_stored() -> RedactionState:
+    """The record on disk, before the governance rule. Fails soft to ENABLED."""
     try:
         raw = json.loads(_path().read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -290,14 +355,36 @@ def read_state() -> RedactionState:
         # ValueError covers JSONDecodeError AND UnicodeDecodeError (non-UTF-8 bytes).
         logger.warning("credential-redaction switch is unreadable; redaction stays ON")
         return RedactionState(enabled=True, changed_at="")
-    state = _parse(raw)
-    if not state.enabled and not owner_may_disable():
-        return RedactionState(enabled=True, changed_at=state.changed_at)
+    return _parse(raw)
+
+
+def _in_force(state: RedactionState) -> RedactionState:
+    """*state* under the governance rule; every setter returns this, not the stored record."""
+    if (not state.enabled or not state.seams_enabled) and not owner_may_disable():
+        return dataclasses.replace(state, enabled=True, seams_enabled=True)
     return state
 
 
-def set_enabled(enabled: bool, *, changed_at: str) -> RedactionState:
-    """Persist the owner's switch position.
+def read_state() -> RedactionState:
+    """Both switches in force and the engine selector, read fresh from disk.
+
+    Fails soft to ENABLED. A stored OFF, of either switch, reads as ON when
+    :func:`owner_may_disable` says no; the engine selector is not governed.
+    """
+    return _in_force(_read_stored())
+
+
+def read_engine() -> str:
+    """The engine selector, read fresh from disk; a missing or unreadable record is structured.
+
+    No governance read: either engine removes every secret main removes, so the
+    choice needs no administrator's opt-in.
+    """
+    return _read_stored().engine
+
+
+def _write(state: RedactionState) -> None:
+    """Persist *state*; the caller holds :data:`_STORE_LOCK`.
 
     Rewritten in place, so a running Linux sandbox's read-only mount of it stays
     sealed; a torn read during the rewrite reads as ON. ``restrict_to_owner=True``
@@ -306,11 +393,41 @@ def set_enabled(enabled: bool, *, changed_at: str) -> RedactionState:
     """
     from kiro_crew.atomic_write import rewrite_in_place
 
-    state = RedactionState(enabled=bool(enabled), changed_at=changed_at)
+    rewrite_in_place(
+        _path(),
+        json.dumps(state.to_dict(), indent=2, sort_keys=True),
+        restrict_to_owner=True,
+    )
+
+
+def set_enabled(enabled: bool, *, changed_at: str) -> RedactionState:
+    """Persist the owner's Files-view switch, keeping the seams switch and engine as stored."""
     with _STORE_LOCK:
-        rewrite_in_place(
-            _path(),
-            json.dumps(state.to_dict(), indent=2, sort_keys=True),
-            restrict_to_owner=True,
+        state = dataclasses.replace(_read_stored(), enabled=bool(enabled), changed_at=changed_at)
+        _write(state)
+    return _in_force(state)
+
+
+def set_engine(engine: str, *, changed_at: str) -> RedactionState:
+    """Persist the engine selector, keeping both switches as stored."""
+    if engine not in ENGINES:
+        raise ValueError(f"unknown redaction engine: {engine!r}")
+    with _STORE_LOCK:
+        state = dataclasses.replace(_read_stored(), engine=engine, engine_changed_at=changed_at)
+        _write(state)
+    return _in_force(state)
+
+
+def set_seams_enabled(enabled: bool, *, changed_at: str) -> RedactionState:
+    """Persist the owner's output-seams switch, keeping the Files-view switch as stored."""
+    with _STORE_LOCK:
+        state = dataclasses.replace(
+            _read_stored(), seams_enabled=bool(enabled), seams_changed_at=changed_at
         )
-    return state
+        _write(state)
+    return _in_force(state)
+
+
+def publish_seams(state: RedactionState) -> None:
+    """Tell this process's output seams the switch *state* holds (the gateway only)."""
+    redaction_seams.publish(not state.seams_enabled)

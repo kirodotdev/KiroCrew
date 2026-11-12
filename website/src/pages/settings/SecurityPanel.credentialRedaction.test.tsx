@@ -14,7 +14,7 @@
  *    could not read is the reassuring direction of wrong, and the dangerous one.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
+import { screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react'
 
 import { renderWithProviders } from '../../test/helpers'
 import type { CredentialRedactionState } from '../../api/client'
@@ -42,6 +42,7 @@ vi.mock('../../api/client', async () => ({
     tailnetStatus: vi.fn(),
     credentialRedaction: vi.fn(),
     setCredentialRedaction: vi.fn(),
+    setCredentialRedactionSeams: vi.fn(),
   },
 }))
 
@@ -50,6 +51,9 @@ import { SecurityPanel } from './SecurityPanel'
 
 const ON: CredentialRedactionState = { enabled: true, changed_at: '' }
 const OFF: CredentialRedactionState = { enabled: false, changed_at: '2026-09-24T23:00:00+00:00' }
+const SEAMS_OFF: CredentialRedactionState = {
+  enabled: true, changed_at: '', seams_enabled: false, seams_changed_at: '2026-11-11T19:00:00+00:00',
+}
 
 async function renderRedaction(state: CredentialRedactionState) {
   ;(api.credentialRedaction as ReturnType<typeof vi.fn>).mockResolvedValue(state)
@@ -58,8 +62,15 @@ async function renderRedaction(state: CredentialRedactionState) {
   return utils
 }
 
+/** The file-view switch. The section has a second one, so each is found in its own row. */
 function toggle(): HTMLElement {
-  return screen.getByRole('switch')
+  // The file-view switch; the prompt-and-logs switch and the engine selector are their own.
+  return within(screen.getByTestId('credential-redaction-row')).getByRole('switch')
+}
+
+/** The prompt-and-logs switch. */
+function seamsToggle(): HTMLElement {
+  return within(screen.getByTestId('credential-redaction-seams-row')).getByRole('switch')
 }
 
 describe('SecurityPanel - credential redaction switch', () => {
@@ -215,5 +226,92 @@ describe('SecurityPanel - credential redaction switch', () => {
     await screen.findByTestId('credential-redaction-write-failed')
     expect(toggle()).toHaveAttribute('aria-checked', 'true')
     expect(screen.queryByTestId('credential-redaction-off-notice')).toBeNull()
+  })
+})
+
+describe('SecurityPanel - prompt-and-logs redaction switch', () => {
+  beforeEach(() => {
+    cleanup()
+    vi.clearAllMocks()
+    ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue({
+      builtins: [], user_added: [], disable_all: false, effective_count: 0, governance_locked: false,
+    })
+    ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue({ controls: [], counts: {} })
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue({
+      version: null, has_policy: false, profile: null, unavailable: false, scopes: [],
+    })
+    ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
+    ;(api.patchConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true })
+    ;(api.tailnetStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      enabled: false, governance_pinned: false, host: '', origin: '', resolved_at: 0, state: 'off',
+    })
+  })
+
+  it('is ON by default and says in one line what turning it off does', async () => {
+    await renderRedaction(ON)
+    await screen.findByTestId('credential-redaction-seams-row')
+    expect(seamsToggle()).toHaveAttribute('aria-checked', 'true')
+    expect(screen.queryByTestId('credential-redaction-seams-off-notice')).toBeNull()
+    expect(screen.getByText('AI model and server logs')).toBeInTheDocument()
+    const row = screen.getByTestId('credential-redaction-seams-row').textContent ?? ''
+    expect(row).toMatch(/Hide credentials from the AI model and server logs/)
+    expect(row).toMatch(/Chats, Slack and values on the Secrets page stay protected either way/)
+    // The card carries no mechanism wording: the old scope list is gone.
+    expect(screen.queryByTestId('credential-redaction-seams-scope')).toBeNull()
+    for (const term of [/structured detectors/i, /pattern passes/i, /credential-shaped/i, /seams?\b/i]) {
+      expect(row).not.toMatch(term)
+    }
+  })
+
+  it('an old file-view OFF record keeps its meaning: the file switch is off, this one is on', async () => {
+    await renderRedaction(OFF)
+    await screen.findByTestId('credential-redaction-seams-row')
+    expect(toggle()).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByTestId('credential-redaction-off-notice')).toBeTruthy()
+    expect(seamsToggle()).toHaveAttribute('aria-checked', 'true')
+    expect(screen.queryByTestId('credential-redaction-seams-off-notice')).toBeNull()
+  })
+
+  it('switching it off sends only the seams switch, purges no file body and shows its own notice', async () => {
+    ;(api.setCredentialRedactionSeams as ReturnType<typeof vi.fn>).mockResolvedValue(SEAMS_OFF)
+    await renderRedaction(ON)
+    await screen.findByTestId('credential-redaction-seams-row')
+    ;(api.credentialRedaction as ReturnType<typeof vi.fn>).mockResolvedValue(SEAMS_OFF)
+    fireEvent.click(seamsToggle())
+    await waitFor(() => expect(api.setCredentialRedactionSeams).toHaveBeenCalledWith(false))
+    expect(api.setCredentialRedaction).not.toHaveBeenCalled()
+    const notice = await screen.findByTestId('credential-redaction-seams-off-notice')
+    expect(notice.textContent).toMatch(/2026/)
+    expect(seamsToggle()).toHaveAttribute('aria-checked', 'false')
+    expect(toggle()).toHaveAttribute('aria-checked', 'true')
+    expect(purgeDocumentBodiesForRedactionChange).not.toHaveBeenCalled()
+  })
+
+  it('switching it back on sends exactly {seams_enabled: true} and clears its notice', async () => {
+    ;(api.setCredentialRedactionSeams as ReturnType<typeof vi.fn>).mockResolvedValue(ON)
+    await renderRedaction(SEAMS_OFF)
+    await screen.findByTestId('credential-redaction-seams-off-notice')
+    ;(api.credentialRedaction as ReturnType<typeof vi.fn>).mockResolvedValue(ON)
+    fireEvent.click(seamsToggle())
+    await waitFor(() => expect(api.setCredentialRedactionSeams).toHaveBeenCalledWith(true))
+    await waitFor(() => expect(screen.queryByTestId('credential-redaction-seams-off-notice')).toBeNull())
+  })
+
+  it('a failed write keeps the position in force and says so', async () => {
+    ;(api.setCredentialRedactionSeams as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('403'))
+    await renderRedaction(ON)
+    await screen.findByTestId('credential-redaction-seams-row')
+    fireEvent.click(seamsToggle())
+    await screen.findByTestId('credential-redaction-seams-write-failed')
+    expect(seamsToggle()).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('a failed read renders neither switch, and the error is shown once', async () => {
+    ;(api.credentialRedaction as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+    renderWithProviders(<SecurityPanel />, { route: '/?section=redaction', queryDefaults: { retryDelay: 0 } })
+    await screen.findByTestId('credential-redaction-read-failed')
+    expect(screen.queryByRole('switch')).toBeNull()
+    expect(screen.queryByTestId('credential-redaction-seams-row')).toBeNull()
+    expect(screen.getAllByText('Open a chat with the agent about this error')).toHaveLength(1)
   })
 })

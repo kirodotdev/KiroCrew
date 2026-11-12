@@ -9932,7 +9932,20 @@
         "credential_redaction_owner_only": "Only the dashboard owner can read or change this setting. The 'Open a chat with the agent' link shares only this error message.",
         "credential_redaction_still_on": "Redaction is still on.",
         "credential_redaction_still_off": "Redaction is still off.",
-        "credential_redaction_ask_agent": "Open a chat with the agent about this error"
+        "credential_redaction_ask_agent": "Open a chat with the agent about this error",
+        "credential_redaction_engine_section": "Redaction engine",
+        "credential_redaction_engine_toggle": "Keep IDs readable",
+        "credential_redaction_engine_toggle_help_summary": "On: keeps IDs such as AWS key IDs and commit SHAs readable. Off: hides them too. This setting doesn't change whether secrets are hidden.",
+        "credential_redaction_engine_toggle_help": "A change applies here at once; other {{productName}} processes use it when they next start.",
+        "credential_redaction_engine_legacy_notice": "IDs such as AWS key IDs are hidden too.",
+        "credential_redaction_engine_write_failed": "Could not change the engine. {{state}} The 'Open a chat with the agent' link shares only this error message.",
+        "credential_redaction_engine_still_structured": "IDs are still kept readable.",
+        "credential_redaction_engine_still_legacy": "IDs are still hidden.",
+        "credential_redaction_seams_section": "AI model and server logs",
+        "credential_redaction_seams_toggle": "Hide credentials from the AI model and server logs",
+        "credential_redaction_seams_toggle_help_summary": "Off lets credentials reach the AI model and appear in server logs. Chats, Slack and values on the Secrets page stay protected either way.",
+        "credential_redaction_seams_toggle_help": "On by default. The file-view switch above is a separate setting.",
+        "credential_redaction_seams_off_notice": "Credentials can reach the AI model and server logs."
       },
       "skillsPanel": {
         "failed_to_save_skills_setting": "Failed to save skills setting",

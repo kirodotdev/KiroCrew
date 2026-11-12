@@ -807,7 +807,15 @@ def _url_payload_command(n: int) -> str:
 #: row only, and ``is_denied`` judges that row on the view while its events keep the
 #: command as submitted. Every other row, an operator's copy, and the rm floor for
 #: ``/`` and ``~`` read the full text. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_997
+#: Raised by 199, from 35,997, to 36,196, for turning the structured detectors on and
+#: for the owner's two settings in ``redaction_switch``: ``redaction`` reads pass 1
+#: through the detectors' residual matches, ``text_redaction`` holds the detectors'
+#: tail and releases it at a display boundary, and the keystone record carries the
+#: engine selector and the output-seams switch (its field, parse and writer, a
+#: stored-record read every writer shares so each keeps the others' fields, and the
+#: governance rule every writer returns). The detectors and the seams table live
+#: outside the files this budget counts. Re-measured.
+_PACKAGE_LINE_BUDGET = 36_196
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

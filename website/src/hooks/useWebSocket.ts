@@ -57,6 +57,7 @@ import { useBundleReload, handleUpdateProgress } from './websocket/bundleReload'
 import {
   handleArtifactUpdate,
   handleCredentialRedactionChanged,
+  handleCredentialRedactionSettingsChanged,
   handleDashboardMoved,
   handleMemberProjection,
   handleMembersSubscribed,
@@ -321,6 +322,9 @@ export function useWebSocket() {
             break
           case 'credential_redaction_changed':
             handleCredentialRedactionChanged(queryClient, msg.data as { enabled?: unknown; changed_at?: unknown } | undefined)
+            break
+          case 'credential_redaction_settings_changed':
+            handleCredentialRedactionSettingsChanged(queryClient, data)
             break
           case 'config_pending_changed':
             // Owner-only frame: a settings file edited outside the dashboard went
