@@ -29,6 +29,7 @@ from kiro_crew.dashboard.handlers.work_ledger_refusals import (
     _audit,
     _refuse_403,
     _refuse_404,
+    _refuse_503,
 )
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import is_incognito_transcript
@@ -334,7 +335,19 @@ async def _worker_binding(
     worker's first call. A ``work_report`` refused the same way may come from a
     worker whose item moved to another session, and that worker has no task left.
     """
-    binding = await asyncio.to_thread(work_ledger.read_binding, key)
+    # Strict: a present-but-unreadable binding (an EACCES/EIO blip, a Windows
+    # rename race) must NOT read as absent and tell a bound worker it has no
+    # task. A missing file still reads as None (not bound); only a real I/O
+    # fault raises, and that is a transient 503, not a 403.
+    try:
+        binding = await asyncio.to_thread(work_ledger.read_binding, key, strict=True)
+    except OSError:
+        _audit(key, operation, "denied", error="ledger_unreadable")
+        return None, _refuse_503(
+            "ledger_unreadable",
+            "This session's work-ledger binding could not be read right now "
+            "(a transient I/O error). Retry; it was not interpreted as unbound.",
+        )
     if binding is None:
         _audit(key, operation, "denied", error=CODE_NOT_BOUND)
         task = (
@@ -369,7 +382,23 @@ async def _own_ledger(
     the request as an authenticated human passes that human as *caller* so the
     SEL row names the operator, not the conductor key being read.
     """
-    record = await asyncio.to_thread(work_ledger.read_conductor, key)
+    # Strict, for the same reason as the binding read above: an I/O fault on
+    # conductor.json must not read as "no ledger" and send a conductor to start
+    # a new one mid-goal. A missing file still reads as None.
+    try:
+        record = await asyncio.to_thread(work_ledger.read_conductor, key, strict=True)
+    except OSError:
+        _audit(
+            caller if caller is not None else key,
+            operation,
+            "denied",
+            error="ledger_unreadable",
+        )
+        return None, _refuse_503(
+            "ledger_unreadable",
+            "This session's work ledger could not be read right now (a transient "
+            "I/O error). Retry; it was not interpreted as having no ledger.",
+        )
     if record is None:
         _audit(
             caller if caller is not None else key,
