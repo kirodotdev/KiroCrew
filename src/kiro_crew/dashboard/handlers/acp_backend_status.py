@@ -5,7 +5,7 @@ One row per backend id in ``acp_backends.ACP_BACKENDS_KNOWN``, sorted by
 switch lists all of them and must be able to say which is which, so an
 unservable backend needs a row rather than silent absence.
 
-Four facts per row, from four owners that must not be conflated:
+Five facts per row, from five owners that must not be conflated:
 
 * ``selectable`` -- build capability AND deployment policy, read from
   ``handlers.core._selectable_acp_backends()``. That helper is already the
@@ -19,6 +19,10 @@ Four facts per row, from four owners that must not be conflated:
   Reached through the SDK rather than the ACP layer directly: this handler is
   application code, and ``scripts/check_agent_sdk_boundary.py`` is what keeps
   that true.
+* ``sandbox_refusal`` -- whether a session start would refuse the harness on THIS
+  host, from the launch's own predicate (``agent_sdk.tool_gate``). A harness the
+  build serves and policy permits can still be one this host cannot sandbox, and
+  the panel must not offer a switch every session then refuses.
 * ``auth`` -- how the harness signs in, projected from its one declaration in
   ``agent_sdk.host_auth``. Installed and signed-in are different questions with
   different remedies, and a panel that only had ``installed`` could show a green
@@ -205,6 +209,9 @@ def _row(state: Any, selectable: set) -> Dict[str, Any]:
         "restart_required": (
             bool(state.restart_required) if state.installed == INSTALLED else False
         ),
+        # Apart from ``selectable``, which HIDES a row: a refused harness is shown
+        # with its reason and a dead Use button.
+        "sandbox_refusal": _sandbox_refusal(state.backend),
         # ``sign_in_remedy`` is rendered VERBATIM by the panel and is
         # deliberately untranslated. A per-harness sign-in string that went
         # through i18n would be a per-harness edit to thirteen locale files
@@ -227,6 +234,24 @@ def _row(state: Any, selectable: set) -> Dict[str, Any]:
         # harness costs no locale edit while a new LINE costs thirteen.
         **card_payload(state.backend),
     }
+
+
+def _sandbox_refusal(backend: str) -> str:
+    """Whose fix it is that a session start refuses *backend* here, or ``""``.
+
+    The launch's own predicate (``tool_gate.sandbox_floor_refusal``) at the
+    configured tier, so the row cannot disagree with a session start. ``"setting"``
+    when the host has a sandbox backend that ``agent.sandbox`` leaves off, ``"host"``
+    when it has none (native Windows): the split first-run setup makes
+    (``sandbox_facts`` in ``kiro_prerequisite_service``), because the remedies are
+    opposite.
+    """
+    from kiro_crew import sandbox
+    from kiro_crew.agent_sdk.tool_gate import sandbox_floor_refusal
+
+    if not sandbox_floor_refusal(backend, sandbox.configured_sandbox_mode()):
+        return ""
+    return "setting" if sandbox.detect_backend() != "none" else "host"
 
 
 def _snapshot() -> List[Dict[str, Any]]:

@@ -35,6 +35,7 @@ const CASES: [string, AcpBackendProbe | undefined, AcpProbeState, boolean, boole
   ['missing', probe({ installed: 'missing', missing_components: ['x'] }), 'missing', true, false],
   ['check failed', probe({ installed: 'unknown' }), 'unknown', false, false],
   ['restart required', probe({ restart_required: true }), 'restart_required', true, false],
+  ['sandbox refused', probe({ sandbox_refusal: 'host' }), 'sandbox_refused', true, false],
   ['unselectable', probe({ selectable: false }), 'unselectable', true, false],
 ]
 
@@ -51,7 +52,7 @@ describe('acpProbeState', () => {
     }
   })
 
-  it('ranks the reasons: unselectable, then missing, then restart, then unknown', () => {
+  it('ranks the reasons: unselectable, then sandbox refused, then missing, then restart, then unknown', () => {
     // A build or policy refusal outranks every machine fact: installing or
     // restarting cannot make a refused switch accepted.
     expect(acpProbeState(probe({ selectable: false, installed: 'missing' }))).toBe('unselectable')
@@ -60,5 +61,9 @@ describe('acpProbeState', () => {
     // that combined it with the other two still reads as a known block.
     expect(acpProbeState(probe({ installed: 'missing', restart_required: true }))).toBe('missing')
     expect(acpProbeState(probe({ installed: 'unknown', restart_required: true }))).toBe('restart_required')
+    // Every session start refuses a sandbox-refused harness whatever is installed,
+    // so no install fact may stand in for that verdict.
+    expect(acpProbeState(probe({ installed: 'missing', sandbox_refusal: 'host' }))).toBe('sandbox_refused')
+    expect(acpProbeState(probe({ installed: 'unknown', sandbox_refusal: 'setting' }))).toBe('sandbox_refused')
   })
 })

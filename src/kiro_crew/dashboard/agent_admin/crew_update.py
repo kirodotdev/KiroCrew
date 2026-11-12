@@ -378,8 +378,9 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
     if "acp_backend" in body:
         from kiro_crew.crewmate_harness import harness_pin_rejected
 
-        backend_reason = harness_pin_rejected(
-            body["acp_backend"], await asyncio.to_thread(KiroCrewConfig.load)
+        pin_config = await asyncio.to_thread(KiroCrewConfig.load)
+        backend_reason = await asyncio.to_thread(
+            harness_pin_rejected, body["acp_backend"], pin_config
         )
         if backend_reason:
             return web.json_response(

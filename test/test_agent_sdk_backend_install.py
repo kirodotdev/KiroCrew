@@ -353,6 +353,21 @@ class TestCopilotWrongVersion:
         assert _row(wrong, frozenset())["found_version"] == "1.0.103"
         assert _row(clamped, frozenset())["found_version"] == ""
 
+    @pytest.mark.parametrize("host_backend, cause", [("none", "host"), ("namespace", "setting")])
+    def test_the_status_row_says_when_the_launch_refuses_the_harness_here(
+        self, monkeypatch, host_backend, cause
+    ):
+        """A harness every session start refuses here says so, and whose fix it is."""
+        from kiro_crew import sandbox
+        from kiro_crew.dashboard.handlers.acp_backend_status import _row
+
+        monkeypatch.setattr(sandbox, "credential_mask_applies", lambda _mode: False)
+        monkeypatch.setattr(sandbox, "detect_backend", lambda: host_backend)
+        codex = probe.BackendInstallState(ACP_BACKEND_CODEX, "codex", probe.INSTALLED)
+        kiro = probe.BackendInstallState(ACP_BACKEND_KIRO, "kiro", probe.INSTALLED)
+        assert _row(codex, frozenset())["sandbox_refusal"] == cause
+        assert _row(kiro, frozenset())["sandbox_refusal"] == ""
+
 
 class TestPiVerdicts:
     """Two components, one installer: the probe names whichever half is absent."""
@@ -1037,6 +1052,7 @@ class TestEndpointPayloadShape:
                 # Non-empty only on a wrong-release MISSING verdict (Copilot's pin).
                 "found_version",
                 "restart_required",
+                "sandbox_refusal",
                 "auth",
                 # The capability card, spread into the row rather than nested:
                 # each of these four is read on its own by the panel. What each
@@ -1089,6 +1105,8 @@ class TestEndpointPayloadShape:
             "install_command": "",
             "found_version": "",
             "restart_required": False,
+            # Kiro CLI is not an enforced harness, so no host refuses it.
+            "sandbox_refusal": "",
             # Compared against the declaration rather than a literal copy of the
             # remedy: the string is rendered verbatim by the panel, so a literal
             # here would pin the WORDING, and every reword of the operator advice

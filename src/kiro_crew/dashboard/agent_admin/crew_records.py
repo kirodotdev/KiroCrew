@@ -233,7 +233,8 @@ async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Respons
             # KAS because it cannot apply this Crew bot's worker tool limits.
             "inherited_source": inherited.source,
             "settings_harness": inherited.settings_harness,
-            # The picker's choices, from the one server-side list a save accepts.
+            # The picker's choices: what a save accepts, bar a harness this host's
+            # sandbox refuses.
             "harnesses": crewmate_harnesses(cfg),
             # Known limit shown beside a choice: where workers run at all.
             "worker_harnesses": worker_harnesses(cfg),

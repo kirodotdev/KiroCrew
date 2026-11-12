@@ -742,6 +742,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.handlers.core_config_patch import (
         _MOVED_CONFIG_FIELDS,
+        _acp_backend_sandbox_refusal,
         _beacon_governance_pinned_off,
         _check_default_profile_is_saved,
         _ConfigKeyAlreadySet,
