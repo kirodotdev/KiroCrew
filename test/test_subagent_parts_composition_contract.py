@@ -274,7 +274,8 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_vet_spawn_governance",
             "function",
-            "(parent_session_key: 'str', agent: 'str', app: 'str' = '') -> 'str | None'",
+            "(parent_session_key: 'str', agent: 'str', app: 'str' = '', "
+            "parent_agent: 'str' = '') -> 'str | None'",
         ),
         ("_parent_project_resolver", "value", "NoneType"),
         (
