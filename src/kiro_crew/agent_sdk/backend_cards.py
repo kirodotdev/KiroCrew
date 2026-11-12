@@ -509,6 +509,19 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "choosing a harness loses nothing; a wrong membership runs every hook twice "
         "or not at all, which is a defect"
     ),
+    "ACP_BACKENDS_CREW_LOADS_SPEC_STEERING": (
+        "who loads the default agent's steering files: the harness, or Crew's prompt "
+        "text on a harness that is handed no spec. Where neither does, the chat's "
+        "steering list marks each file harness_has_no_path and a custom agent's own "
+        "entries get a session-start notice, so the loss is told where it applies; a "
+        "wrong membership sends every document twice or not at all, which is a defect"
+    ),
+    "ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD": (
+        "who reads the project's AGENTS.md on a harness Crew loads steering for: the "
+        "harness from its working directory, or Crew's load. The file arrives either "
+        "way, so a reader choosing a harness loses nothing; a wrong membership sends "
+        "it twice or not at all, which is a defect"
+    ),
     "ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS": (
         "who runs the agent spec's hooks that cannot refuse a tool call: the harness, "
         "or Crew's turn loop. They run either way. What a reader loses on claude, the "

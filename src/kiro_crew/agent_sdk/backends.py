@@ -283,6 +283,14 @@ with no row here.
      - driver-internal (whether the direct client stamps the spec's shell and
        write allowlists on its own permission requests, and the claude seed adds
        the ``permissions.ask`` rules that make those calls reach the gate)
+   * - ``ACP_BACKENDS_CREW_LOADS_SPEC_STEERING``
+     - context assembly (whether Crew puts the agent spec's ``file://`` steering
+       and the global and project steering trees into the prompt, asked by
+       provider label through ``drivers.acp.crew_loads_spec_steering``)
+   * - ``ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD``
+     - context assembly (whether that steering load leaves out the project's
+       ``AGENTS.md`` because the harness reads it from its working directory,
+       asked through ``drivers.acp.reads_project_agents_md``)
    * - ``ACP_BACKENDS_HOST_AUTH_CALLBACK``
      - driver-internal (whether the reader loop may answer the engine's
        ``_kiro/auth/getAccessToken`` from Crew's own vault)
@@ -1319,10 +1327,12 @@ from kiro_crew.agent_sdk.backends_routing import (  # noqa: E402,F401 - re-expor
     ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS,
     ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
     ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS,
+    ACP_BACKENDS_CREW_LOADS_SPEC_STEERING,
     ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED,
     ACP_BACKENDS_HOOKS_LIST,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
     ACP_BACKENDS_META_IDENTITY,
+    ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD,
     ACP_BACKENDS_NATIVE_WORKFLOWS,
     ACP_BACKENDS_OPEN_EXTERNAL_URL,
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,

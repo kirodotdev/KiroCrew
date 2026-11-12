@@ -189,13 +189,14 @@ def post_compaction_parts(
         )
     if _prefs:
         parts.append("[REINJECTED AFTER COMPACTION — response preferences]\n" + _prefs)
-    # The Claude Code backend got the agent config's steering resources as
-    # session-start prompt text, so the compaction dropped them; kiro-cli keeps
-    # its natively loaded ``resources``, so the gate is the session-start one.
+    # A harness that reads no agent ``resources`` (Claude Code, Codex) got the
+    # agent config's steering resources as session-start prompt text, so the
+    # compaction dropped them; kiro-cli keeps its natively loaded ``resources``,
+    # so the gate is the session-start one.
     # The files are user-written: scrub the payload, keep the wrapper outside it.
     _steering_ctx = _inclusion.steering_resources_part(
         agent=agent,
-        is_cc=is_cc,
+        provider_type=provider_type,
         essentials=_essentials,
         context_groups=context_groups,
         project=project,
@@ -221,6 +222,7 @@ def post_compaction_parts(
             native_steering=context_provider is not None and context_provider.native_steering,
             project=project,
             native_launch_sources=native_launch_sources,
+            agent=agent,
         )
         _folder_ctx = _inclusion._render_folder_steering_section(
             steering_dirs,

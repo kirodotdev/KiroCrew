@@ -513,6 +513,7 @@ def build_message(
                 native_steering=context_provider is not None and context_provider.native_steering,
                 project=project,
                 native_launch_sources=native_launch_sources,
+                agent=agent,
             )
             _folder_ctx = ctx._render_folder_steering_section(
                 steering_dirs,

@@ -55,6 +55,7 @@ __all__ = [
     "build_acp_provider",
     "catalog_row_would_drop",
     "context_provider_of",
+    "crew_loads_spec_steering",
     "projected_session_mcp_servers",
     "agent_spec_mcp_refs",
     "claude_adapter_cached_negative",
@@ -78,6 +79,7 @@ __all__ = [
     "provider_error_client",
     "provider_label",
     "provider_label_for_backend",
+    "reads_project_agents_md",
     "resolve_pin_spelling",
     "resolve_pin_spelling_on",
     "resolve_usable_model",
@@ -316,6 +318,40 @@ def provider_label_for_backend(backend: str) -> str:
     if is_claude_backend_name(backend):
         return PROVIDER_LABEL_CLAUDE
     return PROVIDER_LABEL_BY_BACKEND.get(backend, PROVIDER_LABEL_DEFAULT)
+
+
+def _label_names_a_member(provider_type: str | None, backends: Collection[str]) -> bool:
+    """Whether the provider label *provider_type* is the label of a backend in *backends*.
+
+    ``None`` and ``""`` name no harness, so they are a member of nothing.
+    """
+    if not provider_type:
+        return False
+    return any(provider_label_for_backend(backend) == provider_type for backend in backends)
+
+
+def crew_loads_spec_steering(provider_type: str | None) -> bool:
+    """Whether Crew puts the agent spec's ``file://`` steering into this session's prompt.
+
+    *provider_type* is the session's provider label, as context assembly receives
+    it. True for a harness in ``ACP_BACKENDS_CREW_LOADS_SPEC_STEERING`` (claude and
+    codex), which is handed no spec and so reads none of its ``resources``.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_LOADS_SPEC_STEERING
+
+    return _label_names_a_member(provider_type, ACP_BACKENDS_CREW_LOADS_SPEC_STEERING)
+
+
+def reads_project_agents_md(provider_type: str | None) -> bool:
+    """Whether the harness behind *provider_type* reads the project's ``AGENTS.md`` itself.
+
+    True for a harness in ``ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD`` (codex), which
+    reads the file from the session's working directory. Crew's steering load
+    leaves that file out there.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD
+
+    return _label_names_a_member(provider_type, ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD)
 
 
 def _provider_backend(provider: object) -> object:
