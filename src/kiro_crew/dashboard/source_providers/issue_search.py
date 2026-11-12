@@ -1310,6 +1310,12 @@ def _jira_time(value: Any) -> str:
     return text
 
 
+def _jira_excerpt(query: IssueQuery, description: Any) -> str:
+    if jira._jira_is_cloud(query.host):
+        return description if isinstance(description, str) else ""
+    return strip_markdown(description)
+
+
 def _jira_summary(query: IssueQuery, item: dict[str, Any]) -> dict[str, Any] | None:
     key = str(item.get("key") or "")
     number = _jira_number(query, key)
@@ -1339,11 +1345,13 @@ def _jira_summary(query: IssueQuery, item: dict[str, Any]) -> dict[str, Any] | N
         "commentCount": 0,
         "createdAt": _jira_time(fields.get("created")),
         "updatedAt": _jira_time(fields.get("updated")),
-        # Cloud's is the plain text _jira_search made; Server/DC's is wiki text.
+        # Cloud's is the plain text _jira_search made from ADF, kept as written:
+        # a markdown strip would delete literal text such as ``<!-- ... -->`` or
+        # ``snake__case``. Server/DC's is wiki text.
         # shortcut: wiki markup (``h1.``, ``{code}``) is stripped as if it were
-        # markdown; add a wiki strip if Server excerpts show markup. Stripped
-        # only; finish_issue_list cuts it after cache.search_issues redacts.
-        "excerpt": strip_markdown(fields.get("description")),
+        # markdown; add a wiki strip if Server excerpts show markup. Not cut
+        # here; finish_issue_list cuts it after cache.search_issues redacts.
+        "excerpt": _jira_excerpt(query, fields.get("description")),
         "project": query.scope,
         "linkedChanges": [],
     }

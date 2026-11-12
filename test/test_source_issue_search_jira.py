@@ -483,6 +483,22 @@ async def test_cloud_summary_shape(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_cloud_excerpt_keeps_literal_text_markdown_would_strip(monkeypatch) -> None:
+    """ADF text is plain already: markdown-looking characters in it are content."""
+    code = {"type": "codeBlock", "content": [_text("<!-- Press Save twice to reproduce -->")]}
+    description = {
+        "type": "doc",
+        "version": 1,
+        "content": [code, *_adf([_text("snake__case")])["content"]],
+    }
+    _Jira({"issues": [_row("CREW-3", description=description)], "isLast": True}).install(
+        monkeypatch
+    )
+    payload = (await _post(_cloud()))[1]
+    assert payload["issues"][0]["excerpt"] == "<!-- Press Save twice to reproduce --> snake__case"
+
+
+@pytest.mark.asyncio
 async def test_server_summary_shape(monkeypatch) -> None:
     row = _row(
         "CREW-12",
