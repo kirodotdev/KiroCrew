@@ -519,6 +519,7 @@ EXPORTED_NAMES: tuple[str, ...] = (
     "base64",
     "bisect",
     "builtin_denied_rules",
+    "caller_canonicalised",
     "canonical_path_refusal",
     "canonicalize_ip",
     "compute_effective_denied",

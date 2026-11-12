@@ -21,9 +21,11 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Generic, NamedTuple, TypeVar
 
@@ -51,6 +53,34 @@ from .paths_resolver import (
 
 logger = logging.getLogger("kiro_crew.security.paths")
 
+#: The one spelling the running gate call's caller resolved itself, or ``None``.
+#: Set only by :func:`caller_canonicalised`, for the length of its block.
+_caller_canonical: ContextVar[str | None] = ContextVar("_caller_canonical", default=None)
+
+
+@contextmanager
+def caller_canonicalised(resolved: str) -> Iterator[None]:
+    """Mark *resolved* as the caller's own ``realpath`` output for the gates in this block.
+
+    Inside the block, a gate asked about exactly *resolved* (the same string, no
+    ``base_dir``) matches it as given instead of resolving it again on the
+    ``mc-pathres`` pool: the child would return ``realpath`` and ``Path.resolve`` of a
+    path with no link left to follow, which is that path. Every other path a gate is
+    asked about inside the block is resolved as usual, and the anchors are resolved
+    on the pool either way, so a stall still refuses.
+
+    *resolved* MUST come from ``os.path.realpath`` (or the kernel's path for an open
+    descriptor) computed by the caller on this thread, as the read floor does before
+    it opens the file. Marking a spelling that was never resolved lets a link in it
+    pass unfollowed. A relative string is never honoured, because ``realpath`` does
+    not return one.
+    """
+    token = _caller_canonical.set(resolved if os.path.isabs(resolved) else None)
+    try:
+        yield
+    finally:
+        _caller_canonical.reset(token)
+
 
 def _candidate_forms(
     path_str: str, base_dir: str | None = None, *, pre_resolved: bool = False
@@ -71,6 +101,8 @@ def _candidate_forms(
     input and its ``normpath``, which is exactly what :func:`_resolved_spellings`
     returns for a path that has no link left to follow. Reserved for
     :func:`is_sensitive_resolved_path`; see there for why a caller may claim it.
+    The spelling a :func:`caller_canonicalised` block marks gets the same
+    treatment, with the anchors still resolved by the calling gate.
     """
     # Expand ~ and $HOME
     raw = os.path.expanduser(os.path.expandvars(path_str))
@@ -94,6 +126,9 @@ def _candidate_forms(
     # A resolution that does not COMPLETE raises PathResolutionStalled through
     # here, and every gate turns that into a refusal: no lexical-only matching
     # of a path whose canonical form is unknown.
+    # A spelling the caller marked with caller_canonicalised is already canonical too.
+    if not pre_resolved and base_dir is None:
+        pre_resolved = path_str == _caller_canonical.get()
     candidates: set[str] = set() if pre_resolved else _resolved_forms_bounded(expanded)
     candidates.add(os.path.normpath(expanded))
     candidates.add(expanded)
