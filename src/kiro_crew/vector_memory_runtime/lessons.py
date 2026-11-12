@@ -30,6 +30,7 @@ from kiro_crew.lesson_validation import (
     LESSON_APPLIES_ON_TOPIC,
     LESSON_APPLIES_UNSTATED,
     LESSON_APPLIES_VALUES,
+    LESSON_RULES_HEADER,
     cjk_parts,
     contains_volatile_lesson_fact,
     render_lesson_tier,
@@ -1035,11 +1036,7 @@ def get_lessons_context(
         # directive block is served first: when room is short, a past finding
         # yields to a standing rule rather than the two sharing the shortfall.
         directive_tier = {
-            "header": (
-                "[Learned corrections — retained rules from past mistakes.\n"
-                "Follow explicit user rules; stored inferences do not override "
-                "the current user.]" + fold_header
-            ),
+            "header": LESSON_RULES_HEADER + "]" + fold_header,
             "footer": "[End of learned corrections]",
             "omission": (
                 "[Context budget: omitted {count} of {total} retained rules above the "
@@ -1162,10 +1159,7 @@ def get_lessons_context(
     order = "most relevant" if query_text else "most recent"
 
     def render(rows: list[tuple[dict, str]]) -> str:
-        header = (
-            "[Learned corrections — user-taught rules from past mistakes.\n"
-            "ALWAYS follow these. They override default behavior."
-        )
+        header = LESSON_RULES_HEADER
         if len(rows) < total:
             header += (
                 f"\nShowing {len(rows)} of {total} lessons, {order} first; "
