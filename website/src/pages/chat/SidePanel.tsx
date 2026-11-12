@@ -527,6 +527,9 @@ export default function SidePanel({
       setWorkspaceTerminalCapped(!openTerminal({ remoteSlot: slot, title: placement.name }))
     } else if (placement === null) openTerminal({ cwd: projectDir })
   }, [openTerminal, projectDir, slot])
+  // A folder a Side Chat reply names opens as a folder tab here, for this chat.
+  // Stable, so the side transcript's row renderers are not rebuilt every render.
+  const openSideChatFolder = useCallback((p: string) => openFolder(p, slot || null), [openFolder, slot])
   // The note an "Open in <app>" fallback leaves (see the banner below the tab
   // bodies). Held here rather than in the Files tab, which that fallback takes
   // out of view.
@@ -1248,6 +1251,7 @@ export default function SidePanel({
                   // opens document rows as file tabs via onFileOpen and artifact
                   // rows as artifact tabs via onArtifactOpen.
                   onFileOpen={onFileOpen}
+                  onFolderOpen={openSideChatFolder}
                   onArtifactOpen={onArtifactOpen}
                   pins={pins} pinsLoading={pinsLoading} onJumpToPin={onJumpToPin} onPutPinInComposer={onPutPinInComposer} onUnpin={onUnpin}
                   slotTitle={slotTitle} chatMode={chatMode}

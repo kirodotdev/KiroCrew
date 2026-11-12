@@ -1142,6 +1142,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 : (embedMode !== 'chat' && embedMode !== 'sessions' && filteredSlots.length > 0 && !sidebarOpen ? { inset: true } : undefined)
             }
             onFileOpen={handleFileOpen}
+            // Withheld offline like `openSideChat`: its switch to a pane's chat
+            // would be rejected and blank that pane until reconnect.
+            onFolderOpen={connected ? handleFolderOpen : undefined}
             onOpenCrewTab={handleOpenCrewTab}
             onClose={() => setSplitMode(false)}
             onCollapse={(slot, anchorTs, anchorMid, gesture) => {

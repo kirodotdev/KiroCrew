@@ -1,7 +1,8 @@
 /**
  * The reopen-closed-session shortcut resumes through `resumeFromHistory` with
  * `leaveSplit`, and a slot switch may request the same exit, so the opened chat
- * is what the page shows; requests without it keep Split View. Driven through a
+ * is what the page shows; requests without it keep Split View. The grid gets
+ * the folder opener only while connected. Driven through a
  * real `render(<ChatPage />)` with the split grid stubbed to a prop recorder
  * (split from ChatPageMoreCoverage.test.tsx, whose setup this copies the minimum
  * of).
@@ -15,6 +16,7 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
 import { resumeFromHistory, switchSlot } from '../store/chatSlice'
+import { sseDisconnected } from '../store/dashboardSlice'
 import type { RootState } from '../store'
 import type { ChatMessage } from '../types'
 
@@ -40,7 +42,10 @@ vi.mock('../components/ChatInput', async (importOriginal) => {
   return { ...actual, default: () => React.createElement('textarea', { 'aria-label': 'Message input' }) }
 })
 
-interface GridProps { openSideChat?: (slot: string) => boolean | void | Promise<boolean | void> }
+interface GridProps {
+  openSideChat?: (slot: string) => boolean | void | Promise<boolean | void>
+  onFolderOpen?: (path: string, opts?: { slot?: string | null }) => void
+}
 let gridProps: GridProps | null = null
 vi.mock('../components/SessionGridView', async () => {
   const React = await import('react')
@@ -264,5 +269,15 @@ describe('ChatPage resume from history in Split View', () => {
     await act(async () => { await store.dispatch(switchSlot({ key: 'chat-2', leaveSplit: true })).unwrap() })
     expect(store.getState().chat.activeSlot).toBe('chat-2')
     await waitFor(() => expect(screen.queryByTestId('session-grid')).toBeNull())
+  })
+})
+
+describe('ChatPage Split View folder opener', () => {
+  it('hands the panes the folder opener while connected and withholds it offline', async () => {
+    const { store } = await renderSplit()
+    expect(gridProps!.onFolderOpen).toBeTypeOf('function')
+    // Its switch to a pane's chat would be rejected offline and blank that pane.
+    act(() => { store.dispatch(sseDisconnected()) })
+    await waitFor(() => expect(gridProps!.onFolderOpen).toBeUndefined())
   })
 })
