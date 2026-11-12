@@ -100,6 +100,9 @@ class _ConversationLog:
     def list_sessions(self) -> list[dict]:
         return list(self.rows)
 
+    def list_sessions_indexed(self) -> list[dict]:
+        return self.list_sessions()
+
     def search_sessions(self, query: str, limit: int) -> list[dict]:
         self.searched.append(query)
         needle = query.casefold()
