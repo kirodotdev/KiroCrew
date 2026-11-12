@@ -43,6 +43,50 @@ def test_mouse_move_hovers_the_point_it_was_given() -> None:
     assert helpers.calls == [("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 10, "y": 20})]
 
 
+def test_a_click_moves_the_pointer_there_before_it_presses() -> None:
+    # Word on the web places the caret from its own pointer tracking: a press
+    # with no move before it left the caret where it was, and the keys after it
+    # landed at the start of the document or nowhere.
+    helpers = _RecordingHelpers()
+    reply = helper_worker._handle(
+        helpers, {"id": 1, "helper": "click", "kwargs": {"x": 10, "y": 20}}
+    )
+    assert reply["ok"] is True
+    assert [p["type"] for _m, p in helpers.calls] == [
+        "mouseMoved",
+        "mousePressed",
+        "mouseReleased",
+    ]
+    assert all((p["x"], p["y"]) == (10, 20) for _m, p in helpers.calls)
+    pressed, released = helpers.calls[1][1], helpers.calls[2][1]
+    assert (pressed["button"], pressed["buttons"], pressed["clickCount"]) == ("left", 1, 1)
+    assert (released["button"], released["buttons"], released["clickCount"]) == ("left", 0, 1)
+
+
+def test_a_double_click_presses_twice_with_a_rising_click_count() -> None:
+    helpers = _RecordingHelpers()
+    helper_worker._handle(
+        helpers,
+        {"id": 1, "helper": "click", "kwargs": {"x": 5, "y": 6, "button": "left", "clicks": 2}},
+    )
+    seen = [(p["type"], p.get("clickCount")) for _m, p in helpers.calls]
+    assert seen == [
+        ("mouseMoved", None),
+        ("mousePressed", 1),
+        ("mouseReleased", 1),
+        ("mousePressed", 2),
+        ("mouseReleased", 2),
+    ]
+
+
+def test_a_right_click_sets_the_right_button_bit() -> None:
+    helpers = _RecordingHelpers()
+    helper_worker._handle(
+        helpers, {"id": 1, "helper": "click", "kwargs": {"x": 1, "y": 1, "button": "right"}}
+    )
+    assert helpers.calls[1][1]["buttons"] == 2
+
+
 def test_drag_presses_moves_in_steps_and_releases_at_the_target() -> None:
     helpers = _RecordingHelpers()
     reply = helper_worker._handle(

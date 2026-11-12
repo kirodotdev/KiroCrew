@@ -445,10 +445,11 @@ def _fake_helpers() -> types.ModuleType:
     mod.goto_url = lambda url: {"frameId": "f", "url": url}  # type: ignore[attr-defined]
     mod.page_info = lambda: {"url": "about:blank"}  # type: ignore[attr-defined]
 
-    def boom(**_kw):
+    def boom(*_a, **_kw):
         raise RuntimeError("Session with given id not found")
 
     mod.click_at_xy = boom  # type: ignore[attr-defined]
+    mod.cdp = boom  # type: ignore[attr-defined]
     mod.http_get = lambda url: "never"  # type: ignore[attr-defined]
     return mod
 

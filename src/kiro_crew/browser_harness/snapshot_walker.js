@@ -363,6 +363,22 @@
     return a;
   }
 
+  // True when *el* is a contenteditable host holding a non-collapsed selection.
+  // Text fields (input, textarea) replace their selection on insert, so they
+  // never need the Delete `type` sends first.
+  function editableSelection(el) {
+    try {
+      if (!el || !el.isContentEditable) return false;
+      var doc = el.ownerDocument || document;
+      var view = doc.defaultView || window;
+      var sel = view.getSelection ? view.getSelection() : null;
+      if (!sel || sel.isCollapsed || !sel.rangeCount) return false;
+      return el.contains(sel.anchorNode) && el.contains(sel.focusNode);
+    } catch (e) {
+      return false;
+    }
+  }
+
   // Console capture: the Harness daemon drains CDP events into one shared
   // buffer, so console output is read in the page instead. The hook wraps the
   // console methods once per document and keeps the last CONSOLE_CAP entries.
@@ -757,6 +773,10 @@
         // box: a select or copy chord there would carry its value somewhere the
         // agent reads, as it would from an asked field.
         secret: inputType(active) !== "password" && secretish(active) && !!active.value,
+        // A rich editor with a non-empty selection: `type` clears it with a Delete
+        // first, since some editors (Word on the web) keep only as many inserted
+        // characters as the selection held.
+        selected: editableSelection(active),
         tag: (active.tagName || "").toLowerCase(),
         hasFocus: hasFocus
       };

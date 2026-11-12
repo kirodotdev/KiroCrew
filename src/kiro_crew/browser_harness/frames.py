@@ -24,16 +24,23 @@ tab's own process, so no child session ever attaches. Such a frame, directly und
 the top frame, is read through the stream's own session instead, in a fixed
 isolated world of that frame (:data:`WALKER_WORLD`; Chrome hands back the same
 world for the same name until the frame's document changes, so its refs live as
-long as that document). Only frames directly under the tab are read; one nested
-deeper stays a ``slot`` the outline marks as not read.
+long as that document). Only frames directly under the tab are read into the
+outline; one nested deeper stays a ``slot`` the outline marks as not read. An OOPIF
+nested inside another OOPIF still attaches (the stream turns on auto-attach in each
+child session), so the secret-field counts and the screenshot's frame coverage
+check (:meth:`FrameOps.coverage`) reach it.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from typing import Any
+from urllib.parse import urlsplit
+
+from kiro_crew.browser_harness import dom_census
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +63,10 @@ TOP_WALKER_WORLD = "kirocrew_guard_walker"
 #: How far the owner's box may differ from the frame's own viewport, in CSS
 #: pixels, before the frame counts as scaled (its points would land elsewhere).
 SCALE_TOLERANCE_PX = 1.5
+#: Most cross-origin frames, at every depth, one screenshot's coverage check walks.
+#: Each costs a few calls in its own session (a world, two counts, a pierced DOM),
+#: so a page holding more is refused rather than walked.
+FRAME_COVERAGE_CAP = 32
 
 
 def split_frame_ref(ref: Any) -> tuple[int, str] | None:
@@ -67,38 +78,100 @@ def split_frame_ref(ref: Any) -> tuple[int, str] | None:
 
 
 class FrameRegistry:
-    """The OOPIF child sessions directly under one stream's session.
+    """The OOPIF child sessions under one stream's session.
 
-    Fed from the stream's event callback (:meth:`handle`). A frame's ``tag`` is
-    handed out once per frame id and never reused, so a ref minted before the
-    frame went away cannot come to name another frame.
+    Fed from the stream's event callback (:meth:`handle`). Frames directly under
+    the tab (``_session``) are the ones the outline reads and refs name. Frames
+    nested deeper (``_nested``, attached once their parent frame's session turns
+    on auto-attach) are tracked only for the secret-field guards: they get no tag
+    and no ref, since their owner box sits in another frame's coordinates.
+
+    A frame's ``tag`` is handed out once per frame id and never reused, so a ref
+    minted before the frame went away cannot come to name another frame.
     """
 
     def __init__(self) -> None:
         self.parent = ""
         self._session: dict[str, str] = {}
+        #: ``frame id -> (session id, parent session id)`` of OOPIFs nested inside
+        #: another OOPIF, at any depth.
+        self._nested: dict[str, tuple[str, str]] = {}
         #: Same-process cross-origin frames directly under the tab, read through
         #: the stream's own session (:meth:`FrameOps.adopt`).
         self.local: set[str] = set()
         self._tags: dict[str, int] = {}
         self._by_tag: dict[int, str] = {}
 
-    def handle(self, msg: dict[str, Any]) -> None:
+    def _known_child(self, sid: Any) -> bool:
+        if not isinstance(sid, str) or not sid:
+            return False
+        return sid in self._session.values() or any(s == sid for s, _ in self._nested.values())
+
+    def handle(self, msg: dict[str, Any]) -> str:
+        """Track an attach or detach; the new child's session id, else ``""``.
+
+        The caller turns on auto-attach in a returned session, so the frames
+        nested inside that frame attach too.
+        """
         method = msg.get("method")
-        if msg.get("sessionId") != self.parent or not self.parent:
-            return
+        source = msg.get("sessionId")
+        if not self.parent:
+            return ""
+        direct = source == self.parent
+        if not direct and not self._known_child(source):
+            return ""
         params = msg.get("params") or {}
         if method == "Target.attachedToTarget":
             info = params.get("targetInfo") or {}
             frame_id, sid = info.get("targetId"), params.get("sessionId")
             if info.get("type") == "iframe" and isinstance(frame_id, str) and isinstance(sid, str):
-                self._session[frame_id] = sid
-                self.tag_of(frame_id)
+                if direct:
+                    self._session[frame_id] = sid
+                    self.tag_of(frame_id)
+                else:
+                    self._nested[frame_id] = (sid, str(source))
+                return sid
         elif method == "Target.detachedFromTarget":
             sid = params.get("sessionId")
-            for frame_id, s in list(self._session.items()):
+            if isinstance(sid, str):
+                self._forget(sid)
+        return ""
+
+    def _forget(self, sid: str) -> None:
+        """Drop the frame on session *sid* and every frame nested under it."""
+        for frame_id, s in list(self._session.items()):
+            if s == sid:
+                del self._session[frame_id]
+        for frame_id, (s, _parent) in list(self._nested.items()):
+            if s == sid:
+                del self._nested[frame_id]
+        for _frame_id, (s, parent) in list(self._nested.items()):
+            if parent == sid:
+                self._forget(s)
+
+    def all_sessions(self) -> list[tuple[str, str, str]]:
+        """``(frame id, session id, parent session id)`` of every attached OOPIF,
+        direct and nested."""
+        out = [(f, s, self.parent) for f, s in self._session.items()]
+        out += [(f, s, p) for f, (s, p) in self._nested.items()]
+        return out
+
+    def child_count(self, sid: str) -> int:
+        """How many attached OOPIFs sit directly inside the document of *sid*."""
+        return sum(1 for _f, _s, parent in self.all_sessions() if parent == sid)
+
+    def top_frame_of(self, sid: str) -> str:
+        """The frame directly under the tab that holds the OOPIF on session *sid*
+        (that frame itself when it is direct), or ``""`` when *sid* is unknown."""
+        seen: set[str] = set()
+        while sid and sid not in seen:
+            seen.add(sid)
+            for frame_id, s in self._session.items():
                 if s == sid:
-                    del self._session[frame_id]
+                    return frame_id
+            parent = next((p for s, p in self._nested.values() if s == sid), "")
+            sid = parent
+        return ""
 
     def session_of(self, frame_id: str) -> str:
         return self._session.get(frame_id, "")
@@ -121,7 +194,8 @@ class FrameRegistry:
         return self._by_tag.get(tag, "")
 
     def frames(self) -> list[tuple[str, str]]:
-        """``(frame_id, session_id)`` of every attached child frame."""
+        """``(frame_id, session_id)`` of every attached child frame directly under
+        the tab."""
         return list(self._session.items())
 
 
@@ -235,6 +309,56 @@ class FrameOps:
         if not isinstance(size, list) or len(size) != 2:
             return None
         return content_origin(q, size[0], size[1])
+
+    async def frame_box(
+        self, frame_id: str, where: tuple[str, int | None]
+    ) -> list[float] | None:
+        """``[x, y, width, height]`` of the frame's viewport in the page's CSS
+        pixels, or ``None`` when it cannot be placed exactly."""
+        at = await self.owner_origin_box(frame_id, where)
+        if at is None:
+            return None
+        try:
+            size = await self._eval(where, "[innerWidth, innerHeight]")
+        except Exception:  # noqa: BLE001 - the frame is gone or mid-navigation
+            return None
+        if not isinstance(size, list) or len(size) != 2:
+            return None
+        if any(
+            isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0
+            for v in size
+        ):
+            return None
+        return [at[0], at[1], float(size[0]), float(size[1])]
+
+    async def owner_bounds(self, frame_id: str) -> list[float] | None:
+        """``[x, y, width, height]`` around the frame owner's content quad, in the
+        page's CSS pixels, whatever its scale or rotation; ``None`` when the owner
+        is gone. A box to paint the whole frame over, not to place a point in."""
+        try:
+            owner = await self._send("DOM.getFrameOwner", {"frameId": frame_id}, self.top)
+            node = owner.get("backendNodeId")
+            if not isinstance(node, int):
+                return None
+            model = (await self._send("DOM.getBoxModel", {"backendNodeId": node}, self.top)).get(
+                "model"
+            ) or {}
+        except Exception:  # noqa: BLE001 - the frame is gone or mid-navigation
+            return None
+        q = model.get("content")
+        if not isinstance(q, list) or len(q) != 8:
+            return None
+        try:
+            nums = [float(v) for v in q]
+        except (TypeError, ValueError):
+            return None
+        if not all(math.isfinite(v) for v in nums):
+            return None
+        xs, ys = nums[0::2], nums[1::2]
+        w, h = max(xs) - min(xs), max(ys) - min(ys)
+        if w <= 0 or h <= 0:
+            return None
+        return [min(xs), min(ys), w, h]
 
     async def call(self, tag: int, method: str, local_ref: str, *args: Any) -> Any:
         """Run one ref-taking walker method in the frame *tag*; ``None`` when unreadable.
@@ -417,10 +541,11 @@ class FrameOps:
         return ctx if isinstance(ctx, int) else None
 
     async def count(self, method: str) -> int:
-        """Sum of ``askedValues``/``passwordBoxes`` over the child frames; one that
-        cannot be read counts as one, so a guard fails closed."""
+        """Sum of ``askedValues``/``passwordBoxes`` over the child frames, nested
+        ones included; one that cannot be read counts as one, so a guard fails
+        closed."""
         total = 0
-        for _frame_id, sid in self.registry.frames():
+        for _frame_id, sid, _parent in self.registry.all_sessions():
             try:
                 # In an isolated world of the child's own frame: a frame script that
                 # patches its DOM functions cannot make the count read zero there.
@@ -439,6 +564,104 @@ class FrameOps:
                 n = None
             total += n if isinstance(n, int) and not isinstance(n, bool) else 1
         return total
+
+    async def coverage(self, top_unchecked: int) -> str:
+        """Why the frames the top walk could not read are not all checked, or
+        ``""`` when every one of them is.
+
+        *top_unchecked* is the top document's count of frames no walk reached
+        (``ops._frames_unchecked``). It is covered only when it equals the OOPIFs
+        attached directly under the tab, and each attached OOPIF, at any depth,
+        is covered in turn: in that frame's own session, its walker (in an
+        isolated world) counts the frames it cannot read, the browser's pierced
+        DOM counts the frame owners the walker missed (a closed shadow root), and
+        the sum must equal the OOPIFs attached directly inside it, with no
+        secret-looking field or uninspected frame in a closed shadow root.
+        A count is never matched to a frame's identity, only to the number of
+        sessions attached under that document: every attached session is a frame
+        the walk cannot read, so equal counts leave no frame unaccounted for.
+
+        A same-process cross-origin frame (``registry.local``) has no session of
+        its own and is not covered here, so its presence fails closed. One that
+        has left the tab is forgotten first, as :meth:`where` forgets it.
+        """
+        if self.registry.local:
+            try:
+                present = await self._children()
+            except Exception:  # noqa: BLE001 - unknown tree: keep every entry
+                present = None
+            if present is not None:
+                self.registry.local &= set(present)
+        if self.registry.local:
+            return "a same-site frame under the tab has no frame session"
+        sessions = self.registry.all_sessions()
+        if len(sessions) > FRAME_COVERAGE_CAP:
+            return f"the page holds more than {FRAME_COVERAGE_CAP} cross-origin frames"
+        direct = self.registry.child_count(self.top)
+        if top_unchecked != direct:
+            return (
+                f"the page holds {top_unchecked} frame(s) the walk cannot read, "
+                f"{direct} with a frame session"
+            )
+        for _frame_id, sid, _parent in sessions:
+            why = await self._frame_coverage(sid)
+            if why:
+                return why
+        return ""
+
+    async def _pierced_document(self, sid: str) -> dict[str, Any]:
+        """The browser's whole DOM of session *sid*, shadow roots included.
+
+        The DOM domain is turned off again afterwards, so the frame session is not
+        sent a mutation event for every change in that frame for the rest of the
+        stream (``helper_worker._pierced_document`` does the same).
+        """
+        try:
+            return await self._send("DOM.getDocument", {"depth": -1, "pierce": True}, sid)
+        finally:
+            try:
+                await self._send("DOM.disable", {}, sid)
+            except Exception:  # noqa: BLE001 - already off or gone: nothing to undo
+                pass
+
+    async def _frame_coverage(self, sid: str) -> str:
+        """Why the OOPIF on session *sid* is not covered, or ``""`` (:meth:`coverage`)."""
+        host = "a frame"
+        try:
+            tree = await self._send("Page.getFrameTree", {}, sid)
+            url = str(((tree.get("frameTree") or {}).get("frame") or {}).get("url") or "")
+            # Only the host names the frame: a path or query can carry a token.
+            host = urlsplit(url).hostname or host
+            ctx = await self._isolated(sid)
+            if ctx is None:
+                return f"{host}: no isolated world"
+            unread = await self._walker((sid, ctx), "unreadableFrames")
+            seen = await self._walker((sid, ctx), "framesSeen")
+            doc = await self._pierced_document(sid)
+            root = doc.get("root")
+            owners = sum(
+                1
+                for node, _closed in dom_census.walk(root)
+                if node["nodeName"].upper() in dom_census.FRAME_OWNERS
+            )
+            closed = dom_census.closed_secret_count(root)
+        except Exception:  # noqa: BLE001 - unreadable this time: fail closed
+            return f"{host}: could not be read"
+        for v in (unread, seen):
+            if not isinstance(v, int) or isinstance(v, bool) or v < 0:
+                return f"{host}: could not be counted"
+        if closed:
+            return f"{host}: a field or frame sits in a closed shadow root"
+        if seen > owners:
+            return f"{host}: changed while it was read"
+        inside = self.registry.child_count(sid)
+        unchecked = unread + (owners - seen)
+        if unchecked != inside:
+            return (
+                f"{host}: holds {unchecked} frame(s) the walk cannot read, "
+                f"{inside} with a frame session"
+            )
+        return ""
 
 
 def content_origin(
@@ -472,6 +695,7 @@ def content_origin(
 
 __all__ = [
     "TOP_WALKER_WORLD",
+    "FRAME_COVERAGE_CAP",
     "FRAME_READ_CAP",
     "FRAME_REF_RE",
     "FrameOps",
