@@ -42,6 +42,17 @@ from kiro_crew.start_priority import StartPriority
 
 logger = logging.getLogger("kiro_crew.llm_helpers")
 
+#: ``kirocrew-lite`` spec repairs this process has begun, and those still writing the
+#: file or resetting the sessions that may have loaded the old one (``background_turn``).
+_lite_rewrites = {"begun": 0, "running": 0}
+
+#: Repairs in flight, held so a cancelled turn cannot drop one before it finishes.
+_lite_rewrite_tasks: set[asyncio.Task[None]] = set()
+
+#: Session key -> the lite provider no reset has taken out since it went unvouched; the
+#: clean file does not vouch for it, and only a reset that returns forgets it.
+_lite_resets_failed: dict[str, Any] = {}
+
 
 def _raise_if_unfinished(event: object, text: str) -> None:
     """Raise when the backend never finished the turn, so its text is cut off.
@@ -506,6 +517,31 @@ async def _start_fresh_conversation(sessions: Any, key: str, client: Any) -> Non
     logger.info("Background session %s: reset to a new runtime for a fresh conversation", key)
 
 
+async def _rewrite_lite_spec(sessions: Any) -> None:
+    """Repair the ``kirocrew-lite`` spec, then reset the sessions that may have loaded the old one.
+
+    ``_bg`` and ``_consolidate`` outlive a turn and can start without the pre-spawn read
+    (``_ensure_background``, the next conversation a turn opens), so either may still run
+    on the old file; a turn running on one ends. Each reset is bounded, and one that
+    raises or times out leaves its provider in ``_lite_resets_failed``
+    (``agent.reset_after_spec_repair``). Closes the ``running`` count its caller
+    opened only once the resets are done, which is why the caller shields it: a turn
+    cancelled meanwhile must not close it early. Raises nothing but a cancellation.
+    """
+    from kiro_crew.agent import repair_lite_agent_spec, reset_after_spec_repair
+    from kiro_crew.session import BACKGROUND_KEY, CONSOLIDATE_KEY  # circular import
+
+    try:
+        if await asyncio.to_thread(repair_lite_agent_spec):
+            # Fixed keys: an ``_ensure_background`` start in flight is not yet in
+            # ``session_keys()``, and the reset of ``_bg`` must still move its generation.
+            await reset_after_spec_repair(
+                sessions, (BACKGROUND_KEY, CONSOLIDATE_KEY), _lite_resets_failed
+            )
+    finally:
+        _lite_rewrites["running"] -= 1
+
+
 async def _lite_spec_unconfirmed(
     sessions: Any, key: str, client: Any, *, agent: str, authored_before_spawn: bool
 ) -> bool:
@@ -610,11 +646,24 @@ async def background_turn(
     # can start the harness on it (see :func:`_lite_spec_unconfirmed`).
     resolved_agent = agent if agent is not None else BACKGROUND_AGENT
     lite_before_spawn = False
+    rewrites_begun = _lite_rewrites["begun"]
     if resolved_agent == BACKGROUND_AGENT:
         from kiro_crew.agent_sdk.agent_specs import authored_spec_toolless_verdict
 
         verdict = await asyncio.to_thread(authored_spec_toolless_verdict, BACKGROUND_AGENT)
-        lite_before_spawn = verdict is True
+        # Only this first read can vouch for a live session, and not while a rewrite
+        # runs: a session started before one may have loaded the old file.
+        lite_before_spawn = verdict is True and not _lite_rewrites["running"]
+        if verdict is False:
+            # Another tool may have written its server into Crew's own file; put the
+            # template back and let a second read decide.
+            _lite_rewrites["begun"] += 1
+            _lite_rewrites["running"] += 1
+            repair = asyncio.ensure_future(_rewrite_lite_spec(sessions))
+            _lite_rewrite_tasks.add(repair)
+            repair.add_done_callback(_lite_rewrite_tasks.discard)
+            await asyncio.shield(repair)
+            verdict = await asyncio.to_thread(authored_spec_toolless_verdict, BACKGROUND_AGENT)
         if verdict is False:
             # A spec that mounts something is refused before ``get_or_create``:
             # starting the session would run what it names (an MCP server's startup
@@ -645,12 +694,23 @@ async def background_turn(
     # Checked on every turn, not only when ``_new`` says the session is new: a
     # background runtime started by ``_ensure_background`` reports ``_new=False``,
     # and a warm one may have been started on a spec rewritten since. The permit is
-    # held from here, so a cancellation during the check gives it back.
+    # held from here, so a cancellation during the check gives it back, and leaves the
+    # provider in ``_lite_resets_failed``, refused on its next turn.
     try:
         unconfirmed = await _lite_spec_unconfirmed(
             sessions, key, client, agent=resolved_agent, authored_before_spawn=lite_before_spawn
         )
+        if not unconfirmed and lite_before_spawn and _lite_rewrites["begun"] != rewrites_begun:
+            # A rewrite begun since the pre-spawn read can hide what this session loaded.
+            unconfirmed = await _lite_spec_unconfirmed(
+                sessions, key, client, agent=resolved_agent, authored_before_spawn=False
+            )
+        if resolved_agent == BACKGROUND_AGENT and _lite_resets_failed.get(key) is client:
+            unconfirmed = True
     except BaseException:
+        if resolved_agent == BACKGROUND_AGENT and not memory_store:
+            # Ended before vouching; a member consolidation key is never claimed again.
+            _lite_resets_failed[key] = client
         try:
             sessions.release(key)
         except Exception:
@@ -666,10 +726,15 @@ async def background_turn(
             BACKGROUND_AGENT,
             task,
         )
+        if not memory_store:
+            _lite_resets_failed[key] = client
         try:
             await sessions.reset(key)
         except Exception:
             logger.warning("Background session %s: reset after refusal failed", key, exc_info=True)
+        else:
+            if _lite_resets_failed.get(key) is client:
+                del _lite_resets_failed[key]
         finally:
             try:
                 sessions.release(key)

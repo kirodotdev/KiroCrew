@@ -235,7 +235,15 @@ harness loads but cannot close one made and restored inside the spawn window.
 `includeMcpJson` is exactly `false`. The same check gates every `deny_all_tools` channel
 turn on `kirocrew-guest` and every `kirocrew-lite` background turn on a backend routed
 through the agent spec; either is refused, and its session reset, when the spec on disk
-mounts anything.
+mounts anything. When the read before the spawn refuses a `kirocrew-lite` turn, the
+background helper first rewrites an existing `kirocrew-lite.json` that is not its template
+(`agent_materialization/service_agents.py:repair_lite_agent_spec`) and reads it again.
+Only the read before that rewrite counts as the pre-spawn read. The `_bg` and
+`_consolidate` sessions are reset after the rewrite, each reset bounded as the guest
+repair's are (`agent.reset_after_spec_repair`). Without a prepared projection the turn
+that triggered the rewrite is refused too. On any backend, a session whose check was
+cancelled or whose reset failed or timed out is refused and reset on its next turn. A
+missing file is not created.
 
 1. Delivered ONLY when Crew governs the session's permission surface
    (`_permission_surface_governed` in `acp/client_class.py`): Crew authored
@@ -939,7 +947,7 @@ not resurrected on the next boot.
 | Spec | Ownership | Refreshed |
 |---|---|---|
 | `kirocrew.json` | generated | every gateway start, and on `kirocrew setup --agent-only` |
-| `kirocrew-lite.json` | generated | every gateway start |
+| `kirocrew-lite.json` | generated | every gateway start, and before a background turn whose pre-spawn read refused, when the existing file is not the template (the `_bg` and `_consolidate` sessions are reset after that rewrite) |
 | `kirocrew-guest.json` | generated | every gateway start, and before a non-operator channel turn whose pre-spawn read refused, when the existing file is not the template (the tool-less agent a non-operator channel sender talks to; every live session on it is reset after that rewrite) |
 | `kirocrew-worker.json` | DERIVED from `kirocrew.json`; the `skill://` entries of `resources` are mirrored from the default spec, so a worker's skill catalog is its dispatcher's: the mapped set, or the whole catalog when the default maps none | every gateway start, and re-checked before every worker session |
 | `kirocrew-dashboard-author.json` | generated; on a refresh of a spec this installer confirms as its own, an authorized `model` pin and your `resources` skill selection are carried forward (an explicit empty `resources` is preserved) | every gateway start (if a file of this name already exists that is NOT this installer's own — its bytes do not reproduce the ownership digest the installer recorded in the `agent_model_state.json` sidecar for its last managed write, or its read fails — it is left **untouched** and the install is **skipped** — no backup is written and the agent stays unselectable under this name until you remove or rename the file; a user `kirocrew-dashboard-author.md` beside it also blocks the first install, because the `.json` would shadow that markdown spec, while once the `.json` is this installer's own a sibling `.md` no longer stops its refresh) |
