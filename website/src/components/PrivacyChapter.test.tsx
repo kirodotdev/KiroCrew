@@ -99,6 +99,17 @@ describe('PrivacyChapter', () => {
     expect(eyebrow.textContent).not.toMatch(/\bof\b|·/)
   })
 
+  it("gives the left panel the Privacy copy, not the Import step's", () => {
+    renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
+
+    // With nothing to import, Import passes by itself after its scan, so Privacy
+    // is the first screen a user reads: its panel must not advertise Import.
+    expect(screen.getByRole('heading', { name: 'See what is collected.' })).toBeInTheDocument()
+    expect(screen.getByText('What Kiro Crew records on this machine, what it sends, and what it never collects.')).toBeInTheDocument()
+    expect(screen.getByText('The same details are in Settings > Privacy.')).toBeInTheDocument()
+    expect(screen.queryByText('Bring your crew with you.')).not.toBeInTheDocument()
+  })
+
   it('is mandatory: no skip affordance and Escape does not dismiss', () => {
     const onContinue = vi.fn()
     renderWithProviders(<PrivacyChapter open onContinue={onContinue} />)
@@ -410,17 +421,6 @@ describe('PrivacyChapter', () => {
     renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
 
     expect(await screen.findByText(/also sent to the metrics destination set up for it. No heartbeat is sent./)).toBeInTheDocument()
-  })
-
-  it('uses the same left panel copy as the Import setup chapter', () => {
-    renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
-
-    // Identical aside copy is what keeps the shared shell's mascots from
-    // re-animating across the hand-off.
-    expect(screen.getByText('Bring your crew with you.')).toBeInTheDocument()
-    expect(
-      screen.getByText('Merge-only setup · credentials stay where they are'),
-    ).toBeInTheDocument()
   })
 
   it('renders nothing while closed', () => {
