@@ -155,6 +155,10 @@ class ProcessResult:
     # state leaves this None, so an unrelated failure can never be misreported
     # as a sandbox problem, and a child cannot print its way into one.
     sandbox_failure: tuple[str, str, str] | None = None
+    # True when the Windows descendant tracker failed, so the run was ended before
+    # its tree could be certified. ``output`` and ``returncode`` are then what was
+    # seen up to that point, not the child's whole answer.
+    tree_unverified: bool = False
 
 
 ProcessRunner = Callable[..., Awaitable[ProcessResult]]
@@ -329,6 +333,16 @@ async def _track_windows_descendants(
                     if initial_snapshot is not None and not initial_snapshot.done():
                         initial_snapshot.set_result(None)
             await asyncio.sleep(_WINDOWS_DESCENDANT_POLL_SECS)
+    except Exception as exc:
+        # The tracker's own failure goes to the snapshot the run is waiting on (it
+        # awaits the first, then the terminal one), so the run fails with this error.
+        # Left to ``finally``, that waiter would be cancelled instead, and the run
+        # would read its tracker failing as a cancellation of the run itself.
+        for waiter in (initial_snapshot, primary_terminal_snapshot):
+            if waiter is not None and not waiter.done():
+                waiter.set_exception(exc)
+                break
+        raise
     finally:
         if initial_snapshot is not None and not initial_snapshot.done():
             initial_snapshot.cancel()
@@ -646,6 +660,19 @@ async def _run_process(
         else:
             await asyncio.gather(*completion_tasks)
 
+    def _tracker_failure() -> Exception | None:
+        """The descendant tracker's own error, once it has failed.
+
+        Never a cancellation: the tracker hands its error to the snapshot the run
+        awaits, so a ``CancelledError`` below came from outside this run.
+        """
+        for source in (initial_snapshot, primary_terminal_snapshot, descendant_task):
+            if source is not None and source.done() and not source.cancelled():
+                error = source.exception()
+                if isinstance(error, Exception):
+                    return error
+        return None
+
     try:
         await asyncio.wait_for(
             _wait_for_completion(),
@@ -682,11 +709,20 @@ async def _run_process(
             output=output,
             returncode=proc.returncode,
             error=str(exc),
+            tree_unverified=_tracker_failure() is not None,
         )
     finally:
         if descendant_task is not None:
             descendant_task.cancel()
             await asyncio.gather(descendant_task, return_exceptions=True)
+        tracker_error = _tracker_failure()
+        if tracker_error is not None:
+            logger.warning(
+                "The Windows descendant tracker failed during a kiro-cli run (%s: %s); "
+                "the run ended its retained process tree without certifying it",
+                type(tracker_error).__name__,
+                tracker_error,
+            )
         for handle in windows_descendants.values():
             platform_compat.close_process_handle(handle)
         if windows_root_handle is not None:

@@ -157,6 +157,25 @@ _VERSION_PROBE_TIMEOUT_SECS = 5
 #: its mtime, so ``kiro-cli update`` swapping the binary invalidates the entry
 #: instead of leaving a whole gateway lifetime on a stale verdict.
 _version_cache: dict[tuple[str, int], tuple[int, int, int] | None] = {}
+#: How many runs in a row of one probe on one binary may end with the process tree
+#: unverified before that answer is kept as unknown, the way a timed-out probe's is.
+_UNVERIFIED_PROBE_ATTEMPTS = 3
+_unverified_probe_runs: dict[tuple[str, str, int], int] = {}
+
+
+def _retry_unverified_probe(probe: str, key: tuple[str, int], result: ProcessResult | None) -> bool:
+    """Whether *result* stays out of the cache so that the next reader probes again.
+
+    A run ended because its process tree could not be verified says nothing about
+    the binary, as a sandbox that could not be built says nothing. That run did
+    spawn the binary, though, so only :data:`_UNVERIFIED_PROBE_ATTEMPTS` runs in a
+    row are left uncached; the last one is cached like any other failed probe.
+    """
+    if result is None or not result.tree_unverified:
+        return False
+    runs = _unverified_probe_runs.get((probe, *key), 0) + 1
+    _unverified_probe_runs[(probe, *key)] = runs
+    return runs < _UNVERIFIED_PROBE_ATTEMPTS
 
 
 def _sandboxed_probe(binary: str, args: Sequence[str], timeout_secs: float) -> ProcessResult | None:
@@ -211,14 +230,16 @@ def _sandboxed_probe(binary: str, args: Sequence[str], timeout_secs: float) -> P
 def _probe_ran(result: ProcessResult) -> bool:
     """Whether *result* is the child's own whole answer.
 
-    False for a spawn, sandbox or timeout failure, and for output that filled the
-    capture bound, which may have lost the line a caller looks for.
+    False for a spawn, sandbox or timeout failure, for a run ended because its
+    process tree could not be verified, and for output that filled the capture
+    bound, which may have lost the line a caller looks for.
     """
     from kiro_crew.kiro_prerequisite import _MAX_CAPTURED_OUTPUT  # noqa: PLC0415
 
     return (
         result.returncode is not None
         and not result.timed_out
+        and not result.tree_unverified
         and result.sandbox_failure is None
         and len(result.output) < _MAX_CAPTURED_OUTPUT
     )
@@ -363,6 +384,8 @@ def kiro_cli_version_at(binary: str) -> tuple[int, int, int] | None:
     if result is not None and result.sandbox_failure is not None:
         # Not cached: a sandbox that could not be built says nothing about the binary.
         return None
+    if _retry_unverified_probe("version", key, result):
+        return None
     version: tuple[int, int, int] | None = None
     if result is not None and result.ok:
         # stdout and stderr arrive as one text, so each line is read on its own: a
@@ -493,6 +516,8 @@ def chat_agent_engines_at(binary: str) -> tuple[str, ...] | None:
     result = _sandboxed_probe(binary, ["chat", "--help"], _CHAT_HELP_PROBE_TIMEOUT_SECS)
     if result is not None and result.sandbox_failure is not None:
         # Not cached: a sandbox that could not be built says nothing about the binary.
+        return None
+    if _retry_unverified_probe("chat", key, result):
         return None
     engines: tuple[str, ...] | None = None
     if result is not None and _probe_ran(result) and result.ok:

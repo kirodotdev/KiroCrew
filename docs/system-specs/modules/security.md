@@ -4270,8 +4270,17 @@ parent remain eligible, while a child attached to a recycled root or
 intermediate PID is rejected. Failure to retain the primary handle or validate
 its identity, create a Toolhelp snapshot, or complete any initial or later
 enumeration fails the operation closed; opened child handles are closed before
-the error propagates. One deadline covers process exit, initial and terminal
-discovery, and inherited output-pipe closure.
+the error propagates. The run receives a tracker failure as that error, never
+as a cancellation: it ends the leader and every retained handle, logs the
+reason, and returns a failed result marked `tree_unverified`, which a probe
+reader treats as unknown and not as the child's answer (`kiro_cli._probe_ran`).
+The cached probes (`--version`, `chat --help`) leave that answer out of their
+cache, so the next reader probes again; after
+`kiro_cli._UNVERIFIED_PROBE_ATTEMPTS` such runs in a row on one binary the
+answer is cached as unknown, as a timed-out probe's is.
+A cancellation of the run itself still propagates after the same teardown. One
+deadline covers process exit, initial and terminal discovery, and inherited
+output-pipe closure.
 
 Unverified candidate version probes route through
 `sandboxed_spawn_argv(..., mode="strict")` on POSIX. The outer sandbox launches
