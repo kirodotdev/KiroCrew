@@ -102,7 +102,7 @@ param-by-param (name, kind, default) and for async-ness by
 
 | Attribute | Type | Semantics |
 |-----------|------|-----------|
-| `args` | `dict` | the run's arguments, from `workflow_run` / the HTTP body |
+| `args` | `dict` | the run's arguments, from `workflow_run` / the HTTP body. The script gets its own deep copy, so editing `ctx.args` as scratch state never changes the args stored on the run, its `run_started` event, or what a rerun starts from |
 | `now` | `str` | a **fixed run-start stamp** supplied by the caller |
 | `owner_dm` | `str` | the owner's Slack DM target, the intended argument to `send_slack` |
 | `budget` | `Budget` | token accounting (below) |

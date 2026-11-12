@@ -174,6 +174,24 @@ async def test_a_cancel_still_cancels_the_background_run() -> None:
     assert snap["events"][-1]["type"] == "run_cancelled"
 
 
+async def test_a_script_editing_ctx_args_leaves_the_launch_args_alone() -> None:
+    script = (
+        'META = {"name": "pager"}\n'
+        "async def workflow(ctx):\n"
+        "    seen = ctx.args['page']\n"
+        "    ctx.args['page'] = seen + 10\n"
+        "    ctx.args['seen'] = [seen]\n"
+        "    return ctx.args['page']\n"
+    )
+    launched = {"page": 1}
+    res = await _runner().run(script, run_id="wf_args", now=NOW, args=launched)
+    assert res.ok is True, res.error
+    assert res.result == 11  # the script still edits its own copy
+    assert launched == {"page": 1}
+    started = [e for e in res.events if e.type == "run_started"][0]
+    assert started.data["args"] == {"page": 1}
+
+
 # --------------------------------------------------------------------------- #
 # B5 — wall-clock timeout
 # --------------------------------------------------------------------------- #
