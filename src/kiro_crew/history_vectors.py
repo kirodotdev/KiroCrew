@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
@@ -177,6 +178,91 @@ class SessionVectorStore:
                 (key, *_identity(st), chunker),
             )
             self._delete_orphans(conn, old_ids)
+
+    def pending_batch(self, limit: int) -> list[tuple[int, str]]:
+        """Up to *limit* ``(chunk id, text)`` pairs still waiting for a vector."""
+        rows = (
+            self._ensure_open()
+            .execute("SELECT chunk_id, text FROM pending_text ORDER BY chunk_id LIMIT ?", (limit,))
+            .fetchall()
+        )
+        return [(row[0], row[1]) for row in rows]
+
+    def pending_count(self) -> int:
+        return int(self._ensure_open().execute("SELECT count(*) FROM pending_text").fetchone()[0])
+
+    def chunk_owners(self, chunk_ids: Iterable[int]) -> dict[int, set[str]]:
+        """The sessions referencing each of *chunk_ids*; a chunk with none is absent."""
+        conn = self._ensure_open()
+        owners: dict[int, set[str]] = {}
+        for chunk_id in chunk_ids:
+            rows = conn.execute(
+                "SELECT DISTINCT session_key FROM chunk_ref WHERE chunk_id=?", (chunk_id,)
+            ).fetchall()
+            if rows:
+                owners[chunk_id] = {row[0] for row in rows}
+        return owners
+
+    def write_vectors(self, vectors: Sequence[tuple[int, bytes]], signature: str) -> int:
+        """Store each vector and delete its pending text, in one transaction.
+
+        A chunk dropped since it was read matches no row and is skipped; its
+        pending text went with it. Returns how many vectors were written.
+        """
+        conn = self._ensure_open()
+        written = 0
+        now = time.time()
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for chunk_id, vector in vectors:
+                cursor = conn.execute(
+                    "UPDATE chunk SET vector=?, signature=?, embedded_at=? WHERE chunk_id=?",
+                    (vector, signature, now, chunk_id),
+                )
+                if cursor.rowcount:
+                    conn.execute("DELETE FROM pending_text WHERE chunk_id=?", (chunk_id,))
+                    written += 1
+        return written
+
+    def release_stale(self, signature: str) -> int:
+        """Clear vectors from another vector space, and re-queue their sessions.
+
+        A cleared chunk has no text left to embed, so every session referencing
+        one has its chunker signature blanked: the chunk pass then finds it stale,
+        re-chunks it and restores the text. Its ``session_state`` row stays,
+        so the prune still sees it if it turns private or leaves the window first.
+        Returns how many vectors were cleared.
+        """
+        conn = self._ensure_open()
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            cleared = conn.execute(
+                "UPDATE chunk SET vector=NULL, signature=NULL, embedded_at=NULL "
+                "WHERE vector IS NOT NULL AND signature IS NOT ?",
+                (signature,),
+            ).rowcount
+            if cleared:
+                conn.execute(
+                    "UPDATE session_state SET chunker='' WHERE session_key IN ("
+                    " SELECT r.session_key FROM chunk_ref r JOIN chunk c USING (chunk_id)"
+                    " LEFT JOIN pending_text p USING (chunk_id)"
+                    " WHERE c.vector IS NULL AND p.chunk_id IS NULL)"
+                )
+        return cleared
+
+    def embedded_keys(self, signature: str) -> set[str]:
+        """Sessions whose every chunk carries a vector in *signature*'s space."""
+        rows = (
+            self._ensure_open()
+            .execute(
+                "SELECT session_key FROM session_state WHERE session_key NOT IN ("
+                " SELECT r.session_key FROM chunk_ref r JOIN chunk c USING (chunk_id)"
+                " WHERE c.vector IS NULL OR c.signature IS NOT ?)",
+                (signature,),
+            )
+            .fetchall()
+        )
+        return {row[0] for row in rows}
 
     def drop(self, keys: Iterable[str]) -> bool:
         """Remove *keys*, reporting whether the removal is known to have happened.

@@ -268,8 +268,10 @@ class SessionConfig:
             "Build a chunk store of session text in the background so session "
             "search can later find a conversation by describing it. Off by "
             "default. While on, the session index worker cuts each quiet session "
-            "into chunks with the embedding model's tokenizer; incognito and "
-            "temporary sessions are never read. Search does not read the store.",
+            "into chunks with the embedding model's tokenizer, and the gateway embeds "
+            "them with the local embedding model at background priority (nothing is "
+            "embedded with the ollama_http provider); incognito and temporary "
+            "sessions are never read. Search does not read the store.",
         ),
     )
     watchdog_rss_max_mb: int = field(

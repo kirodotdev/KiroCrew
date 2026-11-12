@@ -172,6 +172,49 @@ def chunk_session(
     return INDEXED
 
 
+def session_embeddable(log: "ConversationLog", key: str) -> bool | None:
+    """Whether *key*'s text may still be embedded, read under its lock now.
+
+    ``False`` when the session is gone, private, or its privacy cannot be read,
+    the cases where :func:`chunk_session` drops its rows; ``None`` when its lock
+    could not be taken, so the answer is not known yet.
+    """
+    from kiro_crew.history_derivation import TranscriptWithheld
+    from kiro_crew.history_search import _history_lock_timeout
+
+    try:
+        with log._locked(key):
+            if not log._path(key).exists():
+                return False
+            try:
+                log._withhold_if_restricted(key)
+            except TranscriptWithheld:  # TranscriptBusy too: privacy that cannot be read
+                return False
+    except _history_lock_timeout():
+        return None
+    except OSError:
+        return False
+    return True
+
+
+def search_window(log: "ConversationLog") -> list[dict]:
+    """The sessions the keyword index covers: the listing, cron runs left out, cut to the window."""
+    from kiro_crew.history_search import _facade_search_scan_window, _searchable
+
+    return _searchable(log.list_sessions())[: _facade_search_scan_window()]
+
+
+def visible_window_keys(log: "ConversationLog") -> set[str]:
+    """Keys in :func:`search_window` that are neither incognito nor temporary."""
+    from kiro_crew.history_derivation import is_incognito_transcript
+
+    return {
+        meta["key"]
+        for meta in search_window(log)
+        if not is_incognito_transcript(meta.get("memory_mode"))
+    }
+
+
 def backfill_chunks(
     log: "ConversationLog",
     store: SessionVectorStore,
@@ -190,16 +233,12 @@ def backfill_chunks(
     paces on them.
     """
     from kiro_crew.history_derivation import is_incognito_transcript
-    from kiro_crew.history_search import (
-        _INDEX_QUIET_WINDOW_SECS,
-        _facade_search_scan_window,
-        _searchable,
-    )
+    from kiro_crew.history_search import _INDEX_QUIET_WINDOW_SECS
 
     if tokenizer is None and not store.store_exists():
         return {"indexed": 0, "dropped": 0, "remaining": 0, "deferred": 0}
     store.settle()
-    window = _searchable(log.list_sessions())[: _facade_search_scan_window()]
+    window = search_window(log)
     held = store.indexed_keys()
     # A private session is dropped here, before the quiet window: making a session
     # private rewrites its file, and deferring it would keep its rows meanwhile.
