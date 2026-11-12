@@ -45,4 +45,8 @@ async def api_member_page_offer(request: web.Request) -> web.Response:
     page_offer.schedule_write(
         request.app.get("state"), slug, member, page=request.get(REQ_CARD_PAGE_OFFER_PAGE)
     )
+    from kiro_crew.dashboard.mate_user_actions import REQ_CARD_OWN_WAKE
+
+    # This write-and-apply wake is the card's note (no second one).
+    request[REQ_CARD_OWN_WAKE] = True
     return web.json_response({"ok": True, "slug": slug, "member": member, "scheduled": True})
