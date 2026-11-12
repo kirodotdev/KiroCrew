@@ -17,6 +17,8 @@ export const PRIVACY_NOTICE_VERSION = 2
 /** GET /api/telemetry/collection, the fields the notice reads. */
 interface CollectionStatus {
   enabled?: boolean
+  /** A `config.local.json` entry decides the switch. */
+  overlay_override?: boolean
   env_pinned?: boolean
   env_var?: string
   /** Recording would also send metrics to a configured destination. */
@@ -44,6 +46,8 @@ export interface UsageDataState {
   offReason: UsageOffReason | null
   /** The env var to name when `offReason` is `env`. */
   envVar: string
+  /** Off, and a `config.local.json` entry holds a switch off (not the user's own setting). */
+  overlayOff?: boolean
 }
 
 /**
@@ -88,5 +92,6 @@ export function useUsageDataState(enabled: boolean): UsageDataState {
   if (beacon.governance_override) offReason = 'governance'
   else if (envVar === 'DO_NOT_TRACK') offReason = 'do_not_track'
   else if (envVar) offReason = 'env'
-  return { status: 'ready', on: false, recordingOn: false, heartbeatOn: false, exportOn: false, offReason, envVar }
+  const overlayOff = !!(beacon.overlay_override || collection.overlay_override)
+  return { status: 'ready', on: false, recordingOn: false, heartbeatOn: false, exportOn: false, offReason, envVar, overlayOff }
 }

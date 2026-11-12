@@ -2482,7 +2482,14 @@ consent flow:
   are on" and the recording list; with only the heartbeat on, "A daily heartbeat
   is on" and no recording list; when off (an env var, `DO_NOT_TRACK`, a
   governance pin, or a written `false`), "Performance metrics and the heartbeat
-  are off on this machine" with the reason and one Continue. The chapter calls
+  are off on this machine" with the reason and one Continue. In first run, off
+  by a written `false` (`offReason` `config`, no `config.local.json` entry)
+  does not show that form: there is nothing to ask, so the chapter records the
+  ack Continue would (`passWhenOff`) without rendering, and a failed write shows
+  the off form with its error. Off by a pin (an env var, `DO_NOT_TRACK`, a
+  governance pin) or a `config.local.json` entry still shows the off form and
+  its Continue, since the heartbeat's first send waits on an ack given on a
+  screen. The chapter calls
   local recording "performance metrics" and the beacon "the heartbeat", the same
   two names the Settings > Privacy switches use. An unreadable status gives the
   neutral form above, with an `ErrorNotice`. Both buttons wait until the status read has answered.
