@@ -37,6 +37,7 @@ from kiro_crew.dashboard.handlers.crew_workers import (
     _stamped_rows,
     _tree_workers,
 )
+from kiro_crew.dashboard.handlers.office_slides import _KeyedLocks
 
 logger = logging.getLogger(__name__)
 
@@ -88,11 +89,11 @@ async def _stop(state: Any, key: str) -> bool:
 #: One Pause all, Resume all or held member's own Continue at a time per root, so a
 #: Resume still waiting on a stopped turn's teardown never interleaves with a newer
 #: Pause all, nor a member's refused Continue with the Resume that would drop it.
-_ROOT_LOCKS: dict[str, asyncio.Lock] = {}
-
-
-def _root_lock(root: str) -> asyncio.Lock:
-    return _ROOT_LOCKS.setdefault(root, asyncio.Lock())
+#: ``_KeyedLocks``: a root's lock lives only while someone holds or waits for it, so
+#: a bogus ``{slot}`` that gets a 404 (or any one-off root) leaves no lock behind
+#: for the life of the process -- the same self-pruning registry
+#: ``work_ledger_recording`` uses.
+_ROOT_LOCKS = _KeyedLocks()
 
 
 async def api_crew_pause(request: web.Request) -> web.Response:
@@ -100,7 +101,7 @@ async def api_crew_pause(request: web.Request) -> web.Response:
     refused = await _gate(request, "crew_mode.pause")
     if refused is not None:
         return refused
-    async with _root_lock(request.match_info.get("slot", "")):
+    async with _ROOT_LOCKS.hold(request.match_info.get("slot", "")):
         return await _pause(request)
 
 
@@ -353,7 +354,7 @@ async def api_crew_resume(request: web.Request) -> web.Response:
     refused = await _gate(request, "crew_mode.resume")
     if refused is not None:
         return refused
-    async with _root_lock(request.match_info.get("slot", "")):
+    async with _ROOT_LOCKS.hold(request.match_info.get("slot", "")):
         return await _resume(request)
 
 

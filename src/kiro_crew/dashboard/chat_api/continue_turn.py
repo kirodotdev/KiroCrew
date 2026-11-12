@@ -113,7 +113,7 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
 
     from kiro_crew import crew_mode, crew_pause
     from kiro_crew.dashboard.handlers.crew_pause import (
-        _root_lock,
+        _ROOT_LOCKS,
         drain_held_queue,
         memory_ready_for_drain,
     )
@@ -131,7 +131,7 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
             # them would leave a refused Continue no record to hold the member on.
             started = slot._turns_started
             for root in crew_pause.roots_naming(slot.key):
-                await root_locks.enter_async_context(_root_lock(root))
+                await root_locks.enter_async_context(_ROOT_LOCKS.hold(root))
             if slot._turns_started != started and not crew_pause.holds_turn(slot.key):
                 # The Resume all this waited behind already handed the member back.
                 return web.json_response({"ok": True, "slot": slot.key})
