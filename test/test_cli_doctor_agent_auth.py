@@ -11,7 +11,7 @@ import sys
 
 import pytest
 
-from kiro_crew import cli_doctor, kiro_cli
+from kiro_crew import cli_doctor
 
 
 class TestDoctorAgentAuth:
@@ -945,7 +945,7 @@ class TestDoctorKas:
         assert "engine support unknown" in out
         assert issues == []
 
-    def test_probe_returns_help_text_even_without_the_flag(self, monkeypatch) -> None:
+    def test_probe_returns_help_text_even_without_the_flag(self, monkeypatch, tmp_path) -> None:
         """The probe must not swallow ran-but-lacks-the-flag into None.
 
         Pins the split directly: the previous implementation returned None for
@@ -953,21 +953,34 @@ class TestDoctorKas:
         let an unsupported kiro-cli pass.
         """
 
-        class _Proc:
-            stdout = "Usage: kiro-cli acp [OPTIONS]"
-            stderr = ""
+        from kiro_crew import kiro_prerequisite
+        from kiro_crew.kiro_prerequisite_process import ProcessResult
 
-        monkeypatch.setattr(kiro_cli.subprocess, "run", lambda *a, **k: _Proc())
-        got = cli_doctor._kas_relay_help("/x/kiro-cli")
+        async def _ran(*_a, **_k):
+            return ProcessResult(ok=True, output="Usage: kiro-cli acp [OPTIONS]", returncode=0)
+
+        binary = tmp_path / "kiro-cli"
+        binary.write_bytes(b"")
+        binary.chmod(0o755)
+        monkeypatch.setattr(kiro_prerequisite, "_run_process", _ran)
+        got = cli_doctor._kas_relay_help(str(binary))
         assert got is not None
         assert "--agent-engine" not in got
 
-    def test_probe_returns_none_when_the_spawn_fails(self, monkeypatch) -> None:
-        def _boom(*_a, **_k):
-            raise OSError("no such binary")
+    def test_probe_returns_none_when_the_spawn_fails(self, monkeypatch, tmp_path) -> None:
+        from kiro_crew import kiro_prerequisite
+        from kiro_crew.kiro_prerequisite_process import ProcessResult
 
-        monkeypatch.setattr(kiro_cli.subprocess, "run", _boom)
-        assert cli_doctor._kas_relay_help("/x/kiro-cli") is None
+        async def _failed(*_a, **_k):
+            return ProcessResult(ok=False, error="no such binary")
+
+        binary = tmp_path / "kiro-cli"
+        binary.write_bytes(b"")
+        binary.chmod(0o755)
+        monkeypatch.setattr(kiro_prerequisite, "_run_process", _failed)
+        assert cli_doctor._kas_relay_help(str(binary)) is None
+        # An absent binary is not probed at all.
+        assert cli_doctor._kas_relay_help(str(tmp_path / "absent")) is None
 
     def test_no_credential_probe_is_performed(self, monkeypatch, capsys) -> None:
         """The relay owns auth, so the doctor must not reach for a token.

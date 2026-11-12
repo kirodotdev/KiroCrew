@@ -574,6 +574,7 @@ class TestResolveKiroBinEnvOverride:
 
     @pytest.mark.asyncio
     async def test_spawn_launches_self_updated_override(self, tmp_path):
+        from kiro_crew import kiro_cli as kiro_cli_module
         from kiro_crew import sandbox as sandbox_module
         from kiro_crew.acp import client as client_module
         from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
@@ -599,6 +600,9 @@ class TestResolveKiroBinEnvOverride:
                 "resolve_kiro_cli",
                 return_value=str(fake),
             ),
+            # The engine probe runs through the sandboxed runner, which would
+            # meet the mocked create_subprocess_exec below; it lists no v2 here.
+            patch.object(kiro_cli_module, "kas_relay_help", return_value=None),
             patch(
                 "asyncio.create_subprocess_exec",
                 mock_exec,

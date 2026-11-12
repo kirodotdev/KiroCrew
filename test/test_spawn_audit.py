@@ -328,6 +328,16 @@ FIRST_PARTY_SPAWNS: frozenset[str] = frozenset(
         "kiro_prerequisite_probe.py::_audited_probe",
         "kiro_prerequisite_probe.py::_audited_identity_probe",
         "kiro_prerequisite_probe.py::_run_auth_command",
+        # The pinned kiro-cli's fixed-argv probes (``--version``, ``acp --help``,
+        # ``chat --help``, the ``acp --agent-engine v3`` start, and the unattended
+        # ``whoami``) through ``_sandboxed_probe``, which forwards the flag to
+        # ``_run_process``. Each argv is module constants on the binary
+        # ``pin_kiro_cli`` resolves through ``find_kiro_cli_candidates`` -- the
+        # kiro-cli ACP launches on every session -- so no agent, repo or user text
+        # reaches it. The flag only keeps a backend-less host probing, unconfined,
+        # as these probes always ran; wherever a backend exists they now run
+        # inside the sandbox, because that binary's directory is agent-writable.
+        "kiro_cli.py::_sandboxed_probe",
         "kiro_prerequisite_process.py::_run_process",
         "kiro_prerequisite_process.py::_prepare_sandboxed_spawn",
     }
