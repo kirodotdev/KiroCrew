@@ -60,6 +60,7 @@ from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
 from kiro_crew.owner_only_files import mkdirs_owner_only
+from kiro_crew.work_root import _activity_time
 
 logger = logging.getLogger(__name__)
 
@@ -342,7 +343,8 @@ def _tree_newest_mtime(root: Path, fallback: float) -> float:
     own mtime -- so tree-newest is the faithful idle signal on every
     platform, and the only one available on Windows (no process groups).
     Fail-safe: an unreadable entry returns *fallback* (reads as active, the
-    sweep keeps the dir).
+    sweep keeps the dir). *fallback* is the sweep's clock, and each entry is
+    read through :func:`~kiro_crew.work_root._activity_time` against it.
 
     Deliberately UNCAPPED: an entry cap that bails to *fallback* turns every
     tree larger than the cap into a permanently active-looking one, so a dead
@@ -358,14 +360,13 @@ def _tree_newest_mtime(root: Path, fallback: float) -> float:
     """
     newest = 0.0
     try:
-        newest = os.lstat(root).st_mtime
+        newest = _activity_time(os.lstat(root), fallback)
         stack = [root]
         while stack:
             current = stack.pop()
             for entry in os.scandir(current):
                 info = os.lstat(entry.path)
-                if info.st_mtime > newest:
-                    newest = info.st_mtime
+                newest = max(newest, _activity_time(info, fallback))
                 # lstat: symlinks never descend, nor do Windows junctions.
                 if stat.S_ISDIR(info.st_mode) and not platform_compat.lstat_is_name_surrogate(info):
                     stack.append(Path(entry.path))

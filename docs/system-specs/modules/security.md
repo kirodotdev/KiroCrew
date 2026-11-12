@@ -733,8 +733,9 @@ before listing it and removes each idle subtree through `pinned_fs.remove_tree_p
 the parent resolved and the child name literal, so a root or child swapped for a symlink
 mid-sweep cannot redirect a delete onto a governance file (e.g. `security_policy.json`)
 outside the tree. It reclaims a crash orphan — a `TemporaryDirectory` subtree idle past a 6h
-grace; every staging site produces a directory subtree, so a bare top-level file is left
-untouched — on the gateway's hourly maintenance wake; there is no separate boot sweep,
+grace, where an mtime more than a day past the sweep's clock (an extracted archive member
+can carry one) is read as the entry's change time instead (Windows has none, so it stands there); every staging site produces a directory subtree,
+so a bare top-level file is left untouched — on the gateway's hourly maintenance wake; there is no separate boot sweep,
 because a reboot orphan is a visible staging tree no worse than the visible `snapshots`
 archive beside it and the hourly wake clears it within the grace window regardless.
 
