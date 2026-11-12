@@ -812,6 +812,11 @@ export const subagentReducers = {
       // card must keep its object.
       a.status = doneStatus
       if (a.retrying !== false) a.retrying = false
+      // A finished run is no longer stalled; Activity ranks a stalled card
+      // above finished ones.
+      if (a.stalled) a.stalled = false
+      if (a.idleSecs !== undefined) a.idleSecs = undefined
+      if (a.stalledAt !== undefined) a.stalledAt = undefined
       a.elapsed = action.payload.elapsed
       if (credits !== undefined) a.credits = credits
       const error = doneStatus === 'stopped' ? undefined : action.payload.error
