@@ -30,6 +30,7 @@ from kiro_crew.acp.client import (
     advertised_model_ids,
     catalog_row_would_drop,
 )
+from kiro_crew.acp.command_refused import AcpCommandRefused
 from kiro_crew.acp.launch_tuning import switch_launch_model, switch_launch_tuning
 from kiro_crew.acp.session_handle import (
     _READ_PATH_PROBE_DEADLINE_SECS,
@@ -51,6 +52,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_EFFORT_AT_LAUNCH,
     ACP_BACKENDS_ULTRACODE_CONFIG_OPTION,
     ULTRACODE_CONFIG_OPTION_ID,
+    effort_refused_by_model,
     launch_effort_supported,
 )
 from kiro_crew.effort import EFFORT_LEVELS, model_supports_effort, resolve_effort_for_model
@@ -459,7 +461,9 @@ async def change_effort(self: AcpProvider, level: str) -> bool:
     command for ``ACP_BACKENDS_KIRO_SLASH_COMMANDS``, ``session/set_config_option``
     for ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION``. Returns False when the current
     model does not support effort, or when this harness is in neither set and
-    so has no effort channel at all.
+    so has no effort channel at all. A session that advertises the option but
+    whose model refuses the write (``effort_refused_by_model``) raises
+    ``AcpCommandRefused`` after the stored level and overlay are rolled back.
     """
     model = self._effort_model
     if not self.supports_effort():
@@ -532,7 +536,7 @@ async def change_effort(self: AcpProvider, level: str) -> bool:
             await self._set_effort_config_option(level)
         else:
             await self._client.send_command("/effort", args={"level": level})
-    except Exception:
+    except Exception as exc:
         # Roll back to the prior state before propagating to the caller.
         if _prev is None:
             self._effort_per_model.pop(model, None)
@@ -564,6 +568,17 @@ async def change_effort(self: AcpProvider, level: str) -> bool:
                     model,
                     level,
                 )
+        if effort_refused_by_model(self._client.backend, exc):
+            # The session advertises the option but its current model takes no
+            # level. Rolled back above; raised as a command refusal, because a
+            # False return makes the dashboard store the level and reset, and the
+            # respawn would re-apply the level this rollback just undid.
+            logger.info(
+                "change_effort refused — model %s has no effort setting (backend=%s)",
+                model,
+                self._client.backend,
+            )
+            raise AcpCommandRefused(str(exc), code=getattr(exc, "code", None)) from exc
         logger.warning(
             "ACP effort live push failed (model=%s effort=%s) — rolled back", model, level
         )

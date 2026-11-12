@@ -200,6 +200,9 @@ with no row here.
      - driver-internal (which ``configId`` carries the reasoning effort)
    * - ``effort_config_option_value``
      - driver-internal (which VALUE that option spells a Crew effort level with)
+   * - ``effort_refused_by_model``
+     - driver-internal (whether an effort write's error says the current model
+       takes no effort level)
    * - ``effort_config_option_levels``
      - driver-internal (which advertised values are levels, not "no override")
    * - ``effort_config_option_clear_value``
@@ -1338,6 +1341,7 @@ from kiro_crew.agent_sdk.backends_members import (  # noqa: E402,F401 - re-expor
     crewmate_inherited_backend,
 )
 from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-exported vocabulary
+    _EFFORT_MODEL_REFUSAL_PHRASE_BY_BACKEND,
     _MODEL_REFUSAL_PHRASE_BY_BACKEND,
     _MODEL_REGISTRY_NAMESPACE_BY_BACKEND,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
@@ -1365,6 +1369,7 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     effort_config_option_id,
     effort_config_option_levels,
     effort_config_option_value,
+    effort_refused_by_model,
     launch_effort_supported,
     model_refusal_phrase,
     model_registry_namespace,

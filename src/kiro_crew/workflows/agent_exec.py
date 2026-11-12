@@ -161,8 +161,9 @@ async def apply_step_effort(provider: Any, level: Optional[str]) -> None:
     session, so a session that is already live needs the step's effort pushed.
     Nothing is pushed for an unset level or a provider without ``change_effort``.
     A level the session does not advertise (``accepts_effort_level`` returns
-    False) is skipped, as a cold start drops it. A raise from ``change_effort``
-    propagates to the caller.
+    False) is skipped, as a cold start drops it. A level the session's model
+    refuses (``command_refused``) leaves the session at the effort it runs, as a
+    cold start does; any other raise from ``change_effort`` propagates.
     """
     change_effort = getattr(provider, "change_effort", None)
     if not level or change_effort is None:
@@ -170,7 +171,12 @@ async def apply_step_effort(provider: Any, level: Optional[str]) -> None:
     accepts = getattr(provider, "accepts_effort_level", None)
     if accepts is not None and not accepts(level):
         return
-    await change_effort(level)
+    try:
+        await change_effort(level)
+    except Exception as exc:
+        if getattr(exc, "command_refused", False) is not True:
+            raise
+        logger.warning("step effort %r refused; the session keeps its effort: %s", level, exc)
 
 
 async def vet_step_spawn(
