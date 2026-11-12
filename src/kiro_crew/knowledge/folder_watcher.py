@@ -1550,6 +1550,12 @@ class FolderWatcher:
 
             return committed, "done"
         except Exception as e:
+            from .llm_pool import LLMPoolClosed
+
+            if isinstance(e, LLMPoolClosed):
+                # Gateway exit, not a defect in the file: the 'scanning' marker
+                # stays, and the next start retries it.
+                raise
             # The pipeline already logged an oversized file as a WARNING. The row
             # reads 'failed', not 'skipped', so the Knowledge page shows why, with Retry.
             if not isinstance(e, FileTooLargeError):
