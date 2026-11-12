@@ -55,8 +55,10 @@ RECORD_DIR_LEAF = "config-provenance"
 #: the first line is the nonce, each further line
 #: ``<leaf> <replaced dev> <replaced ino> <published dev> <published ino>``.
 RECORD_FILE = "published"
-#: The leaves whose gateway writes are vouched for. The two sealed runtime-config files.
-PUBLISHED_LEAVES: tuple[str, ...] = ("config.json", "config.local.json")
+#: The leaves whose gateway writes are vouched for: the two sealed runtime-config files,
+#: and the masked refresh-token chain state, which ``dashboard.refresh_tokens`` rewrites
+#: on every token rotation.
+PUBLISHED_LEAVES: tuple[str, ...] = ("config.json", "config.local.json", "refresh_chains.json")
 #: Fresh per gateway process. The launcher is told it in its plan and accepts only a
 #: record that carries it, so a record written by an earlier process, or planted by a
 #: sandbox of a build that did not yet seal this directory, vouches for nothing.
@@ -92,7 +94,7 @@ def record_path() -> Path:
 def launcher_record() -> tuple[str, str, tuple[str, ...]]:
     """``(record path, nonce, names)`` for the launcher's plan.
 
-    *names* are the two config files under the data home, the only targets whose
+    *names* are the :data:`PUBLISHED_LEAVES` under the data home, the only targets whose
     changed occupant the launcher will look the record up for.
     """
     home = config_dir()
