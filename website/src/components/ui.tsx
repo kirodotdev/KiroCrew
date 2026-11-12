@@ -502,7 +502,13 @@ export function Toggle({ checked, onChange, disabled, busy, label, describedBy, 
       // shouts and duplicates a state the row's own grouping already carries.
       // The knob position still reads the state, so nothing is lost by dropping
       // the hue. Accent stays the default so a lone switch keeps its emphasis.
-      className={`w-9 h-5 rounded-full relative transition-colors shrink-0 cursor-pointer ${inert ? 'opacity-40 cursor-not-allowed' : ''} ${checked ? (tone === 'muted' ? 'bg-border-strong' : 'bg-accent') : 'bg-border'}`}
+      // Off, `--border` alone sits near 1.2:1 on a light card and reads as
+      // disabled, so an inset `--muted` edge carries WCAG 1.4.11's 3:1 (worst
+      // 4.9:1 against --card and --bg over every built-in palette). Inset, so no
+      // layout moves; the fill stays lighter than the muted on-fill.
+      // Only a switch that can be turned on gets the edge, so off and disabled
+      // never look alike: disabled stays faint and edgeless.
+      className={`w-9 h-5 rounded-full relative transition-colors shrink-0 cursor-pointer ${inert ? 'opacity-40 cursor-not-allowed' : ''} ${checked ? (tone === 'muted' ? 'bg-border-strong' : 'bg-accent') : inert ? 'bg-border' : 'bg-border shadow-[inset_0_0_0_1.5px_var(--muted)]'}`}
     >
       <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
     </div>

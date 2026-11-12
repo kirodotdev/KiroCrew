@@ -1988,6 +1988,13 @@
       "hint": "A snapshot keeps the size it was saved with, so this applies only to profiles without one. Larger sizes bill more while the machine runs."
     },
     {
+      "id": "session-environments.open-and-update-pull-requests-from-remote-sessions",
+      "label": "Open and update pull requests from remote sessions",
+      "tab": "session-environments",
+      "route": "/settings/session-environments?highlight=key%3Asession_environments.gh_proxy",
+      "configKey": "session_environments.gh_proxy"
+    },
+    {
       "id": "session-environments.secret-name-for-the-token-usually-sprites-token",
       "label": "Secret name for the token (usually SPRITES_TOKEN)",
       "tab": "session-environments",

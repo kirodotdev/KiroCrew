@@ -194,6 +194,21 @@ async def api_session_environments_check(request: web.Request) -> web.Response:
     )
 
 
+async def api_session_environments_gh_login_get(request: web.Request) -> web.Response:
+    """``GET /api/session-environments/gh-login``: owner-only, the GitHub login the
+    gh proxy would act as, so its Settings switch names the account before anyone
+    turns it on. ``{"login": "<login>"}``, or ``{"login": null}`` when this
+    computer's gh has none or cannot say. Reads the name only, never the token.
+    """
+    if (
+        refusal := await require_owner_dashboard_request(request, "session_environments.gh_login")
+    ) is not None:
+        return refusal
+    from kiro_crew.remote_session.gh_gateway import gateway_login
+
+    return web.json_response({"login": await gateway_login()})
+
+
 def _template_names(raw: object) -> list[str]:
     """Template names from ``coder templates list --output json``, sorted.
 

@@ -153,6 +153,10 @@ def register(app: web.Application) -> None:
         session_environment_handlers.api_session_environments_check,
     )
     app.router.add_get(
+        "/api/session-environments/gh-login",
+        session_environment_handlers.api_session_environments_gh_login_get,
+    )
+    app.router.add_get(
         "/api/session-environments/workspaces",
         session_environment_handlers.api_session_environments_workspaces_get,
     )

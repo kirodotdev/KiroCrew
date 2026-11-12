@@ -27,6 +27,7 @@ interface Section {
   boxd_profiles?: BoxdRow[]
   default_profile?: string
   stop_on_shutdown?: boolean
+  gh_proxy?: boolean
   kiro_cloud_profiles?: { id: string; name: string; repositories: string[] }[]
 }
 let stored: { session_environments?: Section }

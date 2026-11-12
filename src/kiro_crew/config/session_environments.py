@@ -36,6 +36,7 @@ SECTION_OPTIONAL_KEYS: tuple[str, ...] = (
     "boxd_profiles",
     "kiro_cloud_profiles",
     "stop_on_shutdown",
+    "gh_proxy",
 )
 #: Days an archived session's stopped workspace is kept before it is deleted. Fixed,
 #: not a setting: a stopped workspace still holds its disk.
@@ -184,6 +185,28 @@ def load_stop_on_shutdown(raw: object) -> bool:
         return True
 
 
+def validate_gh_proxy(value: object) -> bool:
+    """Whether remote sessions get the gh proxy (``gh`` run on this machine)."""
+    if not isinstance(value, bool):
+        raise SessionEnvironmentsError("gh_proxy must be true or false")
+    return value
+
+
+def load_gh_proxy(raw: object) -> bool:
+    """Lenient load: the saved choice; False (off) when absent or invalid.
+
+    It lends this machine's GitHub login, so nothing is lent until the person
+    turns it on, and a value that cannot be read lends nothing.
+    """
+    if not isinstance(raw, dict) or "gh_proxy" not in raw:
+        return False
+    try:
+        return validate_gh_proxy(raw["gh_proxy"])
+    except SessionEnvironmentsError as exc:
+        logger.warning("session_environments: %s; the gh proxy is off", exc)
+        return False
+
+
 def validate_default_profile(value: object) -> str:
     """The profile id new dashboard sessions start on ("" is this machine); shape only."""
     if value is None or value == "":
@@ -279,6 +302,8 @@ def validate_session_environments(value: object) -> dict[str, Any]:
         result["default_profile"] = validate_default_profile(value["default_profile"])
     if "stop_on_shutdown" in value:
         result["stop_on_shutdown"] = validate_stop_on_shutdown(value["stop_on_shutdown"])
+    if "gh_proxy" in value:
+        result["gh_proxy"] = validate_gh_proxy(value["gh_proxy"])
     return result
 
 

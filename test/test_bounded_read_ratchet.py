@@ -56,6 +56,10 @@ _STANDALONE: dict[str, tuple[int, str]] = {
         6,
         "a stdlib-only script copied to the remote guest",
     ),
+    "remote_session/gh_proxy.py": (
+        2,
+        "a stdlib-only script copied to the remote guest (the gh proxy stand-in)",
+    ),
 }
 
 #: Reads of an HTTP response body, with the sites each file holds.

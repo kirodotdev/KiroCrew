@@ -29,7 +29,7 @@ WORKER_DIR = "$HOME/.kirocrew-worker"
 #: Beside a launch's git-proxy port file: the number of a proxy start that failed.
 #: Mirrors ``workspace_tools.GIT_PROXY_FAILED_SUFFIX``.
 GIT_PROXY_FAILED_SUFFIX = ".failed"
-_WORKER_FILES = ("wire.py", "worker.py", "workspace_tools.py", "git_proxy.py")
+_WORKER_FILES = ("wire.py", "worker.py", "workspace_tools.py", "git_proxy.py", "gh_proxy.py")
 _COMMAND_TIMEOUT = 120.0
 _OUTPUT_MAX = 64 * 1024
 #: Variables never handed to the dial/install commands' environment.

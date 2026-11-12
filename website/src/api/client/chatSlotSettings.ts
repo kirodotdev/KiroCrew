@@ -168,6 +168,9 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
       post('/api/session-environments/check').then(j) as Promise<SessionEnvironmentsCheck>,
     sessionEnvironmentsWorkspaces: () =>
       get('/api/session-environments/workspaces').then(j) as Promise<{ workspaces: SessionEnvironmentWorkspace[] }>,
+    /** The GitHub login the gh proxy would act as (this computer's gh), or null. Owner-only. */
+    sessionEnvironmentsGhLogin: () =>
+      get('/api/session-environments/gh-login').then(j) as Promise<{ login: string | null }>,
     /** Templates the saved Coder deployment offers; `error` when unreadable. Owner-only. */
     sessionEnvironmentsTemplates: () =>
       get('/api/session-environments/templates').then(j) as Promise<{ templates: string[]; error?: string }>,

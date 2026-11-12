@@ -928,4 +928,12 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "whoever can write the folder chose, so it passes `redact_via_context` "
         "before it leaves the gateway.",
     ),
+    (
+        "What a remote session writes to GitHub through the gh proxy",
+        "remote_session/gh_gateway.py",
+        "The body, title, labels, milestone and search text of each gh command a remote "
+        "session sends through the gh proxy, on their way to GitHub under the gateway "
+        "owner's login. Each passes the exfiltration-URL then the credential redactor "
+        "before the gateway's gh runs.",
+    ),
 )

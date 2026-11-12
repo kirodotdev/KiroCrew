@@ -3377,6 +3377,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "session-environments.open-and-update-pull-requests-from-remote-sessions",
+    "label": "Open and update pull requests from remote sessions",
+    "labelKey": "sessionEnvironments.ghProxy",
+    "tab": "session-environments",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "session_environments.gh_proxy"
+  },
+  {
     "id": "session-environments.secret-name-for-the-token-usually-sprites-token",
     "label": "Secret name for the token (usually SPRITES_TOKEN)",
     "labelKey": "sessionEnvironments.tokenSecret",

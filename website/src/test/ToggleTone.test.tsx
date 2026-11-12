@@ -33,6 +33,20 @@ describe('Toggle tone', () => {
     expect(switchEl().className).toBe(plain)
   })
 
+  it('draws an edge on the off track only, so off does not read as disabled', () => {
+    const { unmount } = render(<Toggle checked={false} onChange={vi.fn()} label="a" />)
+    expect(switchEl().className).toContain('shadow-[inset_0_0_0_1.5px_var(--muted)]')
+    unmount()
+    render(<Toggle checked onChange={vi.fn()} label="b" />)
+    expect(switchEl().className).not.toContain('shadow-[inset')
+  })
+
+  it('leaves a disabled off switch edgeless, so it never reads as an available off one', () => {
+    render(<Toggle checked={false} onChange={vi.fn()} label="a" disabled />)
+    expect(switchEl().className).not.toContain('shadow-[inset')
+    expect(switchEl().className).toContain('opacity-40')
+  })
+
   it('keeps aria-checked truthful regardless of tone', () => {
     render(<Toggle checked onChange={vi.fn()} label="t" tone="muted" />)
     expect(switchEl()).toHaveAttribute('aria-checked', 'true')

@@ -4046,8 +4046,8 @@ screenshot.
 `session_environments` (`SessionEnvironmentsConfig` in `config/sections.py`)
 persists what the Settings UI needs to offer remote session environments, and
 nothing else: `coder_url`, `profiles`, and the optional `sprites_profiles`,
-`boxd_profiles`, `kiro_cloud_profiles`, `default_profile` and
-`stop_on_shutdown`. `config/session_environments.py` owns
+`boxd_profiles`, `kiro_cloud_profiles`, `default_profile`,
+`stop_on_shutdown` and `gh_proxy`. `config/session_environments.py` owns
 every rule: its strict `validate_*` functions back the dashboard write gate (a
 400, nothing written) and its lenient `load_session_environments` backs
 `SessionEnvironmentsConfig.from_raw`, which keeps every valid part of a
@@ -4081,6 +4081,10 @@ duplicate or over-cap profile is dropped with a warning).
   `boxd_profiles` leaf write refuses to drop the profile the saved default names
   (`unknown_profile`).
 - `stop_on_shutdown`: a boolean, default `true`.
+- `gh_proxy`: a boolean, default `false`: whether remote sessions get the gh
+  proxy, which runs `gh` on this machine with its GitHub login (see
+  [providers](providers.md)). Nothing is lent until the person turns it on;
+  a value the load cannot read is off too.
 - `kiro_cloud_profiles` (optional): at most 20 Kiro Cloud Sessions records,
   each exactly `{id, name, repositories}`: `id` and `name` follow the profile
   rules above, and `repositories` is a list of at most 10 `name` or
@@ -4098,7 +4102,7 @@ GET.
 
 `PATCH /api/config/kirocrew` accepts `session_environments` and the leaf paths
 `coder_url`, `sprites_profiles`, `boxd_profiles`, `kiro_cloud_profiles`,
-`default_profile` and `stop_on_shutdown` (`profiles` only through the whole
+`default_profile`, `stop_on_shutdown` and `gh_proxy` (`profiles` only through the whole
 section), all through the `"normalized"` spec type. Whole-section saves
 require the Coder keys; an omitted `SECTION_OPTIONAL_KEYS` key keeps its saved
 value under the config lock. After every write to the section, a saved
