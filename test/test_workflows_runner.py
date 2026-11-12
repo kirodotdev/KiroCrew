@@ -114,6 +114,66 @@ async def test_script_exception_becomes_run_failed_exec() -> None:
     assert res.events[-1].data["where"] == "exec"
 
 
+async def test_a_script_base_exception_fails_the_background_run() -> None:
+    from kiro_crew.testing.wait import await_until
+    from kiro_crew.workflows.registry import RunRegistry
+
+    script = (
+        'META = {"name": "boom"}\n'
+        "async def workflow(ctx):\n"
+        "    await ctx.agent('step 1')\n"
+        "    raise BaseException('script gave up')\n"
+    )
+    registry = RunRegistry()
+    rid = await _runner().run_background(script, registry=registry, run_id="wf_be", now=NOW)
+    handle = registry.get(rid)
+    assert handle is not None and handle.task is not None
+    escaped: BaseException | None = None
+    try:
+        await await_until(handle.task, what="the driver task to end")
+    except BaseException as exc:  # noqa: BLE001 - the driver must not die with it
+        escaped = exc
+    assert escaped is None, f"the driver task died with {escaped!r}"
+    snap = registry.status(rid, include_events=True)
+    assert snap["status"] == "failed", snap["status"]
+    assert snap["events"][-1]["type"] == "run_failed"
+    assert snap["events"][-1]["data"]["where"] == "exec"
+    assert "script gave up" in snap["error"]
+    assert await registry.cancel(rid) is False  # nothing left to cancel
+
+
+async def test_a_cancel_still_cancels_the_background_run() -> None:
+    from kiro_crew.testing.wait import await_until
+    from kiro_crew.workflows.registry import RunRegistry
+
+    started = asyncio.Event()
+    never = asyncio.Event()
+
+    async def _hang(prompt: str, opts: dict):
+        started.set()
+        await never.wait()
+        return "never"
+
+    script = (
+        'META = {"name": "slow"}\n'
+        "async def workflow(ctx):\n"
+        "    await ctx.agent('hang')\n"
+        "    raise BaseException('not reached')\n"
+    )
+    registry = RunRegistry()
+    runner = _runner(agent_fn=_hang)
+    rid = await runner.run_background(script, registry=registry, run_id="wf_cx", now=NOW)
+    await await_until(started, what="the agent call to start")
+    assert await registry.cancel(rid) is True
+    handle = registry.get(rid)
+    assert handle is not None and handle.task is not None
+    with contextlib.suppress(asyncio.CancelledError):
+        await await_until(handle.task, what="the driver task to end")
+    snap = registry.status(rid, include_events=True)
+    assert snap["status"] == "cancelled", snap["status"]
+    assert snap["events"][-1]["type"] == "run_cancelled"
+
+
 # --------------------------------------------------------------------------- #
 # B5 — wall-clock timeout
 # --------------------------------------------------------------------------- #

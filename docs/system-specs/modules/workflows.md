@@ -555,7 +555,7 @@ agent_finished, run_finished`.
 | `author` | author-in-run raised, or produced no valid script |
 | `validate` | static validation failed, or the script references a ctx primitive this host did not wire |
 | `ceiling` | wall-clock timeout, `BudgetExceeded`, or the per-run agent-call cap |
-| `exec` | the script itself raised |
+| `exec` | the script itself raised, a `BaseException` included (it is in the script's builtins); the background driver also marks the run `failed` on one, so a script's `BaseException` no longer leaves the run `running` with a Cancel that reports success on nothing. A cancel still ends the run `cancelled`; a process `KeyboardInterrupt` or `SystemExit` is recorded, then re-raised; a `GeneratorExit` (a coroutine being closed) is re-raised with nothing awaited |
 | `interrupted` | the script returned, but a `ctx.agent()` step's turn was stopped from outside (`WorkflowStepInterrupted`); `error` is that step's error |
 
 ### Persistence of the stream
