@@ -1409,6 +1409,7 @@ describe('AgentBackendTab shared probe eligibility', () => {
     ['missing', { installed: 'missing', missing_components: ['claude-agent-acp'] }, false],
     ['restart required', { restart_required: true }, false],
     ['check failed', { installed: 'unknown' }, true],
+    ['sandbox refused', { sandbox_refusal: 'host' }, false],
   ] as const)('%s: Use enabled = %s', async (_label, over, enabled) => {
     acpBackendsMock.mockResolvedValue({
       backends: [probeRow('kiro'), probeRow('claude', { ...over })],
@@ -1418,6 +1419,24 @@ describe('AgentBackendTab shared probe eligibility', () => {
     highlight('Claude Code')
     if (enabled) await waitFor(() => expect(useButton('Claude Code')).toBeEnabled())
     else await waitFor(() => expect(useButton('Claude Code')).toBeDisabled())
+  })
+
+  // The host case is also not installed: the refusal, not an install command,
+  // is what the row says, because installing cannot make the harness start here.
+  it.each([
+    ['host', { installed: 'missing', missing_components: ['claude-agent-acp'] }, 'This host cannot provide that sandbox', "Host can't sandbox"],
+    ['setting', {}, 'the sandbox is turned off', 'Sandbox turned off'],
+  ] as const)('a %s sandbox refusal names its cause on the row and in the detail', async (cause, over, why, badge) => {
+    acpBackendsMock.mockResolvedValue({
+      backends: [probeRow('kiro'), probeRow('claude', { ...over, sandbox_refusal: cause })],
+    })
+    wrap()
+    await waitFor(() => expect(row('Claude Code')).toBeInTheDocument())
+    highlight('Claude Code')
+    await waitFor(() => expect(detail().textContent).toContain(why))
+    expect(rowLabel('Claude Code').textContent).toContain(badge)
+    expect(panel().queryByText(/New sessions switch from/)).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull()
   })
 
   it('unselectable: not offered at all', async () => {

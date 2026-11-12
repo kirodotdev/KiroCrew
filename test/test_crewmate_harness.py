@@ -1616,18 +1616,36 @@ class TestCrewmateHarnesses:
         assert "kiro" not in worker_harnesses(_cfg(kas_bundle=True))
 
     def test_the_save_accepts_exactly_the_offered_list(self, monkeypatch):
+        from kiro_crew import sandbox
         from kiro_crew.agent_sdk import backends
         from kiro_crew.crewmate_harness import crewmate_harnesses, harness_pin_rejected
 
         monkeypatch.setattr(
             backends, "selectable_backends", lambda: frozenset({"", "kas", "codex", "opencode"})
         )
+        # A host whose sandbox can confine codex; the refusing host is the next test.
+        monkeypatch.setattr(sandbox, "credential_mask_applies", lambda _mode: True)
         cfg = _cfg()
         for stored in crewmate_harnesses(cfg):
             assert harness_pin_rejected(stored, cfg) is None
         assert harness_pin_rejected("", cfg) is None
         for refused in ("kiro", "opencode", "claude"):
             assert "must be one of" in (harness_pin_rejected(refused, cfg) or "")
+
+    def test_a_harness_the_launch_refuses_on_this_host_is_not_saved(self, monkeypatch):
+        """A pin every session start refuses here is refused with that sentence."""
+        from kiro_crew import sandbox
+        from kiro_crew.agent_sdk import backends
+        from kiro_crew.agent_sdk.tool_gate import sandbox_floor_refusal
+        from kiro_crew.crewmate_harness import harness_pin_rejected
+
+        monkeypatch.setattr(
+            backends, "selectable_backends", lambda: frozenset({"", "kas", "codex"})
+        )
+        monkeypatch.setattr(sandbox, "credential_mask_applies", lambda _mode: False)
+        cfg = _cfg()
+        assert harness_pin_rejected("codex", cfg) == sandbox_floor_refusal("codex", "auto")
+        assert harness_pin_rejected("kas", cfg) is None
 
 
 class TestSaveRefusesAnUncapableHarness:

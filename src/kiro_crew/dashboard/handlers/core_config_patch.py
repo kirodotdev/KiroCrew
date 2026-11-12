@@ -72,6 +72,20 @@ _MOVED_CONFIG_FIELDS: dict[str, str] = {
 }
 
 
+def _acp_backend_sandbox_refusal(stored: str) -> str:
+    """The launch's refusal of the harness *stored* names, or ``""`` (blocking).
+
+    ``tool_gate.sandbox_floor_refusal`` at the configured tier, the predicate a
+    session start runs. Runs in a worker thread: it can probe for a sandbox backend.
+    """
+    from kiro_crew import sandbox
+    from kiro_crew.agent_sdk.backends import backend_from_stored
+    from kiro_crew.agent_sdk.tool_gate import sandbox_floor_refusal
+
+    backend = str(backend_from_stored(stored))
+    return sandbox_floor_refusal(backend, sandbox.configured_sandbox_mode())
+
+
 def _beacon_governance_pinned_off() -> bool:
     """Return whether a ceiling pins ``capabilities.telemetry`` off (blocking).
 
@@ -529,6 +543,17 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                     "code": "shell_not_executable",
                 },
                 status=400,
+            )
+
+    # A harness every session start refuses on this host (an enforced harness whose
+    # credential mask cannot apply here) is refused with the launch's own sentence,
+    # so a save cannot store a choice that fails only at the next session.
+    if path_key == "agent.acp_backend" and value:
+        refusal = await asyncio.to_thread(_acp_backend_sandbox_refusal, value)
+        if refusal:
+            _log_sel("denied", f"{path_key}={value}")
+            return web.json_response(
+                {"error": refusal, "code": "acp_backend_sandbox_refused"}, status=409
             )
 
     # ── Governance: refuse a write an enterprise ceiling has pinned ──

@@ -504,8 +504,22 @@ def enforce_sandbox_floor(backend: str, mode: str) -> None:
     hosts where a backend can exist. Neither message consults
     ``sandbox_allow_unsandboxed_exec``.
     """
+    reason = sandbox_floor_refusal(backend, mode)
+    if reason:
+        raise ToolGateUnroutable(reason)
+
+
+def sandbox_floor_refusal(backend: str, mode: str) -> str:
+    """The sentence :func:`enforce_sandbox_floor` refuses *backend* with at *mode*, or ``""``.
+
+    The launch's verdict without the launch, for the surfaces that offer or save a
+    harness before any session starts (the Agent Harness rows, the
+    ``agent.acp_backend`` PATCH, a crewmate's harness pin): reading this one
+    predicate is what keeps them from offering a choice every session start then
+    refuses. Blocking -- the mask question can probe for a sandbox backend.
+    """
     if not is_enforced(backend):
-        return
+        return ""
     # Local import for the same reason as the mask builder: this is a leaf that
     # ``acp/client.py`` imports at import time.
     from kiro_crew.sandbox import credential_mask_applies
@@ -516,18 +530,18 @@ def enforce_sandbox_floor(backend: str, mode: str) -> None:
     # and ``sandbox_allow_unsandboxed_exec`` opted in resolves to a non-``off`` tier,
     # passes that guard, and still spawns the adapter with its credential mask dropped.
     if credential_mask_applies(mode):
-        return
+        return ""
     # Platform copy only: the verdict above already decided the session cannot
     # start. Recommending standard/strict is advice that cannot succeed on native
     # Windows, where Crew has no OS sandbox backend to apply the mask.
     if platform_compat.IS_WINDOWS:
-        raise ToolGateUnroutable(
+        return (
             "{} cannot run on native Windows because Kiro Crew has no supported OS "
             "sandbox backend here to protect credential files; changing agent.sandbox "
             "cannot enable it. Select Kiro CLI in Settings → Agent Harness and start "
             "a new session.".format(label_for(backend))
         )
-    raise ToolGateUnroutable(
+    return (
         "{} routes tool calls through an enforced permission route whose "
         "compensating control is an OS-level credential mask, but this session would "
         "spawn it unsandboxed -- either agent.sandbox is 'off', or no sandbox backend "
@@ -1226,6 +1240,7 @@ __all__ = [
     "label_for",
     "remediation_for",
     "routing_verdict",
+    "sandbox_floor_refusal",
     "seeded_setting_issue",
     "session_config_issue",
 ]

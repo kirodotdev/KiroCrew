@@ -443,6 +443,16 @@ remedy stays for hosts where a backend can exist (Linux user namespaces, macOS
 Windows Crew delegates to Kiro's own sandbox. The unsandboxed-exec opt-in is
 not a recovery path and is not named.
 
+The same verdict is read BEFORE a session, so no surface offers a harness every
+session start then refuses: `tool_gate.sandbox_floor_refusal(backend, mode)` is
+the refusal `enforce_sandbox_floor` raises, returned as a sentence (or `""`). At
+the configured tier it sets each `GET /api/acp-backends` row's `sandbox_refusal`
+(`"host"` when the host has no sandbox backend, `"setting"` when `agent.sandbox`
+leaves the one it has off), which disables **Use** on Settings → Agent Harness
+and shows first-run setup's sentence for that cause; and it refuses
+`PATCH agent.acp_backend` (409 `acp_backend_sandbox_refused`) and a crewmate's
+`agents.<name>.acp_backend` pin with the launch's own sentence.
+
 **A provider must declare:** whether it self-sandboxes and how that is detected,
 its nesting compatibility, its delegation predicate, and any additional paths its
 credentials occupy. An unknown provider defaults to *not* self-sandboxing.

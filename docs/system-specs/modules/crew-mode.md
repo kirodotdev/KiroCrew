@@ -5200,7 +5200,10 @@ kiro-cli that lacks its engine.
   AND in `ACP_BACKENDS_MEMBER_CAPABILITIES` ∩ `ACP_BACKENDS_MEMBER_DISPATCH` ∩
   `ACP_BACKENDS_MATE_WORKER_KIT` (RFC O6: KAS, Claude Code, Codex; never pi or
   deepseek), judged on the runtime the pin resolves to (so `kiro` counts as KAS only where
-  `kiro_cli_pick_backend()` moves it there). A stored pin outside that list is
+  `kiro_cli_pick_backend()` moves it there), and that this host's session start
+  does not refuse (`tool_gate.sandbox_floor_refusal`: an enforced harness whose
+  credential mask cannot apply here is refused with the launch's own sentence).
+  A stored pin outside that list is
   unchanged: one this gateway can start runs the Bot on KAS with an error
   (`CrewBackendPin.checked`), and one it cannot start refuses as above. It judges `model` and `worker_model` against the harness
   the record will hold, re-judging the stored pins when the harness changes.

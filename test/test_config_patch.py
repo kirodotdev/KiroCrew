@@ -162,6 +162,26 @@ async def test_picking_kiro_cli_stores_kiro_and_the_response_says_kiro(tmp_confi
 
 
 @pytest.mark.asyncio
+async def test_a_harness_the_launch_refuses_on_this_host_is_not_saved(
+    tmp_config, monkeypatch
+) -> None:
+    """The save refuses an enforced harness with the launch's own sentence."""
+    from kiro_crew import sandbox
+    from kiro_crew.acp_backends import ACP_BACKEND_CODEX
+    from kiro_crew.agent_sdk.tool_gate import sandbox_floor_refusal
+
+    monkeypatch.setattr(sandbox, "credential_mask_applies", lambda _mode: False)
+    app = _make_app()
+    async with TestClient(TestServer(app)) as client:
+        response = await _patch(client, "agent.acp_backend", ACP_BACKEND_CODEX)
+        assert response.status == 409
+        body = await response.json()
+    assert body["code"] == "acp_backend_sandbox_refused"
+    assert body["error"] == sandbox_floor_refusal(ACP_BACKEND_CODEX, "auto")
+    assert "acp_backend" not in json.loads(tmp_config.read_text(encoding="utf-8"))["agent"]
+
+
+@pytest.mark.asyncio
 async def test_patching_an_empty_harness_stores_no_choice(tmp_config) -> None:
     """``""`` is "no choice": stored as is, it resolves to the KAS default."""
     from kiro_crew.acp_backends import ACP_BACKEND_KAS
