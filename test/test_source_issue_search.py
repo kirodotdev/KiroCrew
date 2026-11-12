@@ -228,7 +228,7 @@ def test_app_token_grant_is_path_segment_bounded(monkeypatch, declared, path, al
 # ── Providers the contract names but the gateway does not serve yet ──────────
 
 
-@pytest.mark.parametrize("provider", ["jira", "linear"])
+@pytest.mark.parametrize("provider", ["linear"])
 @pytest.mark.asyncio
 async def test_planned_providers_answer_provider_not_supported(
     monkeypatch, _mock_source_sel, provider

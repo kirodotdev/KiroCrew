@@ -129,9 +129,10 @@ export interface IssueSource {
 }
 
 /* ── Issue search (POST /api/source/issues) ─────────────────────────────────
- * Lists or searches ONE scope's issues. GitHub and GitLab are served today;
- * 'jira' and 'linear' answer 400 with code 'provider_not_supported'. Errors use
- * the same status/shape mapping as POST /api/source/issue. */
+ * Lists or searches ONE scope's issues. GitHub, GitLab and Jira (Cloud and
+ * Server/Data Center) are served today; 'linear' answers 400 with code
+ * 'provider_not_supported'. Errors use the same status/shape mapping as
+ * POST /api/source/issue. */
 
 export type IssueSearchProvider = 'github' | 'gitlab' | 'jira' | 'linear'
 
@@ -139,12 +140,12 @@ export interface IssueSearchRequest {
   provider: IssueSearchProvider
   /** GitHub `owner/repo`; GitLab project path `group/sub/project`; Jira project key; Linear team key. */
   scope: string
-  /** GitHub Enterprise / self-managed GitLab / Jira host. Defaults to github.com / gitlab.com.
-   *  Must be a host the gateway already allows for that provider. */
+  /** GitHub Enterprise / self-managed GitLab / Jira host. Defaults to github.com / gitlab.com;
+   *  required for Jira. Must be a host the gateway already allows for that provider. */
   host?: string
   /** Default 'open'. */
   state?: 'open' | 'closed' | 'all'
-  /** 'me' = the signed-in user. */
+  /** 'me' = the signed-in user. Jira: an account ID on Cloud, a username on Server/DC. */
   assignee?: string
   author?: string
   labels?: string[]
@@ -153,8 +154,8 @@ export interface IssueSearchRequest {
   sort?: 'updated' | 'created'
   /** Default 'desc'. */
   order?: 'desc' | 'asc'
-  /** Provider-native query (GitHub search qualifiers, GitLab filter string). Replaces the
-   *  structured filters; `scope` still applies and cannot be widened by it. */
+  /** Provider-native query (GitHub search qualifiers, GitLab filter string, Jira JQL). Replaces
+   *  the structured filters; `scope` still applies and cannot be widened by it. */
   raw?: string
   /** 1..100, default 25. */
   limit?: number
