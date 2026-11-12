@@ -26,7 +26,8 @@
  */
 import { useEffect, useState } from 'react'
 
-import { safeGetItem, safeSetItem } from '../utils/safeStorage'
+import { safeGetItem } from '../utils/safeStorage'
+import { savePrefExplicitly } from './uiPrefs'
 
 /** localStorage key holding the JSON string array of PINNED surface navIds. */
 export const NAV_PINNED_KEY = 'mc-nav-pinned'
@@ -139,7 +140,7 @@ export function useNavPinned(): ReadonlySet<string> {
 }
 
 function writeNavPinned(ids: Set<string>): void {
-  safeSetItem(NAV_PINNED_KEY, JSON.stringify([...ids].sort()))
+  savePrefExplicitly(NAV_PINNED_KEY, JSON.stringify([...ids].sort()))
   // Same-tab sync: localStorage writes only fire `storage` in OTHER tabs, so
   // dispatch our own event after every write (same reason `appNavHidden` does).
   if (typeof window !== 'undefined') {
