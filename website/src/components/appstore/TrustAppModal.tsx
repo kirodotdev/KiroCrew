@@ -663,6 +663,9 @@ export default function TrustAppModal({
     <Modal
       open={!!app}
       onClose={onCancel}
+      // Cancel is off while the grant and its install run; Escape, the backdrop
+      // and the X must be too, or the dialog a late failure renders in is gone.
+      dismissDisabled={pending}
       maxWidth={560}
       guideTrustRoot
       title={i18nT('components.appstore.trustAppModal.title', { app: name })}
