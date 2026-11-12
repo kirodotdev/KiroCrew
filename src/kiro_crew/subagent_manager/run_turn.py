@@ -64,6 +64,7 @@ if TYPE_CHECKING:
         _route_unpinned_start,
         _RunCreditAccounting,
         _selection_kind,
+        _spawning_agents,
         _validate_agent,
         _vet_spawn_governance,
         acp_error_is_transient,
@@ -239,9 +240,19 @@ async def _run_inner_impl(
     kind = _selection_kind(info)
     if info.crew or execution.member_id or (not info.agent and agent):
         policy_agent = info.crew or (execution.selection_name if kind == "member" else agent)
-        denial = await asyncio.to_thread(
-            _vet_spawn_governance, info.parent_session_key, policy_agent, app=info.app
-        )
+        denial = None
+        for parent_agent in _spawning_agents(
+            self._manager._agents.values(), info.parent_session_key or ""
+        ) or ("",):
+            denial = await asyncio.to_thread(
+                _vet_spawn_governance,
+                info.parent_session_key,
+                policy_agent,
+                app=info.app,
+                **({"parent_agent": parent_agent} if parent_agent else {}),
+            )
+            if denial:
+                break
         if denial:
             raise RuntimeError(f"spawn refused by governance: {denial}")
         sel().log_api_access(

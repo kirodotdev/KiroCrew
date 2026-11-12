@@ -265,6 +265,7 @@ from kiro_crew.subagent_parts.agent_policy import (  # noqa: F401
     _internal_agent_refusal,
     _parent_project_resolver,
     _parent_template_for_spawn,
+    _spawning_agents,
     _validate_agent,
     _validate_app_agent_ownership,
     _vet_parent_available_agents,

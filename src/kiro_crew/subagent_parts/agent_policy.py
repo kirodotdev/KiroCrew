@@ -8,7 +8,7 @@ an agent, the governance vetting of a spawn, the parent spec's
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import os
@@ -223,8 +223,55 @@ def _inherited_member_agent(selection_kind: str, template_id: str, project_dir: 
     return template_id
 
 
-def _vet_spawn_governance(parent_session_key: str, agent: str, app: str = "") -> str | None:
+def _spawning_agents(runs: Iterable[Any], parent_session_key: str) -> tuple[str, ...]:
+    """The agent names whose profiles judge a spawn under *parent_session_key*.
+
+    The spawning run is the live run the key names plus every live continuation
+    of it, which has its own id and runs on the first run's ``conversation_key``.
+    With no live one, the run the key names stands in. Each spawning run adds:
+
+    1. its explicit ``agent``, when it was started with one;
+    2. else the explicit ``agent`` of the run the key names, when the manager
+       still holds that run, so a follow-up is judged as the agent it continues;
+    3. else ``""``: the surface profile alone, as that run's own tool gate
+       reads it. A template the run only inherits adds no name.
+
+    A caller vets every name and refuses on the first refusal; ``""`` is vetted
+    with no ``parent_agent``. Empty when the key names no sub-agent run this
+    manager holds.
+    """
+    prefix = "subagent:"
+    if not parent_session_key.startswith(prefix):
+        return ()
+    run_id = parent_session_key[len(prefix) :]
+    records = list(runs)
+    named = [a for a in records if a.id == run_id]
+    live = [
+        a
+        for a in records
+        if not a.done
+        and (
+            a.id == run_id
+            or (getattr(a, "conversation_key", "") or f"{prefix}{a.id}") == parent_session_key
+        )
+    ]
+    lineage_agent = named[0].agent if named else ""
+    names: list[str] = []
+    for a in live or named:
+        names.append(a.agent or lineage_agent or "")
+    return tuple(dict.fromkeys(names))
+
+
+def _vet_spawn_governance(
+    parent_session_key: str, agent: str, app: str = "", parent_agent: str = ""
+) -> str | None:
     """Return a denial reason if governance forbids spawning, else None.
+
+    ``parent_agent`` is the agent the SPAWNING sub-agent run was started as. A
+    profile bound to that name (``{"type": "task", "id": parent_agent}``) is the
+    one that run's tool calls are judged by, so it is the one judged here, ahead
+    of the parent's surface profile. Empty, or a name with no profile, leaves the
+    surface profile deciding.
 
     ``app`` binds the calling app's OWN profile (precedence #1 in
     ``resolve_active_scope``): an app spawning through the SpawnSDK must be
@@ -246,7 +293,9 @@ def _vet_spawn_governance(parent_session_key: str, agent: str, app: str = "") ->
         from kiro_crew.platform.governance_profiles import governance_permits
 
         # Gate enabled?  (item ignored when no inner scope — checks ``enabled``.)
-        gate = governance_permits("capabilities.spawn", "", session_key=parent_session_key, app=app)
+        gate = governance_permits(
+            "capabilities.spawn", "", session_key=parent_session_key, agent=parent_agent, app=app
+        )
         if not getattr(gate, "permitted", True):
             return getattr(gate, "reason", "spawn capability disabled")
         # Agent-scope check (capabilities.spawn.scopes.agents).
@@ -255,6 +304,7 @@ def _vet_spawn_governance(parent_session_key: str, agent: str, app: str = "") ->
                 "capabilities.spawn",
                 f"agents:{agent}",
                 session_key=parent_session_key,
+                agent=parent_agent,
                 app=app,
             )
             if not getattr(scoped, "permitted", True):

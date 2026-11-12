@@ -35,6 +35,7 @@ if TYPE_CHECKING:
         _parent_runs_remotely,
         _shared_start_price_gb,
         _spawn_memory_floor_and_cost,
+        _spawning_agents,
         _startup_memory_reserve_gb,
         _validate_agent,
         _validate_app_agent_ownership,
@@ -573,7 +574,22 @@ class _GateMixin(ManagerComponent):
         # to named agents (capabilities.spawn.scopes.agents).  Resolved against
         # the PARENT surface so a per-app/per-surface profile contains what it
         # can spawn — even if the kiro side would allow it.
-        gov_spawn_err = _vet_spawn_governance(parent_session_key, agent, app=app) if _gate else None
+        # A sub-agent parent started as a named agent is judged by that agent's
+        # own profile, the one its tool calls are judged by. Each spawning run
+        # must be permitted; with none named, the parent's surface decides.
+        gov_spawn_err = None
+        if _gate:
+            for _parent_agent in _spawning_agents(
+                self._manager._agents.values(), parent_session_key or ""
+            ) or ("",):
+                gov_spawn_err = _vet_spawn_governance(
+                    parent_session_key,
+                    agent,
+                    app=app,
+                    **({"parent_agent": _parent_agent} if _parent_agent else {}),
+                )
+                if gov_spawn_err:
+                    break
         if gov_spawn_err:
             if _persistent_diagnostics:
                 logger.warning("Subagent spawn refused by governance: %s", gov_spawn_err)
