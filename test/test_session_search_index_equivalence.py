@@ -105,6 +105,9 @@ QUERIES = [
     "nothing-matches-this",
     "me",
     CJK_SINGLE_QUERY,
+    '"ack contention"',
+    "contention -deployment",
+    'contention -"pipeline notes"',
 ]
 
 
