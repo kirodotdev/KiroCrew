@@ -12318,6 +12318,7 @@
         "fork_no_later_messages": "此消息之后还没有消息。",
         "fork_in_progress": "正在分叉…",
         "fork_other_in_progress": "另一个分叉正在启动。",
+        "fork_with_another_model": "用另一个模型分叉",
         "copy_failed": "复制失败",
         "quote_message": "引用消息",
         "turn_credits": "{{credits}} 额度",

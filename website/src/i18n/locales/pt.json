@@ -12860,6 +12860,7 @@
         "fork_no_later_messages": "Ainda não há mensagens depois desta.",
         "fork_in_progress": "Bifurcando…",
         "fork_other_in_progress": "Outra bifurcação está começando.",
+        "fork_with_another_model": "Bifurcar com outro modelo",
         "copy_failed": "Falha ao copiar",
         "quote_message": "Citar mensagem",
         "turn_credits": "{{credits}} créditos",

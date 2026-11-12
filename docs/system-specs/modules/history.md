@@ -1474,6 +1474,16 @@ no longer destroy older turns.
   beside the plain entry: the plain entry sends `direction="tail"` and this one
   sends `direction="head"`. With the gate off the plain entry already forks with
   history, so the menu lists no second entry.
+- **Fork with another model**: the same message menu lists "Fork with another
+  model" after the fork entries once the fork point resolves. It sends the
+  `direction="head"` request "Fork with earlier messages" sends, then opens the new
+  chat's own composer model picker, so the model and its effort are picked in the
+  one combined control and land through `POST /api/chat/slots/{slot}/model` like
+  any pick; the fork request carries no model. The picker opens only when the new
+  chat is the open one once the switch lands; if the person opened another chat
+  meanwhile it stays an ordinary fork. Until a pick the child runs on the parent's
+  model and effort, and a pick on a child with copied history appends the usual
+  model-switch notice row. The agent `session_fork` path is unchanged.
 - **Fork inherits `memory_mode`, and never loosens it on its own**: an
   incognito or temporary session forks like a persistent one, and the child is
   born with the parent's mode -- passed to `get_or_create_slot` at creation so
