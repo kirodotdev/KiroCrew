@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import importlib.util
 import logging
 import shlex
 import subprocess
@@ -1005,12 +1006,18 @@ def test_streaming_run_skips_a_line_that_is_not_a_json_object(monkeypatch, fake_
     """A line nested past the decoder raised ``RecursionError``, which the
     ``JSONDecodeError`` arm missed, and ended the whole run; a scalar line
     reached ``.get`` the same way."""
-    from stray_line_helpers import STRAY_LINES
+    # test/ is on sys.path only when pytest also collects it, so load the corpus by path.
+    path = Path(__file__).resolve().parents[6] / "test" / "stray_line_helpers.py"
+    spec = importlib.util.spec_from_file_location("auto_improvement_stray_line_helpers", path)
+    assert spec is not None and spec.loader is not None, path
+    helpers = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helpers)
+    stray_lines = helpers.STRAY_LINES
 
     runner = R.AgentRunner(on_activity=lambda ev: None)
     popen = _StreamPopen(
         [
-            *(make().decode("utf-8", "replace") for make in STRAY_LINES.values()),
+            *(make().decode("utf-8", "replace") for make in stray_lines.values()),
             '{"type": "result", "result": "done", "total_cost_usd": 0.5}\n',
         ]
     )
