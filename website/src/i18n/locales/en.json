@@ -9272,6 +9272,8 @@
       "goals_new_goal_send": "Tell {{name}} what to aim for",
       "goals_new_goal_message": "I want to set a goal for you. Ask me what matters, then write it down for me to approve.",
       "goals_new_goal_failed": "Couldn't send that to the chat. Please try again.",
+      "goals_new_goal_unconfirmed": "Delivery not confirmed — open the chat and check the conversation before sending it again.",
+      "goals_new_goal_open_chat": "Open chat",
       "goals_goal_number": "Goal {{number}}",
       "goals_remove": "Remove goal",
       "goals_removed": "Goal removed",

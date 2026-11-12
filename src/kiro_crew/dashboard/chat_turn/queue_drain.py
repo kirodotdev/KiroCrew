@@ -1195,6 +1195,7 @@ async def _start_next_queued_turn(
         CHANNEL_RECIPIENT_META_KEY,
         QUEUED_CONTAINMENT_META_KEY,
         SEND_ORIGIN_META_KEY,
+        SESSION_SEND_QUEUED_META,
         audit_queued_allow,
     )
 
@@ -1298,6 +1299,8 @@ async def _start_next_queued_turn(
     _drained_meta.pop(PROMPT_ON_CHANNEL_META_KEY, None)
     # Queue plumbing: read above to pick the row, never part of a row's meta.
     _drained_meta.pop(REQUEUED_STEER_ROW_MID_META, None)
+    # Queue plumbing for ``session_queue``'s ownership read; never row meta.
+    _drained_meta.pop(SESSION_SEND_QUEUED_META, None)
     # Queue plumbing like the steer mark above, read the way the channel origin is:
     # ANY consumed entry a channel hand-off stamped keeps the merged text content,
     # so a batch cannot smuggle a channel's "/clear" into a command by sitting

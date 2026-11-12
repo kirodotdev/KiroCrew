@@ -22489,6 +22489,8 @@
       "goals_new_goal_send": "Decirle a {{name}} a qué apuntar",
       "goals_new_goal_message": "Quiero fijarte un objetivo. Pregúntame qué importa y luego anótalo para que lo apruebe.",
       "goals_new_goal_failed": "No se pudo enviar al chat. Inténtalo de nuevo.",
+      "goals_new_goal_unconfirmed": "Entrega sin confirmar: abre el chat y revisa la conversación antes de enviarlo de nuevo.",
+      "goals_new_goal_open_chat": "Abrir chat",
       "goals_goal_number": "Objetivo {{number}}",
       "goals_remove": "Quitar objetivo",
       "goals_removed": "Objetivo eliminado",
