@@ -227,6 +227,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # here only drives ``kiro_prerequisite_process._run_process`` -- the
         # sandbox-routed probe runner listed below -- and that runner makes the spawn.
         "agent_sdk/drivers/acp.py::_sandboxed_acp_help",
+        # Same pattern for the pinned kiro-cli's own fixed-argv probes (``--version``,
+        # ``acp --help``, ``chat --help``): the ``asyncio.run`` drives
+        # ``kiro_prerequisite._run_process``, which sandboxes, supervises and bounds
+        # the child; on a running loop the same call runs in one worker thread. No
+        # process is created here.
+        "kiro_cli.py::_sandboxed_probe",
         # The subprocess-pool child interpreter: ONE fixed argv, ``sys.executable -I -S
         # -c <leaf source>``, where the source is the text of a module-relative
         # constant script (the sensitive-path resolver's
@@ -335,14 +341,6 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # agent can write to names the executable; a resource ceiling / sandbox
         # adds nothing to a `--version` call.
         "diagnostics.py::_kiro_cli_version",
-        # The spec-permissions and MCP-deferral version gates: fixed argv
-        # ``[<kiro-cli>, "--version"]``, 5s timeout, no shell, no cwd, cached per
-        # binary path and mtime. Every probed path is pin_kiro_cli's own install:
-        # the pinned binary or its chat sibling. Nothing a PATH entry names
-        # reaches this argv; no turn text enters argv.
-        # The result gates spec permissions and Crew MCP deferral, and a sandbox
-        # adds nothing to this bounded ``--version`` probe.
-        "kiro_cli.py::kiro_cli_version_at",
         # Tailnet origin derivation + forwarded-peer whois (RFC:
         # rfc-tailnet-dashboard-access): one fixed argv — ``["<tailscale>",
         # "status", "--json"]`` or ``["<tailscale>", "whois", "--json",
@@ -659,29 +657,6 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # shell. Same classification as the ``ps``-based probe in
         # ``acp/runtime_process_tree.py::_get_rss_mb``.
         "cli_doctor_parts/host_probes.py::_gateway_rss_bytes",
-        # ``<kiro-cli> acp --help`` readiness probe for the KAS backend: fixed
-        # argv (subcommand and flag are module constants), 15s-capped, no shell,
-        # no agent-influenced arguments, and no credential involved — it reads
-        # help text to confirm this kiro-cli can select the KAS engine at all.
-        # Crew mints no KAS token anywhere; the relay resolves tokens
-        # from kiro-cli's own store (see ``acp/kas_transport.py``), so the former
-        # ``chat _ get-kas-token`` spawn is gone rather than moved.
-        "kiro_cli.py::kas_relay_help",
-        # ``<kiro-cli> acp --agent-engine v3`` start probe for the KAS floor and
-        # doctor: fixed argv (the tail is ``acp.kas_transport``'s constants), run on
-        # ``pin_kiro_cli``'s own install, or by the operator's doctor on the binary
-        # its ``acp --help`` row already ran, 30s-capped, no shell, stdin and stdout
-        # ``/dev/null`` so the engine reads EOF and serves nothing. Only its stderr
-        # is read, for kiro-cli's "V3 is currently not supported on this system"
-        # refusal, which ``acp --help`` cannot show; no credential is passed or read
-        # by Kiro Crew.
-        "kiro_cli.py::kas_relay_start_output",
-        # ``<kiro-cli> chat --help`` engine probe for the ``/usage`` scrape: fixed
-        # argv, 15s-capped, no shell, no agent-influenced arguments, no credential.
-        # It reads which ``--agent-engine`` values this kiro-cli accepts, so the
-        # scrape pins V2 only where V2 exists. Cached per binary path and mtime,
-        # and only ever called on ``pin_kiro_cli``'s own install, never a PATH hit.
-        "kiro_cli.py::chat_agent_engines_at",
         # ``<kiro-cli> whoami`` sign-in probe for the declaration-driven auth row:
         # fixed argv (the binary name is a module constant and the subcommand is a
         # literal), 10s-capped, no shell, no agent-influenced argument. It reads only

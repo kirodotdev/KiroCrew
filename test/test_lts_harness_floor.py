@@ -360,17 +360,17 @@ class TestARecordIsNeverProofAtBoot:
                 )
             },
         )
+        from kiro_crew import kiro_prerequisite
+        from kiro_crew.kiro_prerequisite_process import ProcessResult
+
+        binary.chmod(0o755)
         spawned: list[list[str]] = []
 
-        class _Proc:
-            def wait(self, timeout=None):
-                return 0
+        async def _started(command, args, **_kw):
+            spawned.append([command, *args])
+            return ProcessResult(ok=True, output="", returncode=0)
 
-        def _popen(argv, **kw):
-            spawned.append(argv)
-            return _Proc()
-
-        monkeypatch.setattr(kiro_cli.subprocess, "Popen", _popen)
+        monkeypatch.setattr(kiro_prerequisite, "_run_process", _started)
         assert lts_boot.kas_unrunnable() is None
         assert len(spawned) == 1, "the cached refusal was replayed instead of a fresh start"
 

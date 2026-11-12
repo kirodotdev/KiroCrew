@@ -422,14 +422,34 @@ def whoami_names_personal_account() -> bool:
     it. The caller is unattended, so a binary found on an inherited ``PATH`` an
     agent can write to is never run; naming the binary also skips the KAS vault
     branch of :func:`discover_local_identity`, whose sign-in is not the one
-    kiro-cli applies a registry to. No pinned kiro-cli answers ``False``.
+    kiro-cli applies a registry to. The pinned install's own directory can be
+    agent-writable too, so ``whoami`` runs inside the sandbox
+    (``kiro_cli._sandboxed_probe``), as the dashboard's identity fetch runs it.
+    No pinned kiro-cli, or a ``whoami`` that could not run, answers ``False``.
     """
     pinned, _unpinned = pin_kiro_cli()
     if not pinned:
         return False
-    identity = discover_local_identity(pinned)
+    identity = _sandboxed_whoami(pinned)
     account_type = str((identity or {}).get("account_type") or "")
     return bool(account_type) and is_personal_account_type(account_type)
+
+
+def _sandboxed_whoami(kiro_bin: str) -> dict[str, str] | None:
+    """:func:`discover_local_identity`'s answer for *kiro_bin*, with ``whoami`` sandboxed.
+
+    The parsed identity, or ``None`` when nothing is known (the probe could not run,
+    timed out, or exited nonzero without printing an identity).
+    """
+    from kiro_crew.kiro_cli import _probe_ran, _sandboxed_probe  # noqa: PLC0415
+
+    result = _sandboxed_probe(kiro_bin, ["whoami", "--format", "json"], 15.0)
+    if result is None or not _probe_ran(result):
+        return None
+    identity = parse_whoami_output(result.output)
+    if result.returncode != 0 and not identity:
+        return None
+    return identity
 
 
 # ── remote identity comparison ──────────────────────────────────────────────
