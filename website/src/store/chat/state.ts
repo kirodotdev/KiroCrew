@@ -1,7 +1,7 @@
 /** The chat state's shape: `ChatState`, the entity types it is built from, the
  *  initial value, and the one persisted key family it seeds from
  *  (`mc-activity-open:<slot>`). */
-import { safeSetItem } from '../../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import type { PhaseDetail, ToolPhaseDetail } from '../../utils/toolStatusLabel'
 import type { ChatMessage, SessionInfo, SubagentActivity, ToolActivity } from '../../types'
 import type { SubagentQueuedReason } from '../../pages/chat/subagentQueuedReason'
@@ -38,6 +38,9 @@ export const persistActivityOpen = (slot: string | null, open: boolean): void =>
   if (!slot) return
   safeSetItem(ACTIVITY_OPEN_PREFIX + slot, String(open))
 }
+/** Whether `slot` has a saved panel open/closed choice: the panel was opened or
+ *  closed in that chat at least once. */
+export const hasSavedActivityOpen = (slot: string): boolean => safeGetItem(ACTIVITY_OPEN_PREFIX + slot) !== null
 /** The panel state a chat is entered with: its own saved choice (closed when it
  *  has none), or open while Keep side panel open is on and the entry CHANGES the
  *  chat. Re-entering the chat already shown (a return to the chat page, a switch

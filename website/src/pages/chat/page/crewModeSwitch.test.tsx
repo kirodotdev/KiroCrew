@@ -184,7 +184,7 @@ describe('useCrewModeSwitch turning Ultra Mode on fails', () => {
 })
 
 describe('useCrewModeSwitch entering an Ultra Mode root', () => {
-  beforeEach(() => setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']))
+  beforeEach(() => { setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']); localStorage.clear(); turnOnCrewModePreview() })
   afterEach(() => { setCrewModeCatalog(undefined, undefined); mobile.value = false })
 
   const enter = () => {
@@ -205,6 +205,19 @@ describe('useCrewModeSwitch entering an Ultra Mode root', () => {
     mobile.value = true
     const { store, openView } = enter()
     expect(store.getState().chat.activityOpen).toBe(false)
+    expect(openView).not.toHaveBeenCalled()
+  })
+
+  it('keeps a panel the person closed in this chat closed on a return', () => {
+    localStorage.setItem('mc-activity-open:root', 'false')
+    const { store, openView } = enter()
+    expect(store.getState().chat.activityOpen).toBe(false)
+    expect(openView).not.toHaveBeenCalled()
+  })
+
+  it('leaves the tab the person picked in front on a return', () => {
+    localStorage.setItem('mc-activity-open:root', 'true')
+    const { openView } = enter()
     expect(openView).not.toHaveBeenCalled()
   })
 })
