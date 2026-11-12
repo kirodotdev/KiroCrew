@@ -977,6 +977,11 @@ export default defineConfig({
         ws: true,
         changeOrigin: true, // Backend validates Host header for CSRF; without this, dev proxy sends localhost:3000
       },
+      // The Crew API's Owner routes (the Bots roster reads /v1/crew/owner/members).
+      '/v1/crew/': {
+        target: `http://localhost:${backendPort}`,
+        changeOrigin: true,
+      },
       // Proxy app UI bundle file requests to the backend (serves from ~/.kiro/crew/apps/)
       // Only matches /apps/{name}/ui/* — not /apps (React Router page)
       '^/apps/[^/]+/ui/': {

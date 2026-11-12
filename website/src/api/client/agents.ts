@@ -10,6 +10,7 @@ import type { ProjectionsBlock } from '../../state/memberProjectionTypes'
 import { activeLocale } from '../../i18n/format'
 import { agentPath, needsProxySafePath } from '../agentPath'
 import { toApiError } from '../apiError'
+import { isOwnerOnlyRefusal } from '../crewApiError'
 import type { ClientTransport } from './transport'
 
 /** The profile card's Export toggles (rfc-crewmate-share.md §5.3). */
@@ -423,7 +424,14 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, jMembe
     // cheap live-status fields the backend can answer without IO (richer live
     // detail rides the already-subscribed WS `slots` frames). A non-owner's 403
     // `owner_only` still throws but is not journaled (see `jMembers` in client.ts).
-    members: () => fetch('/api/members').then(jMembers) as Promise<{ members: MemberRosterRow[] }>,
+    // Read through the Crew API Owner route; `GET /api/members` serves the same body.
+    // A relay teammate is not the owner, so the Owner route refuses them `owner_only`;
+    // `/api/members` still serves them the narrowed roster, so that refusal falls back
+    // to it. A non-owner dashboard user gets `owner_only` from both, as before.
+    members: () =>
+      fetch('/v1/crew/owner/members')
+        .then(async (r) => ((await isOwnerOnlyRefusal(r)) ? fetch('/api/members') : r))
+        .then(jMembers) as Promise<{ members: MemberRosterRow[] }>,
     // Idempotent get-or-create of a member's pinned DM thread. Member slots are
     // born ONLY through this route (the generic slot-create endpoint refuses
     // mode="member"), so this is also the only place a member slot key comes from.

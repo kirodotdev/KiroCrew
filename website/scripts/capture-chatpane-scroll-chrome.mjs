@@ -54,9 +54,9 @@ async function geom(page) {
 
 async function newPage(theme, viewport = { width: 1280, height: 820 }) {
   const page = await browser.newPage({ viewport, deviceScaleFactor: 1 })
-  await page.route(u => new URL(u).pathname.startsWith('/api/'), route => {
+  await page.route(u => /^\/api\/|^\/v1\/crew\/owner\/members$/.test(new URL(u).pathname), route => {
     const path = new URL(route.request().url()).pathname
-    if (path === '/api/members') {
+    if (path === '/api/members' || path === '/v1/crew/owner/members') {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ members: MEMBERS, default_agent: 'kirocrew' }) })
     }
     const thread = path.match(/^\/api\/members\/([^/]+)\/thread$/)

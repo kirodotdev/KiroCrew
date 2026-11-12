@@ -34,7 +34,6 @@ describe('the transport keeps a permission refusal', () => {
   it.each([
     ['relay_apps_teammate', () => api.listApps()],
     ['owner_only', () => api.sharedCrewPeople()],
-    ['owner_only', () => api.members()],
   ])('asks once after a %s refusal and answers the rest with the same refusal', async (code, read) => {
     fetchMock.mockImplementation(refusal(code))
     for (let i = 0; i < 3; i++) {
@@ -43,6 +42,28 @@ describe('the transport keeps a permission refusal', () => {
       expect(isPermissionRefusal(err)).toBe(true)
     }
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('asks each roster route once after an owner_only refusal from both', async () => {
+    fetchMock.mockImplementation(refusal('owner_only'))
+    for (let i = 0; i < 3; i++) {
+      const err = await settle(api.members())
+      expect(err).toBeInstanceOf(ApiError)
+      expect(isPermissionRefusal(err)).toBe(true)
+    }
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['/v1/crew/owner/members', '/api/members'])
+  })
+
+  it('keeps an owner_only refusal sent in the Crew API error body', async () => {
+    fetchMock.mockImplementation(async () => json(403, {
+      error: { type: 'permission_error', code: 'owner_only', message: 'refused', param: null, request_id: 'req_1' },
+    }))
+    for (let i = 0; i < 3; i++) {
+      const err = await settle(api.members())
+      expect(err).toBeInstanceOf(ApiError)
+      expect(isPermissionRefusal(err)).toBe(true)
+    }
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['/v1/crew/owner/members', '/api/members'])
   })
 
   it('asks again once a kept refusal is a minute old', async () => {
@@ -98,9 +119,10 @@ describe('the transport keeps a permission refusal', () => {
 
   it('asks again once another tab of this origin loads', async () => {
     fetchMock.mockImplementation(refusal('owner_only'))
+    const ownerRouteCalls = () => fetchMock.mock.calls.filter(([url]) => url === '/v1/crew/owner/members')
     await settle(api.members())
     await settle(api.members())
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(ownerRouteCalls()).toHaveLength(1)
 
     // What a loading document posts: it may carry a new sign-in on the shared cookie.
     const otherTab = new BroadcastChannel('kirocrew-caller-changed')
@@ -109,7 +131,7 @@ describe('the transport keeps a permission refusal', () => {
     // Still refused, so exactly one more request, after which it is kept again.
     await vi.waitFor(async () => {
       await settle(api.members())
-      expect(fetchMock).toHaveBeenCalledTimes(2)
+      expect(ownerRouteCalls()).toHaveLength(2)
     })
   })
 
@@ -132,7 +154,7 @@ describe('the transport keeps a permission refusal', () => {
     release(json(403, { error: 'refused', code: 'owner_only' }))
     await pending
     await settle(api.members())
-    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/members')).toHaveLength(2)
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/v1/crew/owner/members')).toHaveLength(2)
   })
 
   it('asks again after a token is exchanged in the auth banner', async () => {

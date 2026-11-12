@@ -40,10 +40,10 @@ function check(name, ok, detail = '') {
 }
 
 function stub(page, roster) {
-  return page.route((u) => new URL(u).pathname.startsWith('/api/'), (route) => {
+  return page.route((u) => /^\/api\/|^\/v1\/crew\/owner\/members$/.test(new URL(u).pathname), (route) => {
     const req = route.request()
     const path = new URL(req.url()).pathname
-    if (path === '/api/members' && req.method() === 'GET') {
+    if ((path === '/api/members' || path === '/v1/crew/owner/members') && req.method() === 'GET') {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(roster) })
     }
     if (/\/thread$/.test(path) && req.method() === 'POST') {

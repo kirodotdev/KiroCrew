@@ -47,10 +47,10 @@ const VIEWPORTS = [
 for (const theme of ['dark']) {
   for (const vp of VIEWPORTS) {
     const page = await browser.newPage({ viewport: { width: vp.width, height: vp.height }, deviceScaleFactor: 1 })
-    await page.route(u => new URL(u).pathname.startsWith('/api/'), route => {
+    await page.route(u => /^\/api\/|^\/v1\/crew\/owner\/members$/.test(new URL(u).pathname), route => {
       const req = route.request()
       const path = new URL(req.url()).pathname
-      if (path === '/api/members' && req.method() === 'GET') {
+      if ((path === '/api/members' || path === '/v1/crew/owner/members') && req.method() === 'GET') {
         return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(ROSTER) })
       }
       if (path === `/api/members/${SLUG}/thread` && req.method() === 'POST') {

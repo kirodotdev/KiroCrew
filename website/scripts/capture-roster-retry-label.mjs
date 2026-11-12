@@ -50,11 +50,11 @@ function check(name, ok, detail) {
 async function newPage(theme, viewport) {
   const page = await browser.newPage({ viewport, deviceScaleFactor: 1 })
   const counts = { rosterReads: 0, creates: 0, chats: 0 }
-  await page.route(u => new URL(u).pathname.startsWith('/api/'), route => {
+  await page.route(u => /^\/api\/|^\/v1\/crew\/owner\/members$/.test(new URL(u).pathname), route => {
     const path = new URL(route.request().url()).pathname
     const method = route.request().method()
     const json = (body) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
-    if (path === '/api/members') {
+    if (path === '/api/members' || path === '/v1/crew/owner/members') {
       counts.rosterReads += 1
       // The arrival read is empty and fine; every read after the create fails.
       if (counts.rosterReads > 1) return route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"roster unavailable"}' })

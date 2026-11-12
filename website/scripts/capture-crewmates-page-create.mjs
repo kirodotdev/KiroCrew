@@ -135,10 +135,10 @@ async function newPage(theme, scene, viewport = { width: 1440, height: 900 }) {
   const page = await browser.newPage({ viewport, deviceScaleFactor: 1 })
   const members = scene === 'done' ? [RADAR] : scene === 'roster-fail-existing' ? [ONCALL] : []
   let rosterReads = 0
-  await page.route(u => new URL(u).pathname.startsWith('/api/'), route => {
+  await page.route(u => /^\/api\/|^\/v1\/crew\/owner\/members$/.test(new URL(u).pathname), route => {
     const path = new URL(route.request().url()).pathname
     const json = (body) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
-    if (path === '/api/members') {
+    if (path === '/api/members' || path === '/v1/crew/owner/members') {
       rosterReads += 1
       // roster-load-fail: the ARRIVAL read fails; nothing was created, the
       // page has no roster to show and no chat to open.

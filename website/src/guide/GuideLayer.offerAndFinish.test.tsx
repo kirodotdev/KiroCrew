@@ -494,7 +494,7 @@ describe('the way back once a guide ends', () => {
   const radarRow = { name: 'radar', kiro_agent: 'kirocrew', slug: 'radar', slot_key: 'slot-radar', running: false }
 
   beforeEach(() => {
-    server.use(http.get('/api/members', () => HttpResponse.json({ members: [pilotRow, radarRow] })))
+    server.use(http.get('/v1/crew/owner/members', () => HttpResponse.json({ members: [pilotRow, radarRow] })))
   })
 
   /** Owns *slot*'s guide in this tab, away from every chat, and lets it end. */
@@ -666,7 +666,7 @@ describe('the way back once a guide ends', () => {
     ['the roster failed', () => HttpResponse.json({ error: 'boom' }, { status: 500 }), '/members?member=radar'],
     ['the binding moved on', () => HttpResponse.json({ members: [pilotRow, { ...radarRow, name: 'Radar', slot_key: 'member-radar.memory-radar-v2' }] }), '/members?member=Radar'],
   ])('a mate\'s guide goes back to that mate when %s', async (_why, members, to) => {
-    server.use(http.get('/api/members', members))
+    server.use(http.get('/v1/crew/owner/members', members))
     await endOwnedGuide('member-radar', 'complete')
     const back = await screen.findByTestId('guide-back')
     expect(back.textContent).toBe(i18nT('components.meetCrewmatesFlow.back_to_chat'))
@@ -892,7 +892,7 @@ describe("the offering mate's own words in a guide", () => {
   // The guide's slot is a crewmate's pinned thread, so its words are that
   // crewmate's: the "From" line names it from the roster.
   beforeEach(() => {
-    server.use(http.get('/api/members', () => HttpResponse.json({
+    server.use(http.get('/v1/crew/owner/members', () => HttpResponse.json({
       members: [{ name: 'radar-keeper', display_name: 'Skipper', kiro_agent: 'kirocrew', slug: 'radar-keeper', slot_key: 'slot-A', running: false }],
     })))
   })

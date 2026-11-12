@@ -63,10 +63,10 @@ async function newPage(route, viewport = { width: 1280, height: 820 }) {
   // Gateway-free: answer every REAL API call the mounted page (and the
   // ChatPane it hosts) makes. Predicate on the pathname — a glob would also
   // swallow vite-served source modules and break boot.
-  await page.route((u) => new URL(u).pathname.startsWith('/api/'), (r) => {
+  await page.route((u) => /^\/api\/|^\/v1\/crew\/owner\/members$/.test(new URL(u).pathname), (r) => {
     const path = new URL(r.request().url()).pathname
     const json = (body) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
-    if (path === '/api/members') return json({ members: MEMBERS, default_agent: 'kirocrew' })
+    if (path === '/api/members' || path === '/v1/crew/owner/members') return json({ members: MEMBERS, default_agent: 'kirocrew' })
     if (path === '/api/crons') return json({ jobs: [] })
     if (path === '/api/webhooks') return json({ tokens: [] })
     if (path === '/api/agents') return json({ agents: [], default_agent: 'kirocrew' })

@@ -1,0 +1,138 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Crew API Owner routes served by the gateway",
+    "version": "1.0.0-draft",
+    "description": "The Owner-tier routes registered by src/kiro_crew/dashboard/routes/crew_api.py. test_crew_api_owner.py validates the live routes against this file."
+  },
+  "paths": {
+    "/v1/crew/owner/members": {
+      "get": {
+        "operationId": "get_v1_crew_owner_members",
+        "summary": "The Bot roster: one row per global Bot, with its DM thread binding and live status",
+        "x-crew-tier": "owner",
+        "x-crew-wraps": "GET /api/members",
+        "parameters": [
+          {"$ref": "#/components/parameters/CrewApiVersion"},
+          {"$ref": "#/components/parameters/RequestId"}
+        ],
+        "responses": {
+          "200": {
+            "description": "The roster",
+            "headers": {
+              "X-Request-Id": {"$ref": "#/components/headers/X-Request-Id"},
+              "Crew-API-Version": {"$ref": "#/components/headers/Crew-API-Version"}
+            },
+            "content": {
+              "application/json": {"schema": {"$ref": "#/components/schemas/MemberRoster"}}
+            }
+          },
+          "401": {"$ref": "#/components/responses/Error"},
+          "403": {"$ref": "#/components/responses/Error"},
+          "500": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": ["type", "code", "message", "request_id"],
+            "properties": {
+              "type": {"$ref": "#/components/schemas/ErrorType"},
+              "code": {"$ref": "#/components/schemas/ErrorCode"},
+              "message": {"type": "string"},
+              "param": {"type": ["string", "null"]},
+              "request_id": {"type": "string", "pattern": "^req_"}
+            }
+          }
+        }
+      },
+      "ErrorType": {
+        "type": "string",
+        "description": "Open enum: a client accepts a value it does not know.",
+        "pattern": "^[a-z][a-z0-9_]*$",
+        "examples": [
+          "authentication_error",
+          "invalid_request_error",
+          "permission_error",
+          "server_error"
+        ]
+      },
+      "ErrorCode": {
+        "type": "string",
+        "description": "Open enum: a client treats a code it does not know by the HTTP status.",
+        "pattern": "^[a-z][a-z0-9_]*$",
+        "examples": ["owner_only", "invalid_token", "internal_error"]
+      },
+      "MemberRoster": {
+        "type": "object",
+        "required": ["members"],
+        "properties": {
+          "members": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/MemberRosterRow"}
+          }
+        }
+      },
+      "MemberRosterRow": {
+        "type": "object",
+        "required": ["name", "slug", "slot_key", "running"],
+        "additionalProperties": true,
+        "properties": {
+          "name": {"type": "string", "description": "The Bot's name, the key every per-Bot route uses"},
+          "slug": {"type": "string", "description": "Path-safe slug of the name"},
+          "slot_key": {"type": "string", "description": "The DM thread's session key; empty until the thread is opened"},
+          "running": {"type": "boolean", "description": "The DM thread is running a turn now"},
+          "display_name": {"type": "string"},
+          "description": {"type": "string"},
+          "kiro_agent": {"type": "string"},
+          "workspace": {"type": "string"},
+          "memory_store": {"type": "string"},
+          "memory_version": {"type": ["integer", "null"]},
+          "memory_owner": {"type": "string"},
+          "model": {"type": "string"},
+          "reasoning_effort": {"type": "string"},
+          "approval_mode": {"type": "string"},
+          "worker_model": {"type": "string"},
+          "worker_reasoning_effort": {"type": "string"},
+          "dynamic_capabilities": {"type": "boolean"},
+          "avatar": {"type": "object"},
+          "source": {"type": "string"},
+          "starred": {"type": "boolean"},
+          "star_order": {"type": "integer"},
+          "dashboard_created": {"type": "boolean"},
+          "last_active_ts": {"type": "number"},
+          "last_message": {"type": "string"},
+          "has_dm_message": {"type": "boolean"},
+          "projections": {"type": "object"}
+        }
+      }
+    },
+    "responses": {
+      "Error": {
+        "description": "Contract error body",
+        "headers": {
+          "X-Request-Id": {"$ref": "#/components/headers/X-Request-Id"},
+          "Crew-API-Version": {"$ref": "#/components/headers/Crew-API-Version"}
+        },
+        "content": {
+          "application/json": {"schema": {"$ref": "#/components/schemas/Error"}}
+        }
+      }
+    },
+    "headers": {
+      "X-Request-Id": {"schema": {"type": "string", "pattern": "^req_"}},
+      "Crew-API-Version": {"schema": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"}}
+    },
+    "parameters": {
+      "CrewApiVersion": {"name": "Crew-API-Version", "in": "header", "required": false, "schema": {"type": "string"}},
+      "RequestId": {"name": "X-Request-Id", "in": "header", "required": false, "schema": {"type": "string"}}
+    }
+  }
+}

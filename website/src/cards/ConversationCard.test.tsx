@@ -279,7 +279,7 @@ describe('shared change card layout', () => {
   })
 
   it("labels the reason with the crewmate that proposed the card, read from the card's slot", async () => {
-    server.use(http.get('*/api/members', () => HttpResponse.json({ members: [
+    server.use(http.get('*/v1/crew/owner/members', () => HttpResponse.json({ members: [
       { name: 'scout-agent', slug: 'scout', slot_key: SLOT, running: false, display_name: 'Scout' },
       { name: 'pebble', slug: 'pebble', slot_key: 'slot-other', running: false },
     ] })))
@@ -293,7 +293,7 @@ describe('shared change card layout', () => {
   it('keeps a typed secret when the proposer resolves after the card is drawn', async () => {
     let release!: () => void
     const gate = new Promise<void>(r => { release = r })
-    server.use(http.get('*/api/members', async () => {
+    server.use(http.get('*/v1/crew/owner/members', async () => {
       await gate
       return HttpResponse.json({ members: [{ name: 'scout', slug: 'scout', slot_key: SLOT, running: false, display_name: 'Scout' }] })
     }))
@@ -320,7 +320,7 @@ describe('shared change card layout', () => {
   })
 
   it('says so beside the card when the crewmate list cannot be read, and keeps the card', async () => {
-    server.use(http.get('*/api/members', () => HttpResponse.json({ error: 'roster down' }, { status: 500 })))
+    server.use(http.get('*/v1/crew/owner/members', () => HttpResponse.json({ error: 'roster down' }, { status: 500 })))
     pending = [card({ reason: 'You asked for shorter replies.' })]
     renderCards()
     expect(await screen.findByTestId('change-card-roster-error', {}, ROSTER_CHAIN)).toBeInTheDocument()
@@ -329,7 +329,7 @@ describe('shared change card layout', () => {
   })
 
   it('keeps the product name for a card the main assistant proposed, and while the roster is unknown', async () => {
-    server.use(http.get('*/api/members', () => HttpResponse.json({ members: [
+    server.use(http.get('*/v1/crew/owner/members', () => HttpResponse.json({ members: [
       { name: 'scout', slug: 'scout', slot_key: 'member-scout', running: false, display_name: 'Scout' },
     ] })))
     pending = [card({ reason: 'You asked for shorter replies.' })]

@@ -719,8 +719,8 @@ _CREWMATE_PRUNE_GATE_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 #: and never lists a row the pass is removing. ``GET /api/members`` is not a
 #: pure read either: it calls ``MemberEventLogService.ensure`` for every row
 #: and ``reconcile_member_config`` appends to the member log. Every
-#: ``/api/members`` route reaches the same rows, so the whole prefix waits.
-_CREWMATE_PRUNE_GATE_HELD_PREFIXES = ("/api/members",)
+#: ``/api/members`` route (and its Crew API twin) reaches the same rows, so both wait.
+_CREWMATE_PRUNE_GATE_HELD_PREFIXES = ("/api/members", "/v1/crew/owner/members")
 
 
 # Strong references to in-flight warm tasks, so the loop cannot collect one

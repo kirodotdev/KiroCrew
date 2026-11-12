@@ -44,6 +44,8 @@ async function run(base, width, height, tag) {
   })
   const fixedApi = makeFixedApi(START)
   await page.routeWebSocket(/\/api\/ws/, () => {})
+  // The roster is read from the Crew API Owner route first; it serves the /api/members body.
+  await page.route('**/v1/crew/owner/members', route => json(route, { members: [] }))
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname
     if (path === `/api/chat/slots/${SLOT}/project`) {

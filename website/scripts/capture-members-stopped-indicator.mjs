@@ -59,10 +59,10 @@ function check(name, ok, detail) {
 
 async function newPage(theme, viewport = { width: 1280, height: 820 }) {
   const page = await browser.newPage({ viewport, deviceScaleFactor: 1 })
-  await page.route(u => new URL(u).pathname.startsWith('/api/'), route => {
+  await page.route(u => /^\/api\/|^\/v1\/crew\/owner\/members$/.test(new URL(u).pathname), route => {
     const path = new URL(route.request().url()).pathname
     const json = (body) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
-    if (path === '/api/members') return json({ members: MEMBERS, default_agent: 'kirocrew' })
+    if (path === '/api/members' || path === '/v1/crew/owner/members') return json({ members: MEMBERS, default_agent: 'kirocrew' })
     if (path === '/api/crons') return json({ jobs: [] })
     if (path === '/api/webhooks') return json({ tokens: [] })
     if (path === '/api/agents') return json({ agents: [], default_agent: 'kirocrew' })

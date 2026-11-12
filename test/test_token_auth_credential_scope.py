@@ -340,3 +340,130 @@ def test_non_ascii_app_secret_is_rejected(bad: str, tmp_path) -> None:
     grant_host_exec("demo")  # the owner-enable marker, as an owner enable writes
     assert validate_app_secret("demo", "real") is True
     assert validate_app_secret("demo", bad) is False
+
+
+# -- The refusal body: /api/ flat JSON, /v1/ the Crew API error -------------------
+
+
+@pytest.mark.asyncio
+async def test_a_v1_route_without_a_credential_is_refused_with_the_crew_api_error() -> None:
+    import json
+
+    mw = token_auth_middleware()
+    req = _make_request(path="/v1/crew/owner/members", headers={"X-Request-Id": "req_noauth1"})
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 401
+    assert resp.content_type == "application/json"
+    assert resp.headers["X-Auth-Required"] == "true"
+    assert resp.headers["WWW-Authenticate"] == 'Bearer error="invalid_token"'
+    assert resp.headers["X-Request-Id"] == "req_noauth1"
+    assert json.loads(resp.body) == {
+        "error": {
+            "type": "authentication_error",
+            "code": "invalid_token",
+            "message": "Token required",
+            "param": None,
+            "request_id": "req_noauth1",
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_crew_api_refusal_keeps_its_own_code() -> None:
+    import json
+
+    mw = token_auth_middleware(
+        internal_paths=frozenset({"/v1/crew/owner/members"}), internal_secret="s"
+    )
+    req = _make_request(path="/v1/crew/owner/members", headers={"X-Internal-Secret": "wrong"})
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 401
+    error = json.loads(resp.body)["error"]
+    assert (error["type"], error["code"]) == ("authentication_error", "internal_auth_mismatch")
+    assert error["request_id"].startswith("req_")
+    assert error["request_id"] == resp.headers["X-Request-Id"]
+
+
+@pytest.mark.asyncio
+async def test_an_app_token_on_an_owner_route_is_refused_as_owner_only(monkeypatch) -> None:
+    """The middleware's app-scope refusal says what the Owner route itself says."""
+    import json
+
+    import kiro_crew.dashboard.token_auth as _ta
+
+    monkeypatch.setattr(_ta, "_app_api_allowlist", lambda name: ())
+    mw = token_auth_middleware()
+    token = generate_token("file-explorer", app="file-explorer")
+    req = _make_request(path="/v1/crew/owner/members", query={"token": token})
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 403
+    error = json.loads(resp.body)["error"]
+    assert (error["type"], error["code"]) == ("permission_error", "owner_only")
+    assert "WWW-Authenticate" not in resp.headers
+
+
+@pytest.mark.asyncio
+async def test_an_app_token_out_of_scope_on_an_api_route_keeps_the_flat_refusal(
+    monkeypatch,
+) -> None:
+    import json
+
+    import kiro_crew.dashboard.token_auth as _ta
+
+    monkeypatch.setattr(_ta, "_app_api_allowlist", lambda name: ())
+    mw = token_auth_middleware()
+    token = generate_token("file-explorer", app="file-explorer")
+    resp = await mw(_make_request(path="/api/members", query={"token": token}), _ok_handler)
+    assert resp.status == 403
+    assert json.loads(resp.body) == {
+        "error": "app token not permitted for this endpoint",
+        "code": "forbidden",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path", ["/v1/responses", "/v1/models", "/v1/files/f_1", "/v1/chat/completions/x"]
+)
+async def test_a_v1_path_with_no_route_yet_gets_the_crew_api_refusal(path: str) -> None:
+    import json
+
+    resp = await token_auth_middleware()(_make_request(path=path), _ok_handler)
+    assert resp.status == 401
+    assert resp.content_type == "application/json"
+    assert json.loads(resp.body)["error"]["code"] == "invalid_token"
+
+
+@pytest.mark.asyncio
+async def test_the_frozen_chat_completions_route_keeps_the_html_refusal() -> None:
+    mw = token_auth_middleware(
+        internal_paths=frozenset({"/v1/chat/completions"}), internal_secret="s"
+    )
+    req = _make_request(
+        path="/v1/chat/completions", method="POST", headers={"X-Internal-Secret": "wrong"}
+    )
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 403
+    assert resp.content_type == "text/html"
+    assert "X-Request-Id" not in resp.headers
+    assert "WWW-Authenticate" not in resp.headers
+
+
+@pytest.mark.asyncio
+async def test_an_api_route_without_a_credential_keeps_the_flat_refusal() -> None:
+    import json
+
+    mw = token_auth_middleware()
+    resp = await mw(_make_request(path="/api/members"), _ok_handler)
+    assert resp.status == 403
+    assert resp.headers["X-Auth-Required"] == "true"
+    assert json.loads(resp.body) == {"error": "Token required", "code": "forbidden"}
+    assert "X-Request-Id" not in resp.headers
+
+
+@pytest.mark.asyncio
+async def test_a_page_route_without_a_credential_keeps_the_html_refusal() -> None:
+    mw = token_auth_middleware()
+    resp = await mw(_make_request(path="/sprites/x.png"), _ok_handler)
+    assert resp.status == 403
+    assert resp.content_type == "text/html"

@@ -664,7 +664,8 @@ describe('every api method issues one well-formed /api request', () => {
     expect(fetchMock, `${name} issued the wrong request count`).toHaveBeenCalledTimes(expectedRequests)
     const { url, init } = call(expectedRequests - 1)
     expect(typeof url, `${name} did not pass a string URL`).toBe('string')
-    expect(url.startsWith('/api/'), `${name} escaped the /api prefix: ${url}`).toBe(true)
+    // The Crew API Owner routes (`/v1/crew/owner/...`) are the one other gateway prefix.
+    expect(url.startsWith('/api/') || url.startsWith('/v1/crew/owner/'), `${name} escaped the /api prefix: ${url}`).toBe(true)
     for (const junk of ['undefined', '[object Object]', 'NaN', '/null']) {
       expect(url.includes(junk), `${name} leaked ${junk} into ${url}`).toBe(false)
     }

@@ -19,10 +19,10 @@ export const MEMBERS = [
  * answer [] because `{}` crashes their `.map`.
  */
 export function routeMembersApi(page, slotDetail, { members = MEMBERS } = {}) {
-  return page.route(u => new URL(u).pathname.startsWith('/api/'), route => {
+  return page.route(u => /^\/api\/|^\/v1\/crew\/owner\/members$/.test(new URL(u).pathname), route => {
     const path = new URL(route.request().url()).pathname
     const json = (body) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
-    if (path === '/api/members') return json({ members, default_agent: 'kirocrew' })
+    if (path === '/api/members' || path === '/v1/crew/owner/members') return json({ members, default_agent: 'kirocrew' })
     if (path === '/api/crons') return json({ jobs: [] })
     if (path === '/api/webhooks') return json({ tokens: [] })
     if (path === '/api/agents') return json({ agents: [], default_agent: 'kirocrew' })

@@ -71,6 +71,14 @@ describe('service worker skip rules', () => {
     expect(intercepts('/apps/dev-fleet/api/state')).toBe(false)
   })
 
+  it('leaves the Crew API to the browser, like /api', () => {
+    // The roster read is a `fetch`, so its mode is 'cors', never 'navigate'.
+    expect(intercepts('/v1/crew/owner/members', 'cors')).toBe(false)
+    expect(intercepts('/v1/chat/completions', 'cors')).toBe(false)
+    // A page route that only shares the letters is still the shell's.
+    expect(intercepts('/v1x')).toBe(true)
+  })
+
   it('never substitutes the cached dashboard shell for an app window', () => {
     expect(intercepts('/app-windows/mochi/pet.html')).toBe(false)
     expect(intercepts('/app-windows/crew-companion/panel.html')).toBe(false)

@@ -86,7 +86,7 @@ function check(name, ok, detail) {
 }
 
 async function routeApi(page, slotKey) {
-  await page.route(u => new URL(u).pathname.startsWith('/api/'), route => {
+  await page.route(u => /^\/api\/|^\/v1\/crew\/owner\/members$/.test(new URL(u).pathname), route => {
     const url = new URL(route.request().url())
     const path = url.pathname
     if (path === '/api/file-raw') {
@@ -94,7 +94,7 @@ async function routeApi(page, slotKey) {
         ? route.fulfill({ status: 200, contentType: 'image/png', body: PNG })
         : route.fulfill({ status: 404, body: 'not the fixture image' })
     }
-    if (path === '/api/members') {
+    if (path === '/api/members' || path === '/v1/crew/owner/members') {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ members: MEMBERS, default_agent: 'kirocrew' }) })
     }
     const thread = path.match(/^\/api\/members\/([^/]+)\/thread$/)
