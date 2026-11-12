@@ -137,6 +137,10 @@ with no row here.
      - frame translation (whether a compaction pair with no marker is read)
    * - ``ACP_BACKENDS_SENT_IMAGE_RECORD``
      - driver-internal (whether a session keeps a record of the pictures it sent)
+   * - ``ACP_BACKENDS_COMPACTION_REPORTED``
+     - semantic question (``LLMProvider.reports_compaction``: whether Crew sees
+       this harness's compaction, so what it sends once per conversation can be
+       sent again after one)
    * - ``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION``
      - semantic question (whether a skipped autocompact is answered by the harness)
    * - ``ACP_BACKENDS_CONTEXT_RECYCLE``
@@ -1374,6 +1378,7 @@ from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exporte
     ACP_BACKEND_PROMPT_HANDLER_COMMANDS,
     ACP_BACKENDS_AGENT_STARTED_TURNS,
     ACP_BACKENDS_COMPACT,
+    ACP_BACKENDS_COMPACTION_REPORTED,
     ACP_BACKENDS_CONTEXT_RECYCLE,
     ACP_BACKENDS_HARNESS_MANAGED_COMPACTION,
     ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS,

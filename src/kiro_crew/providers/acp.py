@@ -55,6 +55,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     ACP_BACKEND_STRANDS,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_COMPACT,
+    ACP_BACKENDS_COMPACTION_REPORTED,
     ACP_BACKENDS_CONTEXT_RECYCLE,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_EFFORT_OVERLAY,
@@ -1034,6 +1035,10 @@ class AcpProvider(LLMProvider):
         # Kiro ACP manual/fileMatch support depends on version and engine;
         # the fallback keeps those guides reachable without a false capability.
         return self._client.backend == ACP_BACKEND_KAS
+
+    @property
+    def reports_compaction(self) -> bool:
+        return self._client.backend in ACP_BACKENDS_COMPACTION_REPORTED
 
     def prompt_timeout_for_deadline(self, deadline: float) -> float:
         """Resolve the immutable transport budget this ACP session supports."""

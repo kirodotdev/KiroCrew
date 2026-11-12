@@ -53,6 +53,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_COMPACT,
+    ACP_BACKENDS_COMPACTION_REPORTED,
     ACP_BACKENDS_CONTEXT_RECYCLE,
 )
 from kiro_crew.acp.types import (
@@ -823,6 +824,10 @@ class AcpSessionProvider(LLMProvider):
         from kiro_crew.acp.types import ACP_BACKEND_KAS
 
         return self.backend == ACP_BACKEND_KAS
+
+    @property
+    def reports_compaction(self) -> bool:
+        return self.backend in ACP_BACKENDS_COMPACTION_REPORTED
 
     def prompt_timeout_for_deadline(self, deadline: float) -> float:
         """Resolve the immutable transport budget this ACP session supports."""
