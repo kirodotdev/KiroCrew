@@ -2901,6 +2901,7 @@
       "loopback_slow_hint": "The sign-in hasn't finished yet. If you closed the sign-in tab, start over. If the sign-in page can't reach this computer, use a code instead.",
       "loopback_fell_back": "The sign-in couldn't come back to this computer directly, so here's a code instead.",
       "cancel_unsettled": "Couldn’t cancel the sign-in. It is still active — press the same option again to retry.",
+      "pending_cancel_unsettled": "You’re signed in, but the sign-in you started here couldn’t be cancelled. It stays open until it times out.",
       "card_intro": "Used only by the Kiro Agent backend: its agents run as this Kiro account. Kiro CLI keeps its own kiro-cli login, so signing in here does not change it.",
       "previous_sign_in_not_removed": "Signed in, but the previous sign-in could not be removed",
       "previous_sign_in_not_removed_body": "The new account is stored, but the one you were switching away from is still there and takes precedence. Sign out of it, then check the sign-in shown here."

@@ -8105,6 +8105,7 @@
       "loopback_slow_hint": "La connexion n’est pas encore terminée. Si tu as fermé l’onglet de connexion, recommence. Si la page de connexion n’arrive pas à joindre cet ordinateur, utilise plutôt un code.",
       "loopback_fell_back": "La connexion n'a pas pu revenir directement sur cet ordinateur, voici donc un code à la place.",
       "cancel_unsettled": "Impossible d’annuler la connexion. Elle est toujours en cours : appuyez de nouveau sur la même option pour réessayer.",
+      "pending_cancel_unsettled": "Connecté, mais la connexion lancée ici n’a pas pu être annulée. Elle reste ouverte jusqu’à son expiration.",
       "card_intro": "Utilisé uniquement par le backend Kiro Agent : ses agents s'exécutent avec ce compte Kiro. Kiro CLI conserve sa propre connexion kiro-cli ; se connecter ici ne la modifie pas.",
       "previous_sign_in_not_removed": "Connecté, mais la connexion précédente n’a pas pu être supprimée",
       "previous_sign_in_not_removed_body": "Le nouveau compte est enregistré, mais celui que vous quittiez est toujours là et reste prioritaire. Déconnectez-vous de celui-ci, puis vérifiez la connexion affichée ici."

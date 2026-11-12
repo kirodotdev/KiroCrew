@@ -8105,6 +8105,7 @@
       "loopback_slow_hint": "El inicio de sesión aún no ha terminado. Si cerraste la pestaña de inicio de sesión, empieza de nuevo. Si la página de inicio de sesión no puede llegar a este equipo, usa un código en su lugar.",
       "loopback_fell_back": "El inicio de sesión no pudo volver directamente a este equipo, así que aquí tienes un código.",
       "cancel_unsettled": "No se pudo cancelar el inicio de sesión. Sigue activo: pulsa la misma opción otra vez para reintentar.",
+      "pending_cancel_unsettled": "Sesión iniciada, pero no se pudo cancelar el inicio de sesión que empezaste aquí. Seguirá abierto hasta que caduque.",
       "card_intro": "Solo lo usa el backend Kiro Agent: sus agentes se ejecutan con esta cuenta de Kiro. Kiro CLI conserva su propio inicio de sesión de kiro-cli, así que iniciar sesión aquí no lo cambia.",
       "previous_sign_in_not_removed": "Sesión iniciada, pero no se pudo eliminar el inicio de sesión anterior",
       "previous_sign_in_not_removed_body": "La cuenta nueva está guardada, pero la cuenta de la que cambiaste sigue ahí y tiene prioridad. Cierra esa sesión y luego comprueba el inicio de sesión que se muestra aquí."

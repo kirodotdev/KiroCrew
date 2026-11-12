@@ -8105,6 +8105,7 @@
       "loopback_slow_hint": "L’accesso non è ancora completato. Se hai chiuso la scheda di accesso, ricomincia. Se la pagina di accesso non riesce a raggiungere questo computer, usa invece un codice.",
       "loopback_fell_back": "L'accesso non è riuscito a tornare direttamente su questo computer, quindi ecco un codice.",
       "cancel_unsettled": "Impossibile annullare l’accesso. È ancora in corso: premi di nuovo la stessa opzione per riprovare.",
+      "pending_cancel_unsettled": "Accesso effettuato, ma non è stato possibile annullare l’accesso avviato qui. Resta aperto fino alla scadenza.",
       "card_intro": "Usato solo dal backend Kiro Agent: i suoi agenti vengono eseguiti con questo account Kiro. Kiro CLI mantiene il proprio accesso kiro-cli, quindi accedere qui non lo modifica.",
       "previous_sign_in_not_removed": "Accesso effettuato, ma non è stato possibile rimuovere l’accesso precedente",
       "previous_sign_in_not_removed_body": "Il nuovo account è salvato, ma quello da cui stavi passando è ancora presente e ha la precedenza. Esci da quell’account, poi controlla l’accesso mostrato qui."

@@ -356,6 +356,80 @@ describe('KasLoginGate', () => {
     expect(await screen.findByText('app-content')).toBeInTheDocument()
   })
 
+  it('cancels a pending sign-in and stops its poll once the account signs in elsewhere', async () => {
+    // Installed before the render, so the poll's cadence can be stepped past below.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    onTestFinished(() => {
+      vi.useRealTimers()
+    })
+    const { queryClient } = renderWithProviders(
+      <KasLoginGate>
+        <div data-testid="app-root" />
+      </KasLoginGate>,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with Google' }))
+    await screen.findByTestId('kas-login-user-code')
+    await waitFor(() => expect(kasLoginPoll).toHaveBeenCalledWith('login-1'))
+
+    // Another tab or the CLI finished a sign-in: the next status read says so.
+    kasLoginStatus.mockResolvedValue({
+      authenticated: true,
+      provider: 'Google',
+      identity: 'social',
+      transport: 'device',
+    })
+    await act(() => queryClient.invalidateQueries({ queryKey: ['kas-login'] }))
+    expect(await screen.findByTestId('app-root')).toBeInTheDocument()
+    await waitFor(() => expect(kasLoginCancel).toHaveBeenCalledWith('login-1'))
+
+    const polls = kasLoginPoll.mock.calls.length
+    await act(() => vi.advanceTimersByTimeAsync(15_000))
+    expect(kasLoginPoll).toHaveBeenCalledTimes(polls)
+    expect(kasLoginCancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('says so in the signed-in view when that cancel fails, and retries it from there', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    onTestFinished(() => {
+      vi.useRealTimers()
+    })
+    const { queryClient } = renderWithProviders(
+      <KasLoginGate>
+        <div data-testid="app-root" />
+      </KasLoginGate>,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with Google' }))
+    await screen.findByTestId('kas-login-user-code')
+    await waitFor(() => expect(kasLoginPoll).toHaveBeenCalledWith('login-1'))
+
+    kasLoginCancel.mockRejectedValueOnce(new Error('network down'))
+    kasLoginStatus.mockResolvedValue({
+      authenticated: true,
+      provider: 'Google',
+      identity: 'social',
+      transport: 'device',
+    })
+    await act(() => queryClient.invalidateQueries({ queryKey: ['kas-login'] }))
+    const notice = await screen.findByTestId('kas-login-cancel-unsettled')
+    expect(screen.getByTestId('app-root')).toBeInTheDocument()
+
+    // The dropped session stays dropped: an unsettled cancel does not resume its poll.
+    const polls = kasLoginPoll.mock.calls.length
+    await act(() => vi.advanceTimersByTimeAsync(15_000))
+    expect(kasLoginPoll).toHaveBeenCalledTimes(polls)
+
+    fireEvent.click(within(notice).getByRole('button', { name: 'Try again' }))
+    await waitFor(() => expect(kasLoginCancel).toHaveBeenCalledTimes(2))
+    expect(kasLoginCancel).toHaveBeenNthCalledWith(2, 'login-1')
+    // The retry settled: its status read came after the second cancel.
+    await waitFor(() =>
+      expect(kasLoginStatus.mock.invocationCallOrder.at(-1)).toBeGreaterThan(
+        kasLoginCancel.mock.invocationCallOrder[1],
+      ),
+    )
+    expect(screen.queryByTestId('kas-login-cancel-unsettled')).not.toBeInTheDocument()
+  })
+
   it('starts a Builder ID device flow directly from its button', async () => {
     renderWithProviders(<KasLoginGate />)
     fireEvent.click(await screen.findByRole('button', { name: 'Continue with AWS Builder ID' }))
