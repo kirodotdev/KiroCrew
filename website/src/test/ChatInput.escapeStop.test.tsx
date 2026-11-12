@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { screen, fireEvent } from '@testing-library/react'
+import { screen, fireEvent, act } from '@testing-library/react'
 import { useState } from 'react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
@@ -59,5 +59,29 @@ describe('ChatInput textarea: Escape stops the running turn (#22315)', () => {
     fireEvent.keyDown(textarea(), { key: 'Escape', code: 'Escape' })
     expect(onStop).toHaveBeenCalledTimes(1)
     expect(screen.queryByTestId('escape-stop-armed-hint')).toBeNull()
+  })
+})
+
+describe('the Stop button names the stop key (#23462)', () => {
+  it('its tooltip names Esc; its accessible name is unchanged', () => {
+    renderWithProviders(<Host isRunning onStop={vi.fn()} />)
+    const stop = screen.getByTestId('stop-button-armed')
+    expect(stop).toHaveAttribute('title', 'Stop generation (Esc)')
+    expect(stop).toHaveAccessibleName('Stop generation')
+  })
+
+  it('with a second Escape required, its tooltip does not advertise a single Esc', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ doubleEscapeToStop: true }))
+    renderWithProviders(<Host isRunning onStop={vi.fn()} />)
+    expect(screen.getByTestId('stop-button-armed')).toHaveAttribute('title', 'Stop generation')
+  })
+
+  it('its tooltip follows the setting while the composer stays mounted', () => {
+    renderWithProviders(<Host isRunning onStop={vi.fn()} />)
+    const stop = screen.getByTestId('stop-button-armed')
+    expect(stop).toHaveAttribute('title', 'Stop generation (Esc)')
+    localStorage.setItem('mc-chat-config', JSON.stringify({ doubleEscapeToStop: true }))
+    act(() => { window.dispatchEvent(new Event('mc-config-changed')) })
+    expect(stop).toHaveAttribute('title', 'Stop generation')
   })
 })

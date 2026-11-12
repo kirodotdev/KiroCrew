@@ -7084,6 +7084,7 @@
       "compacting_context_stop_unavailable": "Compattazione del contesto — impossibile interrompere finché non termina",
       "click_again_to_force_stop_resets_session": "Fai di nuovo clic per forzare l’arresto (riavvia la sessione; i tuoi messaggi restano, l’agente conserva un estratto recente)",
       "esc_again_to_stop": "Premi di nuovo Esc per fermare",
+      "stop_generation_esc": "Arresta la generazione (Esc)",
       "model_inherited_default": "Questa sessione usa il modello predefinito ({{name}}). Non ha un modello proprio, quindi cambia se cambia il predefinito. Fai clic per fissarne uno.",
       "harness_mark": "Funziona su {{harness}}",
       "model_switch_applies_next_turn": "Il tuo prossimo messaggio userà il modello che scegli. Questa risposta si conclude con il modello con cui è iniziata.",

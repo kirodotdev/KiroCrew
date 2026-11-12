@@ -6716,6 +6716,7 @@
       "compacting_context_stop_unavailable": "コンテキストを圧縮中 — 完了するまで停止できません",
       "click_again_to_force_stop_resets_session": "もう一度クリックして強制停止（セッションを再起動します。メッセージは残り、エージェントは最近の抜粋を保持します）",
       "esc_again_to_stop": "もう一度 Esc を押すと停止します",
+      "stop_generation_esc": "生成を停止（Esc）",
       "model_inherited_default": "このセッションはデフォルトモデル（{{name}}）で動作します。独自のモデルを持たないため、デフォルトが変わると変わります。固定するにはクリックしてください。",
       "harness_mark": "{{harness}} で実行",
       "model_switch_applies_next_turn": "次のメッセージは選んだモデルで実行されます。この返答は開始時のモデルのまま完了します。",

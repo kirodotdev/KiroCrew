@@ -311,6 +311,8 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   'list-outdent': 'hooks.useKeyboardShortcuts.outdent_list_line',
   'agent-monitor': 'hooks.useKeyboardShortcuts.open_agent_monitor',
   'stop-speaking': 'hooks.useKeyboardShortcuts.stop_speaking',
+  // Reused: the composer's Stop button, which this key presses.
+  'stop-turn': 'components.chatInput.stop_generation',
   'notification-prev': 'hooks.useKeyboardShortcuts.previous_notification',
   'notification-next': 'hooks.useKeyboardShortcuts.next_notification',
   'instance-1': 'hooks.useKeyboardShortcuts.switch_to_local',
