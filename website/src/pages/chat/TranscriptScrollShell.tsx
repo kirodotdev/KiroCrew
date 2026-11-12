@@ -190,6 +190,8 @@ function useSlideAnchor(scrollerRef: React.RefObject<HTMLDivElement | null>): vo
 const WIDTH_BUCKET_STEP = 16
 const WIDTH_SETTLE_MS = 200
 const bucketWidth = (px: number) => Math.round(px / WIDTH_BUCKET_STEP) * WIDTH_BUCKET_STEP
+const publishedBucket = (el: HTMLElement) =>
+  bucketWidth(Number.parseFloat(el.style.getPropertyValue(PANE_WIDTH_PROPERTY)))
 
 /** One width scope for both transcript hosts. Layout stays live during a drag,
  * but a height may enter the settled cache only when BOTH the pane and its
@@ -209,9 +211,17 @@ export function useTranscriptWidth() {
     measure()
     if (typeof ResizeObserver === 'undefined') return
     let timer: ReturnType<typeof setTimeout> | undefined
+    // Settle only on a width the table width has been published at, so the
+    // swap commit can measure and its reseed holds the reader. WebKit can lay
+    // out a new width before any observer callback reports and publishes it,
+    // and a held panel slide publishes at its end with no callback after it.
+    const settle = () => {
+      if (publishedBucket(scroller) === bucketWidth(scroller.clientWidth)) measure()
+      else timer = setTimeout(settle, WIDTH_SETTLE_MS)
+    }
     const observer = new ResizeObserver(() => {
       clearTimeout(timer)
-      timer = setTimeout(measure, WIDTH_SETTLE_MS)
+      timer = setTimeout(settle, WIDTH_SETTLE_MS)
     })
     observer.observe(scroller)
     return () => {
@@ -219,11 +229,17 @@ export function useTranscriptWidth() {
       clearTimeout(timer)
     }
   }, [scroller])
+  // The pane can move on between the settle and the commit (a sidebar sliding
+  // back in): move to the width the rows show before this commit paints.
+  useLayoutEffect(() => {
+    if (!scroller) return
+    const pane = bucketWidth(scroller.clientWidth)
+    if (pane !== widthBucket && publishedBucket(scroller) === pane) setWidthBucket(pane)
+  }, [scroller, widthBucket])
   // No bound element means no settled scope to measure against.
   const canMeasure = useCallback(() => {
     if (!scroller || scroller.clientWidth <= 0) return false
-    const published = Number.parseFloat(scroller.style.getPropertyValue(PANE_WIDTH_PROPERTY))
-    return bucketWidth(scroller.clientWidth) === widthBucket && bucketWidth(published) === widthBucket
+    return bucketWidth(scroller.clientWidth) === widthBucket && publishedBucket(scroller) === widthBucket
   }, [scroller, widthBucket])
   return { widthBucket, canMeasure, bindScroller }
 }

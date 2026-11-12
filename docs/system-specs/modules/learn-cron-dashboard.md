@@ -5761,7 +5761,9 @@ scroller element rather than to its ref:
 the shell hands its element to the hook on mount and `null` on unmount, so a
 host that mounts before any shell exists (the main page's welcome hero) or
 replaces its shell on the same stable ref observes exactly the mounted element.
-Cache-scope updates settle for 200ms, while each measurement
+Cache-scope updates settle for 200ms, and only on a width the table width has
+already been published at, re-checked every settle interval until it is (a held
+panel slide publishes once, at its end); each measurement
 write checks that the live pane width and the published table width both match
 that scope; with no bound scroller every write is rejected. Observer callbacks, ref seeds and farm records reject transition
 measurements rather than flushing new-width heights into the old-width cache.
@@ -5776,6 +5778,12 @@ A scope change remeasures mounted rows from live DOM without waiting for another
 resize notification and announces them in the same commit's layout phase, not
 through the debounce; the reader's row, captured render-phase before the cold
 owner's estimate spacer committed, is paid back in the re-render that follows.
+A scope whose commit finds the pane already in another bucket (a sidebar still
+sliding in) moves to the pane's bucket in that commit's layout phase, before it
+paints, when the published width agrees. WebKit can lay out a new pane width
+before any observer callback reports and publishes it, and a scope committed
+then fails the write check, skips that remeasure and leaves the cold spacer
+under the reader.
 Unmounted rows retain only their own width's measurements.
 
 **Syntax highlighting** — `highlight.js` (tree-shaken: js/ts/py/bash/json/yaml/html/css/sql/rust/java/md). An edition can add languages through the highlighting-languages data module (see [extension seams](../../../website/docs/extension-seams.md#highlighting-languages-a-data-module-not-a-registrar)). Custom One Dark / One Light theme in `website/src/styles/focus-and-state-cues.css` using design tokens. `hljs.highlight()` for known languages, `hljs.highlightAuto()` for unknown. Output sanitized via DOMPurify.
