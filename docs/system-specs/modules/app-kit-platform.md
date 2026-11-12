@@ -1163,22 +1163,25 @@ resurrected from a disabled or uninstalled app would have persisted indefinitely
 Lock order is unchanged (transaction → config → bridge-file); the widened hold is
 the innermost one.
 
-**An app's update, disable or uninstall reaches the chats already open.** A new
-chat mounts the spec's `<app>:<server>` entries when it starts; on a harness that
+**An app's enable, update, disable or uninstall reaches the chats already open.** A
+new chat mounts the spec's `<app>:<server>` entries when it starts; on a harness that
 does not watch the spec file, a chat already open keeps the set it started with. So
 these routes end with the step an MCP page write ends with,
 `dashboard/handlers/template_server_request.py::_reach_sessions`: where every live
 session applies an MCP change itself (`_mcp_hot_reload_active`), it marks the ones
 that apply it at their next turn and resets nothing; otherwise it resets every
 session and drains the warm pool, so the next message starts from the new spec. A
-route takes the step after its lifecycle lock, and only when the app was enabled
-and declares `mcpServers`, or an update registered one: a disabled app's entries
-are already out of the spec, and an app with none changed nothing a chat holds. A
-failure of the step is logged and never fails the route, whose change has already
-landed.
+route takes the step after its lifecycle lock, and only when the app declares
+`mcpServers` and was enabled or is being enabled, or an update registered one: a
+disabled app's entries are already out of the spec, and an app with none changed
+nothing a chat holds. A failure of the step is logged and never fails the route,
+whose change has already landed.
 
 | Path | Takes the step | Why |
 |---|---|---|
+| enable (`apps/routes_enable.py::handle_enable_app`), on success | yes, for a gateway-managed app | the registration wrote the app's entries, or the backend's health watch is about to write an HTTP one; an open chat would not have its tools. A re-enable of an app already enabled takes it too, since the registration rewrites them |
+| a registry install over an installed app (`apps/routes_registry.py::handle_registry_install` and `handle_registry_install_stream`), on success | yes | it is the update a registry-sourced app's Update button runs: the take-down removed the old entries and the registration wrote the new version's |
+| a fresh install, local path or registry (`apps/routes_install.py::handle_install_app`, the same registry routes) | no | `install_app` writes the record disabled, so the install registers nothing (§7.3); the enable that turns the app on takes the step |
 | update, local or registry source (`apps/routes_install.py::handle_update_app`), on success | yes | the take-down removed the old entries and, for an app that may still run, the registration wrote the new version's, possibly with a new command, args or server list |
 | disable (`apps/routes_enable.py::handle_disable_app`), on success | yes, for a gateway-managed app | the teardown removed the entries; an open chat would keep the removed server's tools |
 | uninstall (`apps/routes_uninstall.py::_run_uninstall`, shared by the route and `uninstall_app_in_process`), on success | yes, for a gateway-managed app | the deregistration removed the entries, as on disable |
@@ -1378,6 +1381,43 @@ Writer: `apps/bridges_agents.py::_register_agents`, `_preserve_user_agent_edits`
 `_template_record`, `_read_agent_config`; the update route
 `apps/routes_install.py::handle_update_app` with
 `apps/routes_lifecycle.py::_reinstall_from_registry` and `_prune_dropped_resources`.
+
+### 3.1 A granted server's launch spec is the one the default agent mounts
+
+A per-app policy grant (`servers` in `agent_mcp_policy.json`) names a server and
+carries only policy, so `_apply_agent_mcp_policy` copies a launch spec in. It takes
+the first source that holds the name:
+
+| Source | Why it ranks here |
+|---|---|
+| the agent's own `mcpServers`: its template, the app's own `<app>:<server>` entries, a materialized managed ref | the app declared it |
+| `managed_mcp_spec_entry(name, include_opt_in=True)` | no scope may overwrite a managed name, on the default agent either |
+| a built-in app only: the default agent's spec (`<kiro agents dir>/kirocrew.json`, read by `_mounted_mcp_servers`), minus every installed app's own servers (`_app_owned_mcp_keys`) | what `agent.rebuild_agent_config` wrote: the MCP Management store, registry installs, edition servers and provider globals merged over the Kiro global `mcp.json`, the store winning a tie. Another app's server is that app's, never a grant's to copy |
+| the Kiro global `~/.kiro/settings/mcp.json` | a server the default agent's spec does not hold: no rebuild has run yet, or its command did not resolve here |
+
+A copied entry that is muted is withheld: turned off in MCP Management, a registry
+install not yet consented, or a `secret://` env reference the rebuild withholds
+(`mcp_provenance.WITHHELD_KEY`). The grant logs `turned off or withheld for the
+default agent` and adds nothing. The rebuild's `DERIVED_KEY` record is not copied:
+it describes the file the rebuild wrote. A copied spec needs a `command`, so a `url`
+server is not granted this way.
+
+Only a first-party app (`execution.builtin_app_names`: a shipped manifest names it
+and the built-in holds its install) reads the default agent's spec. A user-installed
+app, one under a built-in's name included, writes its own grant file, and no owner
+consent covers what it names, so its grant keeps main's three other sources until
+an owner-consent step exists. The managed-first order and the muted rule reach it
+as well; both only narrow what it gets.
+
+The copy is taken when the app's agents are materialized (enable, update, gateway
+start, or a refresh such as Mochi's settings save), not on every MCP page write. A
+server turned off, or changed, in MCP Management after the grant keeps its earlier
+copy in the app agent until the next of those. A `secret://` server the gateway
+routes is copied as the default agent's spec holds it, and its reference resolves
+for the app agent only once the gateway's overlay wraps the app agent's copy.
+
+Pinned by
+`test_app_bridges_agent_configs.py::TestAGrantResolvesWhatTheDefaultAgentMounts`.
 
 ## 4. A generated prompt is pinned through the app's policy
 

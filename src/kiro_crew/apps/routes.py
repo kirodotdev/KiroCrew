@@ -397,6 +397,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.routes_registry import (  # noqa: F401
         _announce_app_updates,
         _derive_registry_name,
+        _held_mcp_servers,
+        _reach_open_chats,
         _registry_fetch_failures,
         _write_registries_config,
     )
