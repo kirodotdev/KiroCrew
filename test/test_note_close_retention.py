@@ -155,7 +155,7 @@ class TestDeferredNoteLostOnClose:
         async with _note_and_close_client(state) as client:
             await _post_note(client, "CTX-HALF-RETIRED")
             note_id = slot._deferred_notes[0]["id"]
-            slot.flush_deferred_notes(retain=True)
+            slot.flush_deferred_notes(markers_only=False, retain=True)
             assert slot.messages[0]["meta"].get("noteRowFor") == note_id
             _save_slot_to_history(state, slot, closed=False)
             meta = state.conversation_log._read_metadata(slot_history_key(slot))
@@ -190,7 +190,7 @@ class TestDeferredNoteLostOnClose:
 
         slot = _ChatSlot("s1")
         slot._deferred_notes = restored
-        slot.flush_deferred_notes()
+        slot.flush_deferred_notes(markers_only=False)
 
         assert slot.messages == [], "a row-committed hold must not append a second row"
         assert [c["content"] for c in slot._pending_context] == ["RESTORED-CTX"]
@@ -225,7 +225,7 @@ class TestDeferredNoteLostOnClose:
             self._held("plain0000001", "PLAIN"),
         ]
 
-        assert slot.flush_deferred_notes() == 2
+        assert slot.flush_deferred_notes(markers_only=False) == 2
 
         card_row, plain_row = slot.messages
         assert card_row["meta"]["noteId"] == "card00000001"
@@ -258,7 +258,7 @@ class TestDeferredNoteLostOnClose:
 
         monkeypatch.setattr(_ChatSlot, "append_pending_context", seat_raises)
         with pytest.raises(RuntimeError):
-            slot.flush_deferred_notes()
+            slot.flush_deferred_notes(markers_only=False)
 
         assert [(n["id"], n.get("rowCommitted")) for n in slot._deferred_notes] == [
             ("plain0000002", True),
@@ -300,7 +300,7 @@ class TestDeferredNoteLostOnClose:
         assert state._slots.get("s1") is slot
         assert [m["content"] for m in slot.messages] == ["ABORTED-CTX"]
         slot.task = None
-        slot.flush_deferred_notes()
+        slot.flush_deferred_notes(markers_only=False)
         assert [m["content"] for m in slot.messages] == ["ABORTED-CTX"]
         assert [c["content"] for c in slot._pending_context] == ["ABORTED-CTX"]
 
@@ -424,7 +424,7 @@ class TestDeferredNoteLostOnClose:
         }
         original._deferred_notes.append(dict(entry))
         original._closing = True
-        original.flush_deferred_notes()
+        original.flush_deferred_notes(markers_only=False)
         original._closing = False
         assert original._deferred_notes and original._deferred_notes[0].get("rowCommitted")
         if row_saved_first:
@@ -545,7 +545,7 @@ class TestCloseWindowNoteEvidence:
             },
         }
         slot._deferred_notes.append(note)
-        slot.flush_deferred_notes(retain=True)
+        slot.flush_deferred_notes(markers_only=False, retain=True)
 
         def _lock_timeout(*_args: object, **_kwargs: object) -> None:
             raise TimeoutError("history lock")

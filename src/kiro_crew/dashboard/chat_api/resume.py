@@ -44,19 +44,19 @@ if TYPE_CHECKING:
         _redact_meta_for_role,
         _restore_model_fields,
         _restored_agent_name,
+        _resume_session_identity,
         _slot_closed_before,
         _sync_dashboard_slots,
         _unhide_folder,
         app_owns_transcript_meta,
         audit_app_slot_denial,
         carry_provenance,
-        channel_slot_name,
         close_in_flight,
         close_metadata_under_lock,
+        default_row_cls,
         deny_app_slot_session_access,
         durable_row_count,
         effective_session_key,
-        is_channel_session_key,
         load_window_off_loop,
         logger,
         members_mod,
@@ -74,24 +74,6 @@ if TYPE_CHECKING:
         time,
         transcripts_share_file,
     )
-
-
-def _resume_session_identity(state: DashboardState, history_key: str) -> str:
-    """The session a transcript runs under, spelled as a slot spells its own.
-
-    Counterpart to :func:`effective_session_key`, for the caller that holds a
-    history key and no slot. A channel-born transcript's session is the
-    channel's own, read from the session map because ``history._safe_key``
-    folds every ``:`` to ``_`` irreversibly — ``discord_a_b_c`` cannot be
-    unfolded by guessing, and a guess would name a session the channel never
-    reads. An unmapped channel key falls back to the dashboard spelling, the
-    same "leave it unbound" outcome the restore path takes.
-    """
-    if is_channel_session_key(history_key) and state.sessions:
-        real_key = state.sessions.channel_key_for_stem(channel_slot_name(history_key))
-        if isinstance(real_key, str) and is_channel_session_key(real_key):
-            return real_key
-    return _history_key_for(history_key)
 
 
 async def _live_slot_for_resume(
@@ -542,7 +524,7 @@ def _hydrate_slot_from_history(
         # ``is_stop_event_row``), so a resumed session dropping it reads the
         # user's deliberate Stop as an interrupted turn. Import rows carry none
         # and fall through to the role default as before.
-        cls = m.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
+        cls = m.get("cls") or default_row_cls(role)
         content = m.get("content", "")
         slot.append(
             role,

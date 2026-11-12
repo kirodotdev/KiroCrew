@@ -644,11 +644,6 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
     ),
     "resume": (
         (
-            "_resume_session_identity",
-            "function",
-            "(state: 'DashboardState', history_key: 'str') -> 'str'",
-        ),
-        (
             "_live_slot_for_resume",
             "async function",
             "(state, request_app: 'str', history_key: 'str', name: 'str', caller_label: 'str' = '') -> \"'ResumeOutcome | None'\"",
@@ -676,6 +671,13 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "resume_slot_from_history",
             "async function",
             "(state: \"'DashboardState'\", *, name: 'str', history_key: 'str | None' = None, request_app: 'str' = '', caller_label: 'str' = '', request_title: 'str' = '', expected_created_at: 'str | None' = None, containment: \"'Callable[[_ChatSlot], Awaitable[ResumeRefusal | None]] | None'\" = None, final_check: \"'Callable[[_ChatSlot], ResumeRefusal | None] | None'\" = None, rebind_manager: 'bool' = True) -> 'ResumeOutcome'",
+        ),
+    ),
+    "resume_identity": (
+        (
+            "_resume_session_identity",
+            "function",
+            "(state: 'DashboardState', history_key: 'str') -> 'str'",
         ),
     ),
     "resume_window": (

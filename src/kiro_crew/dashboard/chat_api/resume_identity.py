@@ -1,4 +1,5 @@
-"""Holding a resume's live-slot answer to the transcript identity the caller pinned."""
+"""Holding a resume's live-slot answer to the transcript identity the caller pinned,
+and naming the session a transcript runs under."""
 
 from __future__ import annotations
 
@@ -10,8 +11,29 @@ if TYPE_CHECKING:
         DashboardState,
         ResumeOutcome,
         ResumeRefusal,
+        _history_key_for,
+        channel_slot_name,
+        is_channel_session_key,
         slot_history_key,
     )
+
+
+def _resume_session_identity(state: DashboardState, history_key: str) -> str:
+    """The session a transcript runs under, spelled as a slot spells its own.
+
+    Counterpart to :func:`effective_session_key`, for the caller that holds a
+    history key and no slot. A channel-born transcript's session is the
+    channel's own, read from the session map because ``history._safe_key``
+    folds every ``:`` to ``_`` irreversibly — ``discord_a_b_c`` cannot be
+    unfolded by guessing, and a guess would name a session the channel never
+    reads. An unmapped channel key falls back to the dashboard spelling, the
+    same "leave it unbound" outcome the restore path takes.
+    """
+    if is_channel_session_key(history_key) and state.sessions:
+        real_key = state.sessions.channel_key_for_stem(channel_slot_name(history_key))
+        if isinstance(real_key, str) and is_channel_session_key(real_key):
+            return real_key
+    return _history_key_for(history_key)
 
 
 async def _pinned_live_outcome(

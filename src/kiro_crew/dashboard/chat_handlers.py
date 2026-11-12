@@ -224,13 +224,13 @@ from kiro_crew.dashboard.chat_api.resume import (  # noqa: F401
     _normalise_structured_content,
     _redact_history_rows,
     _resume_refusal_response,
-    _resume_session_identity,
     _resume_slot_from_history_noted,
     api_chat_slot_resume,
     resume_slot_from_history,
 )
 from kiro_crew.dashboard.chat_api.resume_identity import (  # noqa: F401
     _pinned_live_outcome,
+    _resume_session_identity,
 )
 from kiro_crew.dashboard.chat_api.resume_window import (  # noqa: F401
     _reconcile_slot_window,
@@ -706,6 +706,7 @@ from kiro_crew.session_agent_selection import (  # noqa: F401
     restore_agent_selection,
     session_agent_selection_name,
 )
+from kiro_crew.session_directive import default_row_cls  # noqa: F401
 from kiro_crew.session_lifecycle import compaction_in_flight  # noqa: F401
 from kiro_crew.session_summary import count_user_turns_in_records  # noqa: F401
 from kiro_crew.start_priority import person_priority  # noqa: F401
