@@ -1052,6 +1052,12 @@ from kiro_crew.dashboard.handlers.computer_use import (  # noqa: E402, F401
     api_computer_use_invoke,
 )
 
+# Computer use setup (the first-use dialog and the Settings status card).
+from kiro_crew.dashboard.handlers.computer_use_setup import (  # noqa: E402, F401
+    api_computer_use_setup_get,
+    api_computer_use_setup_post,
+)
+
 # Owner review of a hand-edited sealed keystone file (Settings > Security).
 from kiro_crew.dashboard.handlers.config_pending import (  # noqa: E402, F401
     api_config_pending_apply,

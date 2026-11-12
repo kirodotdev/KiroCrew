@@ -186,6 +186,11 @@ def _render_record(rec: ElementRec, *, text_limit: int) -> str:
     label = rec.title or rec.value
     if label:
         line += f' "{_clip(label, text_limit)}"'
+    if rec.title and rec.value and rec.value != rec.title:
+        # A named field's CONTENT, which the label alone would hide: an editor named
+        # "Text Editor" holding typed text must show that text, or the model cannot
+        # read back what it typed.
+        line += f' = "{_clip(rec.value, text_limit)}"'
     if rec.actions:
         line += f" [{', '.join(rec.actions)}]"
     if not rec.enabled:

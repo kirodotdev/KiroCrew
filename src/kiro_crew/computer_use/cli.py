@@ -148,6 +148,9 @@ Commands:
                    Run several tools in ONE process, so element_index values from
                    an earlier computer_get_state are still valid for later calls
   call ... --json  Emit the replies as a JSON array instead of prose
+  setup            Show Computer Use's setup state (driver, install, session,
+                   permissions, last check) as JSON. Read-only: installing the
+                   driver and running the check are done in Settings
 
 A key=value argument is parsed as JSON when it can be (element_index=3,
 screenshot=false, x=120.5) and kept as a plain string otherwise (app=Finder).
@@ -184,6 +187,11 @@ def run_computer(args: list[str]) -> None:
         return
     if cmd == "call":
         _cmd_call(args[1:])
+        return
+    if cmd == "setup":
+        from kiro_crew.computer_use import setup as setup_mod
+
+        print(json.dumps(setup_mod.get_setup_status(), indent=2))
         return
     print(f"Unknown command: {cmd}. Run 'kirocrew computer' for help.", file=sys.stderr)
     sys.exit(_EXIT_PROBLEM)

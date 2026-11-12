@@ -47,3 +47,12 @@ Desktop releases bundle an audio-only build of FFmpeg 7.1.1, licensed under
 the GNU Lesser General Public License v2.1 or later, as a separate executable.
 Its license text and the location of its corresponding source are under
 "Bundled Programs" in THIRD-PARTY-NOTICES.
+
+The computer-use feature can run the open-source cua-driver by Cua AI, Inc.
+(https://github.com/trycua/cua, MIT License, Copyright (c) 2025 Cua AI, Inc.),
+pinned to release 0.47.8. It is not bundled or redistributed: when the owner
+installs it, the gateway downloads the official release archive for the host,
+checks its size and sha256 against the pin in
+src/kiro_crew/computer_use/driver_runtime/pin.py, and keeps upstream's own
+license and notice files inside that archive. "Cua Driver" is a trademark of
+Cua AI, Inc.; Kiro Crew refers to it only descriptively.

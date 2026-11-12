@@ -36,6 +36,9 @@ from typing import Callable
 from kiro_crew import platform_compat
 from kiro_crew.computer_use import index
 from kiro_crew.computer_use.types import (
+    DRIVER_AUTO,
+    DRIVER_NATIVE,
+    DRIVER_UPSTREAM,
     ERR_LAUNCH_ALREADY_RUNNING,
     ERR_LAUNCH_AMBIGUOUS,
     ERR_LAUNCH_FAILED,
@@ -78,8 +81,12 @@ logger = logging.getLogger(__name__)
 #: a partial install, not a missing implementation.
 WINDOWS_REASON = "the Windows UI Automation driver could not be loaded on this host"
 LINUX_REASON = (
-    "the Linux AT-SPI driver is not implemented yet; computer use is macOS-only "
-    "in this release (Wayland has no unprivileged window capture)"
+    "Kiro Crew has no native Linux driver; set the computer-use driver to auto or "
+    "upstream to use the open-source driver"
+)
+MACOS_UPSTREAM_REASON = (
+    "the open-source driver is not offered on macOS yet; set the computer-use "
+    "driver to auto or native to use the built-in macOS driver"
 )
 UNKNOWN_PLATFORM_REASON = "this operating system has no computer-use driver"
 DRIVER_IMPORT_REASON = "the native computer-use driver could not be loaded ({detail})"
@@ -248,6 +255,20 @@ class ComputerUseBackend(abc.ABC):
     def close(self) -> None:
         """Release resources. Safe to call repeatedly."""
 
+    #: True when the driver itself refuses a point another window owns, with an
+    #: occlusion-aware OS hit test (the native macOS and Windows drivers). Every
+    #: other backend is held by the service to :meth:`window_bounds`, and refused
+    #: when it reports none: the default is the fail-closed one.
+    confines_points_natively: bool = False
+
+    def window_bounds(self, app: AppRef) -> "tuple[float, float, float, float] | None":
+        """*app*'s window rect ``(x, y, w, h)`` in top-left screen coordinates, or ``None``.
+
+        Read by ``floors.check_point_in_window`` for a backend that does not confine
+        points natively. ``None`` means "unknown", which refuses the gesture.
+        """
+        return None
+
 
 class UnsupportedBackend(ComputerUseBackend):
     """Shared base for platforms with no driver: every method refuses identically.
@@ -384,6 +405,7 @@ def run_launch(
     permit: "Callable[[LaunchIdentity], str | None] | None" = None,
     identity: "Callable[[str, str], LaunchIdentity] | None" = None,
     refuse_launched: "Callable[[AppRef], str | None] | None" = None,
+    find_launched: "Callable[[LaunchIdentity], AppRef | None] | None" = None,
     window_timeout: float = LAUNCH_WINDOW_TIMEOUT_SECS,
     window_poll_interval: float = LAUNCH_POLL_INTERVAL_SECS,
 ) -> DriverResult:
@@ -461,13 +483,20 @@ def run_launch(
     # from the one that got launched. So the check moves to where the resolved identity is
     # known, and is applied to ALL of its spellings, which is also the last point before
     # ``spawn``. A detached spawn cannot be undone, so this must precede it.
+    who = identity(target, name) if identity is not None else LaunchIdentity(display=name)
     if permit is not None:
-        who = identity(target, name) if identity is not None else LaunchIdentity(display=name)
         refusal = permit(who)
         if refusal:
             return DriverResult(ok=False, text=refusal)
 
-    existing = find(name)
+    # *find_launched* matches a window on the RESOLVED identity the policy just
+    # cleared (``who.key``: the executable, bundle id or desktop program), so a
+    # window of another app that shares the display name is never taken for it.
+    # Without it (the native drivers) the display-name lookup is kept.
+    def lookup() -> "AppRef | None":
+        return find_launched(who) if find_launched is not None else find(name)
+
+    existing = lookup()
     if existing is not None:
         # Refused rather than re-launched: a second copy of an editor is a second
         # unsaved document, and the model's actual goal — a window to drive — is
@@ -487,7 +516,7 @@ def run_launch(
         )
 
     appeared, waited = await_launched_window(
-        lambda: find(name), timeout=window_timeout, interval=window_poll_interval
+        lookup, timeout=window_timeout, interval=window_poll_interval
     )
     if appeared is None:
         # A SUCCESS with a caveat, not a failure. The process did start; reporting
@@ -601,7 +630,46 @@ def reset_shared_backend() -> None:
 #: Platform ids with a real driver. Kept beside :func:`select_default_backend`, whose
 #: branches are what make it true, so adding a driver is one edit rather than two that
 #: can disagree. ``test_computer_use_backend.py`` pins the two together.
-_SUPPORTED_PLATFORM_IDS: frozenset[str] = frozenset({PLATFORM_MACOS, PLATFORM_WINDOWS})
+_SUPPORTED_PLATFORM_IDS: frozenset[str] = frozenset(
+    {PLATFORM_MACOS, PLATFORM_WINDOWS, PLATFORM_LINUX}
+)
+
+
+def upstream_installed() -> bool:
+    """Whether the pinned upstream driver is installed AND usable: installed (the
+    record) and not stopped at its last launch by the system (endpoint security
+    software). Windows ``auto`` keeps the native driver otherwise."""
+    try:
+        from kiro_crew.computer_use.driver_runtime import install as install_mod
+        from kiro_crew.config.paths import data_home
+
+        home = data_home()
+        return install_mod.install_state(home).installed and not install_mod.read_blocked(home)
+    except Exception:
+        logger.debug("upstream install state unreadable", exc_info=True)
+        return False
+
+
+def _driver_choice() -> str:
+    """The owner's ``driver`` choice from the keystone; ``auto`` when unreadable."""
+    try:
+        from kiro_crew.computer_use import enable_state
+
+        return enable_state.driver_choice()
+    except Exception:
+        logger.debug("computer-use driver choice unreadable; using auto", exc_info=True)
+        return DRIVER_AUTO
+
+
+def _upstream_backend(platform_id: str) -> ComputerUseBackend:
+    try:
+        # Deferred + circular: the upstream backend subclasses ComputerUseBackend.
+        from kiro_crew.computer_use.driver_runtime.backend import CuaBackend
+
+        return CuaBackend()
+    except Exception as exc:
+        logger.warning("upstream computer-use driver unavailable: %s", exc)
+        return UnsupportedBackend(platform_id, DRIVER_IMPORT_REASON.format(detail=exc))
 
 
 def select_default_backend() -> ComputerUseBackend:
@@ -623,7 +691,10 @@ def select_default_backend() -> ComputerUseBackend:
     propagating: a partial install or a framework that will not load should
     disable one capability, not crash the process that asked about it.
     """
+    choice = _driver_choice()
     if platform_compat.IS_MACOS:
+        if choice == DRIVER_UPSTREAM:
+            return UnsupportedBackend(PLATFORM_MACOS, MACOS_UPSTREAM_REASON)
         try:
             # Deferred + circular: macos_driver subclasses ComputerUseBackend.
             from kiro_crew.computer_use.macos_driver import MacOSBackend
@@ -633,6 +704,8 @@ def select_default_backend() -> ComputerUseBackend:
             logger.warning("macOS computer-use driver unavailable: %s", exc)
             return UnsupportedBackend(PLATFORM_MACOS, DRIVER_IMPORT_REASON.format(detail=exc))
     if platform_compat.IS_WINDOWS:
+        if choice == DRIVER_UPSTREAM or (choice == DRIVER_AUTO and upstream_installed()):
+            return _upstream_backend(PLATFORM_WINDOWS)
         try:
             # Deferred + circular: windows_driver subclasses ComputerUseBackend.
             from kiro_crew.computer_use.windows_driver import WindowsBackend
@@ -645,6 +718,8 @@ def select_default_backend() -> ComputerUseBackend:
             logger.warning("Windows computer-use driver unavailable: %s", exc)
             return UnsupportedBackend(PLATFORM_WINDOWS, WINDOWS_REASON)
     if platform_compat.IS_LINUX:
+        if choice != DRIVER_NATIVE:
+            return _upstream_backend(PLATFORM_LINUX)
         # Deferred + circular: linux_driver subclasses UnsupportedBackend.
         from kiro_crew.computer_use.linux_driver import LinuxBackend
 

@@ -1,9 +1,9 @@
-import { useRef, useState } from 'react'
+import { Suspense, lazy, useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ExternalLink } from 'lucide-react'
+import { Lock } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsInput } from '../../components/settings'
 import { Badge, Btn, FormSkeleton } from '../../components/ui'
-import InfoTip from '../../components/InfoTip'
 import { LockedByPolicyBadge } from '../../components/settingRef/LockedByPolicyBadge'
 import { api } from '../../api/client'
 import type { ComputerUseConfigData, ComputerUseConfigSave } from '../../api/client'
@@ -11,77 +11,22 @@ import type { ComputerUseConfigData, ComputerUseConfigSave } from '../../api/cli
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
 import AgentSpecNotRewrittenNotice, { agentSpecNotRewritten } from '../../components/AgentSpecNotRewrittenNotice'
+import { ComputerUseSetupStatus } from './ComputerUseSetupStatus'
+import { SETUP_QUERY_PARAM } from './computerUseSetup'
+import { COMPUTER_USE_SETUP_QK, useComputerUseSetupQuery } from '../../hooks/useComputerUseSetup'
+
+// The setup dialog opens only on a click (or ?setup=1), so it is its own chunk
+// rather than part of the Settings page bundle.
+const ComputerUseSetupDialog = lazy(() =>
+  import('./ComputerUseSetupDialog').then(m => ({ default: m.ComputerUseSetupDialog })),
+)
 
 const QK = ['computer-use-config']
 /** The locked-by-policy note under the enable, which the switch's description points at. */
 const LOCKED_NOTE_ID = 'computer-use-locked-note'
 
-/** macOS System Settings deep links for the two TCC grants (mirrors the
- *  backend's SETTINGS_URL_* constants). */
-const PANE_ACCESSIBILITY = 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'
-const PANE_SCREEN_RECORDING = 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'
-
-const GRANTED = 'granted'
-const MISSING = 'missing'
 const DARWIN = 'macos'
 const WINDOWS = 'windows'
-
-/** Catalog KEY for each of the backend's permission tokens. The raw values are wire
- *  vocabulary (`missing`, `unsupported`, `unknown`) and read as jargon in a badge.
- *
- *  Keys, not strings: this table is evaluated at module load, so an `i18nT()` call
- *  here would freeze the boot language. The lookup happens in `permLabel()`, which
- *  runs during render. Shaped as a flat `Record` of full literal keys, indexed
- *  inline at the `i18nT()` call, because that is the form
- *  `scripts/check-i18n-keys.mjs` can resolve statically. */
-const PERM_LABEL_KEY: Record<string, string> = {
-  granted: 'pages.settings.computerUsePanel.granted',
-  missing: 'pages.settings.computerUsePanel.not_detected',
-  unsupported: 'pages.settings.computerUsePanel.not_applicable',
-  unknown: 'pages.settings.computerUsePanel.could_not_check',
-}
-
-/** Localised badge text for a permission token. An unmapped value falls back to
- *  ITSELF, so a state a newer backend invents still renders (as the raw token)
- *  instead of blanking the badge.
- *
- *  `hasOwnProperty`, not `in`: the token comes off the wire, so a backend
- *  reporting `toString` would otherwise resolve to an inherited Object.prototype
- *  member and hand a function to i18next. */
-function permLabel(state: string): string {
-  return Object.prototype.hasOwnProperty.call(PERM_LABEL_KEY, state)
-    ? i18nT(PERM_LABEL_KEY[state])
-    : state
-}
-
-/** Permission states the backend calls TERMINAL: re-probing cannot change them.
- *  `granted` is done; `unsupported` means there is no TCC to grant on this
- *  platform; `unknown` means the probe itself could not run (framework load
- *  failure), which a retry in 5s will not fix. Only `missing` is worth polling —
- *  and even that is not authoritative, since macOS attributes a grant to the
- *  process that launched KiroCrew. */
-const TERMINAL_PERM_STATES = new Set([GRANTED, 'unsupported', 'unknown'])
-
-/** Permission poll cadence, and the cap on how long it runs.
- *  Bounded because the poll spawns a permission-probe child process on every
- *  tick: an unbounded poll on a host that never reports `granted`
- *  (the documented-normal case) spawns a subprocess every 5s forever, for as long
- *  as the Settings page stays open. 3 minutes is far longer than the round trip
- *  through System Settings, and the row still updates on any manual refetch. */
-const PERM_POLL_MS = 5000
-const PERM_POLL_MAX_MS = 180_000
-
-/** Decide the next poll delay from the query state. Exported so the bound is
- *  testable without driving 36 fake-timer ticks through the whole panel. */
-export function permissionPollInterval(
-  state: string | undefined,
-  firstFetchedAt: number,
-  now: number,
-): number | false {
-  if (state === undefined || TERMINAL_PERM_STATES.has(state)) return false
-  if (firstFetchedAt > 0 && now - firstFetchedAt >= PERM_POLL_MAX_MS) return false
-  return PERM_POLL_MS
-}
 
 /** Resolve a numeric draft to the value to PUT, or `null` for "discard the edit".
  *
@@ -111,50 +56,6 @@ export function commitNumericDraft(
  * resolved with `i18nT()` at its single JSX use site, inside the component body,
  * so a language switch re-reads the catalog. */
 
-/** Hand a System Settings deep link to the OS.
- *
- *  MUST be `window.open`, not `window.location.href`. The dashboard renders
- *  inside an instance <iframe> (InstancesViewport), and a FRAME navigation is
- *  governed by the CSP `frame-src` directive, which the dashboard declares as a
- *  loopback/cloudfront allowlist naming no custom scheme — so assigning
- *  `location.href` to an
- *  `x-apple.systempreferences:` URL is refused with ERR_BLOCKED_BY_CSP and the
- *  button is a dead click in the desktop app. `window.open` is a new top-level
- *  request instead: the browser hands it to the OS, and in Electron it reaches
- *  the main process's `setWindowOpenHandler` (see electron/external-scheme.js),
- *  which forwards the allowlisted scheme to `shell.openExternal`.
- *
- *  Exported so the delivery mechanism is asserted directly — a regression back
- *  to `location.href` would otherwise only show up as a dead button in a
- *  packaged build.
- */
-export function openSystemSettings(pane: string): void {
-  // `noopener` keeps the opened context from retaining a handle on the
-  // dashboard window; nothing needs the returned reference.
-  window.open(pane, '_blank', 'noopener,noreferrer')
-}
-
-/** One advisory permission row: name, state badge, and a grant shortcut.
- *  Local to this panel rather than shared with SecurityPanel's StatusRow — the
- *  two carry different semantics (a permission hint is never a security state)
- *  and coupling them would make one of the two read wrongly. */
-function PermRow({ label, state, pane }: { label: string; state: string; pane: string }) {
-  const variant = state === GRANTED ? 'ok' : state === MISSING ? 'warn' : 'muted'
-  return (
-    <div className="flex items-center justify-between py-1.5">
-      <span className="text-[13px] text-text">{label}</span>
-      <span className="flex items-center gap-2">
-        <Badge variant={variant}>{permLabel(state)}</Badge>
-        {state !== GRANTED && (
-          <Btn onClick={() => openSystemSettings(pane)} aria-label={i18nT('pages.settings.computerUsePanel.open_system_settings_for', { label })}>
-            {i18nT('pages.settings.computerUsePanel.open_system_settings')} <ExternalLink className="lucide-inline" />
-          </Btn>
-        )}
-      </span>
-    </div>
-  )
-}
-
 /**
  * Settings → Computer Use.
  *
@@ -167,6 +68,27 @@ function PermRow({ label, state, pane }: { label: string; state: string; pane: s
  * keystone `computer_use.json`, which the agent can neither read nor write. That
  * is why this panel is the only way to turn the feature on.
  */
+/** The Setup summary on an unsupported Mac, only when the cause is the
+ *  open-source driver choice (not offered on macOS): it offers Continue setup,
+ *  whose dialog switches back to the built-in driver. */
+function MacUpstreamRecovery({ onOpenSetup }: { onOpenSetup: () => void }) {
+  const setupQ = useComputerUseSetupQuery()
+  const doc = setupQ.data
+  // A failed read is not "nothing to recover": say so, with Check again. Rendered
+  // here rather than through the status card, whose own query observer would
+  // refetch on mount and flip this branch back to pending in a loop.
+  if (setupQ.isError && !doc) {
+    return (
+      <div className="flex flex-wrap items-center gap-3 pt-2" data-testid="cu-mac-recovery-error">
+        <ErrorNotice className="flex-1 min-w-[16rem]" askAgent message={i18nT('pages.settings.computerUseSetup.status_load_error')} />
+        <Btn onClick={() => void setupQ.refetch()}>{i18nT('pages.settings.computerUseSetup.check_again')}</Btn>
+      </div>
+    )
+  }
+  if (!doc || doc.platform !== 'macos' || doc.driver.kind !== 'upstream' || doc.state !== 'unsupported') return null
+  return <ComputerUseSetupStatus part="summary" onOpenSetup={onOpenSetup} />
+}
+
 export function ComputerUsePanel() {
   const qc = useQueryClient()
   const [saveError, setSaveError] = useState('')
@@ -179,26 +101,25 @@ export function ComputerUsePanel() {
   const [restarted, setRestarted] = useState(false)
   // Set when the enable saved but the agent spec was not rewritten.
   const [specNotRewritten, setSpecNotRewritten] = useState(false)
-
-  // Mount time, for the poll's wall-clock bound. A ref (not state) so reading it
-  // never re-renders and the deadline survives every refetch.
-  const mountedAt = useRef(Date.now())
+  // The first-use setup dialog. Its progress lives on the server, so closing it
+  // loses nothing.
+  const [setupOpen, setSetupOpen] = useState(false)
+  // `?setup=1` is how the chat's Set up Computer Use button asks for the
+  // dialog: open it once on arrival, then drop the parameter (replace, so Back
+  // does not reopen it).
+  const [searchParams, setSearchParams] = useSearchParams()
+  const setupRequested = searchParams.has(SETUP_QUERY_PARAM)
+  useEffect(() => {
+    if (!setupRequested) return
+    setSetupOpen(true)
+    const next = new URLSearchParams(searchParams)
+    next.delete(SETUP_QUERY_PARAM)
+    setSearchParams(next, { replace: true })
+  }, [setupRequested, searchParams, setSearchParams])
 
   const cfgQ = useQuery<ComputerUseConfigData>({
     queryKey: QK,
     queryFn: api.getComputerUseConfig,
-    // Poll ONLY while a grant is genuinely outstanding, so flipping the switch in
-    // System Settings updates the row without a reload — and stop for the states
-    // that a retry cannot change (see TERMINAL_PERM_STATES) or once the bound
-    // elapses. Each tick spawns a permission-probe child process, so an
-    // unbounded poll on a host that legitimately never reports `granted` would
-    // spawn one every 5s for as long as the page stays open.
-    refetchInterval: q =>
-      permissionPollInterval(
-        q.state.data?.permissions?.accessibility,
-        mountedAt.current,
-        Date.now(),
-      ),
   })
 
   const saveMut = useMutation({
@@ -224,7 +145,12 @@ export function ComputerUsePanel() {
       if (ctx?.prev) qc.setQueryData<ComputerUseConfigData>(QK, ctx.prev)
       setSaveError(i18nT('pages.settings.computerUsePanel.could_not_save_computer_use_settings'))
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: QK }),
+    onSettled: (_data, _err, patch) => {
+      void qc.invalidateQueries({ queryKey: QK })
+      // The setup card reads its own document, which the enable switch changes
+      // (off <-> the setup state), so it must be read again too.
+      if (patch && 'enabled' in patch) void qc.invalidateQueries({ queryKey: COMPUTER_USE_SETUP_QK })
+    },
   })
 
   const cfg = cfgQ.data
@@ -309,7 +235,16 @@ export function ComputerUsePanel() {
           <div className="text-[13px] text-muted">
             {cfg.reason || i18nT('pages.settings.computerUsePanel.computer_use_not_available', { platform: cfg.platform })}
           </div>
+          {/* The open-source driver chosen on a Mac, where it is not offered: the
+              setup dialog's Use the built-in driver is the way back, so keep it
+              reachable here (and through ?setup=1). */}
+          {cfg.platform === DARWIN && <MacUpstreamRecovery onOpenSetup={() => setSetupOpen(true)} />}
         </SettingsCard>
+        {setupOpen && cfg.platform === DARWIN && (
+          <Suspense fallback={null}>
+            <ComputerUseSetupDialog open={setupOpen} onOpenChange={setSetupOpen} config={cfg} />
+          </Suspense>
+        )}
       </SettingsSection>
     )
   }
@@ -334,23 +269,48 @@ export function ComputerUsePanel() {
         className="mb-4 animate-rise"
       />
 
+      {/* One card, like Settings > Browser: the switch, the status in a few
+          words and ONE primary action for the current state. */}
       <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')} badge={platformBadge}>
         <SettingsCard>
-          <SettingsToggle
-            label={i18nT('pages.settings.computerUsePanel.enable_computer_use')}
-            hint={i18nT('pages.settings.computerUsePanel.let_the_agent_read_desktop_app_windows_through_a')}
-            checked={cfg.enabled}
-            onChange={v => save({ enabled: v })}
-            disabled={busy || locked}
-            describedBy={locked ? LOCKED_NOTE_ID : undefined}
-          />
-          {/* Outside the toggle row, so it is not dimmed with the disabled switch. */}
-          {locked && (
-            <div id={LOCKED_NOTE_ID} className="flex items-center gap-2 text-[12px] text-muted" data-testid="computer-use-locked-note">
-              <LockedByPolicyBadge />
-              <span>{i18nT('components.lockedByPolicyBadge.tooltip')}</span>
-            </div>
-          )}
+          <div data-testid="cu-main-card">
+            <SettingsToggle
+              label={i18nT('pages.settings.computerUsePanel.enable_computer_use')}
+              hint={i18nT('pages.settings.computerUsePanel.let_the_agent_read_desktop_app_windows_through_a')}
+              checked={cfg.enabled}
+              onChange={v => save({ enabled: v })}
+              disabled={busy || locked}
+              describedBy={locked ? LOCKED_NOTE_ID : undefined}
+            />
+            {/* Outside the toggle row, so it is not dimmed with the disabled switch. */}
+            {locked && (
+              <div id={LOCKED_NOTE_ID} className="flex items-center gap-2 text-[12px] text-muted" data-testid="computer-use-locked-note">
+                <LockedByPolicyBadge />
+                <span>{i18nT('components.lockedByPolicyBadge.tooltip')}</span>
+              </div>
+            )}
+            <ComputerUseSetupStatus part="summary" onOpenSetup={() => setSetupOpen(true)} />
+            {/* No hand-off: the limit fields under More hold drafts that commit on blur. */}
+            {specNotRewritten && <AgentSpecNotRewrittenNotice className="pt-1" askAgent={false} />}
+            {restarted && (
+              <div className="pt-1 text-[13px] text-muted animate-rise">
+                {specNotRewritten
+                  ? i18nT('pages.settings.computerUsePanel.your_chat_sessions_were_restarted')
+                  : i18nT('pages.settings.computerUsePanel.your_chat_sessions_were_restarted_so_this_takes')}
+              </div>
+            )}
+          </div>
+        </SettingsCard>
+      </SettingsSection>
+      {setupOpen && (
+        <Suspense fallback={null}>
+          <ComputerUseSetupDialog open={setupOpen} onOpenChange={setSetupOpen} config={cfg} />
+        </Suspense>
+      )}
+
+      {/* The one main control an ordinary user changes. */}
+      <div className="mt-3">
+        <SettingsCard>
           <SettingsToggle
             label={i18nT('pages.settings.computerUsePanel.attach_screenshots')}
             description={i18nT('pages.settings.computerUsePanel.also_capture_the_target_window_and_pass_its_file_summary')} hint={i18nT('pages.settings.computerUsePanel.also_capture_the_target_window_and_pass_its_file')}
@@ -358,85 +318,56 @@ export function ComputerUsePanel() {
             onChange={v => save({ attach_screenshot: v })}
             disabled={busy}
           />
-          {/* Cursor Motion is purely visual, so it is shown only where it can
-              actually draw (macOS). */}
-          {cfg.enabled && cfg.cursor_motion_supported && (
-            <SettingsToggle
-              label={i18nT('pages.settings.computerUsePanel.show_cursor_motion')}
-              hint={i18nT('pages.settings.computerUsePanel.draw_a_cursor_that_glides_to_each_target_and_pul')}
-              checked={cfg.cursor_motion}
-              onChange={v => save({ cursor_motion: v })}
+        </SettingsCard>
+      </div>
+
+      {/* Everything else, collapsed by default. */}
+      <SettingsSection title={i18nT('pages.settings.computerUsePanel.more_title')} collapsible>
+        <SettingsCard>
+          <div data-testid="cu-more">
+            <p className="m-0 pb-2 text-[13px] text-muted">{i18nT('pages.settings.computerUsePanel.computer_use_lets_the_agent_read_any_app_window')}</p>
+            {cfg.platform === WINDOWS && (
+              <p className="m-0 pb-2 text-[13px] text-muted">{i18nT('pages.settings.computerUsePanel.on_windows_keystrokes_take_your_keyboard_focus')}</p>
+            )}
+            {/* Purely visual, and only where it can draw (macOS). */}
+            {cfg.cursor_motion_supported && (
+              <SettingsToggle
+                label={i18nT('pages.settings.computerUsePanel.show_cursor_motion')}
+                hint={i18nT('pages.settings.computerUsePanel.draw_a_cursor_that_glides_to_each_target_and_pul')}
+                checked={cfg.cursor_motion}
+                onChange={v => save({ cursor_motion: v })}
+                disabled={busy}
+              />
+            )}
+            <SettingsInput
+              label={i18nT('pages.settings.computerUsePanel.max_tree_nodes')}
+              aria-label={i18nT('pages.settings.computerUsePanel.max_tree_nodes')}
+              hint={i18nT('pages.settings.computerUsePanel.how_many_controls_one_window_reading_returns_a_w')}
+              type="number"
+              value={draftNodes ?? String(cfg.max_tree_nodes)}
+              onChange={setDraftNodes}
+              onBlur={() => commit('max_tree_nodes', draftNodes, () => setDraftNodes(null))}
               disabled={busy}
             />
-          )}
-          {/* No hand-off: the hand-off navigates away, and this panel's numeric
-              fields hold drafts that only commit on blur. */}
-          {specNotRewritten && <AgentSpecNotRewrittenNotice className="pt-1" askAgent={false} />}
-          {/* Shown even beside the notice: the sessions really were restarted, and
-              hiding that would leave a torn-down chat unexplained. Beside the notice
-              it drops "so this takes effect", which the notice says is not true. */}
-          {restarted && (
-            <div className="pt-1 text-[13px] text-muted animate-rise">
-              {specNotRewritten
-                ? i18nT('pages.settings.computerUsePanel.your_chat_sessions_were_restarted')
-                : i18nT('pages.settings.computerUsePanel.your_chat_sessions_were_restarted_so_this_takes')}
-            </div>
-          )}
-          {cfg.enabled && (
-            <div className="pt-1 text-[13px] text-muted">{i18nT('pages.settings.computerUsePanel.computer_use_lets_the_agent_read_any_app_window')}</div>
-          )}
-          {/* The paragraph above is written for the per-process case: "leave your
-              pointer alone" is true on macOS and not on Windows, where there is no
-              per-process input route at all. The badge names the two nouns; this says
-              what actually happens to the operator, which is the fact they need before
-              enabling and the one nothing else on this panel states. */}
-          {cfg.enabled && cfg.platform === WINDOWS && (
-            <div className="pt-1 text-[13px] text-muted">{i18nT('pages.settings.computerUsePanel.on_windows_keystrokes_take_your_keyboard_focus')}</div>
-          )}
+            <SettingsInput
+              label={i18nT('pages.settings.computerUsePanel.screenshot_width')}
+              aria-label={i18nT('pages.settings.computerUsePanel.screenshot_width')}
+              hint={i18nT('pages.settings.computerUsePanel.longest_edge_of_the_screenshot_in_pixels_smaller')}
+              type="number"
+              value={draftWidth ?? String(cfg.screenshot_max_px)}
+              onChange={setDraftWidth}
+              onBlur={() => commit('screenshot_max_px', draftWidth, () => setDraftWidth(null))}
+              disabled={busy}
+            />
+            <ComputerUseSetupStatus part="details" onOpenSetup={() => setSetupOpen(true)} />
+          </div>
         </SettingsCard>
       </SettingsSection>
 
-      {cfg.platform === DARWIN && (
-        <SettingsSection title={i18nT('pages.settings.computerUsePanel.permissions')}>
-          <SettingsCard index={1}>
-            <div className="flex items-center gap-1.5 pb-1 text-[13px] text-muted">
-              <span>{i18nT('pages.settings.computerUsePanel.advisory_only')}</span>
-              <InfoTip text={i18nT('pages.settings.computerUsePanel.not_detected_does_not_always_mean_unavailable_ma')} />
-            </div>
-            <PermRow label={i18nT('pages.settings.computerUsePanel.accessibility')} state={cfg.permissions.accessibility} pane={PANE_ACCESSIBILITY} />
-            <PermRow label={i18nT('pages.settings.computerUsePanel.screen_recording')} state={cfg.permissions.screen_recording} pane={PANE_SCREEN_RECORDING} />
-            {cfg.permissions.responsible_hint && (
-              <div className="pt-1 text-[13px] text-muted">{cfg.permissions.responsible_hint}</div>
-            )}
-          </SettingsCard>
-        </SettingsSection>
-      )}
-
-      <SettingsSection title={i18nT('pages.settings.computerUsePanel.limits')} hint={i18nT('pages.settings.computerUsePanel.how_much_of_a_window_the_agent_reads_at_once_the')}>
-        <SettingsCard index={2}>
-          <SettingsInput
-            label={i18nT('pages.settings.computerUsePanel.max_tree_nodes')}
-            aria-label={i18nT('pages.settings.computerUsePanel.max_tree_nodes')}
-            hint={i18nT('pages.settings.computerUsePanel.how_many_controls_one_window_reading_returns_a_w')}
-            type="number"
-            value={draftNodes ?? String(cfg.max_tree_nodes)}
-            onChange={setDraftNodes}
-            onBlur={() => commit('max_tree_nodes', draftNodes, () => setDraftNodes(null))}
-            disabled={busy}
-          />
-          <SettingsInput
-            label={i18nT('pages.settings.computerUsePanel.screenshot_width')}
-            aria-label={i18nT('pages.settings.computerUsePanel.screenshot_width')}
-            hint={i18nT('pages.settings.computerUsePanel.longest_edge_of_the_screenshot_in_pixels_smaller')}
-            type="number"
-            value={draftWidth ?? String(cfg.screenshot_max_px)}
-            onChange={setDraftWidth}
-            onBlur={() => commit('screenshot_max_px', draftWidth, () => setDraftWidth(null))}
-            disabled={busy}
-          />
-        </SettingsCard>
-      </SettingsSection>
-
+      <p className="flex items-center gap-1.5 mt-4 mb-0 text-[12px] text-muted" data-testid="cu-privacy-footer">
+        <Lock size={12} className="shrink-0" aria-hidden />
+        {i18nT('pages.settings.computerUsePanel.privacy_footer')}
+      </p>
     </>
   )
 }

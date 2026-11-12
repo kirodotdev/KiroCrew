@@ -673,90 +673,25 @@ def test_capture_uses_no_subprocess_and_no_image_library():
     assert not hasattr(capture_macos, "Image")
 
 
-# ── the live-view (PiP) relay hook ──
+# ── the live-view (PiP) relay ──
 #
-# The capture layer's only other consumer. These cases pin the WIRING — that a
-# successful capture offers the frame it just encoded to the relay, and that a
-# suppressed capture offers nothing at all. The relay's own three suppressions
-# (no surface scope / secure window / screenshot-denied ceiling) are covered in
-# ``test_computer_use_api_frame.py::TestLiveViewSuppression``.
+# The relay moved above the seam: ``service.snapshot`` offers the spooled frame
+# through ``floors.emit_live_frame`` for every backend (pinned in
+# ``test_computer_use_floors.py``). The capture layer itself relays nothing, so a
+# frame is never mirrored twice.
 
 
-@pytest.fixture
-def relayed(monkeypatch: pytest.MonkeyPatch) -> list[Snapshot]:
-    """Capture what ``screencast.emit_snapshot_frame`` was handed, if anything."""
-    seen: list[Snapshot] = []
-
-    def _emit(snap: Snapshot) -> bool:
-        seen.append(snap)
-        return True
-
-    monkeypatch.setattr(capture_macos.screencast, "emit_snapshot_frame", _emit)
-    return seen
-
-
-def test_a_successful_capture_offers_the_encoded_frame_to_the_live_view(
-    spool: Path, encoded, relayed: list[Snapshot]
-):
-    """The relay receives the SAME bytes the model got — never a second capture.
-
-    Asserted on identity of the encoded bytes and on the native capture running
-    exactly once: the PiP path must not add a capture of its own, or the panel
-    would be able to make the agent screenshot windows it never asked about.
-    """
-    result = capture_macos.capture_snapshot_image(_snapshot())
-    assert len(encoded) == 1, "the live view must not trigger a second capture"
-    assert len(relayed) == 1
-    assert relayed[0].image_jpeg == result.image_jpeg == _JPEG
-    assert relayed[0].image_path == result.image_path
-
-
-def test_a_secure_window_offers_nothing_to_the_live_view(
-    spool: Path, encoded, relayed: list[Snapshot]
-):
-    """No pixels exist, so there is nothing to mirror — the floor holds upstream."""
-    capture_macos.capture_snapshot_image(_snapshot(secure=True))
-    assert relayed == []
-
-
-def test_a_failed_capture_offers_nothing_to_the_live_view(
-    spool: Path, relayed: list[Snapshot], monkeypatch: pytest.MonkeyPatch
-):
-    """A NULL image (closed window) must not produce an empty frame on the wire."""
-    monkeypatch.setattr(macos_ffi, "capture_window_jpeg", lambda wid, **kw: (b"", 0, 0))
-    capture_macos.capture_snapshot_image(_snapshot())
-    assert relayed == []
-
-
-def test_a_failed_persist_offers_nothing_to_the_live_view(
-    spool: Path, encoded, relayed: list[Snapshot], monkeypatch: pytest.MonkeyPatch
-):
-    """The relay rides the persisted result, so a dropped frame is never mirrored."""
-    monkeypatch.setattr(capture_macos, "persist_jpeg", lambda raw: "")
-    capture_macos.capture_snapshot_image(_snapshot())
-    assert relayed == []
-
-
-def test_a_relay_failure_never_breaks_the_observation(
+def test_the_capture_layer_does_not_relay_the_frame_itself(
     spool: Path, encoded, monkeypatch: pytest.MonkeyPatch
 ):
-    """The mirror is decoration; a raising relay must not fail the tool call.
+    from kiro_crew.computer_use import screencast
 
-    ``emit_snapshot_frame`` is itself contracted never to raise, so this pins the
-    CALL SITE's own robustness against that inner contract being broken later —
-    ``capture_snapshot_image`` promises "never raises" and a decorative panel must
-    not be able to break that promise.
-    """
-
-    def _boom(snap):
-        raise RuntimeError("relay exploded")
-
-    monkeypatch.setattr(capture_macos.screencast, "emit_snapshot_frame", _boom)
+    seen: list[Snapshot] = []
+    monkeypatch.setattr(screencast, "emit_snapshot_frame", lambda snap: seen.append(snap) or True)
     result = capture_macos.capture_snapshot_image(_snapshot())
-    # The observation is intact: bytes, dimensions and the spooled path all stand.
-    assert result.image_path
     assert result.image_jpeg == _JPEG
-    assert len(_spooled(spool)) == 1
+    assert len(encoded) == 1
+    assert seen == []
 
 
 if __name__ == "__main__":  # pragma: no cover

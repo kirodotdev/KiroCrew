@@ -23,7 +23,8 @@ would over-report by the downscale factor (verified: a 1676x1320 window encodes 
 1280x1008), and a wrong size in the result would make a model reason about a
 resolution it is not going to get.
 
-The encoded frame has exactly one other consumer: :mod:`screencast` relays these
+The encoded frame has exactly one other consumer: :mod:`screencast`, called from
+``service.snapshot`` through ``floors.emit_live_frame``, relays these
 same bytes to the dashboard's floating live view. It is a relay, not a second
 capture — no extra ``CGWindowListCreateImage`` call, no timer, no full-screen
 grab — and it re-checks ``has_secure`` plus the permitted screenshot channel
@@ -46,7 +47,7 @@ import time
 from dataclasses import replace
 
 from kiro_crew import platform_compat
-from kiro_crew.computer_use import macos_ffi, screencast
+from kiro_crew.computer_use import floors, macos_ffi
 from kiro_crew.computer_use.types import (
     DEFAULT_SCREENSHOT_JPEG_QUALITY,
     DEFAULT_SCREENSHOT_MAX_PX,
@@ -131,23 +132,11 @@ def capture_snapshot_image(
     Never raises. The accessibility tree is the primary channel, so a capture
     failure must degrade the result rather than fail the observation.
     """
-    if snap.has_secure:
-        return snap
-    # FAIL CLOSED on an incomplete scan. ``has_secure`` is set for every node the
-    # walk CLASSIFIED — which now includes nodes past the reporting budget — but the
-    # walk still has hard cutoffs of its own (``MAX_TREE_NODES_LIMIT`` nodes and the
-    # ``MAX_WALK_SECS`` deadline). If either fired, the walk never reached the end of
-    # the window, so ``has_secure=False`` means "none seen", NOT "none present": a
-    # password field beyond the cutoff would leave rendered credentials capturable.
-    #
-    # "Unknown" therefore has to behave like "present" here. This is the one gate
-    # that decides whether pixels leave the process, and the cost of being wrong in
-    # each direction is not symmetric — a suppressed screenshot costs the model one
-    # announced omission (the renderer says so, so it does not retry blindly), while
-    # a wrong capture photographs somebody's password box.
-    if snap.truncated or snap.depth_truncated:
-        return snap
-    if snap.app.window_id <= 0:
+    # The always-on floor (secure element, truncated walk, unknown window), read
+    # from the one predicate every backend shares. ``service.snapshot`` applies it
+    # again to whatever any backend returns; checking here as well means a
+    # withheld window is never even encoded.
+    if not floors.screenshot_permitted(snap):
         return snap
 
     raw, width, height = _encode_window(snap.app, max_px=max_px, quality=quality)
@@ -173,21 +162,8 @@ def capture_snapshot_image(
         image_width=width,
         image_height=height,
     )
-    # Mirror the frame we JUST encoded to the dashboard's live view. Nothing is
-    # captured for the mirror — it relays these exact already-downscaled bytes —
-    # and ``emit_snapshot_frame`` owns all three suppressions (no published
-    # surface scope, a secure window, a withheld screenshot channel). It does not
-    # block: the POST runs on a daemon thread, so a dead
-    # gateway cannot slow the observation the model asked for.
-    #
-    # Wrapped anyway, even though the relay is itself contracted never to raise:
-    # this function's OWN contract is "never raises", and a decorative mirror must
-    # not be able to turn a successful observation into a failed tool call if that
-    # inner contract is ever broken.
-    try:
-        screencast.emit_snapshot_frame(captured)
-    except Exception:
-        logger.debug("computer-use live-view relay failed", exc_info=True)
+    # The live-view mirror is offered by ``service.snapshot`` once the frame is
+    # spooled, from one place for every backend; nothing is relayed from here.
     return captured
 
 

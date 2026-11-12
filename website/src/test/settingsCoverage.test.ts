@@ -68,6 +68,8 @@ function readPanel(file: string): string {
 const UNMAPPED_PANELS: Record<string, string> = {
   'BrowserEngineSection.tsx': "the Browser tab's Engine row under More (Harness and Chromium versions) with a Redownload action; status and one action, no setting of its own",
   'BrowserStatusCard.tsx': "the Browser tab's main card (browser, status dot, one state-dependent Install / Retry / Allow / Connect / Disconnect action); it reports the engine and holds no setting",
+  'ComputerUseSetupDialog.tsx': "the Computer Use setup dialog that walks the install and macOS permission steps; it runs setup actions and holds no setting",
+  'ComputerUseSetupStatus.tsx': "the Computer Use tab's setup summary and the setup details under More (status, one primary action, Restart driver / Run check, diagnostics); it reports and acts on the driver and holds no setting",
   'KiroHarnessFallbackNote.tsx': 'informational note ChatPanel mounts above the fallback pickers on a Kiro harness, zero controls',
   'ChannelDisabledPanel.tsx': 'informational placeholder (locked/loading/error states), zero controls',
   'ChannelFolderBackfill.tsx': 'one action button shared by the channel panels; files existing conversations into the folder the OWNING panel configures, and holds no setting of its own',

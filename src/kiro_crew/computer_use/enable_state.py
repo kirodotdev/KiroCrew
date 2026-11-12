@@ -32,7 +32,10 @@ from typing import Any
 
 from kiro_crew.atomic_write import atomic_write, text_bytes
 from kiro_crew.computer_use.types import (
+    DRIVER_AUTO,
+    DRIVER_CHOICES,
     STATE_FILE_NAME,
+    STATE_KEY_DRIVER,
     STATE_KEY_ENABLED,
     PolicyConfig,
 )
@@ -115,6 +118,18 @@ def locked_by_policy(*, audit_tool: str = "") -> bool:
     from kiro_crew.edition_locks import policy_permits
 
     return not policy_permits("capabilities.computer_use", audit_tool=audit_tool)
+
+
+def driver_choice(state: "dict | None" = None) -> str:
+    """Which desktop driver the owner chose: ``auto``, ``native`` or ``upstream``.
+
+    Kept in the keystone (not ``config.json``) because ``upstream`` runs a
+    downloaded third-party binary, which is the owner's call, not the agent's. An
+    absent or unknown value reads as ``auto``, the per-platform default.
+    """
+    data = load_state() if state is None else state
+    value = data.get(STATE_KEY_DRIVER)
+    return value if value in DRIVER_CHOICES else DRIVER_AUTO
 
 
 def load_policy_config(state: "dict | None" = None) -> PolicyConfig:

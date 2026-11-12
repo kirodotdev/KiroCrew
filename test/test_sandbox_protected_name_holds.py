@@ -489,7 +489,14 @@ class TestLeafOnlyPopulationIsRecorded:
     #: writer can replace a wheel between its digest check and pip's install. It moved
     #: out of the sandbox read-write ``trust/``; at the data-home root beside writable
     #: siblings, so leaf-only is the only hold, as for ``web-push``.
-    EXPECTED: dict[str, int] = {"standard": 333, "cc": 340, "strict": 341}
+    #: One more root-level directory, three entries per tier: ``computer-use`` -- the
+    #: desktop driver the gateway executes, its install record and private home, and
+    #: the setup progress file (``computer_use.driver_runtime.install.RUNTIME_LEAF``).
+    #: Sealed read-only and no-follow like ``browser-harness`` so an agent cannot
+    #: choose the driver the gateway runs or forge a passed setup check. Every write
+    #: is a create or rename INSIDE it, so its own inode stays the same; at the
+    #: data-home root, so leaf-only is the only hold.
+    EXPECTED: dict[str, int] = {"standard": 336, "cc": 343, "strict": 344}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

@@ -71,13 +71,83 @@ export interface ComputerUseConfigSave {
   extra_denied_apps: string[]
 }
 
-export function createBrowserAndComputerUseEndpoints({ get, put, j }: ClientTransport) {
+/** Wire states of the setup document, as `GET /api/computer-use/setup` names them.
+ *  The handler maps anything outside this list to `error`. */
+export type ComputerUseSetupState =
+  | 'disabled'
+  | 'not_configured'
+  | 'installing'
+  | 'install_failed'
+  | 'requesting_accessibility'
+  | 'accessibility_denied'
+  | 'requesting_screen_recording'
+  | 'screen_recording_denied'
+  | 'waiting_for_system_settings'
+  | 'restart_required'
+  | 'validating'
+  | 'ready'
+  | 'temporarily_unavailable'
+  | 'permission_revoked'
+  | 'unsupported'
+  | 'error'
+
+/** Actions `POST /api/computer-use/setup` accepts. None of them turns the feature
+ *  on: that stays the keystone enable behind `PUT /api/computer-use/config`. */
+export type ComputerUseSetupAction = 'install' | 'recheck' | 'verify' | 'restart_driver' | 'reset' | 'use_builtin_driver'
+
+export type ComputerUsePermissionValue = 'granted' | 'missing' | 'unknown' | 'not_applicable'
+
+export interface ComputerUseSetupStep {
+  id: 'install' | 'session' | 'accessibility' | 'screen_recording' | 'verify' | 'ready'
+  status: 'done' | 'current' | 'pending' | 'failed' | 'not_applicable'
+  action?: { kind: 'open_pane'; pane: 'accessibility' | 'screen_recording' } | { kind: 'post'; action: ComputerUseSetupAction }
+}
+
+/** The setup document. Every key is always present (the handler fills absent
+ *  ones), so the UI never guards a missing branch. */
+export interface ComputerUseSetupDoc {
+  state: ComputerUseSetupState
+  platform: 'macos' | 'windows' | 'linux' | 'unknown'
+  driver: { kind: 'upstream' | 'native' | 'none'; version: string; installed: boolean; healthy: boolean }
+  session: { kind: 'x11' | 'wayland' | 'windows_interactive' | 'session0' | 'aqua' | 'none'; detail: string }
+  permissions: {
+    accessibility: ComputerUsePermissionValue
+    screen_recording: ComputerUsePermissionValue
+    /** The app the user must turn on in Privacy & Security, exactly as listed there. */
+    owner_name: string
+  }
+  capabilities: {
+    observe_tree: boolean
+    screenshot: boolean
+    background_input: boolean
+    foreground_input: boolean
+    window_capture: boolean
+  }
+  /** Plain sentences from the backend, shown as they are. */
+  limitations: string[]
+  steps: ComputerUseSetupStep[]
+  /** One plain sentence saying what the user should do next, or empty. */
+  user_action: string
+  progress: { last_step: string }
+  /** What is wrong now (failure states only); null otherwise. Failure reasons
+   *  never travel in `limitations`, which holds standing platform limits. */
+  problem?: { code: string; message: string; recoverable: boolean } | null
+  /** How the system stopped the upstream driver at launch ("" when it did not). */
+  blocked?: string
+}
+
+export function createBrowserAndComputerUseEndpoints({ get, put, post, j }: ClientTransport) {
   const hostAutomation = {
     // Computer use (desktop automation). The PUT returns the refreshed snapshot so
     // the panel re-renders from server truth rather than its optimistic guess.
     getComputerUseConfig: () => get('/api/computer-use/config').then(j) as Promise<ComputerUseConfigData>,
     saveComputerUseConfig: (body: Partial<ComputerUseConfigSave>) =>
       put('/api/computer-use/config', body).then(j) as Promise<ComputerUseConfigData>,
+    // The setup document. Each POST runs one step and answers with the document
+    // that step left behind, so the dialog renders from server truth.
+    getComputerUseSetup: () => get('/api/computer-use/setup').then(j) as Promise<ComputerUseSetupDoc>,
+    runComputerUseSetupAction: (action: ComputerUseSetupAction) =>
+      post('/api/computer-use/setup', { action }).then(j) as Promise<ComputerUseSetupDoc>,
   }
 
   return { hostAutomation }

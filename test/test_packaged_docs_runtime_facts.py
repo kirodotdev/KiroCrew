@@ -71,8 +71,15 @@ def test_wecom_file_send_cell_follows_the_document_channels():
     assert row["WeCom"] == "✅"
 
 
-def test_linux_computer_use_is_documented_as_unsupported():
+def test_linux_computer_use_is_documented_as_supported():
+    # Linux runs on the open-source driver by default; the native Linux backend
+    # remains only the explicit ``driver: native`` refusal.
+    from kiro_crew.computer_use import backend as backend_mod
+
+    assert backend_mod.PLATFORM_LINUX in backend_mod._SUPPORTED_PLATFORM_IDS
     assert issubclass(LinuxBackend, UnsupportedBackend)
     doc = _read("computer-use.md")
     assert "## Linux" in doc
+    assert "Linux uses the open-source driver" in doc
+    assert "XWayland" in doc
     assert '"not\nsupported on this platform" refusal' in doc
