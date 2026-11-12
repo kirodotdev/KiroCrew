@@ -1362,7 +1362,8 @@ def _resume_slot_fold(
     # fold.
     before = _digest_to_carry(units, marks)
     registry = ProjectionRegistry(seq_of=_ordinal_seq)
-    registry.register(_SlotFold(_FOLDS[name], slot))
+    fold = _SlotFold(_FOLDS[name], slot)
+    registry.register(fold)
     # ``resume``: the byte position the savepoint's writer stored for the record at its
     # seq, so the tail walk opens the file there instead of decoding every record below
     # it. The store checks it against the live file before seeking and walks from the
@@ -1414,6 +1415,11 @@ def _resume_slot_fold(
         )
         savepoints.discard_slot(handle, (name,))
         return None
+    finally:
+        # As in :func:`_fold_slot_cold`: the resumed tail steps the fold through
+        # ``apply_owned``, and the fold outlives the pass inside the memo, so a kept
+        # reference would pin an uncharged state.
+        fold.latest = None
     # The savepoint was admitted BEFORE this pass, and that window is not empty. The
     # store's supersede repair replaces orphan chunk records at seqs the savepoint
     # already consumed; the tail starts above them so this fold never reads the
