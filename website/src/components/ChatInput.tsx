@@ -2,14 +2,12 @@ import { useRef, useEffect, useLayoutEffect, useMemo, useCallback, useId, useSta
 import { GUIDE_KEEP_CLEAR } from '../guide/trustRoot'
 import { useGuidePredicate } from '../guide/guidePredicates'
 import { markComposerResize } from '../utils/composerResize'
-import { ArrowUp, Loader2, RotateCw, Sparkles, Target, CheckCircle, Lock, FolderOpen, ClipboardList, PenLine, MoreHorizontal, Terminal, Clock, X } from 'lucide-react'
+import { ArrowUp, Loader2, RotateCw, Sparkles, CheckCircle, Lock, FolderOpen, ClipboardList, PenLine, MoreHorizontal, Terminal, X } from 'lucide-react'
 import SketchDialog from './SketchDialog'
 import QuoteCard from '../pages/chat/QuoteCard'
 import CopyBranchButton from './CopyBranchButton'
 import ProjectAwsProfileStatus from './ProjectAwsProfile'
 import { useSlotRemoteEnvironment } from './sessionEnvironmentHooks'
-import RejectDropdown from './RejectDropdown'
-import DenyOverrideDropdown, { DenyOverrideWarning } from './DenyOverrideDropdown'
 import { OverlayPortal } from './overlayRoot'
 import { useQueryClient } from '@tanstack/react-query'
 import { useBranding } from '../hooks/useBranding'
@@ -17,8 +15,7 @@ import { useAppStore, useAppDispatch } from '../store'
 import { switchSlot } from '../store/chatSlice'
 import { useSlotId } from '../providers/SlotContext'
 import { emitComposeIntent } from '../lib/composeIntent'
-import { ToolDetails } from '../pages/chat/ToolDetails'
-import { safeGetItem, safeSetItem } from '../utils/safeStorage'
+import { safeGetItem } from '../utils/safeStorage'
 import { savePrefExplicitly } from '../lib/uiPrefs'
 import { offlineProps } from '../utils/offline'
 import { pathBasename, stripTrailingSeparators } from '../utils/pathBasename'
@@ -29,7 +26,6 @@ import { useComposerSpellcheck } from '../hooks/useComposerSpellcheck'
 import { useComposerInlineMarkdown } from '../hooks/useComposerInlineMarkdown'
 import { useComposerArrowKeyHistory } from '../hooks/useComposerArrowKeyHistory'
 import { useComposerSendMode } from '../hooks/useComposerSendMode'
-import TrustDropdown, { TrustUnavailable } from './TrustDropdown'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { usePressActivation } from '../hooks/usePressActivation'
 import { isTouchDevice } from '../utils/isTouchDevice'
@@ -56,7 +52,6 @@ import { useMenuOpensDialog } from '../hooks/useMenuOpensDialog'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from './ui/dropdown-menu'
 import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
-import { fmtDateFields } from '../i18n/format'
 import SessionRefStrip from './SessionRefStrip'
 import { Glass } from './Glass'
 import type { ChatInputProps } from './chat-input/props'
@@ -64,7 +59,8 @@ import { LexicalComposerInput, ComposerLoadBoundary, useComposerEngine } from '.
 import { SessionAutomationPopover, SessionEnvironmentChip } from './chat-input/lazyChips'
 import { LIST_HINT_DISMISSED_KEY, useTextareaListContinuation } from './chat-input/listContinuation'
 import { useFollowUpGhost } from './chat-input/followUpGhost'
-import { approvalBtnClass, useSpawnApprovals, useToolApproval } from './chat-input/approval'
+import { useSpawnApprovals, useToolApproval } from './chat-input/approval'
+import { ApprovalReceipt, ToolApprovalCard } from './chat-input/ToolApprovalCard'
 import { SpawnApprovalCard } from './chat-input/SpawnApprovalCard'
 import { useComposerPickers } from '../chat-core/composer/pickers'
 import { ComposerPickerMenus } from '../chat-core/composer/PickerMenus'
@@ -88,7 +84,7 @@ import { useUndoHistory } from '../chat-core/composer/undoHistory'
 import { useOptimizeBeforeSend, usePromptOptimizer, usePromptOptimizerEnabled } from './chat-input/optimizer'
 import { usePasteTokens } from '../chat-core/composer/pasteEditor'
 import { FilePreviewStrip } from './chat-input/FilePreviewStrip'
-import { RaisedBy, TypingLockBanner } from './chat-input/TypingLockBanner'
+import { TypingLockBanner } from './chat-input/TypingLockBanner'
 import { useTypingLockKeys } from './chat-input/typingLockKeys'
 import { ComposerAttach } from '../chat-core/composer/Attach'
 import { afterSlide, forgetAfterSlide, slideHeld } from '../utils/panelSlide'
@@ -139,7 +135,7 @@ const ONE_ROW_CLUSTER_PAD_PX = 12
 const COMPOSER_RIM_FROM_PX = 102
 const FILE_ACCEPT = IMAGE_ACCEPT + ',' + VIDEO_ACCEPT + ',' + AUDIO_ACCEPT + ',.txt,.text,.xwiki,.md,.json,.jsonl,.excalidraw,.har,.yaml,.yml,.xml,.drawio,.csv,.tsv,.log,.rem,.ret,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.php,.sql,.kt,.swift,.cs,.vue,.toml,.pdf,.doc,.docx,.dotx,.xls,.xlsx,.xltx,.ppt,.pptx,.potx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz'
 
-import ApprovalModePicker, { APPROVAL_MODE_ADJUSTED_LS_KEY } from './ApprovalModePicker'
+import ApprovalModePicker from './ApprovalModePicker'
 // Effort vocabulary lives in lib/effort.ts (mirrors backend effort.py).
 // Re-exported here for back-compat with existing `from './ChatInput'` imports.
 export {
@@ -374,15 +370,12 @@ function ChatInput({
           : i18nT('components.chatInput.terminal_attachments'))
           : terminalRefusal === 'pending' ? i18nT('components.chatInput.terminal_pending')
             : terminalRefusal === 'empty' ? i18nT('components.chatInput.terminal_empty') : null
+  const approval = useToolApproval({ slotId, slotApprovalChrome, approvalMode, dispatch })
   const {
-    pendingApproval, hasApproval, approvalId, approvalSubmitting, approvalPickerSignal, setApprovalPickerSignal,
-    approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
-    approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError, showApprovalStatus,
-    approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell, approvalTakesReason, approvalMid,
-    approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
-    approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
-    approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, showGhost, showInChat, handleApprovalAction, approvalActionsRef,
-  } = useToolApproval({ slotId, slotApprovalChrome, approvalMode, dispatch })
+    pendingApproval, hasApproval, approvalId, approvalPickerSignal,
+    approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
+    approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError, showApprovalStatus, showGhost,
+  } = approval
   const activeSlot = slotId
   // Read the composer-spellcheck preference here rather than as a prop, so every
   // render site of this component honours it and none can forget to pass it.
@@ -1123,116 +1116,7 @@ function ChatInput({
             exit={{ opacity: 0, y: 8 }}
             transition={{ type: 'spring', damping: 25, stiffness: 300, mass: 0.8 }}
           >
-          <div className={`bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] ${showGhost ? 'rounded-2xl' : 'rounded-t-2xl border-b border-[color:var(--glass-edge)]'} transition-[border-radius,border-color,border-width] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]`}>
-              <AnimatePresence initial={false}>
-                  {showGhost && (
-                      <motion.div
-                          key="ghost"
-                          initial={{ height: 0, opacity: 0, y: -6 }}
-                          animate={{ height: 'auto', opacity: 1, y: 0 }}
-                          exit={{ height: 0, opacity: 0, y: -6 }}
-                          transition={{ type: 'spring', damping: 24, stiffness: 280, mass: 0.7 }}
-                          style={{ overflow: 'hidden' }}
-                      >
-                          <div className="px-3.5 pt-2.5 pb-1">
-                              <div className="inline-flex items-start gap-1 text-[13px] font-mono px-2 py-0.5">
-                                  <Lock size={12} className="text-warn shrink-0" style={{ marginTop: '3px' }} />
-                                  <span className="text-muted break-words min-w-0 line-clamp-2">{approvalLabel}</span><RaisedBy name={approvalRaisedBy} />
-                              </div>
-                              <ToolDetails
-                                  purpose={approvalPurpose}
-                                  pillLabel={approvalLabel}
-                                  toolName={approvalLabelRaw}
-                                  input={approvalToolInput}
-                                  output=""
-                                  auto={false}
-                                  pending={true}
-                                  ts={approvalTs}
-                                  hasEntry={!!approvalToolInput}
-                                  fmtTime={t => t ? fmtDateFields(t, { hour: '2-digit', minute: '2-digit' }) : ''}
-                                  barColor="color-mix(in srgb, var(--warn) 70%, transparent)"
-                                  layoutId={`ghost-tool-detail-${approvalToolCallId || approvalId}`}
-                                  compact
-                              />
-                          </div>
-                          <div className="mx-3.5 h-px bg-[color-mix(in_srgb,var(--warn)_25%,transparent)]" />
-                      </motion.div>
-                  )}
-              </AnimatePresence>
-              <div className="flex items-center gap-1.5 px-3.5 py-2.5 select-none flex-wrap">
-                  {!showGhost && <>
-                      <Lock size={12} className="text-warn shrink-0" />
-                      <span className="text-[13px] font-mono text-muted truncate flex-1 min-w-0">{approvalLabel}</span><RaisedBy name={approvalRaisedBy} />
-                  </>}
-                  {showGhost && <div className="flex-1 min-w-0" />}
-                  {showGhost && approvalToolCallId && (
-                      <button
-                          type="button"
-                          onClick={showInChat}
-                          title={i18nT('components.chatInput.show_pending_tool_call_in_chat')}
-                          aria-label={i18nT('components.chatInput.show_pending_tool_call_in_chat')}
-                          className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-transparent border border-border text-muted text-[11px] cursor-pointer hover:text-text hover:border-border-strong hover:bg-bg-hover transition-colors"
-                      >
-                          <Target size={11} className="shrink-0" />
-                          {i18nT('components.chatInput.show_in_chat')}
-                      </button>
-                  )}
-                  {/* `data-approval-actions` is the probe `queryPendingApprovalAction`
-                      resolves — a keyboard chord lands on this row's first enabled
-                      control, and the reject chord's event arrives on the row. A `data-`
-                      hook rather than button text because every catalog translates the labels. */}
-                  <div ref={approvalActionsRef} data-approval-actions className="flex gap-1.5 flex-wrap items-center">
-                      {approvalDenyRule ? <DenyOverrideDropdown disabled={approvalSubmitting} className={approvalBtnClass} family={approvalDenyFamily} onAction={(action) => { handleApprovalAction(action) }} /> : <>
-                      <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('approved')}><CheckCircle size={12} className="shrink-0" />{i18nT('components.chatInput.allow_once')}</button>
-                      {/* One dropdown carries every standing grant (trust-reads is a tier in it), and a card with none
-                          keeps its place disabled: `max-two-buttons-per-row` grandfathers Allow once + Trust + Reject; no fourth. */}
-                      {approvalTrustGrantable && (approvalTrustCommandGrantable || approvalTrustAllGrantable || approvalIsReadOnly) ? (
-                        <TrustDropdown
-                            fullCommand={approvalFullCommand}
-                            baseCommand={approvalBaseCommand}
-                            isShell={approvalIsShell && approvalTrustBaseGrantable}
-                            hasCommand={approvalTrustCommandGrantable}
-                            trustReadsLabelKey={approvalIsReadOnly ? 'components.chatInput.trust_reads' : undefined}
-                            showTrustAll={approvalTrustAllGrantable || approvalTrustCommandGrantable}
-                            disabled={approvalSubmitting}
-                            className={approvalBtnClass}
-                            timedGrants
-                            onAction={(action, pattern, ttlSeconds) => { handleApprovalAction(action, pattern, ttlSeconds) }}
-                        />
-                      ) : <TrustUnavailable className={approvalBtnClass} />}
-                      </>}
-                      {/* Keyed per card row: a typed reason never reaches another card. */}
-                      <RejectDropdown
-                          key={`${activeSlot}:${approvalId}:${approvalMid ?? ''}`}
-                          disabled={approvalSubmitting} takesReason={approvalTakesReason}
-                          className={`${approvalBtnClass} hover:!text-danger hover:!bg-[color-mix(in_srgb,var(--danger)_10%,transparent)]`}
-                          onAction={(action, reason) => { handleApprovalAction(action, undefined, undefined, reason) }}
-                      />
-                  </div>
-              </div>
-              {approvalDenyRule && <DenyOverrideWarning rule={approvalDenyRule} family={approvalDenyFamily} detail={approvalDenyDetail} command={approvalDenyCommand} />}
-              {/* A1 hint: points at the footer mode picker. Withheld for unattended
-                  sources (the picker governs THIS slot), the ghost state (picker
-                  unmounted), an override card, the B2 nudge, and once the user has
-                  found the picker (this link or a mode change). */}
-              {!showGhost && !approvalIsUnattended && !approvalDenyRule && !approvalModeAdjusted && !approvalNudgeActive && approvalMode && (
-                <div className="flex items-center gap-1.5 flex-wrap px-3.5 pb-2 -mt-1 text-[12px] text-muted select-none">
-                  <span>{i18nT('components.chatInput.approval_hint_question')}</span>
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-0.5 p-0 bg-transparent border-none text-accent text-[12px] cursor-pointer hover:underline"
-                    onClick={() => {
-                      // Discovery achieved: the picker is about to open under a
-                      // spotlight, so the hint has done its job for good.
-                      safeSetItem(APPROVAL_MODE_ADJUSTED_LS_KEY, '1')
-                      setApprovalPickerSignal(n => n + 1)
-                    }}
-                  >
-                    {i18nT('components.chatInput.approval_hint_adjust')}
-                  </button>
-                </div>
-              )}
-            </div>
+          <ToolApprovalCard approval={approval} activeSlot={activeSlot} approvalMode={approvalMode} />
           </motion.div>
         )}
       </AnimatePresence>
@@ -1282,13 +1166,8 @@ function ChatInput({
           />
         </div>
       )}
-      {approvalNotice && approvalNoticeKind === 'granted' && (
-        // A grant that landed, not a block: its own clock icon and ok tint,
-        // so the confirmation never wears the warning lock above.
-        <div role="status" className="flex items-center gap-2 px-4 py-2 mb-1 bg-ok-subtle rounded-lg">
-          <Clock size={12} className="text-ok shrink-0" />
-          <span className="text-muted text-[13px]">{approvalNotice}</span>
-        </div>
+      {approvalNotice && (approvalNoticeKind === 'granted' || approvalNoticeKind === 'rejected') && (
+        <ApprovalReceipt kind={approvalNoticeKind}>{approvalNotice}</ApprovalReceipt>
       )}
 
       {!showGhost && prefillHint && (
