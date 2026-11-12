@@ -218,6 +218,7 @@
     "dsk": "DSK",
     "expand_sidebar": "展开侧边栏",
     "gateway_connected": "网关已连接",
+    "gateway_connecting": "正在连接网关…",
     "gateway_offline_reconnecting": "网关离线 — 正在重连",
     "relay_access_refused": "中继拒绝了连接 — 正在重试",
     "relay_session_ended": "中继会话已结束 — 请重新打开此 Crew",

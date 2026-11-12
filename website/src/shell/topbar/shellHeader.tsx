@@ -3,7 +3,7 @@ import { TOPBAR_FOCUS_Z, TOPBAR_Z } from '../../lib/themeDecorLayer'
 import { kiroUsageSegment } from './kiroUsageReadout'
 import { metricsSegment, MetricsErrorNotice } from './metricsReadout'
 import { ResourcePostureChip } from './resourcePostureChip'
-import { Bell, Fullscreen, Menu, Plug, Unplug } from 'lucide-react'
+import { Bell, Fullscreen, Loader2, Menu, Plug, Unplug } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { isWinElectron } from '../../lib/electron'
 import { setNativeBadgeCount } from '../platform/electronBridge'
@@ -156,7 +156,7 @@ function NotificationsBellButton() {
  */
 export function ShellHeader({ shell }: { shell: AppShell }) {
   const {
-    connected, updateAvailable, authRequired, gatewayStatusMsg, focusModeChord, focusModeExitMsgVisible, focusChromeInert, dispatch, colorTheme, resolvedMode, branding, avatar, isMobile, focusMode,
+    connected, gatewayConnecting, updateAvailable, authRequired, gatewayStatusMsg, focusModeChord, focusModeExitMsgVisible, focusChromeInert, dispatch, colorTheme, resolvedMode, branding, avatar, isMobile, focusMode,
     toggleFocusMode, focusActive, topPeek, topPeekSurface, topChromeShown, slotOwners, commandPalette,
     setKiroUsageOpen, kiroUsageState, usageSegmentHidden, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef, setReportProblemOpen,
@@ -513,7 +513,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
               not something a phone user acts on; the session-expired banner
               stays the offline signal there. */}
           {!isMobile && (() => {
-            const offline = !connected
+            const offline = !connected && !gatewayConnecting
             // `gatewayStatusMsg` (useAppShell) is the announced cause; see its
             // comment for why auth wording wins over transport state. It mirrors
             // the branch the button `title` already uses (minus the
@@ -550,12 +550,15 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
                 aria-expanded={!capsuleCollapsed}
               >
                 {/* The glyph's SHAPE carries the state (WCAG 1.4.1): a plug when
-                    connected, an unplugged plug when offline. Colour is only
-                    the second cue, so a red/green colour-blind reader still
-                    sees the state without hovering. */}
+                    connected, an unplugged plug when offline, a spinner while
+                    the first socket is still opening. Colour is only the
+                    second cue, so a red/green colour-blind reader still sees
+                    the state without hovering. */}
                 {offline
                   ? <Unplug aria-hidden="true" data-conn-state="offline" size={12} strokeWidth={2.25} className="text-danger transition-colors duration-300 animate-pulse [animation-iteration-count:3]! motion-reduce:animate-none" />
-                  : <Plug aria-hidden="true" data-conn-state="connected" size={12} strokeWidth={2.25} className="text-ok transition-colors duration-300" />}
+                  : gatewayConnecting
+                    ? <Loader2 aria-hidden="true" data-conn-state="connecting" size={12} strokeWidth={2.25} className="text-muted animate-spin motion-reduce:animate-none" />
+                    : <Plug aria-hidden="true" data-conn-state="connected" size={12} strokeWidth={2.25} className="text-ok transition-colors duration-300" />}
                 {/* Live-region announcement lives in its own hidden span:
                     role="status" on the button itself would override its
                     implicit button role for screen readers. */}
@@ -633,8 +636,9 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
               the collapse ladder makes room for it (shell-chrome.css). The
               same inline ErrorNotice as MetricsErrorNotice beside it, with
               `announce` off: the dot's `role="status"` span already announces
-              `gatewayStatusMsg`. Quiet while the session-expired banner speaks. */}
-          {!isMobile && !connected && !authRequired && (
+              `gatewayStatusMsg`. Quiet while the session-expired banner speaks,
+              and while the first socket is still opening. */}
+          {!isMobile && !connected && !gatewayConnecting && !authRequired && (
             <ErrorNotice
               variant="inline"
               announce={false}
@@ -726,19 +730,20 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             capsule read; auth expiry keeps its own banner (api/client.ts), so
             this stays quiet then rather than saying "reconnecting" over a fix
             that is pasting a token. Absolute (out of the bar's grid flow) so
-            the three-track invariant holds. */}
-        {isMobile && !connected && !authRequired && (
-          <div
-            role="status"
-            data-testid="mobile-offline-strip"
-            // `pointer-events-none`: the strip hangs over the top 24px of
-            // whatever <main> paints; a readout must not swallow the taps and
-            // scroll starts that land there while the socket is down.
-            className="absolute left-0 right-0 top-full z-[1] pointer-events-none flex items-center justify-center gap-1.5 h-6 text-[12px] font-medium text-danger-text bg-danger-subtle border-b border-danger/30"
-          >
-            <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-danger animate-pulse [animation-iteration-count:3]! motion-reduce:animate-none" />
-            {gatewayStatusMsg}
-          </div>
+            the three-track invariant holds. The same ErrorNotice as the
+            desktop notice, announced: nothing else on the phone speaks it.
+            `pointer-events-none`: the strip hangs over the top 24px of
+            whatever <main> paints; a readout must not swallow the taps and
+            scroll starts that land there while the socket is down. */}
+        {isMobile && !connected && !gatewayConnecting && !authRequired && (
+          <ErrorNotice
+            variant="inline"
+            noHandoffReason="The gateway is offline, so a hand-off to the agent cannot be delivered."
+            message={gatewayStatusMsg}
+            messageClassName="text-danger-text"
+            className="absolute left-0 right-0 top-full z-[1] pointer-events-none justify-center h-6 font-medium bg-danger-subtle border-b border-danger/30"
+            testId="mobile-offline-strip"
+          />
         )}
         {/* Session expired on the phone: the auth banner (api/client.ts) is the
             visible message and has no live region, and the capsule's sr-only

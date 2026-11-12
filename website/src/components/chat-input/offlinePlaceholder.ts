@@ -1,4 +1,5 @@
 import { useAppSelector } from '../../store'
+import { useGatewayConnecting } from '../../hooks/useConnected'
 import { i18nT } from '../../i18n/t'
 import { offlineReason } from '../../utils/offlineReason'
 
@@ -10,5 +11,7 @@ import { offlineReason } from '../../utils/offlineReason'
    (CrewChatWindow), which the relay's cause says nothing about. */
 export function useOfflinePlaceholder(): string {
   const offlineCause = useAppSelector(s => (s.dashboard.connected ? null : s.dashboard.offlineCause))
+  const connecting = useGatewayConnecting()
+  if (connecting) return i18nT('app.gateway_connecting')
   return offlineCause ? offlineReason(offlineCause) : i18nT('components.chatInput.gateway_offline_message_will_not_send')
 }

@@ -218,6 +218,7 @@
     "dsk": "DSK",
     "expand_sidebar": "サイドバーを展開",
     "gateway_connected": "ゲートウェイに接続済み",
+    "gateway_connecting": "ゲートウェイに接続中…",
     "gateway_offline_reconnecting": "ゲートウェイがオフライン — 再接続中",
     "relay_access_refused": "リレーが接続を拒否しました — 再試行中",
     "relay_session_ended": "リレーのセッションが終了しました — この Crew を開き直してください",

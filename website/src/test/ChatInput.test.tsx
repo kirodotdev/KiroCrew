@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
+import { sseDisconnected } from '../store/dashboardSlice'
 import { PREVIEW_STRIP_H, stubStripHeights } from './stripHeights'
 
 // The composer's own drag floor.
@@ -71,7 +72,9 @@ describe('ChatInput', () => {
     })
 
     it('shows offline placeholder when connected=false', () => {
-      renderWithProviders(<ChatInput {...defaultProps} connected={false} />)
+      const { store } = renderWithProviders(<ChatInput {...defaultProps} connected={false} />)
+      // An outage, not the page's first socket still opening (#34947).
+      act(() => { store.dispatch(sseDisconnected()) })
       expect(screen.getByPlaceholderText(/Gateway offline/)).toBeInTheDocument()
     })
 

@@ -92,6 +92,17 @@ const shellSettled = (queryClient: QueryClient) =>
     expect(queryClient.isFetching()).toBe(0)
   }, SHELL_SETTLED)
 
+// The connection dot is the capsule's only button carrying aria-expanded;
+// grab it that way so the query does not depend on the accessible name that
+// these tests are asserting varies.
+const connDot = () => {
+  const btns = screen.getAllByRole('button')
+  const dot = btns.find(b => b.hasAttribute('aria-expanded') && b.querySelector('[role="status"]'))
+  if (!dot) throw new Error('connection dot button not found')
+  return dot
+}
+const statusText = (dot: HTMLElement) => dot.querySelector('[role="status"]')?.textContent ?? ''
+
 describe('App offline capsule — auth-required accessible name + live region', () => {
   beforeEach(() => {
     isAuthBannerShownMock.mockReset()
@@ -102,19 +113,9 @@ describe('App offline capsule — auth-required accessible name + live region', 
     dashboard: { connected: false, status: { platform: 'darwin' }, slots: [], approvalMode: 'normal' } as unknown as RootState['dashboard'],
   }
 
-  // The connection dot is the capsule's only button carrying aria-expanded;
-  // grab it that way so the query does not depend on the accessible name that
-  // these tests are asserting varies.
-  const connDot = () => {
-    const btns = screen.getAllByRole('button')
-    const dot = btns.find(b => b.hasAttribute('aria-expanded') && b.querySelector('[role="status"]'))
-    if (!dot) throw new Error('connection dot button not found')
-    return dot
-  }
-  const statusText = (dot: HTMLElement) => dot.querySelector('[role="status"]')?.textContent ?? ''
-
   it('announces the generic offline cause when WS is disconnected AND no auth banner', async () => {
-    const { queryClient } = renderWithProviders(<App />, { route: '/chat', preloadedState: offlineState })
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat', preloadedState: offlineState })
+    act(() => { store.dispatch(sseDisconnected()) })
     const dot = connDot()
     // Accessible name and live region carry the reconnecting cause; the
     // dot has no "Offline" text pill (the capsule's danger tint is the
@@ -150,7 +151,8 @@ describe('App offline capsule — auth-required accessible name + live region', 
   })
 
   it('flips name + live region live in response to mc-auth-required / mc-auth-cleared events', async () => {
-    const { queryClient } = renderWithProviders(<App />, { route: '/chat', preloadedState: offlineState })
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat', preloadedState: offlineState })
+    act(() => { store.dispatch(sseDisconnected()) })
     expect(connDot().getAttribute('aria-label')).toMatch(/reconnecting/i)
     expect(statusText(connDot())).toMatch(/reconnecting/i)
 
@@ -217,10 +219,11 @@ describe('App connection indicator — the shape carries the state, not colour a
   })
 
   it('shows an unplugged icon when offline, and its pulse stops under reduced motion', async () => {
-    const { queryClient } = renderWithProviders(<App />, {
+    const { store, queryClient } = renderWithProviders(<App />, {
       route: '/chat',
       preloadedState: { dashboard: { connected: false, status: { platform: 'darwin' }, slots: [], approvalMode: 'normal' } as unknown as RootState['dashboard'] },
     })
+    act(() => { store.dispatch(sseDisconnected()) })
     const glyph = connGlyph()
     expect(glyph.getAttribute('aria-hidden')).toBe('true')
     expect(glyph.getAttribute('data-conn-state')).toBe('offline')
@@ -272,6 +275,38 @@ describe('App offline notice — visible at desktop width, worded by the cause (
     const { store, queryClient } = renderWithProviders(<App />, { route: '/chat' })
     act(() => { store.dispatch(sseDisconnected()) })
     expect(screen.queryByTestId('topbar-offline-notice')).toBeNull()
+    await shellSettled(queryClient)
+  })
+})
+
+describe('App before the first socket opens — connecting, not offline (#34947)', () => {
+  beforeEach(() => {
+    isAuthBannerShownMock.mockReset()
+    isAuthBannerShownMock.mockReturnValue(false)
+  })
+
+  it('says it is connecting, with no outage notice or danger tint, until the first socket opens', async () => {
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    expect(statusText(connDot())).toBe(en.app.gateway_connecting)
+    expect(connDot().getAttribute('aria-label')).toContain(en.app.gateway_connecting)
+    expect(connDot().querySelector('svg')?.getAttribute('data-conn-state')).toBe('connecting')
+    expect(connDot().closest('.tb-capsule')).not.toHaveClass('glass-danger')
+    expect(screen.queryByTestId('topbar-offline-notice')).toBeNull()
+    act(() => { store.dispatch(sseConnected()) })
+    expect(statusText(connDot())).toBe(en.app.gateway_connected)
+    // A drop after that first open is a real outage, worded as one.
+    act(() => { store.dispatch(sseDisconnected()) })
+    expect(statusText(connDot())).toBe(en.app.gateway_offline_reconnecting)
+    expect(connDot().closest('.tb-capsule')).toHaveClass('glass-danger')
+    expect(screen.getByTestId('topbar-offline-notice')).toHaveTextContent(en.app.gateway_offline_reconnecting)
+    await shellSettled(queryClient)
+  })
+
+  it('reports the outage when the first socket closes without ever opening', async () => {
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    act(() => { store.dispatch(sseDisconnected()) })
+    expect(statusText(connDot())).toBe(en.app.gateway_offline_reconnecting)
+    expect(screen.getByTestId('topbar-offline-notice')).toHaveTextContent(en.app.gateway_offline_reconnecting)
     await shellSettled(queryClient)
   })
 })

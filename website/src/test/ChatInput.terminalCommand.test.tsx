@@ -13,6 +13,7 @@ import { KILLING_ESCAPE_MS } from '../hooks/useStopEscapeHatch'
 import { parseDirTokens } from '../utils/fileTokens'
 import { formatToken } from '../utils/pasteTokens'
 import { renderWithProviders as renderWithAppProviders } from './helpers'
+import { sseDisconnected } from '../store/dashboardSlice'
 import { LAZY_COMPOSER_MOUNT } from './lazyComposerReady'
 import { changeLanguage, registerCatalogs } from '../i18n'
 import ru from '../i18n/locales/ru.json'
@@ -231,7 +232,9 @@ describe('direct terminal commands', () => {
     [{ disabled: true }, /stopping/i],
     [{ continuable: true, continueIsRecovery: true, onContinue: vi.fn() }, /interrupted/i],
   ] satisfies [Partial<React.ComponentProps<typeof ChatInput>>, RegExp][])('keeps an existing placeholder ahead of terminal discovery: %j', (overrides, expected) => {
-    setup({ value: '', ...overrides })
+    const { store } = setup({ value: '', ...overrides })
+    // The offline case is an outage, not the page's first socket still opening (#34947).
+    if (overrides.connected === false) act(() => { store.dispatch(sseDisconnected()) })
     expect(screen.getByLabelText('Message input')).toHaveAttribute('placeholder', expect.stringMatching(expected))
   })
 

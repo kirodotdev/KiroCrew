@@ -24,6 +24,7 @@ import { hardNavigate, installSoftNavigate } from '../utils/errorReport'
 import { fetchNotifications, armBootNotificationsFallback } from '../store/notificationsSlice'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { useDashboardHealthProbe } from '../hooks/useDashboardHealthProbe'
+import { useGatewayConnecting } from '../hooks/useConnected'
 import { useConfigAutolinkRules } from '../hooks/useConfigAutolinkRules'
 import { usePreviewFlagServerSync } from '../hooks/usePreviewFlagServerSync'
 import { useTheme } from '../hooks/useTheme'
@@ -168,6 +169,7 @@ export function useAppShell() {
   // it would re-render the root on dashboard traffic neither of these fields reads.
   const connected = useAppSelector(s => s.dashboard.connected)
   const offlineCause = useAppSelector(s => s.dashboard.offlineCause)
+  const gatewayConnecting = useGatewayConnecting()
   // Gateway (web) update flag OR desktop updater availability (mirrored from
   // Electron update-state by useUpdateSubscription) -- both light the same
   // Settings nav dot in the rails.
@@ -205,12 +207,15 @@ export function useAppShell() {
   // Auth takes precedence over transport: `authRequired` (a 403 auth flag) and
   // `connected` (Redux transport state) are independently sourced, so the
   // session can expire while the socket is still up, and "Gateway connected"
-  // would then be a reassuring lie nothing else corrects.
+  // would then be a reassuring lie nothing else corrects. Before the first
+  // socket has opened or closed nothing has failed, so it says connecting.
   const gatewayStatusMsg = authRequired
     ? i18nT('app.gateway_offline_session_expired_see_banner_above')
     : connected
       ? i18nT('app.gateway_connected')
-      : offlineReason(offlineCause)
+      : gatewayConnecting
+        ? i18nT('app.gateway_connecting')
+        : offlineReason(offlineCause)
   // The chord that turns focus mode off, as the user has it bound RIGHT NOW. In
   // focus mode the top bar (and its toggle) is inert, so this chord is the only
   // keyboard route back; it is spoken when focus mode turns on and declared on
@@ -1055,7 +1060,7 @@ export function useAppShell() {
   const mobileNavOpen = mobileNavPhase === 'open'
 
   return {
-    isEmbed, isPopout, initialPopoutPath, appPopoutRoute, dispatch, connected, updateAvailable, settingsDotLabel, authRequired, terminalEnabled,
+    isEmbed, isPopout, initialPopoutPath, appPopoutRoute, dispatch, connected, gatewayConnecting, updateAvailable, settingsDotLabel, authRequired, terminalEnabled,
     gatewayStatusMsg, focusModeChord, focusModeExitMsg, focusModeExitMsgVisible, focusChromeInert,
     terminalPoppedOut, bottomTerminalOpen, mobileConnect, mobileConnectOpen, setMobileConnectOpen,
     hasRenderableMobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
