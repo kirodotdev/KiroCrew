@@ -889,3 +889,153 @@ def test_link_to_private_page_is_refused_before_the_card_follows(fake) -> None:
     out = run(ops.run_op("click", {"x": 1, "y": 2}, ctx))
     assert out["code"] == "redirect_refused"
     assert fake.calls[-1] == ("goto", {"url": "about:blank"})
+
+
+# --- screenshot options: whole page, one element, a region, a size cap ---------
+
+
+def _shoot_into(fake: FakeBrowser, helper: str) -> None:
+    def shoot(path: str, **_kw: Any) -> str:
+        Path(path).write_bytes(b"\x89PNG")
+        return path
+
+    fake.helpers[helper] = shoot
+
+
+def _calls(fake: FakeBrowser, helper: str) -> list[dict[str, Any]]:
+    return [kw for h, kw in fake.calls if h == helper]
+
+
+def test_a_screenshot_without_arguments_asks_the_helper_for_the_path_only(
+    fake: FakeBrowser,
+) -> None:
+    _shoot_into(fake, "screenshot")
+    assert run(ops.run_op("screenshot", {}, fake.ctx()))["ok"] is True
+    (kw,) = _calls(fake, "screenshot")
+    assert set(kw) == {"path"}
+    assert _calls(fake, "screenshot_clip") == []
+
+
+def test_a_full_page_screenshot_with_a_size_cap_passes_both_to_the_helper(
+    fake: FakeBrowser,
+) -> None:
+    _shoot_into(fake, "screenshot")
+    out = run(ops.run_op("screenshot", {"full": True, "max_dim": 900.0}, fake.ctx()))
+    assert out["ok"] is True
+    (kw,) = _calls(fake, "screenshot")
+    assert kw["full"] is True and kw["max_dim"] == 900 and isinstance(kw["max_dim"], int)
+
+
+def test_a_screenshot_by_ref_photographs_the_element_box_at_its_own_size(
+    fake: FakeBrowser,
+) -> None:
+    fake.page["resolve"] = {"ok": True, "x": 150.0, "y": 240.0, "w": 200.0, "h": 80.0, "tag": "div"}
+    _shoot_into(fake, "screenshot_clip")
+    out = run(ops.run_op("screenshot", {"ref": "e7"}, fake.ctx()))
+    assert out["ok"] is True and Path(out["path"]).read_bytes() == b"\x89PNG"
+    (kw,) = _calls(fake, "screenshot_clip")
+    assert (kw["x"], kw["y"], kw["width"], kw["height"]) == (50.0, 200.0, 200.0, 80.0)
+    assert kw["magnify"] == 1.0 and kw["max_dim"] == ops.SHOT_MAX_DIM
+    assert _calls(fake, "screenshot") == []
+
+
+def test_a_screenshot_by_ref_honours_the_size_cap(fake: FakeBrowser) -> None:
+    fake.page["resolve"] = {"ok": True, "x": 10.0, "y": 10.0, "w": 20.0, "h": 20.0, "tag": "p"}
+    _shoot_into(fake, "screenshot_clip")
+    assert run(ops.run_op("screenshot", {"ref": "e1", "max_dim": 300}, fake.ctx()))["ok"]
+    assert _calls(fake, "screenshot_clip")[0]["max_dim"] == 300
+
+
+def test_a_screenshot_of_a_region_magnifies_it_to_the_zoom_size(fake: FakeBrowser) -> None:
+    _shoot_into(fake, "screenshot_clip")
+    region = {"x": 5, "y": 6, "width": 60, "height": 20}
+    assert run(ops.run_op("screenshot", {"region": region}, fake.ctx()))["ok"] is True
+    (kw,) = _calls(fake, "screenshot_clip")
+    assert (kw["x"], kw["y"], kw["width"], kw["height"]) == (5, 6, 60, 20)
+    assert kw["magnify"] == ops.SHOT_ZOOM_MAGNIFY and kw["max_dim"] == ops.SHOT_ZOOM_DIM
+    assert fake.page_methods().count("resolve") == 0
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"full": "yes"},
+        {"max_dim": 10},
+        {"max_dim": 99999},
+        {"max_dim": "big"},
+        {"ref": "banana"},
+        {"region": "left"},
+        {"region": {"x": 1, "y": 1, "width": 0, "height": 5}},
+        {"region": {"x": -1, "y": 1, "width": 5, "height": 5}},
+        {"region": {"x": 1, "y": 1, "width": 5}},
+        {"full": True, "ref": "e1"},
+        {"ref": "e1", "region": {"x": 1, "y": 1, "width": 5, "height": 5}},
+    ],
+)
+def test_screenshot_refuses_bad_options_before_touching_the_page(
+    fake: FakeBrowser, args: dict[str, Any]
+) -> None:
+    out = run(ops.run_op("screenshot", args, fake.ctx()))
+    assert out["ok"] is False and out["code"] in ("bad_args", "bad_ref")
+    assert fake.calls == []
+
+
+def test_a_screenshot_by_ref_of_a_gone_element_is_ref_stale_and_takes_no_image(
+    fake: FakeBrowser,
+) -> None:
+    fake.page["resolve"] = {"ok": False, "code": "ref_stale"}
+    out = run(ops.run_op("screenshot", {"ref": "e3"}, fake.ctx()))
+    assert out["code"] == "ref_stale"
+    assert _calls(fake, "screenshot_clip") == []
+
+
+def test_a_screenshot_by_ref_of_an_element_with_no_size_is_ref_stale(fake: FakeBrowser) -> None:
+    fake.page["resolve"] = {"ok": True, "x": 1.0, "y": 1.0, "tag": "div"}
+    assert run(ops.run_op("screenshot", {"ref": "e3"}, fake.ctx()))["code"] == "ref_stale"
+    assert _calls(fake, "screenshot_clip") == []
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"full": True},
+        {"ref": "e1"},
+        {"region": {"x": 0, "y": 0, "width": 10, "height": 10}},
+    ],
+)
+def test_every_screenshot_form_keeps_the_secret_field_guard(
+    fake: FakeBrowser, args: dict[str, Any]
+) -> None:
+    fake.page["secretValues"] = 1
+    fake.page["resolve"] = {"ok": True, "x": 5.0, "y": 5.0, "w": 10.0, "h": 10.0, "tag": "div"}
+    out = run(ops.run_op("screenshot", args, fake.ctx()))
+    assert out["code"] == "secret_value_on_page"
+    assert _calls(fake, "screenshot") == [] and _calls(fake, "screenshot_clip") == []
+
+
+def test_a_clip_image_is_discarded_when_the_page_turns_unsafe_during_capture(
+    fake: FakeBrowser,
+) -> None:
+    fake.page["resolve"] = {"ok": True, "x": 5.0, "y": 5.0, "w": 10.0, "h": 10.0, "tag": "div"}
+    seen = {"n": 0}
+
+    def secret_values() -> int:
+        seen["n"] += 1
+        return 0 if seen["n"] == 1 else 1
+
+    fake.page["secretValues"] = secret_values
+
+    def shoot(path: str, **_kw: Any) -> str:
+        Path(path).write_bytes(b"\x89PNG")
+        return path
+
+    fake.helpers["screenshot_clip"] = shoot
+    out = run(ops.run_op("screenshot", {"ref": "e1"}, fake.ctx()))
+    assert out["code"] == "secret_value_on_page"
+    assert not list((fake.tmp / "shots").glob("*.png"))
+
+
+def test_the_walker_resolve_answers_the_element_size_for_screenshot_by_ref() -> None:
+    start = ops.WALKER_SOURCE.index("resolve: function")
+    body = ops.WALKER_SOURCE[start : ops.WALKER_SOURCE.index("focus: function", start)]
+    assert "w: r.width" in body and "h: r.height" in body

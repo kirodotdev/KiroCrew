@@ -716,6 +716,8 @@
         ok: true,
         x: off[0] + r.left + r.width / 2,
         y: off[1] + r.top + r.height / 2,
+        w: r.width,
+        h: r.height,
         tag: (el.tagName || "").toLowerCase(),
         password: inputType(el) === "password"
       };

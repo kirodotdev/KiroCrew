@@ -7,6 +7,7 @@ in-memory stdin/stdout, so each request path is observed by its reply.
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import sys
@@ -202,3 +203,85 @@ def test_main_reports_a_missing_harness_on_the_pipe_and_exits_1(
     assert len(replies) == 1
     assert replies[0]["id"] is None and replies[0]["ok"] is False
     assert replies[0]["error"].startswith("import failed:")
+
+
+# --- screenshot_clip ---------------------------------------------------------------
+
+
+class _ClipHelpers:
+    """Answers the three CDP calls ``screenshot_clip`` makes."""
+
+    def __init__(self, *, ratio: Any = 2, page_x: float = 0, page_y: float = 100, data: Any = None):
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self._ratio, self._x, self._y = ratio, page_x, page_y
+        self._data = base64.b64encode(b"\x89PNG-clip").decode() if data is None else data
+
+    def cdp(self, method: str, **params: Any) -> dict[str, Any]:
+        self.calls.append((method, params))
+        if method == "Page.getLayoutMetrics":
+            return {"cssVisualViewport": {"pageX": self._x, "pageY": self._y}}
+        if method == "Runtime.evaluate":
+            return {"result": {"value": self._ratio}}
+        return {"data": self._data}
+
+    def clip(self) -> dict[str, Any]:
+        (params,) = [p for m, p in self.calls if m == "Page.captureScreenshot"]
+        return params["clip"]
+
+
+def _clip_request(tmp_path: Any, **kwargs: Any) -> dict[str, Any]:
+    base = {
+        "path": str(tmp_path / "c.png"),
+        "x": 10,
+        "y": 20,
+        "width": 200,
+        "height": 80,
+        "max_dim": 4096,
+        "magnify": 1.0,
+    }
+    return {"id": 9, "helper": "screenshot_clip", "kwargs": {**base, **kwargs}}
+
+
+def test_screenshot_clip_writes_the_decoded_image_and_shifts_the_box_by_the_scroll(
+    tmp_path: Any,
+) -> None:
+    helpers = _ClipHelpers()
+    reply = helper_worker._handle(helpers, _clip_request(tmp_path))
+    assert reply["ok"] is True
+    assert (tmp_path / "c.png").read_bytes() == b"\x89PNG-clip"
+    clip = helpers.clip()
+    assert (clip["x"], clip["y"], clip["width"], clip["height"]) == (10, 120, 200, 80)
+    assert clip["scale"] == 1.0
+
+
+def test_screenshot_clip_fits_the_longest_device_pixel_side_to_max_dim(tmp_path: Any) -> None:
+    helpers = _ClipHelpers(ratio=2)
+    helper_worker._handle(helpers, _clip_request(tmp_path, max_dim=200))
+    assert helpers.clip()["scale"] == pytest.approx(200 / (200 * 2))
+
+
+def test_screenshot_clip_magnifies_a_small_box_but_not_past_the_limit(tmp_path: Any) -> None:
+    helpers = _ClipHelpers(ratio=1)
+    helper_worker._handle(
+        helpers, _clip_request(tmp_path, width=40, height=10, max_dim=1568, magnify=4.0)
+    )
+    assert helpers.clip()["scale"] == 4.0
+    helpers = _ClipHelpers(ratio=1)
+    helper_worker._handle(
+        helpers, _clip_request(tmp_path, width=400, height=10, max_dim=1000, magnify=4.0)
+    )
+    assert helpers.clip()["scale"] == pytest.approx(2.5)
+
+
+def test_screenshot_clip_reads_an_unknown_pixel_ratio_as_one(tmp_path: Any) -> None:
+    helpers = _ClipHelpers(ratio=None)
+    helper_worker._handle(helpers, _clip_request(tmp_path, max_dim=100))
+    assert helpers.clip()["scale"] == pytest.approx(100 / 200)
+
+
+def test_screenshot_clip_with_no_image_is_an_error_reply_and_writes_nothing(
+    tmp_path: Any,
+) -> None:
+    reply = helper_worker._handle(_ClipHelpers(data=""), _clip_request(tmp_path))
+    assert reply["ok"] is False and "no image" in reply["error"]
+    assert not (tmp_path / "c.png").exists()

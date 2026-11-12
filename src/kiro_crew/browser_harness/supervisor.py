@@ -89,6 +89,7 @@ HELPERS: Mapping[str, tuple[str, ...]] = {
     "press_key": ("key", "modifiers"),
     "scroll": ("x", "y", "dy", "dx"),
     "screenshot": ("path", "full", "max_dim"),
+    "screenshot_clip": ("path", "x", "y", "width", "height", "max_dim", "magnify"),
     "page_info": (),
     "wait_for_load": ("timeout",),
     "new_tab": ("url",),
