@@ -6,6 +6,10 @@ the batch and its headers to a host neither checked. ``requests`` raises
 ``TooManyRedirects`` before following one, which the exporter logs once, without
 header values, and does not retry.
 
+Every session also has an ``auth``, its own or one that applies only the endpoint
+URL's own credentials, so ``requests`` never sends a ``~/.netrc`` login for the
+collector's host.
+
 Imported by :mod:`kiro_crew.metrics.provider` at module scope, so nothing here
 imports ``requests`` or the OTel SDK until a reader is built.
 """
@@ -26,7 +30,7 @@ _CREDENTIAL_PROVIDER_VARS = (
 
 
 def export_session(supplied: Any, own_only: bool) -> Any:
-    """The no-redirect session for one destination's exporter.
+    """The no-redirect, no-``.netrc`` session for one destination's exporter.
 
     - *supplied* (a destination built in code with ``session``): a copy of it,
       so neither the redirect rule nor the exporter's header updates change the
@@ -49,7 +53,23 @@ def export_session(supplied: Any, own_only: bool) -> Any:
     else:
         session = _legacy_session()
     session.max_redirects = 0
+    if not session.auth:
+        # Any set ``auth`` stops requests reading ``$NETRC`` (else ``~/.netrc``)
+        # for the collector's host, whose login would replace a configured
+        # Authorization header or add one. A session's own ``auth`` is kept, and
+        # ``trust_env`` stays on for proxy and CA settings.
+        session.auth = _url_auth_only
     return session
+
+
+def _url_auth_only(request: Any) -> Any:
+    """Apply the endpoint URL's own ``user:password@``, as requests does with no ``auth``.
+
+    A set ``auth`` also skips that step, so without this an endpoint carrying
+    its credentials in the URL would export unauthenticated.
+    """
+    request.prepare_auth(None)
+    return request
 
 
 def _legacy_session() -> Any:

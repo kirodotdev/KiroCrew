@@ -250,7 +250,13 @@ exporter's header updates change the edition's object. The legacy entry gets the
 load itself (the OTel credential-provider one, else a plain one); that loader is
 private to the SDK, and if it is missing the legacy destination keeps exporting
 through a plain no-redirect session, with one WARNING (naming the credential-provider
-variable, when one is set, whose session was therefore not loaded).
+variable, when one is set, whose session was therefore not loaded). Every session
+the exporter gets has an `auth`: its own (an edition's, or the credential-provider
+session's) is kept, and one without gets an `auth` that applies only the endpoint
+URL's own `user:password@` (what `requests` does with no `auth`), so `requests`
+never reads `$NETRC` or `~/.netrc` for the collector's host. That login would
+otherwise replace a configured `Authorization` header, or add one where none was
+set. Proxy and CA settings from the environment still apply.
 
 The method must be cheap and side-effect-free per call: it is read once per
 recorder build AND on every egress-posture read (the Privacy panel's status, and
