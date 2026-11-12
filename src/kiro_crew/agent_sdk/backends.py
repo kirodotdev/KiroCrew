@@ -135,6 +135,8 @@ with no row here.
      - semantic question (``SessionCapabilities.compacts_inline``)
    * - ``ACP_BACKENDS_UNMARKED_COMPACTION_PAIR``
      - frame translation (whether a compaction pair with no marker is read)
+   * - ``ACP_BACKENDS_SENT_IMAGE_RECORD``
+     - driver-internal (whether a session keeps a record of the pictures it sent)
    * - ``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION``
      - semantic question (whether a skipped autocompact is answered by the harness)
    * - ``ACP_BACKENDS_CONTEXT_RECYCLE``
@@ -1382,6 +1384,7 @@ from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exporte
     ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
     ACP_BACKENDS_NATIVE_TODOS,
     ACP_BACKENDS_REPORT_USAGE,
+    ACP_BACKENDS_SENT_IMAGE_RECORD,
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STEER_CONCURRENT_PROMPT,
     ACP_BACKENDS_STEER_RETRACT,

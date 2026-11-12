@@ -119,6 +119,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "56174177c198",
         "session_handle_native_children",
     ),
+    "_forget_sent_images": ("function", False, "b60c5fea256e", "session_handle_turn"),
     "_handle_announced_subagent": (
         "function",
         False,

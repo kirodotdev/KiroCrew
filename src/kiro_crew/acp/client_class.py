@@ -55,6 +55,7 @@ from kiro_crew.acp.engine_fallback import EngineFallbackTracker
 from kiro_crew.acp.liveness import LivenessOracle
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.mcp_startable import PrunedServer
+from kiro_crew.acp.prompt_blocks import SentImageLedger, StagedImages
 from kiro_crew.acp.runtime_models import DEFAULT_MODEL
 from kiro_crew.acp.runtime_process_tree import ChildRecord
 from kiro_crew.acp.skill_reads import SkillReadTracker
@@ -71,6 +72,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
+    ACP_BACKENDS_SENT_IMAGE_RECORD,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STEER_CONCURRENT_PROMPT,
@@ -816,6 +818,15 @@ class AcpClient:
         # See _maybe_audit_unasked_tool_call.
         self._sel_settled_tool_calls: set[str] = set()
         self._last_stop_reason: str = ""
+        # The pictures this client's current session already holds (see
+        # AcpSessionHandle), only on a harness whose compaction this client
+        # sees; and the request id of the prompt whose inlined pictures are
+        # staged, with that prompt's staging: only that prompt's answer commits them.
+        self._sent_images: SentImageLedger | None = (
+            SentImageLedger() if acp_backend in ACP_BACKENDS_SENT_IMAGE_RECORD else None
+        )
+        self._sent_images_req: int | None = None
+        self._sent_images_staged: StagedImages | None = None
         # Dynamic config from ACP session/new response and config_option_update notifications.
         # Only the effort configOptions are consumed (model lists come from
         # _capture_available_models, which parses the real dict-shaped `models`).
@@ -1474,6 +1485,7 @@ class AcpClient:
     stream_events = _client_turn.stream_events
     stream_unsolicited = _client_turn.stream_unsolicited
     _dispatch_events = _client_turn._dispatch_events
+    _forget_sent_images = _client_turn._forget_sent_images
     _send_prompt = _client_turn._send_prompt
     _read_prompt_response = _client_turn._read_prompt_response
 

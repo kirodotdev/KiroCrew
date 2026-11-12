@@ -90,6 +90,18 @@ async def test_the_old_claude_session_is_closed_before_the_new_one_is_set_up(tmp
 
 
 @pytest.mark.asyncio
+async def test_the_fresh_conversation_holds_no_picture_the_old_one_was_sent(tmp_path, monkeypatch):
+    client = _live_claude(tmp_path, monkeypatch, [])
+    staged = client._sent_images.staging()
+    staged.stage(["a" * 64])
+    staged.commit()
+
+    await client.new_conversation()
+
+    assert not client._sent_images.holds("a" * 64)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [AcpError("model refused"), asyncio.CancelledError()])
 async def test_a_failure_on_the_way_ends_the_process(tmp_path, monkeypatch, failure):
     steps: list[str] = []
