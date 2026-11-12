@@ -24,6 +24,7 @@ from typing import Any
 from kiro_crew import mcp_core
 from kiro_crew.constants import LEAKED_TOOL_CALL_NOTE, NO_TOOL_CALLS_NOTE
 from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS
+from kiro_crew.mcp_caller import heartbeat_fields
 from kiro_crew.mcp_shared import DEFERRED_STEP_WORKERS, DeferredTool
 from kiro_crew.mcp_tools.spawn_parts.listing import _queued_why
 from kiro_crew.platform import redact_via_context as redact
@@ -343,11 +344,16 @@ class _SubAgentsStep(DeferredTool):
     #: wait on (queued, or its read failed), no held read was free, or the gateway
     #: answered without holding.
     POLL_INTERVAL = 2.0
-    #: Seconds between session keepalives while polling. Pinging
+    #: Seconds between session keepalives, in every phase. Pinging
     #: ``/api/session-keepalive`` keeps the gateway's ``is_responsive()`` from
     #: flagging this session as stale and SIGTERMing the ACP subprocess
-    #: mid-wait, which would abort the very sub-agents being waited on.
-    KEEPALIVE_SECS = 60.0
+    #: mid-wait, which would abort the very sub-agents being waited on. It is
+    #: also this call's heartbeat (:meth:`_heartbeat`).
+    KEEPALIVE_SECS = 30.0
+    #: Bound on one keepalive POST: it shares the step's thread with a
+    #: submission or a poll, so a gateway that stops answering costs one short
+    #: wait, and the next beat retries.
+    KEEPALIVE_TIMEOUT_SECS = 5.0
 
     def __init__(
         self,
@@ -384,7 +390,7 @@ class _SubAgentsStep(DeferredTool):
         self._inline_result = inline_result
         now = mcp_core.time.monotonic()
         self.deadline = now + max_wait
-        self.next_ping = now + self.KEEPALIVE_SECS  # first keepalive after 60s, not immediately
+        self.next_ping = now + self.KEEPALIVE_SECS  # first keepalive after one interval
         self.next_due = now
         self.wait_settled: set[str] = set()
         # The part of ``wait_settled`` settled because a gate deferral holds it;
@@ -523,7 +529,33 @@ class _SubAgentsStep(DeferredTool):
         self._submit_index = 0
         return None
 
+    def _heartbeat(self) -> None:
+        """Send this call's heartbeat when one is due, whatever the phase.
+
+        While polling it names the members still waited on, so the call's
+        silence timer runs from their own activity, not from this poll. While
+        the batch is submitted or the parent waits for its slot back it names
+        none, and the beat itself is the activity: a long submission or a long
+        hold is this call working, and the hold has its own deadline.
+        """
+        now = mcp_core.time.monotonic()
+        if now < self.next_ping:
+            return
+        self.next_ping = now + self.KEEPALIVE_SECS
+        waited_on = (
+            [a for a in self.sa_ids if a not in self.wait_settled] if self.phase == "poll" else []
+        )
+        try:
+            mcp_core._post(
+                "/api/session-keepalive",
+                {**heartbeat_fields(self.phase), "subagent_ids": waited_on},
+                timeout=self.KEEPALIVE_TIMEOUT_SECS,
+            )
+        except Exception:
+            pass  # keepalive is best-effort
+
     def step(self) -> str | None:
+        self._heartbeat()
         if self.phase == "submit":
             return self._submit_one()
         if self.phase == "poll":
@@ -562,12 +594,6 @@ class _SubAgentsStep(DeferredTool):
         if now >= self.deadline:
             self.phase = "hold"
             return
-        if now >= self.next_ping:
-            try:
-                mcp_core._post("/api/session-keepalive", {})
-            except Exception:
-                pass  # keepalive is best-effort
-            self.next_ping = now + self.KEEPALIVE_SECS
         # Settled for this wait, and not polled again: done, or held by a gate
         # DEFERRAL -- that can wait far longer than this call should hold the
         # parent's turn, and its completion event arrives on its own later. A

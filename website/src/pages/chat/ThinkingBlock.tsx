@@ -6,6 +6,7 @@ import { ROW_PILL_BUTTON_CLASS, ROW_PILL_WRAPPER_CLASS, ROW_RAIL_CLASS } from '.
 import { useStreamIdle } from './ChatFooter'
 import { loadChatConfig } from './ChatSettings'
 import { useSmoothStream } from '../../hooks/useSmoothStream'
+import { useReasoningStartsExpanded } from '../../hooks/useToolCallsStartExpanded'
 
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -44,7 +45,8 @@ function liveTail(content: string): string {
  * updates; the backend broadcasts them as `chat_thinking` WS events, which the
  * chatSlice accumulates into a content-bearing `thinking`-role message. This
  * component renders that text as a collapsed-by-default disclosure so the
- * reasoning is available without cluttering the conversation.
+ * reasoning is available without cluttering the conversation. The "Reasoning
+ * starts expanded" setting, or a ChatPanel's `expandSteps`, opens it instead.
  *
  * While chunks are still arriving the collapsed row also shows the tail of the
  * trace on one line, right-aligned with a left fade, so the reasoning is
@@ -56,7 +58,8 @@ function ThinkingBlock({ content, disclosureKey }: { content: string; disclosure
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // Held outside the row: the transcript is virtualised, so this block is
   // unmounted whenever its row leaves the mounted window.
-  const [expanded, setExpanded] = useRowDisclosure(disclosureKey, false)
+  const startExpanded = useReasoningStartsExpanded()
+  const [expanded, setExpanded] = useRowDisclosure(disclosureKey, startExpanded)
   const [changeTick, setChangeTick] = useState(0)
   const [clipped, setClipped] = useState(false)
   const lastContent = useRef<string | null>(null)

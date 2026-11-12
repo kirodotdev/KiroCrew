@@ -907,6 +907,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _cron_dispatch,
         _cron_folder_label,
         _cron_folder_ref,
+        _cron_model,
         _cron_preview,
         _cron_update_not_found,
         _format_schedule,

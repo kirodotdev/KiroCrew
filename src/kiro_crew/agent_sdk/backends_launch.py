@@ -45,9 +45,10 @@ from kiro_crew.agent_sdk.backends import (
 # must keep Crew's layer.
 #
 # codex-acp is excluded on the same rule: it is a Node adapter, so Crew's own layer
-# is the only OS confinement a codex session gets. The Codex sandbox modes the
-# adapter can apply are in-process policy, not an OS sandbox that Crew's would
-# nest inside.
+# is the only OS confinement a codex session gets. Codex's read-only mode would
+# build a second OS sandbox inside it, which cannot start there, so Crew selects
+# the adapter's external-sandbox mode whenever the adapter offers it
+# (``ACP_BACKEND_PREFERRED_PERMISSION_CONFIG``).
 #
 # opencode is excluded, and here the exclusion is load-bearing rather than
 # conservative: Crew's own sandbox layer carries the credential mask that is the

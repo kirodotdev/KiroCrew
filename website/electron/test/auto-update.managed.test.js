@@ -1171,6 +1171,70 @@ test("readExternallyManaged: a trusted marker carries relaunchPath; a rewritable
   }).relaunchPath, "", "a marker this user could rewrite names nothing to exec");
 });
 
+// ---------------------------------------------------------------------------
+// updatePrompts: "edition". The edition's own top-bar update widget is the
+// update surface, so every push and getInfo() carry the flag the dashboard's
+// UpdateFoundModal and UpdateModal read to stay closed.
+// ---------------------------------------------------------------------------
+
+function readUpdatePrompts(t, value, { rewritable = false } = {}) {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kc-ext-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, "EXTERNALLY-MANAGED"), JSON.stringify({
+    managedBy: "m", updateCommand: "/usr/bin/u", checkCommand: "/usr/bin/c", updatePrompts: value,
+  }));
+  return readExternallyManaged({ env: {}, resourcesPath: dir, probeMarkerRewritable: () => rewritable });
+}
+
+test("readExternallyManaged: updatePrompts keeps only \"edition\", and only on a trusted marker", (t) => {
+  assert.strictEqual(readUpdatePrompts(t, "edition").updatePrompts, "edition");
+  assert.strictEqual(readUpdatePrompts(t, " edition ").updatePrompts, "edition", "trimmed like every other field");
+  for (const other of ["core", "Edition", "", 1, true]) {
+    assert.ok(!("updatePrompts" in readUpdatePrompts(t, other)), `${JSON.stringify(other)} is ignored`);
+  }
+  assert.ok(!("updatePrompts" in readUpdatePrompts(t, "edition", { rewritable: true })),
+    "a marker this user could rewrite carries no metadata at all");
+});
+
+const EDITION_PROMPTS = {
+  managedBy: "toolbox", updateCommand: "apply", checkCommand: "check", updatePrompts: "edition",
+};
+
+test("updatePrompts edition: the found push, the arm's downloaded push and getInfo all carry it", async (t) => {
+  const { deps, states } = makeDeps({ externallyManaged: EDITION_PROMPTS });
+  const { commands, restore } = stubSpawn((cmd) =>
+    cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 0, out: "" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  await u.install();
+  const found = states.find((s) => s.state === "found");
+  const armed = states.find((s) => s.state === "downloaded" && s.armed === true);
+  assert.ok(found && armed, "the check finds 0.5.0.5 and the click arms it");
+  for (const s of states) assert.strictEqual(s.updatePrompts, "edition", `the ${s.state} push carries it`);
+  assert.strictEqual(u.getInfo().updatePrompts, "edition");
+  assert.strictEqual(u.getInfo().lastState.updatePrompts, "edition", "the replay seed too");
+  assert.ok(!commands.includes("apply"), "the arm runs nothing");
+});
+
+test("updatePrompts absent: no managed-lane push and no getInfo carries the key", async (t) => {
+  const marker = { ...EDITION_PROMPTS };
+  delete marker.updatePrompts;
+  const { deps, states } = makeDeps({ externallyManaged: marker });
+  const { restore } = stubSpawn((cmd) =>
+    cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 0, out: "" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  await u.install();
+  assert.ok(states.some((s) => s.state === "downloaded" && s.armed === true), "the click arms 0.5.0.5");
+  for (const s of states) assert.ok(!("updatePrompts" in s), `the ${s.state} push keeps its shape`);
+  assert.ok(!("updatePrompts" in u.getInfo()));
+});
+
 
 
 

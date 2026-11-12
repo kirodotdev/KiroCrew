@@ -1400,7 +1400,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Session Start Concurrency",
-      "help": "How many ACP session/new requests may be outstanding at once per gateway event loop (the SessionStartGate). session/new blocks while the backend initializes the session's MCP servers, so a burst of subagent starts on one shared runtime slows every start until the budget is hit; queued starts a person is waiting on are served first, except that a waiting background start is let through after a bounded run of them so it is never starved, and FIFO within each class. Queue time is not charged to the start budget or the startup deadline, but a subagent start that stays queued past the start-queue cap ends as never started, unless its subagent timeout ends it first. A fixed bound, not adaptive: the adaptive loop is the MCP gateway spawn gate and the execution-cap controller. \"auto\" (the default) sizes it once at gateway start as min(cpus // 4, available GB // 3) clamped to 2..16, with cpus the affinity count capped by a cgroup cpu.max quota; the gateway logs the value in force at boot, and kirocrew doctor shows what auto picks for the host now. An integer sets it explicitly, clamped to 1..64.",
+      "help": "How many ACP session/new requests may be outstanding at once per gateway event loop (the SessionStartGate). session/new blocks while the backend initializes the session's MCP servers, so a burst of subagent starts on one shared runtime slows every start until the budget is hit; queued starts a person is waiting on are served first, except that a waiting background start is let through after a bounded run of them so it is never starved, and FIFO within each class. Queue time is not charged to the start budget or the startup deadline, but a subagent start that stays queued past the start-queue cap ends as never started, unless its subagent timeout ends it first. Not adaptive: the adaptive loop is the MCP gateway spawn gate and the execution-cap controller. \"auto\" (the default) sizes it at gateway start as min(cpus // 4, available GB // 3) clamped to 2..16, with cpus the affinity count capped by a cgroup cpu.max quota, and widens it when a later reading finds more memory available; it never narrows and never passes what the cores give. The gateway logs the value in force at boot and each time it widens, and kirocrew doctor shows what auto picks for the host now. An integer sets it explicitly, clamped to 1..64, and is fixed until a restart.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "auto",
@@ -2105,7 +2105,8 @@
         "watchdog_rss_max_mb": 4096,
         "watchdog_end_leftovers_mid_turn": false,
         "harness_background_hold_secs": 3600,
-        "reconcile_max_kills": 5
+        "reconcile_max_kills": 5,
+        "max_per_creator": 50
       }
     },
     {
@@ -2416,6 +2417,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 5
+    },
+    {
+      "path": "session.max_per_creator",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Sessions per Creator",
+      "help": "How many live sessions one creator may hold: a Bot's own chat, a conductor, or any session that opens other sessions (10-450). A creator that holds this many cannot open another until it closes one. The chats you open yourself do not count. All sessions together still stop at 500. Read at each session create, so a change needs no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 50
     },
     {
       "path": "taskrunner",
@@ -2731,8 +2746,10 @@
         "kind_routing": "off",
         "lesson_origin_gate": "off",
         "lesson_tier_policy": "off",
+        "lesson_fold": "off",
         "rule_authority_order": "off",
         "member_lesson_dedup": "off",
+        "relevance_rule": "off",
         "inject_memory": true,
         "inject_lessons": true,
         "inject_lessons_per_turn": false,
@@ -3352,6 +3369,24 @@
       "defaultValue": "off"
     },
     {
+      "path": "memory.lesson_fold",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Lesson Fold",
+      "help": "Whether the session-start rule block leaves out near-duplicate rules (same scope and tier, and the same text or stored vectors at cosine 0.95 or more). 'off' (default) keeps today's block. 'shadow' keeps today's block and only records, in the injection receipt and within fixed size caps, which rule ids would fold into which. 'enforce' keeps the first copy of each rule (yours first, then newest) and says how many were folded; learn_list still shows all. Rules you taught are never folded and no stored lesson is changed.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "shadow",
+        "enforce"
+      ],
+      "defaultValue": "off"
+    },
+    {
       "path": "memory.rule_authority_order",
       "kind": "core",
       "type": "string",
@@ -3379,6 +3414,24 @@
       "tags": [],
       "label": "Private Lesson Dedup",
       "help": "Whether a private memory store folds a consolidation lesson into a stored copy of the same rule (same scope and tier, the same text, or stored vectors at cosine 0.95 or more). 'off' (default) keeps today's writes. 'shadow' writes every lesson as before and only counts, within fixed size caps, what the fold would do. 'enforce' skips a textual copy and retires a new near-copy with a saved revision before a dashboard turn has been given it; turning the flag off restores those rows. Lessons you taught are never folded.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "shadow",
+        "enforce"
+      ],
+      "defaultValue": "off"
+    },
+    {
+      "path": "memory.relevance_rule",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relevance Rule",
+      "help": "Which word matches let past findings, task facts and the activity block (projects, history) into a new session. 'off' (default) keeps today's blocks. 'shadow' keeps today's blocks and only records, in the injection receipt and within fixed size caps, which rows the new rule would add or drop. 'enforce' counts only words of 3 or more letters or digits and two-character pairs of Chinese or Japanese text, and admits a task fact only with the evidence the private store already asks for. The rule block is unchanged and no stored row is changed.",
       "hasChildren": false,
       "enumValues": [
         "off",
@@ -6396,6 +6449,10 @@
         "tool_stall_hard_cap_secs": 7200.0,
         "model_silent_probe_secs": 1800.0,
         "remote_flat_probe_secs": 0.0,
+        "builtin_tool_silence_secs": 300.0,
+        "mcp_network_silence_secs": 300.0,
+        "mcp_stdio_silence_secs": 1800.0,
+        "subagent_silence_secs": 600.0,
         "wellness_sample_secs": 3.0
       }
     },
@@ -6482,6 +6539,62 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0.0
+    },
+    {
+      "path": "watchdog.builtin_tool_silence_secs",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Built-in tool silence (s)",
+      "help": "Seconds a non-shell built-in tool call (a file edit, a read, a search, a fetch) may go with no frame for it before it is cancelled and the agent is told it timed out, so it can retry. Counted from the call's dispatch and restarted by any frame for that call; time spent waiting on a person (an approval card, an MCP question) is not counted, and the answer restarts it. A shell call keeps the liveness-oracle rules instead. This and the three bounds below run only while Kiro Crew can see the call's activity: a call whose activity may be out of sight (one a frame of an unknown kind names, a sub-agent call whose sub-agent's frames may not have reached the session) loses its timer, and no call is judged while a KAS hook runs or another request is reading the session's frames; such a call is left to the liveness oracle and tool_stall_hard_cap_secs. Default 5 min; 0 turns the timer off for these calls. Never longer than tool_stall_hard_cap_secs. Applies on kiro-cli and KAS, whose tool frames say which calls an MCP server served.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 300.0
+    },
+    {
+      "path": "watchdog.mcp_network_silence_secs",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "MCP network tool silence (s)",
+      "help": "The same per-call silence bound for a tool on an MCP server the session declared with a url. Any frame the harness sends for that call restarts it. Default 5 min; 0 turns it off.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 300.0
+    },
+    {
+      "path": "watchdog.mcp_stdio_silence_secs",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "MCP stdio tool silence (s)",
+      "help": "The same per-call silence bound for a tool on any other MCP server, Kiro Crew's own included. Kiro Crew's own long tools (wait, ask_question, the browser's hand-back) send a heartbeat about every 30 s, so they are never cut short while they work. Kiro Crew's sub-agent tools (spawn_run, spawn_continue, spawn_sub_agents) are bounded by subagent_silence_secs instead. Default 30 min; 0 turns it off.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 1800.0
+    },
+    {
+      "path": "watchdog.subagent_silence_secs",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Sub-agent call silence (s)",
+      "help": "The same per-call silence bound for a sub-agent call (the harness's own sub-agent tool, spawn_run, spawn_continue, spawn_sub_agents), counted from the sub-agent's own activity: its frames, and any tool call it has open, which holds the timer while it runs. A kiro-cli sub-agent call has no timer once any frame on its runtime may have missed the session this turn: while another session shares the runtime, even for a moment, its sub-agent's frames are dropped. Default 10 min; 0 turns it off.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 600.0
     },
     {
       "path": "watchdog.wellness_sample_secs",
@@ -6877,6 +6990,7 @@
         "session_folder": "",
         "auto_link_sessions": false,
         "agent_sessions": false,
+        "code_channel_dispatch": false,
         "code_channels": false,
         "code_channel_defaults": {
           "folder": null,
@@ -7235,6 +7349,22 @@
       ],
       "label": "Agent Sessions",
       "help": "Run Slack threads as Slack agent sessions: threads show a live status and title, and Slack's native Stop button cancels the turn. Adds the agent view (features.agent_view), the assistant:write scope and the agent-session events to the generated app manifest; an installed app needs that manifest update and a reinstall before it takes effect, and until then Slack behaves as before. Slack cannot switch an app back from agent_view to assistant_view. Off by default; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "slack.code_channel_dispatch",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Code Channel Dispatch",
+      "help": "Let a Slack code channel's own session hand work to worker sessions: create them, bind them to its work ledger and follow their status. Only on turns the owner started, only for workers it created itself, one level deep, filed in the channel's folder, with the channel's own approval mode and never more; channels shared beyond this workspace are excluded. Needs slack.code_channels on as well; turning that on does not turn this on. Off keeps the full channel containment: a conductor in a code channel cannot hand off work. Off by default, and a missing, unreadable or malformed value reads as off. Takes effect on the next call; no restart.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -8974,7 +9104,8 @@
       "defaultValue": {
         "enabled": false,
         "api_base_url": "",
-        "send_heartbeats": false
+        "send_heartbeats": false,
+        "oauth_client_id": ""
       }
     },
     {
@@ -9024,6 +9155,22 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "wakatime.oauth_client_id",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "wakatime"
+      ],
+      "label": "OAuth Client ID",
+      "help": "WakaTime OAuth app client ID, from https://wakatime.com/apps. Required to read stats, summaries, and durations after WakaTime makes API keys write-only on 1 November 2026. The matching client secret and the user's access and refresh tokens are stored in the secrets vault, not here. Empty keeps the integration on API-key auth, which still works before the cutoff and for self-hosted backends.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "teams",

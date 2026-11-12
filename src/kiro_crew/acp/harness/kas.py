@@ -295,11 +295,26 @@ def _with_project_switch_offs(spec: dict[str, Any], project: dict[str, Any]) -> 
     return _with_restrictions(spec, kept)
 
 
+def session_projects_folder_hooks(session_key: str) -> bool:
+    """Whether a session keyed *session_key* projects a folder agent's own hooks.
+
+    False for a ``cron:``-keyed session, whose turns never fire them, so every
+    projection of that session (its own agent and each native sub-agent target)
+    keeps its auto-approvals; ``spec_hooks.kas_hook_checkout`` reads the same rule.
+    """
+    # Deferred: agent_sdk imports this package at load time.
+    from kiro_crew.agent_sdk.spec_hooks import CRON_SESSION_KEY_PREFIX
+
+    return not session_key.startswith(CRON_SESSION_KEY_PREFIX)
+
+
 def resolve_projected_spec(
     agents_dir: Path,
     agent: str,
     work_dir: str | Path | None,
     notices: list[str] | None = None,
+    *,
+    project_hooks: bool = True,
 ) -> tuple[dict[str, Any], Path]:
     """The spec KAS is handed for *agent*, and the directory its prompt anchors to.
 
@@ -317,10 +332,12 @@ def resolve_projected_spec(
     over the wire and a cloned repository must not choose which of the user's
     files that is.
 
-    Either way the servers and hooks a session runs are user-level, which is why
-    the broker-overlay lookup stays unscoped for this host
-    (``agent_sdk.backends.overlay_project_scope``) and why Crew's spec hooks keep
-    reading the user level (``agent_sdk.spec_hooks``).
+    Either way the servers a session runs are user-level, which is why the
+    broker-overlay lookup stays unscoped for this host
+    (``agent_sdk.backends.overlay_project_scope``). Its hooks are user-level too,
+    except a project-only agent's own ``hooks``, kept when the folder's
+    project-hooks choice is on and *project_hooks* is true (below; Crew fires them
+    through ``agent_sdk.kas_project_hooks``).
 
     A project-only spec that exists but cannot be read raises
     :class:`KasAgentTranslationError`: there is no other spec of that name to run.
@@ -447,9 +464,20 @@ def resolve_projected_spec(
         # at read time would follow a link the checkout repointed in between.
         project = {**project, "prompt": kas_agents_mod._PROMPT_FILE_SCHEME + target.as_posix()}
     # ``systemPrompt`` is not dropped: it was carried as ``prompt`` above.
-    dropped = sorted(
-        k for k in project if k not in PROJECT_SPEC_HONOURED_KEYS and k != "systemPrompt"
-    )
+    honoured: tuple[str, ...] = PROJECT_SPEC_HONOURED_KEYS
+    # A cron session's projection (*project_hooks* false) keeps none: cron never
+    # fires a folder agent's own hooks, so none may withhold its auto-approvals.
+    if project_hooks and project.get("hooks"):
+        from kiro_crew.project_hooks_consent import hooks_enabled
+
+        if hooks_enabled(work_dir)[0]:
+            # The folder's hooks run (the owner's choice, or kiro-cli's trust). They
+            # are kept so the projection withholds auto-approval for what their
+            # PreToolUse matchers cover (``kas_agents.pre_tool_hook_matchers``);
+            # KAS itself never receives them (``kas_agents.UNSUPPORTED_SPEC_KEYS``),
+            # Crew fires them (``agent_sdk.spec_hooks._consented_kas_project_hooks``).
+            honoured = (*PROJECT_SPEC_HONOURED_KEYS, "hooks")
+    dropped = sorted(k for k in project if k not in honoured and k != "systemPrompt")
     if dropped:
         logger.info(
             "agent %r: the project checkout's spec is not trusted to grant; ignored keys: %s",
@@ -464,7 +492,7 @@ def resolve_projected_spec(
                 f"without {names}. Crew takes only a folder agent's name, description, "
                 "prompt, tools and model. Copy it to your own agents folder to use the rest."
             )
-    spec = {k: project[k] for k in PROJECT_SPEC_HONOURED_KEYS if k in project}
+    spec = {k: project[k] for k in honoured if k in project}
     # The checkout's keys are filtered above; the approved additions come from the
     # user's own record, never from the checkout. The checkout's switch-off keys for
     # an approved server (a mute, switched-off tools) are kept, and only those, and
@@ -1131,7 +1159,14 @@ class KasHarness(MembershipHarness):
             else:
                 try:
                     spec, prompt_dir = resolve_projected_spec(
-                        agents_dir, agent, work_dir, spec_notices
+                        agents_dir,
+                        agent,
+                        # The session's own folder, the one Crew fires its folder
+                        # agent's hooks from (``spec_hooks.kas_hook_checkout``), so a
+                        # sub-agent in another folder projects that folder's choice.
+                        session_cwd or work_dir,
+                        spec_notices,
+                        project_hooks=session_projects_folder_hooks(session_key),
                     )
                 except kas_agents_mod.KasAgentSpecAbsent as exc:
                     # Nothing defines the agent, so name what removed it (an app

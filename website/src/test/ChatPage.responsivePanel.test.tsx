@@ -19,6 +19,7 @@ import { __resetPanelTabs, usePanelTabs } from '../hooks/usePanelTabs'
 import { setSidePanelDock } from '../hooks/useSidePanelDock'
 import { switchSlot, toggleActivity } from '../store/chatSlice'
 import { paneCovered } from '../hooks/paneVisibility'
+import { closeCrewWindow, openCrewWindow } from '../pages/chat/crew-window/crewWindowStore'
 
 // --- Stub child components (same scaffold as ChatPage.embedded test) ---
 vi.mock('react-virtuoso', () => ({ Virtuoso: () => null }))
@@ -35,14 +36,17 @@ vi.mock('../components/SegmentedControl', () => ({ default: () => null }))
 vi.mock('../pages/chat/CollapsibleToolGroup', () => ({ default: () => null }))
 vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => null }))
 vi.mock('../pages/chat/SessionColorPicker', () => ({ default: () => null }))
+vi.mock('../pages/chat/crew-window/CrewChatWindow', () => ({ default: () => <div data-testid="crew-chat-window" /> }))
 vi.mock('../pages/chat', () => ({ ChatFooter: () => null, AssistantMessage: () => null, McpInfoButton: () => null }))
 vi.mock('../pages/ChatSidebar', () => ({ default: () => null, SIDEBAR_MIN: 200, SIDEBAR_MAX: 500 }))
 vi.mock('../pages/chat/ChatSettings', () => ({ loadChatConfig: () => ({ contentWidth: 'compact' }), CONTENT_WIDTH: { compact: { messages: '800px', input: '816px' }, comfortable: { messages: '84%', input: '85%' }, full: { messages: '92%', input: '93%' } } }))
 // SidePanel: stub the component (pulls in xterm etc.) but keep the space
 // contract deterministic: threshold = 320 + 560 = 880, reopen at 920.
 vi.mock('../pages/chat/SidePanel', () => ({
-  default: ({ fillWidth }: { fillWidth?: number }) => (
-    <div data-testid="side-panel" data-fill-width={fillWidth ?? ''} />
+  default: ({ fillWidth, onPutPinInComposer }: { fillWidth?: number; onPutPinInComposer?: (ts: string) => void }) => (
+    <div data-testid="side-panel" data-fill-width={fillWidth ?? ''}>
+      {onPutPinInComposer && <button type="button" aria-label="Put in composer" data-testid="put-pin" onClick={() => onPutPinInComposer('pin-ts')} />}
+    </div>
   ),
   SIDE_PANEL_MIN_W: 320,
   SIDE_PANEL_RESERVED_W: 560,
@@ -93,6 +97,7 @@ globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.res
 globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver
 
 import ChatPage from '../pages/ChatPage'
+import { api } from '../api/client'
 
 const setWindowWidth = (w: number) => {
   Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: w })
@@ -332,6 +337,62 @@ describe('ChatPage — session-header activity toggle (relocated from the top ba
     // which the on-screen backstop sees (its matrix covers that box), and a
     // bottom-docked panel leaves the transcript on screen.
     expect(paneCovered(document)).toBe(false)
+  })
+
+  it('Put in composer closes a panel that fills the chat column, and leaves one beside the chat open', async () => {
+    const { store } = renderWithSlot()
+    fireEvent.click(await screen.findByLabelText('Open activity panel'))
+    fireEvent.click(await screen.findByTestId('put-pin'))
+    expect(store.getState().chat.activityOpen).toBe(true)
+    resizeTo(800) // 800 - 236 - 260 = 304 < 640: the panel fills the chat column
+    fireEvent.click(await screen.findByTestId('put-pin'))
+    expect(store.getState().chat.activityOpen).toBe(false)
+  })
+
+  it('offers no Put in composer in Split View, whose pane composers are not the single-chat draft', async () => {
+    vi.mocked(api.dashboardConfig).mockResolvedValue({ session_grid: true })
+    try {
+      renderWithSlot()
+      fireEvent.click(await screen.findByLabelText('Open activity panel'))
+      expect(await screen.findByTestId('put-pin')).toBeInTheDocument()
+      fireEvent.click(await screen.findByLabelText('Enter split view'))
+      expect(screen.getByTestId('side-panel')).toBeInTheDocument()
+      expect(screen.queryByTestId('put-pin')).toBeNull()
+    } finally {
+      vi.mocked(api.dashboardConfig).mockResolvedValue({})
+    }
+  })
+
+  it('offers no Put in composer while a crew window covers the chat and its composer', async () => {
+    try {
+      renderWithSlot()
+      fireEvent.click(await screen.findByLabelText('Open activity panel'))
+      expect(await screen.findByTestId('put-pin')).toBeInTheDocument()
+      act(() => { openCrewWindow({ instanceId: 'i1', key: 'k1' }) })
+      // ChatPaneChrome mounts CrewChatWindow through lazyRetry(() => import(...)): wait out that chunk.
+      expect(await screen.findByTestId('crew-chat-window', {}, { timeout: 5000 })).toBeInTheDocument()
+      expect(screen.getByTestId('side-panel')).toBeInTheDocument()
+      expect(screen.queryByTestId('put-pin')).toBeNull()
+    } finally {
+      act(() => { closeCrewWindow() })
+    }
+  })
+
+  it('Put in composer leaves a bottom-docked panel open on a narrow window, where the composer stays on screen', async () => {
+    const slot = document.createElement('div') // the shell's panel column; bottom docking lives there
+    slot.id = 'activity-bar-slot'
+    document.body.appendChild(slot)
+    setSidePanelDock('bottom')
+    try {
+      const { store } = renderWithSlot()
+      resizeTo(800)
+      fireEvent.click(await screen.findByLabelText('Open activity panel'))
+      await waitFor(() => expect(slot.contains(screen.getByTestId('side-panel'))).toBe(true))
+      fireEvent.click(screen.getByTestId('put-pin'))
+      expect(store.getState().chat.activityOpen).toBe(true)
+    } finally {
+      act(() => { setSidePanelDock('right') })
+    }
   })
 
   it('switches an already-open panel from beside to fill on resize, without remounting it', async () => {

@@ -709,7 +709,9 @@ parameters a fetch varies on, so a stale entry cannot serve a different subject.
 Real-time updates arrive on a single WebSocket at `/api/ws`, read through
 `useWebSocket`, which reconnects with capped exponential backoff (1s doubling to a
 10s ceiling) and re-fetches state through Redux on reconnect instead of reloading
-the page.
+the page. The slot list is the exception: the new socket's connect snapshot
+carries it, so the reconnect catch-up reads it over HTTP only when that snapshot
+is empty or does not come (`createReconnectSnapshotWait` in `reconnectCatchUp.ts`).
 
 `src/hooks/useWebSocket.ts` is the composition point and the only import path:
 it holds the frame routing table (one `case` per frame type), the silence
@@ -954,8 +956,9 @@ files own it:
     settings icon-tile and goal-mark tokens, the dock pass-through and the
     global reduced-motion transition reset.
   - `content-fit.css` owns the rules that make content fit its box: font-metric
-    compensation on the nav rail, the crew-chip cut edge, image and spacer
-    reservations, the pane-dim token and the markdown-table breakout.
+    compensation on the nav rail, the Hindi and Bengali letter-spacing reset,
+    the crew-chip cut edge, image and spacer reservations, the pane-dim token
+    and the markdown-table breakout.
 
   `cli-mode.css`, `message-font-size.css` and `crew-notes.css` in the same
   directory are imported by `main.tsx` instead. A test that measures the

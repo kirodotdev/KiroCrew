@@ -42,7 +42,7 @@ describe('InfoTip', () => {
     // talks over the user and collides with real actions named inside it.
     // Closed, the text sits on `title` -- the native fallback, and nothing of it
     // is body copy; open, the visible tooltip is referenced instead and `title`
-    // is dropped so the browser cannot show a second tooltip over ours.
+    // is empty so the browser cannot show a second tooltip over ours.
     render(<InfoTip text="What this binding does" />)
     const btn = trigger()
     expect(btn).toHaveAttribute('aria-expanded', 'false')
@@ -52,7 +52,7 @@ describe('InfoTip', () => {
 
     fireEvent.click(btn)
     expect(btn).toHaveAttribute('aria-expanded', 'true')
-    expect(btn).not.toHaveAttribute('title')
+    expect(btn).toHaveAttribute('title', '')
     const tip = screen.getByRole('tooltip')
     expect(tip).toHaveTextContent('What this binding does')
     expect(btn.getAttribute('aria-describedby')).toBe(tip.id)
@@ -84,6 +84,27 @@ describe('InfoTip', () => {
     settle()
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
     expect(btn).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('a mouse on the glyph empties its title at once, and a pass-through gets it back', () => {
+    // The browser reads the title under the pointer as it moves and shows it
+    // after its own delay, so the title has to be gone in the event that brings
+    // the mouse there, before the tip opens, or the native tooltip doubles it.
+    render(<InfoTip text="Pass-through help" />)
+    const btn = trigger()
+    expect(btn).toHaveAttribute('title', 'Pass-through help')
+    enter(btn)
+    expect(btn).toHaveAttribute('aria-expanded', 'false')
+    expect(btn).toHaveAttribute('title', '')
+    unhover(btn)
+    expect(btn).toHaveAttribute('title', 'Pass-through help')
+  })
+
+  it('a touch on the glyph keeps its title, which only a mouse would show', () => {
+    render(<InfoTip text="Touch help" />)
+    const btn = trigger()
+    fireEvent.pointerEnter(btn, { pointerType: 'touch' })
+    expect(btn).toHaveAttribute('title', 'Touch help')
   })
 
   it('a mouse that rests on the glyph past the open delay opens the tip', () => {
@@ -128,7 +149,20 @@ describe('InfoTip', () => {
     fireEvent.click(tip)
     expect(screen.getByRole('tooltip')).toBe(tip)
     expect(btn).toHaveAttribute('aria-expanded', 'true')
-    expect(btn).not.toHaveAttribute('title')
+    expect(btn).toHaveAttribute('title', '')
+  })
+
+  it('an open tip inside a titled element leaves no title for the browser to show', () => {
+    // A browser shows the nearest title at or above the hovered element. Open,
+    // the glyph's own title is empty rather than absent, so the row's title
+    // cannot appear as a second tooltip beside the bubble.
+    render(<span title="Row summary"><InfoTip text="Glance help" /></span>)
+    const btn = trigger()
+    expect(btn.closest('[title]')).toBe(btn)
+    hover(btn)
+    expect(btn).toHaveAttribute('aria-expanded', 'true')
+    expect(btn.closest('[title]')).toBe(btn)
+    expect(btn).toHaveAttribute('title', '')
   })
 
   it('stays open while the pointer moves from the glyph onto the bubble, and closes when it leaves', () => {

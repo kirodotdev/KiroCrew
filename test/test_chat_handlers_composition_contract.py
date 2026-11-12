@@ -45,7 +45,7 @@ _BASE_NAMES = frozenset("""
         ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS ARTIFACT_SLUG_RE AUTOCOMPACT_PCT_MAX
         AUTOCOMPACT_PCT_MIN AcpModelUnavailable AcpProvider Any Awaitable
         CHAT_TURN_TIMEOUT_MAX CHAT_TURN_TIMEOUT_MIN COLOR_HEX_RE Callable
-        ClientConnectionResetError DashboardState DeferredHoldFull DeferredHoldRebound
+        DashboardState DeferredHoldFull DeferredHoldRebound
         FavoritesUnreadable GrantDeadline HUMAN_TURN_META_KEY Iterable JEV_ROUTE_MODEL
         KiroCrewConfig LLMProvider MAX_COLOR_INDEX MAX_DEFERRED_NOTES
         MAX_DEFERRED_NOTE_CHARS MAX_SOURCE_LABEL_LEN MODEL_NAMESPACE_ACP Mapping
@@ -853,7 +853,7 @@ turn_stop | api_chat_slot_stop | async function | (request: 'web.Request') -> 'w
 turn_stop | api_chat_slot_interrupt | async function | (request: 'web.Request') -> 'web.Response'
 continue_turn | api_chat_slot_continue | async function | (request: 'web.Request') -> 'web.Response'
 continue_turn | SlotContinueRefusal | class
-continue_turn | continue_slot_turn | async function | (state: 'DashboardState', slot: '_ChatSlot', *, directive_user_origin: 'bool', via: 'str' = '', require_interrupted: 'bool' = False, allow_restored_queue: 'bool' = False, before_dispatch: 'Callable[[], None] | None' = None, extra_meta: 'dict[str, Any] | None' = None, replaced: 'Callable[[], bool] | None' = None) -> 'str'
+continue_turn | continue_slot_turn | async function | (state: 'DashboardState', slot: '_ChatSlot', *, directive_user_origin: 'bool', directive_channel_origin: 'bool' = False, via: 'str' = '', require_interrupted: 'bool' = False, allow_restored_queue: 'bool' = False, before_dispatch: 'Callable[[], None] | None' = None, prepare_dispatch: 'Callable[[], Awaitable[None]] | None' = None, dispatch_guard: 'Callable[[], AbstractContextManager[Any]] | None' = None, extra_meta: 'dict[str, Any] | None' = None, replaced: 'Callable[[], bool] | None' = None) -> 'str'
 continue_turn | session_start_failure_streak | function | (messages: 'list[dict]') -> 'int'
 continue_turn | _is_stop_event | function | (m: 'dict') -> 'bool'
 continue_turn | _is_interrupted | function | (slot: '_ChatSlot') -> 'bool'

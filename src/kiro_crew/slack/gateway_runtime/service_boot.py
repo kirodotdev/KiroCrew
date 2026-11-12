@@ -490,9 +490,19 @@ def _schedule_session_start_sizing(self: GatewayOrchestrator) -> None:
     """Run :meth:`_log_session_start_sizing` as a tracked background task.
 
     Called after the dashboard/API socket binds, so the host probe never
-    delays READY (AUTOSDE ``no-new-work-on-gateway-boot-path``).
+    delays READY (AUTOSDE ``no-new-work-on-gateway-boot-path``). The same task
+    then re-reads the host on a slow interval and widens the ``auto`` gates, so
+    a gateway that boots while memory is short does not keep that moment's
+    widths for its whole life (``start_gate_widening``).
     """
-    task = asyncio.create_task(self._log_session_start_sizing())
+
+    async def _size_then_widen() -> None:
+        from kiro_crew.start_gate_widening import widen_start_gates_as_memory_frees
+
+        await self._log_session_start_sizing()
+        await widen_start_gates_as_memory_frees(self._cfg.agent, getattr(self, "sessions", None))
+
+    task = asyncio.create_task(_size_then_widen())
     self._background_tasks.add(task)
     task.add_done_callback(self._background_tasks.discard)
 
@@ -667,6 +677,15 @@ def _init_task_runner(self: GatewayOrchestrator) -> None:
     # mypy checks this owner before the facade's bindings, so this function runs in a
     # deferred pass, where the nested def above drops the narrowing from the assignment.
     self.task_runner._on_approval = _task_approval  # type: ignore[union-attr]
+
+    # An app turn (``AgentTurnSDK.run``: a meeting's agents) passes this prompt as
+    # its approver, as a cron job does. Without it a call the hook gate neither
+    # denies nor grants is approved with nobody asked.
+    from kiro_crew.apps import agent_turn_sdk
+
+    agent_turn_sdk.set_turn_approver(
+        lambda app: self._interactive_approval("app", requester=f"app {app}")
+    )
 
 
 async def _init_dashboard(self: GatewayOrchestrator) -> None:
@@ -1175,6 +1194,17 @@ async def run(self: GatewayOrchestrator) -> None:
         _consent_task = asyncio.create_task(reconcile_after_ready())
         self._background_tasks.add(_consent_task)
         _consent_task.add_done_callback(self._background_tasks.discard)
+
+        # The first session's skill read, made once for the gateway so that
+        # session's prompt build does not wait for it. Past KIROCREW_READY
+        # (no-new-work-on-gateway-boot-path), on a worker thread, never raises.
+        from kiro_crew.skill_first_read import first_read_after_ready
+
+        _skill_read_task = asyncio.create_task(
+            first_read_after_ready(self.ctx_builder, self._skills_sync_task)
+        )
+        self._background_tasks.add(_skill_read_task)
+        _skill_read_task.add_done_callback(self._background_tasks.discard)
 
     # The run directories a PREDECESSOR gateway of this data home left behind
     # (session_work_dir). Ordered after ``cleanup_orphaned_sessions`` above,

@@ -37,7 +37,7 @@ from kiro_crew.dashboard.handlers.knowledge_sync import (
     _source_row,
 )
 from kiro_crew.dashboard.upload_limits import bytes_to_mb_figure, knowledge_upload_max_bytes
-from kiro_crew.knowledge.ingestion import ImportChunkBudgetError, _redact
+from kiro_crew.knowledge.ingestion import FileTooLargeError, ImportChunkBudgetError, _redact
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.store import _ACCOUNT_BOUND_SOURCE_TYPE
 from kiro_crew.zip_vet import ZipInventoryRejected, vet_zip_inventory
@@ -137,7 +137,8 @@ async def ingest_text(request: web.Request) -> web.Response:
             if is_cancel:
                 logger.debug("Agent ingest_text cancelled for source %s", source_id)
                 raise
-            logger.exception("Agent ingest_text failed for source %s", source_id)
+            if not isinstance(exc, FileTooLargeError):  # the pipeline already warned
+                logger.exception("Agent ingest_text failed for source %s", source_id)
             return web.json_response({"error": "internal server error"}, status=500)
         finally:
             Path(tmp.name).unlink(missing_ok=True)

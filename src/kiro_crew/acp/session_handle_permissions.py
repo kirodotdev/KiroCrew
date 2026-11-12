@@ -52,7 +52,10 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
     rejection_reason_meta,
 )
-from kiro_crew.agent_sdk.backends import ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED,
+    permission_value_for,
+)
 from kiro_crew.constants import DENY_CAUSE_PROVENANCE_UNRETAINED, DENY_CAUSE_UNREADABLE_IDENTITY
 from kiro_crew.deny_notice import unreadable_identity_clause
 from kiro_crew.metrics.events import CHILD_PERMISSION_DENIED, emit_counter
@@ -111,6 +114,9 @@ async def approve_tool(
     ``AcpClient.approve_tool``.
     """
     gate_event = self._permission_gate_events.pop(request_id, None)
+    # Answered: the call's silence timer runs again from here (a withdrawn or
+    # ended grant puts the request back, and it is pending again).
+    self.note_ask_answered(getattr(gate_event, "tool_call_id", "") or "")
     # Taken first, before any await: it records the session's cancellation
     # generation, so a turn Stop at any point after this leaves no grant behind.
     capability = mediated_request_capability.ApprovalMint(self._session_key or "", gate_event)
@@ -248,6 +254,8 @@ async def reject_tool(self: AcpSessionHandle, request_id: str | int, reason: str
     """
     recorded = self._permission_options.pop(request_id, None)
     gate_event = self._permission_gate_events.pop(request_id, None)
+    # Answered, so the call's silence timer runs again from here.
+    self.note_ask_answered(getattr(gate_event, "tool_call_id", "") or "")
     # A deny (or cancel) invalidates any mediated-secret grant minted for this
     # call id (see ``AcpClient.reject_tool``).
     mediated_request_capability.invalidate_for_gate_event(self._session_key or "", gate_event)
@@ -629,7 +637,8 @@ async def apply_session_permission_routing(self: AcpSessionHandle) -> None:
         return
     if self.mirror_used and self._runtime._member_projection_needs_confirmation(self.mirror_used):
         await self._runtime._confirm_member_projection(self)
-    option_id, value = acp_tool_gate.permission_config_for(backend)
+    option_id, _required = acp_tool_gate.permission_config_for(backend)
+    value = permission_value_for(backend, self._config_options)
     issue = acp_tool_gate.session_config_issue(backend, self._config_options)
     if issue:
         # Not advertised: INDETERMINATE, never BYPASSED. The adapter may well

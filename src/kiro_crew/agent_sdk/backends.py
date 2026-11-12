@@ -135,6 +135,8 @@ with no row here.
      - semantic question (``SessionCapabilities.compacts_inline``)
    * - ``ACP_BACKENDS_UNMARKED_COMPACTION_PAIR``
      - frame translation (whether a compaction pair with no marker is read)
+   * - ``ACP_BACKENDS_SENT_IMAGE_RECORD``
+     - driver-internal (whether a session keeps a record of the pictures it sent)
    * - ``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION``
      - semantic question (whether a skipped autocompact is answered by the harness)
    * - ``ACP_BACKENDS_CONTEXT_RECYCLE``
@@ -266,6 +268,9 @@ with no row here.
    * - ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL``
      - driver-internal (whether a kindless permission frame takes the preceding
        tool_call's ``kind``; read per frame by the session handle's wire accessor)
+   * - ``ACP_BACKENDS_TOOL_SILENCE_TIMER``
+     - driver-internal (whether the session handle gives each non-shell tool call
+       its own silence bound, read once per dispatched call)
    * - ``ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED``,
        ``ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED``
      - driver-internal (whether that transport's permission events say
@@ -283,6 +288,14 @@ with no row here.
      - driver-internal (whether the direct client stamps the spec's shell and
        write allowlists on its own permission requests, and the claude seed adds
        the ``permissions.ask`` rules that make those calls reach the gate)
+   * - ``ACP_BACKENDS_CREW_LOADS_SPEC_STEERING``
+     - context assembly (whether Crew puts the agent spec's ``file://`` steering
+       and the global and project steering trees into the prompt, asked by
+       provider label through ``drivers.acp.crew_loads_spec_steering``)
+   * - ``ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD``
+     - context assembly (whether that steering load leaves out the project's
+       ``AGENTS.md`` because the harness reads it from its working directory,
+       asked through ``drivers.acp.reads_project_agents_md``)
    * - ``ACP_BACKENDS_HOST_AUTH_CALLBACK``
      - driver-internal (whether the reader loop may answer the engine's
        ``_kiro/auth/getAccessToken`` from Crew's own vault)
@@ -1314,26 +1327,31 @@ from kiro_crew.agent_sdk.backends_routing import (  # noqa: E402,F401 - re-expor
     ACP_BACKEND_GATE_READBACK,
     ACP_BACKEND_PERMISSION_CONFIG,
     ACP_BACKEND_PERMISSION_SETTING,
+    ACP_BACKEND_PREFERRED_PERMISSION_CONFIG,
     ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST,
     ACP_BACKEND_ROUTING,
     ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS,
     ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
     ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS,
+    ACP_BACKENDS_CREW_LOADS_SPEC_STEERING,
     ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED,
     ACP_BACKENDS_HOOKS_LIST,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
     ACP_BACKENDS_META_IDENTITY,
+    ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD,
     ACP_BACKENDS_NATIVE_WORKFLOWS,
     ACP_BACKENDS_OPEN_EXTERNAL_URL,
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
     ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED,
     ACP_BACKENDS_SIDE_READONLY,
+    ACP_BACKENDS_TOOL_SILENCE_TIMER,
     Readback,
     Routing,
     gate_probe_command_for,
     gate_readback_for,
     permission_config_for,
     permission_setting_for,
+    permission_value_for,
     prompt_command_issue,
     routing_for,
     session_config_drift_issue,
@@ -1366,6 +1384,7 @@ from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exporte
     ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
     ACP_BACKENDS_NATIVE_TODOS,
     ACP_BACKENDS_REPORT_USAGE,
+    ACP_BACKENDS_SENT_IMAGE_RECORD,
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STEER_CONCURRENT_PROMPT,
     ACP_BACKENDS_STEER_RETRACT,

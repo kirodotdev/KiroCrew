@@ -25,6 +25,7 @@ from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import repository_bound_grant_denied
 from kiro_crew.apps.manager_records import (
     APP_MANIFEST_FILENAME,
+    INSTALLED_META_FILENAME,
     AppResult,
     InstalledApp,
     _approved_grants_after_manifest_change,
@@ -453,17 +454,42 @@ def install_app(
     )
     # Installing is the consent moment for everything the manifest declares.
     # Written before the record, so no record ever sits beside a missing set.
-    _write_approved_grants(name, _declared_grant_entries(grant_source(manifest)))
-    _write_installed(name, meta)
+    #
+    # One unit: a failed write part-way through (disk full, permissions) must not
+    # leave a record with no secret or no data dir, read as installed. Only what
+    # this block wrote is undone; the copied tree, with any preserved ``data/``,
+    # stays for the next install of this name to take over.
+    #
+    # The approved set is put back as it was rather than removed. An installed app
+    # was refused above, so no prior record exists to lose, but an approved set can
+    # outlive its record, and that set is restored byte for byte.
+    prior_grants_text = _approved_grants_snapshot(name)
+    try:
+        _write_approved_grants(name, _declared_grant_entries(grant_source(manifest)))
+        _write_installed(name, meta)
 
-    # Create data directory
-    app_data_dir(name)
+        # Create data directory
+        app_data_dir(name)
 
-    # Generate and write app secret for token-based auth (App Kit §5.1)
-    # circular import: token_auth -> dashboard -> bridges -> manager
-    from kiro_crew.dashboard.token_auth import generate_app_secret, write_app_secret
+        # Generate and write app secret for token-based auth (App Kit §5.1)
+        # circular import: token_auth -> dashboard -> bridges -> manager
+        from kiro_crew.dashboard.token_auth import generate_app_secret, write_app_secret
 
-    write_app_secret(name, generate_app_secret())
+        write_app_secret(name, generate_app_secret())
+    except (OSError, ValueError) as exc:
+        try:
+            (dest / INSTALLED_META_FILENAME).unlink(missing_ok=True)
+            _restore_approved_grants(name, prior_grants_text)
+        except OSError as undo_exc:
+            logger.error("Failed to undo the install record of app %s: %s", name, undo_exc)
+        sel().log_api_access(
+            caller="app_install",
+            operation="install",
+            outcome="failed",
+            resources=f"name={name!r}",
+            error=f"install record: {exc}",
+        )
+        return AppResult(ok=False, name=name, error=f"failed to record the install: {exc}")
 
     # Audit successful install for all callers (CLI, registry, dashboard)
     sel().log_api_access(

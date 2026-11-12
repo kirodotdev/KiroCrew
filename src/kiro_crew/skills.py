@@ -462,7 +462,13 @@ class SkillsLoader:
         self._extra_paths: list[Path] = []
         self._configured_extra_paths: list[Path] = []
         for p in cfg.skills.extra_paths:
-            resolved = Path(p).expanduser().resolve()
+            try:
+                resolved = Path(p).expanduser().resolve()
+            except (OSError, RuntimeError, ValueError):
+                # ``~nosuchuser`` (no such home) or an embedded NUL: one bad
+                # entry is skipped, never the whole loader.
+                logger.warning("Skipping unresolvable extra skill path: %r", p)
+                continue
             if is_sensitive_path(str(resolved)):
                 logger.warning("Skipping sensitive extra skill path: %s", p)
             elif resolved.is_dir():

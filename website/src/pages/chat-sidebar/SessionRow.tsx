@@ -14,7 +14,7 @@ import { offlineProps } from '../../utils/offline'
 import { sessionRefBlockReason } from '../../utils/sessionRefs'
 import { OfflineReasonRow } from '../../components/OfflineMenuReason'
 import { crewOf } from '../../hooks/useInstanceSessions'
-import { switchSlot, selectSidebarWorkflowActive, selectAutomationForSlot } from '../../store/chatSlice'
+import { switchSlot, selectSidebarWorkflowActive, selectAutomationForSlot, selectSlotStreamState } from '../../store/chatSlice'
 import { api } from '../../api/client'
 import { recencyTintShadow } from '../../utils/recencyTint'
 import { resolveSessionColor } from '../../utils/sessionColors'
@@ -79,6 +79,7 @@ function selectRowLive(st: RootState, localSlotKey: string) {
   const wf = selectSidebarWorkflowActive(st)[normalizeRunSessionKey(localSlotKey)]
   return {
     statusDetail: st.chat.slotStatusDetail?.[localSlotKey],
+    compacting: selectSlotStreamState(st, localSlotKey) === 'compacting',
     automation: selectAutomationForSlot(st, localSlotKey),
     queuedForSlot: st.chat.subagentQueued?.[localSlotKey] || 0,
     queuedReason: st.chat.subagentQueuedReason?.[localSlotKey],
@@ -146,16 +147,14 @@ const LIVE_ROW_STATE_KEYS: ReadonlySet<string> = new Set(['running', 'subagents'
  *  member's waiting approval never takes the line from one of them. */
 const OWED_ROW_STATE_KEYS: ReadonlySet<string> = new Set(['pending_approval', 'subagent_awaiting', 'needs_input', 'loop_waiting'])
 
-/** A slot's running-status line. Every phase resolves through toolStatusLabel:
- *  the fixed phases (`thinking`/`streaming`) carry no copy in the store and map
- *  to catalog keys at render time, a server-supplied status (also
- *  `kind: 'thinking'`, with its own `label`) is passed through, and a `tool`
- *  phase honors the user's `simplifiedToolNames` preference (purpose vs raw tool
- *  title), so the row agrees with the inline tool pill in the transcript rather
- *  than always showing the purpose. The generic copy covers whatever resolves to
- *  nothing (an `idle` phase caught before the slot list refreshes). */
-function slotStatusText(detail: ToolStatusDetail | undefined, simplifiedToolNames: boolean, uiLang: string): string {
-  return toolStatusLabel(detail, simplifiedToolNames, uiLang) || i18nT('pages.chatSidebar.thinking')
+/** A slot's running-status line. A compaction says the chat footer's word, whatever
+ *  phase the status detail still holds. Every other phase resolves through
+ *  toolStatusLabel: `thinking`/`streaming` map to catalog keys at render time, a
+ *  server-supplied status (`kind: 'thinking'` with its own `label`) passes through,
+ *  and a `tool` phase honors `simplifiedToolNames`, as the transcript's tool pill
+ *  does. The generic copy covers whatever resolves to nothing (an early `idle`). */
+function slotStatusText(detail: ToolStatusDetail | undefined, compacting: boolean, simplifiedToolNames: boolean, uiLang: string): string {
+  return compacting ? i18nT('pages.chat.chatFooter.compacting') : toolStatusLabel(detail, simplifiedToolNames, uiLang) || i18nT('pages.chatSidebar.thinking')
 }
 
 export { connectedChannelLinks }
@@ -442,7 +441,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   // keeps each field's own identity rule: an entry object repaints only when
   // THIS slot's entry is replaced, and the workflow primitives only when this
   // slot's runs change.
-  const { statusDetail, automation, queuedForSlot, queuedReason, wfCount, wfName: wfRawName, wfPhase: wfRawPhase } =
+  const { statusDetail, compacting, automation, queuedForSlot, queuedReason, wfCount, wfName: wfRawName, wfPhase: wfRawPhase } =
     useAppSelector(st => selectRowLive(st, localSlotKey), shallowEqual)
   // A Crew Mode root's crew members waiting on a tool approval. The server keeps
   // each one's `pending_approval` on its own row, which the person's list leaves
@@ -764,7 +763,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
       : subagentCount > 0
         ? subagentLabel
         : s.running
-          ? slotStatusText(statusDetail, simplifiedToolNames, uiLang)
+          ? slotStatusText(statusDetail, compacting, simplifiedToolNames, uiLang)
           : snapshotOnlyLiveWork
             ? snapshotLiveWorkLabel
             : (s.last_message || '')
@@ -1050,7 +1049,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
         key: 'running',
         when: isRunning && (!monitorOwnsRunning || s.running),
         build: () => {
-          const text = slotStatusText(statusDetail, simplifiedToolNames, uiLang)
+          const text = slotStatusText(statusDetail, compacting, simplifiedToolNames, uiLang)
           // `title` because this is the one status text that is unbounded — a tool
           // phase can name a long command — and the line truncates. The gutter
           // glyph used to carry that tooltip, so it has to move with it, or a
@@ -1155,7 +1154,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
         case 'subagents_waiting': return subagentWaitingTitle || subagentWaitingLabel
         case 'subagents': return subagentLabel
         case 'snapshot_live_work': return snapshotLiveWorkLabel
-        case 'running': return slotStatusText(statusDetail, simplifiedToolNames, uiLang)
+        case 'running': return slotStatusText(statusDetail, compacting, simplifiedToolNames, uiLang)
         default: return ''
       }
     }

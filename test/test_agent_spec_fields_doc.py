@@ -58,26 +58,26 @@ def test_steering_is_still_the_backend_gated_half(doc_text: str) -> None:
     """The `file://` half IS backend-gated, so the page must keep saying so.
 
     The whole gate is matched as one contiguous block, ending at the
-    ``_load_steering_resources(project)`` call it guards, in the one helper session start
-    and post-compaction re-injection share; both callers are pinned to route
-    through it. A token match on ``is_cc`` anywhere would stay green with the
-    steering gate's own condition dropped.
+    ``_load_steering_resources(project, ...)`` call it guards, in the one helper session
+    start and post-compaction re-injection share; both callers are pinned to route
+    through it. A token match on ``crew_loads_spec_steering`` anywhere would stay green
+    with the steering gate's own condition dropped.
     """
     owner = Path(__file__).parent.parent / "src" / "kiro_crew" / "context_assembly"
     source = (owner / "inclusion.py").read_text(encoding="utf-8")
     gate = (
-        "    if not is_cc or essentials:\n"
+        "    if essentials or not ctx.acp_driver.crew_loads_spec_steering(provider_type):\n"
         '        return ""\n'
         "    if agent and not is_kirocrew_default_agent(agent):\n"
         '        return ""\n'
         "    if not _group_included(context_groups, CONTEXT_GROUP_PROJECT):\n"
         '        return ""\n'
-        "    return ctx._load_steering_resources(project)\n"
+        "    return ctx._load_steering_resources(\n"
     )
     assert gate in source, (
-        "the steering block's gate no longer reads is_cc together with the default-agent "
-        "and project-group conditions, so the page's 'steering is the backend-gated half' "
-        "is stale"
+        "the steering block's gate no longer reads the backend set together with the "
+        "default-agent and project-group conditions, so the page's 'steering is the "
+        "backend-gated half' is stale"
     )
     for caller in ("session_start.py", "turn.py"):
         assert "_inclusion.steering_resources_part(" in (owner / caller).read_text(

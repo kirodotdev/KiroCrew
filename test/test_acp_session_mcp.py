@@ -914,6 +914,110 @@ class TestLocalSettingsSeed:
         data = json.loads(client._render_claude_settings_payload())
         assert data["availableModels"] == model_registry.seed_available_models("claude_code")
 
+    @staticmethod
+    def _user_settings(tmp_path, monkeypatch, settings):
+        """Point the user tier and the managed tier at *tmp_path*; write *settings* as the user file."""
+        user = tmp_path / "claude-user"
+        user.mkdir()
+        (user / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(user))
+        managed = tmp_path / "claude-managed"
+        managed.mkdir()
+        monkeypatch.setattr(
+            "kiro_crew.platform_compat.claude_code_managed_settings_dir", lambda: managed
+        )
+
+    def test_seed_names_the_newer_model_the_users_own_family_entry_covers(
+        self, tmp_path, monkeypatch
+    ):
+        """The adapter lists literal entries only, so the covered model needs a name.
+
+        The user's list has ``claude-opus-5``, which the CLI reads as also allowing
+        ``claude-opus-5-5``, and the user's ``modelOverrides`` routes that newer
+        model. The seed adds its name after Crew's own entries and adds nothing else.
+        """
+        from kiro_crew import model_registry
+
+        self._user_settings(
+            tmp_path,
+            monkeypatch,
+            {
+                "availableModels": ["claude-opus-5[1m]", "claude-opus-5", "claude-haiku-4-5"],
+                "modelOverrides": {
+                    "claude-opus-5[1m]": "global.anthropic.claude-opus-5[1m]",
+                    "claude-opus-5-5[1m]": "global.anthropic.claude-opus-5-5[1m]",
+                    "claude-opus-5-5": "global.anthropic.claude-opus-5-5",
+                    "claude-sonnet-5-5": "global.anthropic.claude-sonnet-5-5",
+                },
+            },
+        )
+        self._advertised(monkeypatch)
+        client = self._client(tmp_path, permission_mode="default")
+        first = client._render_claude_settings_payload()
+        seeded = model_registry.seed_available_models("claude_code")
+        assert json.loads(first)["availableModels"] == [
+            *seeded,
+            "claude-opus-5-5[1m]",
+            "claude-opus-5-5",
+        ]
+        # Writing twice gives the same file.
+        assert client._render_claude_settings_payload() == first
+
+    def test_first_session_names_the_covered_models_before_any_list_is_cached(
+        self, tmp_path, monkeypatch
+    ):
+        """On a cold cache the local list holds only the names the user's settings cover.
+
+        Those names come from the user's ``settings.json``, not from the cache, so
+        the first session after an update already offers the newer model. No
+        ``model`` key is written, as on any cold cache.
+        """
+        from kiro_crew import model_registry
+
+        self._user_settings(
+            tmp_path,
+            monkeypatch,
+            {
+                "availableModels": ["claude-opus-5"],
+                "modelOverrides": {"claude-opus-5-5": "global.anthropic.claude-opus-5-5"},
+            },
+        )
+        monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {})
+        client = self._client(tmp_path, model="claude-opus-5", permission_mode="default")
+        data = json.loads(client._render_claude_settings_payload())
+        assert data["availableModels"] == ["claude-opus-5-5"]
+        assert "model" not in data
+
+    def test_seed_reads_no_model_name_from_a_project_settings_file(self, tmp_path, monkeypatch):
+        """A cloned repository controls the project file, so its names are never added."""
+        self._user_settings(tmp_path, monkeypatch, {"availableModels": ["claude-opus-5"]})
+        project = tmp_path / ".claude"
+        project.mkdir()
+        (project / "settings.json").write_text(
+            json.dumps(
+                {
+                    "availableModels": ["claude-opus-5"],
+                    "modelOverrides": {"claude-opus-5-5": "global.anthropic.claude-opus-5-5"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        self._advertised(monkeypatch)
+        client = self._client(tmp_path, permission_mode="default")
+        data = json.loads(client._render_claude_settings_payload())
+        assert "claude-opus-5-5" not in data["availableModels"]
+
+    def test_seed_adds_no_model_when_no_settings_file_has_a_list(self, tmp_path, monkeypatch):
+        """``modelOverrides`` alone starts no allowlist: the write condition is unchanged."""
+        self._user_settings(
+            tmp_path,
+            monkeypatch,
+            {"modelOverrides": {"claude-opus-5-5": "global.anthropic.claude-opus-5-5"}},
+        )
+        self._advertised(monkeypatch)
+        client = self._client(tmp_path, permission_mode="default")
+        assert "availableModels" not in json.loads(client._render_claude_settings_payload())
+
     def test_seed_omits_both_model_keys_on_a_cold_cache(self, tmp_path, monkeypatch):
         """A cold cache seeds no model keys.
 

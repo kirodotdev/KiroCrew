@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
+import { sseDisconnected } from '../store/dashboardSlice'
 import { PREVIEW_STRIP_H, stubStripHeights } from './stripHeights'
 
 // The composer's own drag floor.
@@ -71,7 +72,9 @@ describe('ChatInput', () => {
     })
 
     it('shows offline placeholder when connected=false', () => {
-      renderWithProviders(<ChatInput {...defaultProps} connected={false} />)
+      const { store } = renderWithProviders(<ChatInput {...defaultProps} connected={false} />)
+      // An outage, not the page's first socket still opening (#34947).
+      act(() => { store.dispatch(sseDisconnected()) })
       expect(screen.getByPlaceholderText(/Gateway offline/)).toBeInTheDocument()
     })
 
@@ -375,6 +378,16 @@ describe('ChatInput', () => {
       Object.defineProperty(ta, 'selectionEnd', { value: 3, writable: true })
       fireEvent.keyDown(ta, { key: 'Enter', ctrlKey: true })
       expect(onChange).toHaveBeenCalledWith('hel\nlo')
+    })
+
+    it('leaves a read-only (disabled) composer untouched on Ctrl+Enter', () => {
+      const onChange = vi.fn()
+      renderWithProviders(<ChatInput {...defaultProps} value="hello" disabled onChange={onChange} sendOnEnter="enter-ctrl-newline" />)
+      const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+      Object.defineProperty(ta, 'selectionStart', { value: 3, writable: true })
+      Object.defineProperty(ta, 'selectionEnd', { value: 3, writable: true })
+      fireEvent.keyDown(ta, { key: 'Enter', ctrlKey: true })
+      expect(onChange).not.toHaveBeenCalled()
     })
   })
 

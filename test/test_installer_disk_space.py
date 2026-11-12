@@ -12,6 +12,7 @@ is the test's choice.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -47,6 +48,15 @@ fi
 exec "$FAKE_REAL_PYTHON" "$@"
 """
 
+# mktemp as macOS ships it: a bare `mktemp -d` creates under the per-user temp
+# directory and reads TMPDIR only when the system has none; a template is used
+# as given. Every case runs against it, so a Linux run fails too when cli.sh's
+# scratch dir stops following TMPDIR.
+_MKTEMP_AS_ON_MACOS = """#!/bin/sh
+[ "$*" != "-d" ] || set -- -d "$FAKE_USER_TEMP_DIR/tmp.XXXXXXXX"
+exec "$FAKE_REAL_MKTEMP" "$@"
+"""
+
 ENOSPC_LOG = (
     "Collecting numpy>=1.21,<3\n"
     "ERROR: Could not install packages due to an OSError: [Errno 28] No space left on device\n"
@@ -76,6 +86,13 @@ def _run(
     stubs.mkdir()
     (stubs / "df").write_text(_DF, encoding="utf-8")
     (stubs / "df").chmod(0o755)
+    real_mktemp = shutil.which("mktemp", path="/usr/bin:/bin")
+    assert real_mktemp is not None
+    (stubs / "mktemp").write_text(_MKTEMP_AS_ON_MACOS, encoding="utf-8")
+    (stubs / "mktemp").chmod(0o755)
+    user_temp = run_root / "user-temp"
+    user_temp.mkdir()
+    env.update({"FAKE_REAL_MKTEMP": real_mktemp, "FAKE_USER_TEMP_DIR": str(user_temp)})
     if venv_fails:
         for name in ("python3.13", "python3.12", "python3"):
             (stubs / name).write_text(_VENV_FAILS, encoding="utf-8")
@@ -118,6 +135,25 @@ def test_too_little_free_space_stops_before_the_first_download(
     assert "Downloading" not in result.stdout
     assert not (run_root / "data-home-venv").exists()
     assert not (run_root / "install-argv").exists()
+
+
+def test_a_tmpdir_that_does_not_exist_stops_and_names_it(
+    tmp_path: Path, signing_key: SigningKey
+) -> None:
+    """The scratch dir is made under TMPDIR, so a TMPDIR with no directory
+    behind it stops the install; the message names it and says what to do."""
+    case = tmp_path / "case"
+    missing = case / "run" / "no-such-dir"
+    result, run_root = _run(case, signing_key, env_extra={"TMPDIR": str(missing)})
+
+    assert result.returncode == 1, result.stderr
+    assert (
+        f"kirocrew-install: could not create a scratch directory in {missing}, the directory "
+        "TMPDIR names. Create it, point TMPDIR at a directory you can write to, or unset TMPDIR, "
+        "then re-run this installer. Nothing was changed."
+    ) in result.stderr
+    assert "Downloading" not in result.stdout
+    assert not (run_root / "data-home-venv").exists()
 
 
 def test_a_df_that_cannot_answer_skips_the_check(tmp_path: Path, signing_key: SigningKey) -> None:

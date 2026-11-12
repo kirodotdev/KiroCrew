@@ -34,6 +34,7 @@ from kiro_crew.apps.registry_pipeline.checkout import (
     _communicate_with_timeout,
     _git_fetch_branch,
     _git_fetch_commit,
+    _mkdtemp_settled,
     _rmtree_force_settled,
 )
 from kiro_crew.apps.registry_pipeline.git_targets import (
@@ -211,11 +212,9 @@ async def _fetch_app_manifest(
         )
         return None
 
-    import tempfile
-
     tmp_root: str | None = None
     try:
-        tmp_root = await asyncio.to_thread(tempfile.mkdtemp, prefix="kirocrew-manifest-")
+        tmp_root = await _mkdtemp_settled("kirocrew-manifest-")
         # Credential posture for the manifest fetch. Default: anonymous+strict
         # (confused-deputy defense — see anonymous_git_env). Same-repo
         # carve-out: when owner_designated is True the clone URL is the

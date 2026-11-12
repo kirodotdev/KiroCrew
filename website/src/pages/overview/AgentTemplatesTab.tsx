@@ -20,12 +20,12 @@ import { useAvailableModels } from '../../hooks/useAvailableModels'
 import { useScrollEdgesY } from '../../hooks/useScrollEdges'
 import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
 import { parseErrorCode, parseErrorField } from '../../utils/errorReport'
-import { defaultLookFor } from '../../lib/avatarPoses'
 import { errMessage } from '../../utils/thunkError'
 import { templateSourceKind } from '../../lib/templateSource'
 import { queryReadFailed } from '../../utils/queryReadFailed'
 import { i18nT } from '../../i18n/t'
 import UnlistedSpecFiles, { type UnlistedSpec } from './UnlistedSpecFiles'
+import EnrollAsBotDialog from './EnrollAsBotDialog'
 
 /** One row of `GET /api/agents/templates`: the discovery record plus the two
  *  facts a management page needs — whether it may be edited here, and what
@@ -388,9 +388,6 @@ export default function AgentTemplatesTab() {
     setDraft(d); setBaseline(d)
   }, [detailQuery.data, detailQuery.isFetching, dirty])
   const editable = !!selected && selected.read_only === null
-  // Enrolling creates a crewmate NAMED after the template, so that is the
-  // name that decides whether it has already happened.
-  const enrolled = !!selected && selected.used_by.some(u => u.kind === 'crew' && u.id === selected.name)
   const dirtyMessage = i18nT('pages.overview.agentTemplatesTab.discard_unsaved_changes')
   // The rail click belongs to the shell; it consults this guard before
   // unmounting the pane and taking an unsaved draft with it.
@@ -511,29 +508,26 @@ export default function AgentTemplatesTab() {
   // A delete from "Files not shown" refused as referenced opens the same
   // reference list a row's refused delete opens.
   const onUnlistedReferenced = (name: string, body: string) => setBlocked({ name, references: referencesIn(body) })
-  const enroll = useMutation({
-    mutationFn: (row: TemplateRow) => api.createKirocrewAgent({ name: row.name, kiro_agent: row.name, memory_store: 'default', avatar: defaultLookFor(row.name) }),
-    onSuccess: (r: { error?: string }, row) => {
-      if (r?.error) { setNotice({ kind: 'err', text: r.error }); return }
-      setNotice({ kind: 'ok', text: i18nT('pages.overview.agentTemplatesTab.enrolled', { name: row.name }) })
-      invalidate()
-      // Enrolling is a crew registry write, so it has to reach the registry's
-      // readers too -- the Crews tab beside this one on the same rail
-      // (CapabilitiesPage), and the Crew Members roster under the same prefix
-      // (api/membersQuery.ts). Nothing else will while that cache entry is
-      // live: the QueryClient sets `staleTime: Infinity`, so a remount serves
-      // the cached roster without refetching, and `POST /api/agents` pushes no
-      // `refresh` frame (the only `push_refresh("agents")` is the MCP
-      // capability install). A user who opens Capabilities on Crews, comes
-      // here, enrolls and goes back is inside that entry's `gcTime`, and the
-      // crewmate this tab just reported as enrolled is missing from the list.
-      void queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] })
-      // The same write lands in config.json, whose masked read ships the agent
-      // records -- the pairing #12740 established for a member write.
-      void queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
-    },
-    onError: writeError,
-  })
+  // The custom agent "Enroll as bot" is open for. A bot can never take the
+  // agent's own name, so the dialog asks for one (EnrollAsBotDialog).
+  const [enrolling, setEnrolling] = useState<string | null>(null)
+  const onBotCreated = () => {
+    invalidate()
+    // Enrolling is a crew registry write, so it has to reach the registry's
+    // readers too -- the Crews tab beside this one on the same rail
+    // (CapabilitiesPage), and the Crew Members roster under the same prefix
+    // (api/membersQuery.ts). Nothing else will while that cache entry is
+    // live: the QueryClient sets `staleTime: Infinity`, so a remount serves
+    // the cached roster without refetching, and `POST /api/agents` pushes no
+    // `refresh` frame (the only `push_refresh("agents")` is the MCP
+    // capability install). A user who opens Capabilities on Crews, comes
+    // here, enrolls and goes back is inside that entry's `gcTime`, and the
+    // crewmate this tab just reported as enrolled is missing from the list.
+    void queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] })
+    // The same write lands in config.json, whose masked read ships the agent
+    // records -- the pairing #12740 established for a member write.
+    void queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+  }
 
   // The template a session runs when NOTHING names one: a plain chat, a CLI
   // chat, a warm-pool process, an agent-less schedule. A crewmate's DM thread
@@ -942,14 +936,14 @@ export default function AgentTemplatesTab() {
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="min-w-[260px] max-w-[min(360px,calc(100vw-2rem))]">
                           {!selected.private_to && (
-                            <DropdownMenuItem disabled={enroll.isPending || enrolled} onSelect={() => enroll.mutate(selected)} className="items-start">
+                            <DropdownMenuItem onSelect={() => setEnrolling(selected.name)} className="items-start">
                               <UserPlus className="lucide-inline mt-0.5 shrink-0 text-muted" aria-hidden />
                               <span className="flex flex-col gap-0.5">
                                 <span>{i18nT('pages.overview.agentTemplatesTab.enroll')}</span>
                                 {/* What enrolling starts, so the click is not a leap: a
                                     crewmate with its own memory, and nothing running. */}
                                 <span className="text-[11.5px] text-muted whitespace-normal">
-                                  {enrolled ? i18nT('pages.overview.agentTemplatesTab.enroll_already') : i18nT('pages.overview.agentTemplatesTab.enroll_hint')}
+                                  {i18nT('pages.overview.agentTemplatesTab.enroll_hint')}
                                 </span>
                               </span>
                             </DropdownMenuItem>
@@ -1211,6 +1205,14 @@ export default function AgentTemplatesTab() {
           until the create succeeds. */}
       {notice?.kind === 'err' && <ErrorNotice message={notice.text} className="mt-3" />}
     </Modal>
+
+    <EnrollAsBotDialog
+      agent={enrolling}
+      agentNames={rows.map(r => r.name)}
+      onCreated={onBotCreated}
+      onEnrolled={bot => setNotice({ kind: 'ok', text: i18nT('pages.overview.agentTemplatesTab.enroll_added', { bot, agent: enrolling ?? '' }) })}
+      onClose={() => setEnrolling(null)}
+    />
 
     <Modal open={!!blocked} onClose={() => setBlocked(null)} title={i18nT('pages.overview.agentTemplatesTab.cannot_delete_title', { name: blocked?.name ?? '' })} maxWidth={520} footer={<Btn onClick={() => setBlocked(null)}>{i18nT('pages.overview.agentTemplatesTab.close')}</Btn>}>
       <p className="text-[12.5px] text-muted mb-3">{i18nT('pages.overview.agentTemplatesTab.cannot_delete_body', { count: blocked?.references.length ?? 0 })}</p>

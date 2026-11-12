@@ -954,11 +954,12 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
                 )
             if adopt_outcome != "recorded":
                 # "unwritable": the marker was discarded, so the tree is
-                # UNOWNED and never swept -- a leak a human can see rather
-                # than a deletion under a live runtime.
+                # UNOWNED: never deleted in place, and moved into the
+                # quarantine only after a week with no write.
                 logger.warning(
                     "agent-scratch: could not join the owner marker of %r (%s); the tree's "
-                    "work directory is left unowned and will not be swept",
+                    "work directory is left unowned and is moved into the quarantine only "
+                    "after a week with no write",
                     self._shared_scratch.name,
                     adopt_outcome,
                 )

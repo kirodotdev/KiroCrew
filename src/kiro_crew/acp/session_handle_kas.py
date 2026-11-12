@@ -222,6 +222,11 @@ async def _answer_kas_hooks_request(self: AcpSessionHandle, msg: JsonRpcMessage)
         task = asyncio.create_task(self._answer_kas_hook_execute(msg.id, params))
         self._hook_tasks.add(task)
         task.add_done_callback(self._hook_tasks.discard)
+        # A hook can gate a call already dispatched, and nothing names which, so
+        # every call's silence timer is paused while one runs. The callback runs
+        # after the discard above, so the hold closes with the last hook.
+        self._sync_silence_hold()
+        task.add_done_callback(lambda _task: self._sync_silence_hold())
         return
     if msg.method == kas_wire.METHOD_HOOKS_LIST:
         result = kas_wire.hooks_list_response(
@@ -411,6 +416,7 @@ def _handle_kas_session_info(self: AcpSessionHandle, update: dict) -> list[AcpEv
             # them so the meter resets and fresh telemetry re-derives real
             # numbers (parity with the kiro-cli compaction handler).
             self.last_prompt_stats.reset_after_compaction()
+            self._forget_sent_images()
             self._compaction_failed_at = None
             status_type = "completed"
         elif kind == kas_wire.KIND_SUMMARIZATION_FAILED:

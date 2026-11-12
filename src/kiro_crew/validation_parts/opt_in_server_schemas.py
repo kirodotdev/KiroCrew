@@ -339,9 +339,14 @@ MCP_WORK_SCHEMAS: dict[str, ToolSchema] = {
     # no name. ``accept_eval``: the ``accept_batch`` document; each item's fields
     # are the evaluator's to judge (one bad item is a verdict, not a refusal), so
     # only shape and count are checked; 256 is the store's stored-item bound.
+    # With no document the tool evaluates the caller's own ``done`` items, and
+    # ``item_id`` (the record schema's own rule) narrows that to one of them.
     "accept_eval": ToolSchema(
         tool_name="accept_eval",
-        fields=[FieldSpec("items", list, required=True, max_items=256)],
+        fields=[
+            FieldSpec("items", list, max_items=256),
+            next(f for f in WORK_LEDGER_RECORD_SCHEMA.fields if f.name == "item_id"),
+        ],
     ),
 }
 

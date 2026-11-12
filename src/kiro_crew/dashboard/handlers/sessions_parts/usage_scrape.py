@@ -446,11 +446,12 @@ def _usage_scrape_argv(kiro_bin: str) -> list[str] | None:
     - No selector, or the probe could not run: the plain argv, as before the
       selector existed. An unknown flag would fail the whole command.
 
-    The probe runs outside the sandbox, so it runs only on the
-    :func:`pin_kiro_cli` binary, and only when that is the binary being spawned.
+    The probe runs only on the
+    :func:`pin_kiro_cli` binary, inside the sandbox, and only when that is the
+    binary being spawned.
     *kiro_bin* may come off the inherited ``PATH``, which can lead with an
     agent-writable directory; a binary from there gets the plain argv and is
-    never run unsandboxed. Blocking: the pin stats install directories, and the
+    not probed. Blocking: the pin stats install directories, and the
     probe is a bounded spawn on its first call per binary identity.
     """
     argv = [kiro_bin, "chat", "--no-interactive"]

@@ -618,6 +618,11 @@ class MemoryStore:
                     # stale, so make the caller's next read observe the winner.
                     self._invalidate_history_cache()
                     return False
+                from kiro_crew.memory_history_edit import today_part_of_aggregate_edit
+
+                content = today_part_of_aggregate_edit(
+                    content, current, _normalize_newlines(current_today).strip()
+                )
                 self._atomic_write_text(path, content)
                 self._index_file(path, content)
                 wrote = True
@@ -1045,8 +1050,13 @@ class MemoryStore:
     # Each activity section is spelled once here; get_context and
     # get_activity_context both assemble their block from these.
 
-    def _projects_section(self, cap: int) -> str:
+    def _projects_section(
+        self, cap: int, gate: Callable[[str, str, int], str] | None = None
+    ) -> str:
         """The ``## Active Projects`` section, or "" when the file is default.
+
+        *gate* is the activity block's relevance gate (``get_activity_context``):
+        it takes ``("projects", text, cap)`` and returns the text to cap.
 
         This is a startup INJECTION read, not a read-modify-write baseline, so
         it goes through :meth:`_guarded_entry` rather than :meth:`read_projects`:
@@ -1068,14 +1078,21 @@ class MemoryStore:
             return ""
         if not projects.strip() or projects.strip() == _DEFAULT_PROJECTS.strip():
             return ""
+        if gate is not None:
+            projects = gate("projects", projects, cap)
+            if not projects.strip():
+                return ""
         return (
             f"## Active Projects\n"
             f"_[source: {self._projects_file}]_\n"
             f"{_cap_text(projects, cap)}"
         )
 
-    def _history_section(self, cap: int) -> str:
-        """The ``## Recent History`` section over 14 days, or "" when empty."""
+    def _history_section(self, cap: int, gate: Callable[[str, str, int], str] | None = None) -> str:
+        """The ``## Recent History`` section over 14 days, or "" when empty.
+
+        *gate* works as in :meth:`_projects_section`, named ``"history"``.
+        """
         try:
             history = self.read_recent_history(days=14)
         except OSError:
@@ -1087,6 +1104,10 @@ class MemoryStore:
             return ""
         if not history.strip():
             return ""
+        if gate is not None:
+            history = gate("history", history, cap)
+            if not history.strip():
+                return ""
         history_scope = (
             "retained full entries, bounded read"
             if self._memory_version == 2
@@ -1120,6 +1141,7 @@ class MemoryStore:
         semantic_cap: int = 12_000,
         episodic_cap: int = 12_000,
         query: str = "",
+        relevance_rule: str = "off",
     ) -> str:
         """Build the recent-activity block a new session carries as background.
 
@@ -1128,15 +1150,51 @@ class MemoryStore:
         path serves those complete as protected context through
         :meth:`get_context`, so this block is the budgeted complement that the
         admission loop may drop whole when the background pool is full.
+
+        *relevance_rule* is ``memory.relevance_rule``
+        (:mod:`kiro_crew.memory_relevance_rule`). With a request, ``enforce``
+        keeps only the projects and history sections that share a significant
+        token with it, and gates task facts the same way the private store
+        does; ``shadow`` keeps today's block and records the section ids and
+        fact keys that would change. Without a request nothing is gated.
         """
+        from kiro_crew import injection_receipts
+        from kiro_crew import memory_relevance_rule as _relevance_rule
+        from kiro_crew.config.memory_sections import relevance_rule_mode_from
+
+        mode = relevance_rule_mode_from(relevance_rule)
+        gate: Callable[[str, str, int], str] | None = None
+        add: list[str] = []
+        drop: list[str] = []
+        if mode != _relevance_rule.MODE_OFF and query:
+            tokens = _relevance_rule.request_tokens(query)
+
+            def _gate(name: str, text: str, cap: int) -> str:
+                kept, would_add, would_drop = _relevance_rule.gate_document(name, text, tokens, cap)
+                add.extend(would_add)
+                drop.extend(would_drop)
+                return kept if mode == _relevance_rule.MODE_ENFORCE else text
+
+            gate = _gate
+
         parts = [
             section
             for section in (
-                self._projects_section(projects_cap),
-                self._history_section(history_cap),
+                self._projects_section(projects_cap, gate),
+                self._history_section(history_cap, gate),
             )
             if section
         ]
+        if gate is not None:
+            shadow = mode == _relevance_rule.MODE_SHADOW
+            injection_receipts.record_stage(
+                injection_receipts.RELEVANCE_RULE,
+                mode=mode,
+                policy=_relevance_rule.POLICY_VERSION,
+                would_add=add if shadow else (),
+                would_drop=drop if shadow else (),
+                part=_relevance_rule.PART_ACTIVITY,
+            )
 
         # Facts and episodes are relevance-ranked against the request. Without a
         # request (the eval runner, a bare session open) there is nothing to rank
@@ -1144,8 +1202,9 @@ class MemoryStore:
         if self.ranks_activity_against(query):
             vector_store = self._vector_store
             assert vector_store is not None
+            gated: dict[str, str] = {} if gate is None else {"relevance_rule": mode}
             semantic_ctx = vector_store.get_semantic_context(
-                query_text=query, cap=semantic_cap, facts_only=True
+                query_text=query, cap=semantic_cap, facts_only=True, **gated
             )
             if semantic_ctx:
                 parts.append(semantic_ctx)

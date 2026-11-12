@@ -340,6 +340,34 @@ async def test_widening_moves_both_queues_to_the_host_sized_widths(
     assert admission.semaphore.limit == 8
 
 
+@pytest.mark.parametrize(
+    ("built_with", "edited_to", "background", "spawn"),
+    [((1, 1), (32, 32), 1, 1), (("auto", "auto"), (3, 1), 16, 8)],
+    ids=["explicit-then-wider", "auto-then-explicit"],
+)
+def test_widening_sizes_from_the_settings_the_manager_was_built_with(
+    monkeypatch: pytest.MonkeyPatch,
+    built_with: tuple[object, object],
+    edited_to: tuple[object, object],
+    background: int,
+    spawn: int,
+) -> None:
+    """A config change replaces ``_cfg``; both widths stay restart settings."""
+    monkeypatch.setattr(session_start_sizing, "_host_cached", None)
+    cfg = KiroCrewConfig()
+    cfg.agent.cold_start_concurrency, cfg.agent.runtime_spawn_concurrency = built_with  # type: ignore[assignment]
+    mgr = _manager(cfg)
+    edited = KiroCrewConfig()
+    edited.agent.cold_start_concurrency, edited.agent.runtime_spawn_concurrency = edited_to  # type: ignore[assignment]
+    mgr._cfg = edited
+    _pin_auto_width(monkeypatch, 16)
+
+    mgr.widen_cold_start_queues()
+
+    assert _background_width(mgr) == background
+    assert cold_start_sizing.configured_runtime_spawn_width() == spawn
+
+
 def test_widening_leaves_an_explicit_width_alone(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = KiroCrewConfig()
     cfg.agent.cold_start_concurrency = 3

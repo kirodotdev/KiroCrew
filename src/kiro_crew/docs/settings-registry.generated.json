@@ -399,6 +399,14 @@
       "route": "/settings/channels/whatsapp?highlight=channels.how-the-agent-joins-in-whatsapp"
     },
     {
+      "id": "channels.let-code-channels-start-helper-agents-slack",
+      "label": "Let code channels start helper agents (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=key%3Aslack.code_channel_dispatch",
+      "description": "Helpers work in the code channel's folder and ask you before changing files, unless that channel is set to approve automatically (Trust).",
+      "configKey": "slack.code_channel_dispatch"
+    },
+    {
       "id": "channels.messages-database-path-imessage",
       "label": "Messages database path (iMessage)",
       "tab": "channels",
@@ -909,6 +917,13 @@
       "route": "/settings/chat/composer?highlight=chat.quick-send"
     },
     {
+      "id": "chat.reasoning-starts-expanded",
+      "label": "Reasoning starts expanded",
+      "tab": "chat",
+      "route": "/settings/chat/transcript?highlight=chat.reasoning-starts-expanded",
+      "hint": "Open reasoning rows with their text showing, instead of collapsed. Rows you open or close by hand keep your choice."
+    },
+    {
       "id": "chat.recall-sent-messages-with-arrow-keys",
       "label": "Recall Sent Messages with Arrow Keys",
       "tab": "chat",
@@ -971,6 +986,15 @@
       "route": "/settings/chat/sessions?highlight=chat.session-summaries",
       "description": "Uses tokens on turns that change the session.",
       "hint": "Summarize each session by intent."
+    },
+    {
+      "id": "chat.sessions-per-creator",
+      "label": "Sessions per creator",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=key%3Asession.max_per_creator",
+      "description": "The most sessions one Bot or agent can keep open at once. 10 to 450. Default 50.",
+      "hint": "A creator is a Bot, or any chat whose agent opens other sessions. A creator at this limit cannot open another session until it closes one. Chats you open yourself do not count. All sessions together still stop at 500. Applies from the next new session.",
+      "configKey": "session.max_per_creator"
     },
     {
       "id": "chat.show-context-percentage",

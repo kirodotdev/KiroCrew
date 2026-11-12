@@ -5,10 +5,11 @@ import { purposeFromToolArgs } from '../../utils/toolPurpose'
 import { deriveToolCallTitle } from '../../utils/toolCallTitle'
 import { ToolInputText } from '../../components/ToolInputText'
 import ErrorNotice from '../../components/ErrorNotice'
+import StatusNotice from '../../components/StatusNotice'
 import { ApiError } from '../../api/client'
 import { isTerminalApprovalRefusal } from '../../api/apiError'
 import { useRowDisclosure } from './rowDisclosure'
-import { useToolCallsStartExpanded } from '../../hooks/useToolCallsStartExpanded'
+import { useReasoningStartsExpanded, useToolCallsStartExpanded } from '../../hooks/useToolCallsStartExpanded'
 
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -117,12 +118,14 @@ function derivedHeading(meta?: Record<string, unknown>): string {
 }
 
 /** Collapsible row that wraps tool/thinking/permission messages — collapsed unless autoExpand or the
- *  "Tool calls start expanded" chat setting is on. */
+ *  "Tool calls start expanded" chat setting is on (for a reasoning-only group, or "Reasoning starts
+ *  expanded"). */
 const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, reasoningOnly = false, autoExpand, disclosureKey, hasPermission, isRunning, children, permissionMeta, permissionMetas, pendingPermCount, onApprove, onApproveBatch, canTrust, askAgent = true, onViewActivity, activityOpen }: CollapsibleToolGroupProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // The chat setting (#18254) raises the resting state from collapsed to
   // expanded; liveness (autoExpand) can still open a row on top of it.
-  const startExpanded = useToolCallsStartExpanded()
+  const reasoningStartsExpanded = useReasoningStartsExpanded()
+  const startExpanded = useToolCallsStartExpanded() || (reasoningOnly && reasoningStartsExpanded)
   const restingExpanded = !!autoExpand || startExpanded
   const [expanded, setExpanded] = useRowDisclosure(disclosureKey, restingExpanded)
   const userToggled = useRef(false)
@@ -145,12 +148,13 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, reasoni
     if (!userToggled.current) setExpanded(restingExpanded)
   }, [restingExpanded, setExpanded])
 
-  // Reset approval state when permission props change (new approval arrives)
+  // Reset approval state when permission props change (new approval arrives),
+  // including a new approval at the same count: a gone one must not hide it.
   useEffect(() => {
     setLocalResolved(null)
     setSubmitting(false)
     setFailure(null)
-  }, [hasPermission, pendingPermCount])
+  }, [hasPermission, pendingPermCount, permissionMeta?.approval_id])
 
   // Return to the resting state when tools finish running (unless user manually
   // toggled): collapsed by default, still open when the chat setting is on.
@@ -319,19 +323,17 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, reasoni
         </div>
       )}
 
-      {failure !== null && (
-        // A refused decide is a failed request (errors-use-error-notice), the
-        // gone refusal included. Hand-off on by default. The approval buttons
-        // hold no draft of their own, and the main chat's composer draft is
-        // persisted per slot (ChatPage saves it on slot switch) while the
-        // hand-off opens a FRESH slot.
+      {/* A gone approval is status: nothing the user did failed. */}
+      <StatusNotice tone="info" className="mt-1 ml-4" message={failure?.terminal ? i18nT('components.approvalCard.approval_no_longer_pending') : null} />
+      {failure !== null && !failure.terminal && (
+        // Hand-off on by default. The approval buttons hold no draft of their
+        // own, and the main chat's composer draft is persisted per slot (ChatPage
+        // saves it on slot switch) while the hand-off opens a FRESH slot.
         // No hand-off when the host passes `askAgent={false}`: ChatEmbed's
         // composer draft is unsaved local state the navigation would drop.
-        <ErrorNotice variant="inline" className="mt-1 ml-4 pl-3" askAgent={askAgent} message={failure.terminal
-          ? i18nT('components.approvalCard.approval_no_longer_pending')
-          : failure.message
-            ? i18nT('components.approvalCard.decision_not_recorded_error', { error: failure.message })
-            : i18nT('components.approvalCard.decision_failed')} />
+        <ErrorNotice variant="inline" className="mt-1 ml-4 pl-3" askAgent={askAgent} message={failure.message
+          ? i18nT('components.approvalCard.decision_not_recorded_error', { error: failure.message })
+          : i18nT('components.approvalCard.decision_failed')} />
       )}
 
       {expanded && <div className="mt-1 ml-4 pl-3 shadow-[inset_2px_0_0_0_var(--border)] forced-colors:border-l-2 flex flex-col gap-1">

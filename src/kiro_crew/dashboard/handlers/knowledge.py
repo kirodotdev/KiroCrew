@@ -244,6 +244,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.knowledge.folder_watcher import folder_chunk_budget  # noqa: F401
     from kiro_crew.knowledge.folder_watcher import max_files_prop  # noqa: F401
     from kiro_crew.knowledge.folder_watcher import walk_filters  # noqa: F401
+    from kiro_crew.knowledge.ingestion import FileTooLargeError  # noqa: F401
     from kiro_crew.knowledge.ingestion import ImportChunkBudgetError  # noqa: F401
     from kiro_crew.knowledge.ingestion import IngestionPipeline  # noqa: F401
     from kiro_crew.knowledge.ingestion import _redact  # noqa: F401

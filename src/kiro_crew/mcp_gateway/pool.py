@@ -147,7 +147,26 @@ logger = logging.getLogger(__name__)
 _DEFAULT_READ_BUFFER_LIMIT = read_limits._DEFAULT_READ_BUFFER_LIMIT
 _resolve_read_buffer_limit = read_limits.resolve_read_buffer_limit
 
-READ_BUFFER_LIMIT_BYTES: int = read_limits.resolve_read_buffer_limit()
+
+def _config_readable_at_import() -> bool:
+    """Whether the two ceilings below may read config while this module is imported.
+
+    Reading config resolves its path, which creates the data home, and importing the
+    gateway must create nothing. A home that does not exist yet holds no config, so
+    there the environment and the built-in default decide.
+    """
+    from kiro_crew.config.paths import peek_data_home
+
+    return peek_data_home().is_dir()
+
+
+_READ_CONFIG_AT_IMPORT = _config_readable_at_import()
+
+READ_BUFFER_LIMIT_BYTES: int = (
+    read_limits.resolve_read_buffer_limit()
+    if _READ_CONFIG_AT_IMPORT
+    else read_limits._env_read_buffer_limit() or _DEFAULT_READ_BUFFER_LIMIT
+)
 
 
 # Default spill threshold — responses larger than this (but under the read
@@ -157,12 +176,13 @@ READ_BUFFER_LIMIT_BYTES: int = read_limits.resolve_read_buffer_limit()
 _DEFAULT_SPILL_THRESHOLD = 256 * 1024  # 256 KiB
 
 
-def _resolve_spill_threshold() -> int:
+def _resolve_spill_threshold(*, read_config: bool = True) -> int:
     """Resolve the spill threshold.
 
     Precedence: env var ``KIROCREW_MCP_SPILL_THRESHOLD`` → config key
     ``mcp_gateway.response_spill_threshold_bytes`` → hard-coded default. Config
-    read mirrors _resolve_read_buffer_limit.
+    read mirrors _resolve_read_buffer_limit. *read_config* False skips the config
+    key, for the import-time read on a host with no data home yet.
     """
     raw = os.environ.get("KIROCREW_MCP_SPILL_THRESHOLD")
     if raw:
@@ -172,6 +192,8 @@ def _resolve_spill_threshold() -> int:
                 return val
         except (ValueError, TypeError):
             pass
+    if not read_config:
+        return _DEFAULT_SPILL_THRESHOLD
     try:
         from kiro_crew.config.loader import _raw_config
 
@@ -183,7 +205,7 @@ def _resolve_spill_threshold() -> int:
     return _DEFAULT_SPILL_THRESHOLD
 
 
-RESPONSE_SPILL_THRESHOLD_BYTES: int = _resolve_spill_threshold()
+RESPONSE_SPILL_THRESHOLD_BYTES: int = _resolve_spill_threshold(read_config=_READ_CONFIG_AT_IMPORT)
 
 
 def backend_rss_kb(pid: Optional[int]) -> int:

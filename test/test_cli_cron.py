@@ -818,3 +818,112 @@ class TestCronCli:
             assert "Removed job: abc123" in out.out
             assert out.err == ""
             mock_sel.assert_not_called()
+
+
+class TestCronUpdateJobSettings:
+    """``cron update`` changes the settings ``cron add`` takes, in place, on the same job id."""
+
+    @pytest.fixture()
+    def svc(self, tmp_path, monkeypatch):
+        from kiro_crew import cli_commands
+        from kiro_crew.config.loader import config_dir
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        config_dir().mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(cli_commands, "sel", MagicMock())
+        return CronService(base_dir=config_dir())
+
+    @staticmethod
+    def _update(*argv: str) -> None:
+        """Parse ``cron update ARGV`` with the real cron parser, then run it on the store.
+
+        Not through ``cli.main``: that also sets up process-wide logging, which would
+        outlive this test's captured stderr.
+        """
+        from kiro_crew import cli_commands
+        from kiro_crew.cli_parser_agent import register_cron_parser
+
+        root = argparse.ArgumentParser(prog="kirocrew")
+        register_cron_parser(root.add_subparsers(dest="command"))
+        cli_commands._cron_dispatch(root.parse_args(["cron", "update", *argv]))
+
+    @staticmethod
+    def _stored():
+        """The one job as the store file holds it, read by a fresh service."""
+        from kiro_crew.config.loader import config_dir
+
+        (job,) = CronService(base_dir=config_dir()).list_jobs(include_disabled=True)
+        return job
+
+    def test_each_flag_changes_its_setting_and_keeps_the_job(self, svc, capsys):
+        job_id = svc.add_job("standup", "post it", cron_expr="0 9 * * *").id
+        self._update(
+            job_id,
+            "--model",
+            "test-model-x",
+            "--timezone",
+            "America/New_York",
+            "--no-persistent-session",
+            "--minimal-context",
+            "--hide-in-chat",
+            "--silent",
+        )
+        job = self._stored()
+        assert job.id == job_id
+        assert (job.name, job.message, job.schedule.cron_expr) == (
+            "standup",
+            "post it",
+            "0 9 * * *",
+        )
+        assert job.model == "test-model-x"
+        assert job.timezone == "America/New_York"
+        assert job.persistent_session is False
+        assert job.minimal_context is True
+        assert job.hide_in_chat is True
+        assert job.silent is True
+        assert capsys.readouterr().out == f"Updated job: {job_id} (standup)\n"
+
+    def test_empty_values_and_no_forms_clear_and_restore(self, svc):
+        job_id = svc.add_job(
+            "standup",
+            "post it",
+            cron_expr="0 9 * * *",
+            model="test-model-x",
+            timezone="Europe/Paris",
+            persistent_session=False,
+            minimal_context=True,
+            hide_in_chat=True,
+            silent=True,
+        ).id
+        self._update(
+            job_id,
+            "--model",
+            "",
+            "--timezone",
+            "",
+            "--persistent-session",
+            "--no-minimal-context",
+            "--no-hide-in-chat",
+            "--no-silent",
+        )
+        job = self._stored()
+        assert (job.model, job.timezone) == ("", "")
+        assert (job.persistent_session, job.minimal_context) == (True, False)
+        assert (job.hide_in_chat, job.silent) == (False, False)
+
+    @pytest.mark.parametrize(
+        ("argv", "expected"),
+        [
+            (["--model", "bad model"], "Error: invalid model format"),
+            (["--timezone", "Mars/Olympus"], "Error: Invalid timezone: 'Mars/Olympus'"),
+        ],
+        ids=["model", "timezone"],
+    )
+    def test_a_refused_value_exits_1_and_writes_nothing(self, svc, capsys, argv, expected):
+        job_id = svc.add_job("standup", "post it", cron_expr="0 9 * * *", model="test-model-x").id
+        before = self._stored()
+        with pytest.raises(SystemExit) as exc:
+            self._update(job_id, *argv)
+        assert exc.value.code == 1
+        assert capsys.readouterr().err.startswith(expected)
+        assert self._stored() == before

@@ -21,14 +21,13 @@ import time
 from collections.abc import (
     Awaitable,
     Callable,
-    Container,
     Iterable,
     Iterator,
     Mapping,
     Sequence,
 )
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, AbstractSet, Any, Literal, Optional
+from typing import TYPE_CHECKING, AbstractSet, Any, Literal
 
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.acp.liveness import (
@@ -247,56 +246,37 @@ from kiro_crew.subagent_parts import run_limits as _run_limits
 from kiro_crew.subagent_parts import run_output as _run_output
 from kiro_crew.subagent_parts import run_record as _run_record
 from kiro_crew.subagent_parts import run_surface as _run_surface
+from kiro_crew.subagent_parts import spawn_allowlists as _spawn_allowlists
 from kiro_crew.subagent_parts import start_pricing as _start_pricing
 from kiro_crew.subagent_parts import terminal_surface as _terminal_surface
 from kiro_crew.subagent_parts.agent_policy import (  # noqa: F401
     _AGENT_GLOB_RE,
-    _MAX_AVAILABLE_AGENTS_GLOB_CHARS,
-    _MAX_AVAILABLE_AGENTS_GLOBS,
     _MAX_AVAILABLE_IN_ERROR,
-    _MAX_UNREADABLE_ERROR_CHARS,
-    _MAX_UNREADABLE_IN_ERROR,
-    _PARENT_ALLOWLIST_MEMO,
-    _PARENT_PROJECT_ALLOWLIST_MEMO,
-    _UNRESOLVED_PARENT_WARNED,
-    _UNRESOLVED_PARENT_WARNED_MAX,
     AGENT_INTERNAL_CODE,
     AGENT_NOT_AVAILABLE_CODE,
     AGENT_NOT_FOUND_CODE,
-    UNADVERTISED_AGENTS,
     AgentCheck,
     ParentRecordUnreadable,
     ParentSpawnPolicy,
     _accepted_project_dirs,
     _available_agents_hint,
     _bot_worker_allowlist,
-    _describe_unreadable_spec,
-    _describe_unreadable_specs,
     _inherited_member_agent,
     _internal_agent_refusal,
     _parent_project_resolver,
     _parent_template_for_spawn,
-    _ParentSpawnResolution,
-    _resolve_parent_spawn_allowlists,
-    _scan_parent_spawn_allowlists,
-    _scope_spawn_allowlists,
-    _ScopeAllowlists,
-    _surface_unresolved_parent_spec,
+    _spawning_agents,
     _validate_agent,
     _validate_app_agent_ownership,
     _vet_parent_available_agents,
     _vet_spawn_governance,
-    agent_matches_allowlist,
     conductor_spawn_refusal,
     parent_project_dirs,
-    parent_spawn_allowlists,
     parent_spawn_policy,
     parent_template_allowlists,
     parent_template_spawn_policy,
     set_parent_project_resolver,
-    spawn_allowlist,
     validate_cwd,
-    visible_agent_names,
 )
 from kiro_crew.subagent_parts.delivery import (  # noqa: F401
     _TEARDOWN_GATE_TTL_SECS,
@@ -433,6 +413,29 @@ from kiro_crew.subagent_parts.run_record import (  # noqa: F401
     _DoneFlag,
     wait_done,
 )
+from kiro_crew.subagent_parts.spawn_allowlists import (  # noqa: F401
+    _MAX_AVAILABLE_AGENTS_GLOB_CHARS,
+    _MAX_AVAILABLE_AGENTS_GLOBS,
+    _MAX_UNREADABLE_ERROR_CHARS,
+    _MAX_UNREADABLE_IN_ERROR,
+    _PARENT_ALLOWLIST_MEMO,
+    _PARENT_PROJECT_ALLOWLIST_MEMO,
+    _UNRESOLVED_PARENT_WARNED,
+    _UNRESOLVED_PARENT_WARNED_MAX,
+    UNADVERTISED_AGENTS,
+    _describe_unreadable_spec,
+    _describe_unreadable_specs,
+    _ParentSpawnResolution,
+    _resolve_parent_spawn_allowlists,
+    _scan_parent_spawn_allowlists,
+    _scope_spawn_allowlists,
+    _ScopeAllowlists,
+    _surface_unresolved_parent_spec,
+    agent_matches_allowlist,
+    parent_spawn_allowlists,
+    spawn_allowlist,
+    visible_agent_names,
+)
 from kiro_crew.subagent_parts.start_pricing import (  # noqa: F401
     _SETTLED_PROJECTION_CEILING_GB,
     _SHARED_START_MIN_GB,
@@ -539,7 +542,6 @@ _PARTS_GLOBAL_BINDINGS = (
     COMPLETION_KEEP_DEFAULT_CHARS,
     Callable,
     ClaimPoint,
-    Container,
     ContextBuilder,
     DEFAULT_MODEL,
     InFlightToolTracker,
@@ -549,7 +551,6 @@ _PARTS_GLOBAL_BINDINGS = (
     Literal,
     Mapping,
     MemoryReadPoint,
-    Optional,
     PROVIDER_CLAUDE_CODE,
     PROVIDER_LABEL_CLAUDE,
     PreparedSpawn,
@@ -614,6 +615,7 @@ _facade_compose(
     (
         _run_limits,
         _run_output,
+        _spawn_allowlists,
         _agent_policy,
         _model_choice,
         _host_memory,

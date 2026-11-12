@@ -8,7 +8,7 @@
  * `RestartGatewayButton`, `resolveUnarmedPhase`), so their importers keep that path.
  */
 import { useEffect, useRef, useState } from 'react'
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw, AlertCircle, GitBranch, ArrowUp, X, Download, Copy } from 'lucide-react'
 import { Btn } from '../../components/ui'
 import { useAppDispatch, useAppSelector } from '../../store'
@@ -253,7 +253,8 @@ export function InAppUpdateFlow({
      * `version` prop: the gateway re-checks the feed before arming, so a panel
      * whose verdict is hours old can offer v1 and arm the newer v2. The armed
      * copy names this one, or the approval installs a version the UI never
-     * mentioned. Empty for a gateway that predates the field.
+     * mentioned. Empty for a gateway that predates the field, and for an arm
+     * adopted from the status read, which carries only the raw version.
      */
     versionDisplay: string
     /**
@@ -276,6 +277,11 @@ export function InAppUpdateFlow({
   useEffect(() => {
     armedRef.current = armed
   }, [armed])
+  // When this copy last put the "Update to" offer up; Infinity once it arms
+  // itself. The arm is one gateway record shown by every copy of this flow, so a
+  // copy showing the offer adopts a live arm another copy made, but only from an
+  // answer read since then: an older one can predate an approval or expiry.
+  const idleSince = useRef(Date.now())
   // The armed version differs from the one the button offered, so the panel owes
   // the user an explanation rather than a bare second number. Declared once
   // because it decides BOTH armed lines: the explanatory note renders on it, and
@@ -327,6 +333,7 @@ export function InAppUpdateFlow({
       : 'pages.settings.aboutPanel.update_to_version', { version })
     : i18nT('pages.settings.aboutPanel.update_when_i_restart')
   const dispatch = useAppDispatch()
+  const queryClient = useQueryClient()
   const arm = useMutation({
     // The offered version rides as the mutation variable so `onSuccess` records
     // what THIS click was made against (see `armed.offered`).
@@ -348,6 +355,18 @@ export function InAppUpdateFlow({
           deadlineMs: Date.now() + expiresIn * 1000,
         })
         setPhase('armed')
+        // Seed the shared arm-status read with this arm: copies showing the offer
+        // adopt it now, and the poll below never mistakes an earlier `armed: false`
+        // for this arm's approval. The seed can render before `phase` updates, so
+        // stop adopting first: adopting its own arm would drop `versionDisplay`.
+        // A read still in flight began before this arm; cancelling it (which
+        // reverts synchronously) keeps its answer from landing over the seed.
+        idleSince.current = Infinity
+        void queryClient.cancelQueries({ queryKey: ['update-arm-status'] })
+        queryClient.setQueryData(['update-arm-status'], {
+          armed: true, managed_by: 'kirocrew', request_id: res.request_id, version: res.version,
+          expires_in: expiresIn, approve_command: res.approve_command,
+        })
       } else {
         setArmError({ message: res.error || i18nT('pages.settings.aboutPanel.update_failed') })
       }
@@ -385,6 +404,7 @@ export function InAppUpdateFlow({
   // enforces the TTL); the poll is what notices the request being consumed —
   // approval happens in a terminal this tab cannot see.
   const isArmed = phase === 'armed'
+  const canStart = phase === 'idle' || phase === 'expired' || phase === 'ended'
   useEffect(() => {
     if (!isArmed) return
     const tick = setInterval(() => {
@@ -412,6 +432,34 @@ export function InAppUpdateFlow({
     refetchInterval: 5000,
   })
   const polled = armStatusQuery.data
+  const polledAt = armStatusQuery.dataUpdatedAt
+  const refetchArmStatus = armStatusQuery.refetch
+  // Each time the offer goes up (mount, Try again, an expiry, an apply that never
+  // started), read the arm again: the dashboard's queries never go stale on their
+  // own, and a refetch cancels any read that began before this moment.
+  useEffect(() => {
+    if (!canStart) return
+    idleSince.current = Date.now()
+    void refetchArmStatus()
+  }, [canStart, refetchArmStatus])
+  // Adopt a live in-app arm while the offer is up. The packaged-app lane
+  // (`managed_by: 'electron'`) is the agent request card's, never this flow's. An
+  // approval consumes the arm, so a live one postdates any progress in the store:
+  // clear it as the arm click does.
+  useEffect(() => {
+    if (!canStart || polledAt < idleSince.current) return
+    if (!polled?.armed || polled.managed_by !== 'kirocrew' || !polled.approve_command) return
+    const expiresIn = polled.expires_in ?? 600
+    dispatch(setUpdateProgress(null))
+    setArmed({
+      approveCommand: polled.approve_command,
+      versionDisplay: '',
+      offered: version,
+      expiresIn,
+      deadlineMs: polledAt + expiresIn * 1000,
+    })
+    setPhase('armed')
+  }, [canStart, polled, polledAt, version, dispatch])
   useEffect(() => {
     if (!isArmed || !polled) return
     if (!polled.armed) {
@@ -479,7 +527,6 @@ export function InAppUpdateFlow({
         : phase === 'failed'
           ? 'in-app-update-failed'
           : 'in-app-update'
-  const canStart = phase === 'idle' || phase === 'expired' || phase === 'ended'
 
   return (
     <div className="flex flex-col gap-2" data-testid={rootTestId}>

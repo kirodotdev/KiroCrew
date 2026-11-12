@@ -1303,6 +1303,9 @@ async def read_context(
             "impact": impact,
             "label": await asyncio.to_thread(_crewmate_label, p["member"]),
             "gateway": sorted(await asyncio.to_thread(gateway_matches, p)),
+            # A crewmate on its own file: the edit reaches its worker only, never
+            # the conductor its chat runs on (``mate_worker``).
+            "worker_kit": result.get("mode") == "mate",
         }
     if kind == catalog.KIND_TEMPLATE_UPDATE:
         from kiro_crew.config.loader import KiroCrewConfig
@@ -1508,8 +1511,8 @@ async def _workflow_context(
     from kiro_crew.workflows.validate import validate
 
     result = await asyncio.to_thread(validate, params["source"])
-    if not result.ok:
-        errors = "; ".join(str(e) for e in result.errors)
+    if result.save_errors:  # a compile-stage error still saves, with a warning
+        errors = "; ".join(str(e) for e in result.save_errors)
         raise catalog.CardCatalogError(
             "invalid_workflow", f"the script is not valid: {errors[:400]}"
         )

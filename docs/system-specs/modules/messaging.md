@@ -55,7 +55,7 @@ legacy metadata do not override a canonical execution.
 
 | File | Purpose |
 |------|---------|
-| `messaging/__init__.py` | Package facade re-exporting the public contracts, approval-mode constants, and Layer-3 helpers |
+| `messaging/__init__.py` | Package facade re-exporting the public contracts, approval-mode constants, and Layer-3 helpers. Each name is resolved on first read (`__getattr__`), so importing one leaf (`messaging.link`) does not load the turn driver |
 | `messaging/transport.py` | **Layer 1** — `MessagingTransport` ABC + the `TransportCapabilities`, `InboundMessage`, and `ConfiguredChannelTarget` value objects (stdlib-only) |
 | `messaging/attachments.py` | Channel-neutral attachment classification, bounded streaming download, extraction/redaction, opaque-file preservation, temp ownership, and SEL audit |
 | `messaging/driver.py` | **Layer 2** — `TurnDriver` (channel-neutral turn loop), approval-mode constants, `_redact` helper |
@@ -236,7 +236,7 @@ The dashboard does **not** flow through `TurnDriver`; it remains unchanged as th
 | `EVENT_TOOL_RESULT` | `TOOL_RESULT` when the result carries a terminal `tool_status` (`acp.types.TERMINAL_TOOL_STATUSES`) and a `tool_call_id`, carrying that status so a renderer can finalize the call's card honestly; a non-terminal update renders nothing. Also decodes + applies a session-directive marker via the injected `directive_consumer` (inert without one) |
 | `EVENT_PERMISSION_REQUEST` | `PROMPT_CHOICE` (interactive w/ decider only) then approve/reject; the PreToolUse script hooks gate it first (see Script hooks) |
 | `EVENT_COMPACTION_STATUS` | `COMPACTION`; a `completed` status also sets `TurnDriver.compaction_completed` (cleared at the start of each `run()`), which the dispatcher's settle reads to arm the one-shot re-injection flag |
-| `EVENT_COMPLETE` | `DONE` |
+| `EVENT_COMPLETE` | `DONE`. A completion that ended the prompt because a call's own silence timer ran out is not the turn's: `run` streams the provider through `acp.timed_out_continuation.continue_timed_out_calls`, which sends the same session the timed-out continuation and goes on with its events, at most `STOP_RECOVERY_MAX_RETRIES` times a turn, so the reply carries the model's answer after the timeout and the `DONE` is the continuation's, its usage summed over both prompts (see [acp-client](acp-client.md), "Per-call silence timer") |
 
 An optional structured-monitor completion hook is orthogonal to rendering. It
 revalidates the persisted `(monitor_id, fingerprint)` claim after
@@ -487,7 +487,7 @@ is the point — a channel-local store would have had to reimplement every one o
 
 **Deny-on-silence can be SPOKEN.** `open_approval(..., on_timeout=…)` takes an optional coroutine that `PendingApproval.wait` awaits when the window closes, before it returns `DENY`, so the channel can resolve the prompt still sitting on the user's screen: `approval.TIMEOUT_NOTICE` is the text. Without it the refusal is invisible: the turn moves on and a live-looking prompt remains, which a later `1` can no longer answer (it finds no open entry and gets `RECEIPT_EXPIRED`). It is a callback rather than a transport because this module never learns what a channel is, and only the renderer that posted the prompt knows which message to edit. It must not raise: the verdict is already `DENY`, and `_announce_timeout` logs and swallows anything but cancellation, because a notice that could not be posted must never become an approval. WhatsApp is the first channel wired onto it.
 
-**The dashboard composer answers the same prompts for a web chat slot.** `useToolApproval` (`website/src/components/chat-input/approval.ts`) owns the decision its approval bar submits: a trust verb goes to the slot-scoped `api.approveChatSlot` only when the composer has a slot; from an unattended source (`UNATTENDED_APPROVAL_SOURCES`: cron, heartbeat, taskrunner), whose Trust controls are withheld, it is deliberately downgraded to a one-shot `approve` on `api.decideApproval`; every other decision goes to `api.decideApproval` (bound to the card's owner-bound target, see `website/src/types/approvalTarget.ts`) through the shared fail-closed `toApiDecision` mapping (`website/src/utils/approvalDecision.ts`), which sends any verb that endpoint cannot honor as `reject`. `website/src/components/ChatInput.tsx` renders the bar, and `SpawnApprovalCard.tsx` beside the hook renders the slot's pending sub-agent spawns. `ChatInput.approval.test.tsx` and `ChatInput.trustOneShot.test.tsx` pin the routing.
+**The dashboard composer answers the same prompts for a web chat slot.** `useToolApproval` (`website/src/components/chat-input/approval.ts`) owns the decision its approval bar submits: a trust verb goes to the slot-scoped `api.approveChatSlot` only when the composer has a slot; from an unattended source (`UNATTENDED_APPROVAL_SOURCES`: cron, heartbeat, taskrunner), whose Trust controls are withheld, it is deliberately downgraded to a one-shot `approve` on `api.decideApproval`; every other decision goes to `api.decideApproval` (bound to the card's owner-bound target, see `website/src/types/approvalTarget.ts`) through the shared fail-closed `toApiDecision` mapping (`website/src/utils/approvalDecision.ts`), which sends any verb that endpoint cannot honor as `reject`. `website/src/components/ChatInput.tsx` renders the bar, and `SpawnApprovalCard.tsx` beside the hook renders the slot's pending sub-agent spawns. A bar that offers no standing grant (an unattended source, a coordinator or sub-agent request, no slot, or no server grant proof) keeps a disabled Trust control in the middle (`TrustUnavailable` in `TrustDropdown.tsx`), with the reason as its tooltip and accessible description, so every bar that offers Allow once keeps Allow once, Trust and Reject in one order and Allow once never moves into the Trust menu's place. `ChatInput.approval.test.tsx` and `ChatInput.trustOneShot.test.tsx` pin the routing.
 
 ### Channel-neutral spawn-approval delivery (`spawn_approval_delivery.py`)
 
@@ -726,6 +726,11 @@ output, which a muted turn always did. It is also deliberately NOT published int
 dispatcher's `_active_renderers`, which silences the mid-turn steer chip and keeps
 channel-local APIs (`note_steer`) off the shared class. Slack never reaches these
 pipelines — it drives its own gateway and is gated by `slack_mirror_is_paused`.
+A muted turn's approval prompt is dropped with the rest, so the Discord, Telegram
+and Teams button deciders find no reservation for the request and deny it at once
+with `approval_undeliverable` (Discord also records the stall for a bound loop, as
+its expiry does) instead of waiting the whole window for an answer nobody was asked
+for. A torn-down (cancelled) reservation still opens a fresh window.
 
 ### Live dashboard view of a channel turn (`dashboard_live.py`)
 
@@ -1988,6 +1993,9 @@ abstraction Slack uses, so one bot serves many parallel, topic-scoped sessions
   (`session_control.owner_dm_refusal` stays `direct` + a single scope segment, a
   predicate shared with Discord), the fail-safe default — a private topic can
   hold a conversation without gaining host-wide session-control authority.
+  (The one other channel-session exemption is a Slack code channel's own recorded
+  session, bounded to its own one-level workers -- see
+  [session-control](session-control.md#code-channel-conductor-callers-the-second-exemption).)
   Outbound: `may_send_to` authorizes a threaded link whose chat_id is a
   roster-listed **positive** user id — a private topic, attested by the same
   `direct_peer_of` the owner-DM predicate uses — so proactive sends (cron,
@@ -3717,6 +3725,7 @@ answer is not permission: a raised evaluation and a `Decision` without
   byte-level pass in `TurnDriver` ran before those tags existed. Slack, Discord and
   Telegram each do this at their render boundary.
 - **A media-only inbound message is a message**: a transport whose text extraction comes back empty may only drop the envelope when there are also no media items. Returning early on empty text would discard an uncaptioned screenshot with no reply and no log line — the sender sees a successful send while the agent is never told anything arrived; Weixin follows this rule. Emptiness is a reason to drop only when the whole envelope is empty.
+- **A cut text file or document is handed over whole, redacted**: when the redacted text of a TEXT or DOCUMENT attachment is longer than `max_text_inject`, the prompt keeps its first `max_text_inject` characters, the marker says how many of how many were shown (`[… truncated: N of M characters of text shown]`), and the WHOLE redacted text is written to a new temporary `.txt`, created and written through its own descriptor in one offloaded call, so the gateway never writes through a path an agent could replace; a turn cancelled while it is written cannot stop that worker, so the copy is deleted when the worker finishes. That copy is handed over in `IngestResult.file_paths` under the opaque-file lifecycle, with a `[Its whole text is in <path> until this turn ends]` line. The download is deleted as before, so the raw bytes are never kept: the copy hides exactly what the inline part hides. If the copy cannot be stored, the block keeps the marker alone. Text under the limit is inlined whole and nothing is kept.
 - **Unknown formats remain passive and complete**: `messaging/attachments.py` preserves video and unrecognized formats as byte-identical, randomized temporary files, supplies their local paths and original metadata to the agent, and transfers cleanup ownership through the current or queued turn. Opaque bytes are never automatically parsed, extracted, or executed; an inlineable image suffix is stripped from the temporary path so the suffix-typed ACP image sink cannot claim them, and any later tool access still crosses the normal permission and hook boundaries.
 - **Weixin inbound media is CDN-indirect**: iLink envelopes never carry bytes, only a `CDNMedia` reference (`encrypt_query_param` + `aes_key`) whose object is AES-128-ECB encrypted on the WeChat CDN. `weixin/media.py` owns that protocol work (URL construction with percent-encoded params, key decoding, decrypt, a streaming size cap enforced on bytes read rather than `Content-Length`); `weixin/attachments.py` maps the four CDN-backed item types onto the shared `Attachment` and hands them to `messaging/attachments.py`, which keeps classification, limits, signature validation and temp-file ownership channel-neutral. The `aes_key` field carries **two** encodings for the same value — `base64(raw 16 bytes)` for images, `base64(ascii hex)` for file/voice/video — discriminated by decoded length plus a strict hex check, because guessing wrong yields plausible garbage rather than an error. A voice item that already carries server-side `text` short-circuits the download: iLink voice is SILK, which no shipped transcription backend decodes, so the local path is strictly worse than the transcript the server gave us. `files_inbound=True` reflects this; `files_outbound` stays `False` until the `getuploadurl` + encrypted CDN PUT half lands.
 - **A mid-turn queue receipt is edited, never deleted**: it flips in place to `▶️ Now answering` on drain and to `🛑 Cancelled` on `/stop`. It is the durable record that a held message was accepted, so no path may delete it. A caller-scoped `/stop` withdraws that caller's OWN lines from the record. While lines remain at the bubble's own address (`texts_at_address()`), the entry stays LIVE and nothing is written, because it is the only handle those queued messages have. Otherwise the entry is dropped and `🛑 Cancelled` is written over the withdrawn lines only when the caller's surface addresses the bubble (`receipt.addressed_by(surface)`) -- otherwise `msg_id` names a message in somebody else's conversation; an edit the platform refuses leaves an owed record to retry. Both terminal transitions are preceded by the same condition, which is about neither addressing nor who is calling: while ANOTHER principal's line is still listed at the bubble's own address, nothing terminal is written and the entry stays LIVE -- the stop writes nothing at all, and the drain re-renders `⏳ Queued` over what remains -- because that entry is the only handle those still-queued messages have.
@@ -5719,8 +5728,9 @@ limit: no voice bytes ever reach the ingest path, so the only audio that does is
 file the user attached, and the voice limit would have refused a 5 MB `.mp3` that
 WeCom itself carried. `max_text_bytes` is the one cap left at the shared default
 on purpose — it budgets bytes READ into gateway memory, of which only
-`max_text_inject` can reach the prompt, so it is not a transport ceiling and must
-not be raised to one. A `mixed` message's caption lives in its item
+`max_text_inject` is inlined into the prompt (the rest of a cut file is handed
+over as its redacted `.txt` copy, not read again), so it is not a transport
+ceiling and must not be raised to one. A `mixed` message's caption lives in its item
 list rather than in `text`, and is read from there — and a media-only message is a
 message, so the empty-text early return now also requires no attachments.
 

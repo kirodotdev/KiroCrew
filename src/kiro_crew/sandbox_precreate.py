@@ -16,6 +16,7 @@ from kiro_crew.sandbox_leaves import (
     _MD_NOTEBOOK_STAGING_LEAF,
     _MD_NOTEBOOK_STATE_LEAVES,
     _SECRET_REQUEST_POLICY_LEAF,
+    _UPDATE_STAGING_LEAF,
     MD_NOTEBOOK_APP_NAME,
 )
 
@@ -56,15 +57,19 @@ from kiro_crew.sandbox_leaves import (
 #:      the absent-and-therefore-writable name this list exists to close.
 #:
 #: 2. A STALE read of that empty document must fail toward refusal. The seal is a
-#:    bind mount, which pins the INODE for the sandbox's lifetime, while every
-#:    dashboard writer publishes through ``atomic_write`` (temp + rename), i.e. a NEW
-#:    inode. So a sandboxed reader keeps seeing the empty document even after the
-#:    operator writes the real one. For the three JSON files above that freezes them at
-#:    "disabled" / "no consent" / "no extra endpoints" — narrower than the truth, and
-#:    for ``settings_seeds.json`` at "Crew owns no settings file", so the writer takes
+#:    bind mount of the pre-created inode, so until a host save changes what the name
+#:    holds a sandboxed reader sees the empty document: "disabled" / "no consent" /
+#:    "no extra endpoints" for the JSON files above — narrower than the truth — and
+#:    for ``settings_seeds.json`` "Crew owns no settings file", so the writer takes
 #:    its leave-it-alone branch: the seed is not refreshed, and nothing is overwritten
-#:    or unlinked. The empty ``profiles`` dir is exempt from the concern entirely: a
-#:    directory bind shows live contents, so a profile added later is visible.
+#:    or unlinked. A writer that rewrites in place (``atomic_write.rewrite_in_place``:
+#:    ``decisions_consent.json``, ``shared_crew_preview.json``,
+#:    ``credential_redaction.json``) keeps the inode, so its reader then sees the
+#:    owner's record under the seal; one that publishes by rename detaches the seal
+#:    in a running sandbox until it respawns (the ``config.json`` residual in
+#:    ``security.md``). The empty ``profiles`` dir is exempt from the concern
+#:    entirely: a directory bind shows live contents, so a profile added later is
+#:    visible.
 #:
 #: DELIBERATELY EXCLUDED:
 #:
@@ -395,13 +400,20 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # -- the DEFAULT before any grant -- leaving it creatable from inside the
     # namespace sandbox.
     "ssh_auth_sock_consent.json",
-    # The credential-redaction switch satisfies both criteria the way
-    # ``ssh_auth_sock_consent.json`` does: ``redaction_switch.read_state`` reads
+    # The project-hooks choice satisfies both criteria the same way:
+    # ``project_hooks_consent`` reads a pre-created ``{}`` as no choice, what an
+    # absent file means (criterion 1); an unreadable record reads as hooks off,
+    # narrower still. The writer rewrites the record IN PLACE (same inode), so the
+    # read-only bind of this name keeps covering it after a save (criterion 2). The
+    # name is on ``_CREW_READONLY_LEAVES`` and ``_CREW_CHILD_WITHHELD_LEAVES``, so no
+    # sandbox mode can write it.
+    "project_hooks_consent.json",
+    # The credential-redaction switch: ``redaction_switch.read_state`` reads
     # absent, empty and unreadable alike as ENABLED, so a pre-created ``{}``
     # means exactly what an absent file means (criterion 1); the writer
-    # publishes through ``atomic_write`` (new inode), so a sandboxed reader
-    # frozen at ``{}`` keeps redacting after the owner switches off, which is
-    # narrower than the truth (criterion 2).
+    # rewrites an existing record in place (``redaction_switch.set_enabled``),
+    # so the read-only mount stays on the same inode and a sandboxed reader
+    # sees the owner's choice, never a writable copy (criterion 2).
     "credential_redaction.json",
     "settings_seeds.json",
     # The operator's grants of ``owner`` trust to a hand-configured app registry.
@@ -526,6 +538,9 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # (and the owner CLI publishes the policy) after a sandbox may already be running, so
     # the directory must exist, and be masked, before any namespace starts.
     _SECRET_REQUEST_POLICY_LEAF,
+    # The self-update wheel staging directory, by the same rule: the engine first creates it
+    # at an update, which can start while a sandbox is already running.
+    _UPDATE_STAGING_LEAF,
     # ``crew-panels`` is the same requirement seen from the mirror side of the
     # ceilings above: a read-only ceiling is materialised so the SEAL can apply,
     # a hidden leaf so the MASK can. The skip lands precisely on a fresh install,

@@ -294,6 +294,11 @@ declare global {
      *  local bundled gateway's policy provider was accepted via the three-gate
      *  assertLocalDashboard check. False for remote (SSH-tunneled) gateways. */
     policyGoverned?: boolean
+    /** `'edition'`: the install's EXTERNALLY-MANAGED marker says the edition's
+     *  own update widget is the update surface, so the core opens neither its
+     *  "update available" popup nor its "update ready" dialog for this lane.
+     *  Absent on every other install. */
+    updatePrompts?: 'edition'
   }
 
   interface UpdateInfo {
@@ -313,6 +318,8 @@ declare global {
     disabled?: string
     managedBy?: string
     updateCommand?: string
+    /** Same as `UpdateState.updatePrompts`. */
+    updatePrompts?: 'edition'
     laneVersion?: string
     runningAheadOfLane?: boolean | null
     /** The main process's confirmed policy governance verdict — true only when

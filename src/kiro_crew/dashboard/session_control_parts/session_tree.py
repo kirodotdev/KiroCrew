@@ -45,10 +45,10 @@ from kiro_crew.dashboard.session_control_parts.target_authorization import (
 )
 from kiro_crew.dashboard.state import (
     MAX_LIVE_SLOTS,
-    MAX_SLOTS_PER_CREATOR,
     SlotOrigin,
     _safe_folder_tree,
     append_and_surface,
+    creator_slot_cap_refusal,
     load_window_off_loop,
 )
 from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN
@@ -136,6 +136,11 @@ async def fork_session(
     clean_title = _clean_new_session_title(
         title, cap=_MAX_FORK_TITLE_CHARS, not_done="session not forked"
     )
+    # The creator gate reads the code-channel store's loaded snapshot; load it
+    # off the loop first (see `create_session`).
+    # Loads the code-channel lineage, then warms the config cache as the LAST await
+    # before the synchronous gates (see `prewarm_enabled_check`).
+    await prewarm_enabled_check()
     caller_key = caller_slot_key(state, caller_session_key)
     if not caller_key:
         raise SessionControlError(
@@ -160,7 +165,7 @@ async def fork_session(
     # A fork manufactures a session the caller owns, so the caller must be an
     # eligible creator before anything else is read -- see the note on
     # `_refuse_ineligible_creator` for why this set mirrors `authorize_target`'s.
-    _refuse_ineligible_creator(state, caller_slot)
+    _refuse_ineligible_creator(state, caller_slot, operation="fork")
     # A fork opens a session too, so a paused crew may not fork one either. The
     # stored pause is read (off the loop) first, so a fork right after a restart
     # still sees it.
@@ -238,7 +243,7 @@ async def fork_session(
     live_caller = state.get_slot(caller_key)
     if live_caller is None or live_caller is not caller_slot:
         raise SessionControlError("caller session is not open", code="caller_not_open", status=404)
-    _refuse_ineligible_creator(state, live_caller)
+    _refuse_ineligible_creator(state, live_caller, operation="fork")
     if state.get_slot(source_slot.key) is not source_slot:
         raise SessionControlError(
             "the source session closed while the fork was being prepared",
@@ -264,12 +269,8 @@ async def fork_session(
             code="slot_cap_reached",
             status=409,
         )
-    if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
-        raise SessionControlError(
-            f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
-            code="creator_slot_cap_reached",
-            status=409,
-        )
+    if (cap_reason := creator_slot_cap_refusal(state, caller_key)) is not None:
+        raise SessionControlError(cap_reason, code="creator_slot_cap_reached", status=409)
 
     audit_caller = f"session:{caller_key}"
     # The copy below reads the source's rows: a source restored as a sidebar
@@ -320,7 +321,7 @@ async def fork_session(
             raise SessionControlError(
                 "caller session is not open", code="caller_not_open", status=404
             )
-        _refuse_ineligible_creator(state, live)
+        _refuse_ineligible_creator(state, live, operation="fork")
         # A Pause all that landed during the transcript read: the child would open
         # outside the paused crew's snapshot and run while the crew is paused.
         session_create._refuse_if_crew_paused(caller_key, live)
@@ -356,12 +357,8 @@ async def fork_session(
             raise SessionControlError(
                 f"slot cap reached ({MAX_LIVE_SLOTS})", code="slot_cap_reached", status=409
             )
-        if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
-            raise SessionControlError(
-                f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
-                code="creator_slot_cap_reached",
-                status=409,
-            )
+        if (cap_reason := creator_slot_cap_refusal(state, caller_key)) is not None:
+            raise SessionControlError(cap_reason, code="creator_slot_cap_reached", status=409)
 
     in_crew_tree = False
     # The caller's folder principal: an inherited folder in a mate's home stays

@@ -415,6 +415,25 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 },
                 status=400,
             )
+    # A chat recreated in place of another (a memory mode switch) keeps that
+    # chat's project, which an agent from the project's own `.kiro` needs to
+    # resolve at all. Read from the server's slot, never from the request, so
+    # the create widens agent resolution only to a project that slot already has.
+    carried_project = ""
+    source_slot = None
+    source_key = body.get("project_from_slot")
+    if (
+        isinstance(source_key, str)
+        and source_key
+        and not name
+        and is_owner_dashboard_request(request)
+    ):
+        source_slot = state._slots.get(_normalize_slot_key(source_key))
+        source_project = getattr(source_slot, "project", "")
+        if isinstance(source_project, str) and source_project:
+            source_is_dir: bool = await asyncio.to_thread(os.path.isdir, source_project)
+            if source_is_dir:
+                carried_project = source_project
     # Binding resolution checks memory readiness. A fresh conversation gets
     # the same bounded recovery grace as its first turn, before any slot or
     # protected assignment is published.
@@ -472,13 +491,14 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         )
         try:
             # Resolved in the STATED namespace, so a template pick takes the
-            # template's workspace rather than a same-name member's. No project
-            # scope here: a create carries no slot yet, and the catalog offers a
-            # slot-less chat global rows only, so this is the whole choice set.
+            # template's workspace rather than a same-name member's. Project
+            # scope only for a carried project: otherwise a create carries no
+            # slot yet, and the catalog offers a slot-less chat global rows only.
             bindings = await asyncio.to_thread(
                 resolve_agent_bindings,
                 cfg,
                 agent,
+                project_dir=carried_project or None,
                 validate_memory_files=False,
                 selection_kind=agent_kind,
             )
@@ -496,6 +516,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                     resolve_agent_bindings,
                     cfg,
                     agent,
+                    project_dir=carried_project or None,
                     validate_memory_files=False,
                     selection_kind=agent_kind,
                 )
@@ -547,6 +568,15 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 {"error": "slot changed during agent resolution", "code": "session_rebound"},
                 status=409,
             )
+    if carried_project and (
+        state._slots.get(_normalize_slot_key(str(source_key))) is not source_slot
+        or getattr(source_slot, "project", None) != carried_project
+    ):
+        # The agent was resolved in a project the replaced chat does not have now.
+        return web.json_response(
+            {"error": "slot changed during agent resolution", "code": "session_rebound"},
+            status=409,
+        )
     # The owner's member assignment below can refuse a new slot's agent. Ask the
     # same question here, before the mint, the session folder or the folder
     # un-hide, so the common refusal builds nothing. The assignment still runs
@@ -557,7 +587,9 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         and is_owner_dashboard_request(request)
         and (not preflight_key or preflight_key not in state._slots)
     ):
-        preflight_project = folder_project or await _birth_default_project(cfg, workspace)
+        preflight_project = (
+            carried_project or folder_project or await _birth_default_project(cfg, workspace)
+        )
         try:
             await _check_new_slot_assignment(cfg, agent, agent_kind, preflight_project, memory_mode)
         except Exception as exc:
@@ -902,6 +934,8 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # server owns this fallback because the client folder cache can be
         # temporarily stale; existing named slots with an explicit project keep
         # it and continue to use the project endpoint for scope changes.
+        if carried_project and is_new_slot and not slot.project:
+            slot.project = carried_project
         if folder_project and folder_applied and not slot.project:
             slot.project = folder_project
         # A fresh folder per new chat, when the owner turned it on. Only for a

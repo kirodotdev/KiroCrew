@@ -18,7 +18,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ChatSlot } from '../../../types'
 import { dropPanelViews, panelStripOf, type ViewKind } from '../../../hooks/usePanelTabs'
 import { useAppDispatch, useAppSelector } from '../../../store'
-import { closeActivityPanel, openActivityPanel } from '../../../store/chatSlice'
+import { closeActivityPanel, hasSavedActivityOpen, openActivityPanel } from '../../../store/chatSlice'
 import { crewModeAgent, gatewayRunsCrewMode, isDefaultAgentName, memoryModeAllowsCrewMode, runsConductor, runsCrewMode } from '../../../lib/crewMode'
 import { isRootSession } from '../command-center/model'
 import { useIsMobile } from '../../../hooks/useIsMobile'
@@ -91,16 +91,18 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
     shownKey.current = currentSlot?.key
     return () => { shownKey.current = undefined }
   }, [currentSlot?.key])
-  // entering an Ultra Mode root (new or existing) opens the side
-  // panel on the Crew tab, once per visit. Not on a phone: there the panel is
-  // a sheet over the chat, and a phone always lands on the chat.
+  // The first entry to an Ultra Mode root opens the side panel on the Crew tab.
+  // After that the chat keeps its own saved panel state and tab: a panel the
+  // person closed stays closed, and the tab they picked stays in front. Not on a
+  // phone: there the panel is a sheet over the chat, and a phone always lands
+  // on the chat.
   const isMobile = useIsMobile()
   const enteredKey = useRef<string | null>(null)
   const rootKey = crewModeOn && isRootSession(currentSlot) ? currentSlot!.key : null
   useEffect(() => {
     if (!rootKey || enteredKey.current === rootKey) { if (!rootKey) enteredKey.current = null; return }
     enteredKey.current = rootKey
-    if (isMobile) return
+    if (isMobile || hasSavedActivityOpen(rootKey)) return
     // A chat created already in Ultra Mode (`dashboard.new_chat_crew_mode`) is
     // entered, not turned on: remember a closed panel the same way, so turning
     // it off before the first message closes the panel again.

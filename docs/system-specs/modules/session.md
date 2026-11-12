@@ -456,7 +456,13 @@ state are composed behind that facade:
   it passed in (`localns`). A class an owner defines keeps
   `kiro_crew.session_allocation` as its `__module__`.
   `test/test_session_allocation_bindings.py` pins the member inventory, the
-  binding and the reach
+  binding and the reach. Every publication and removal of a key passes
+  `advance_ownership_generation`, which is also where the registry the
+  gateway's `DashboardState` holds marks a provider it just published
+  (`kiro_crew.keepalive_route`): `/api/session-keepalive` reads that registry,
+  so only such a provider's handle times calls on Kiro Crew's own servers, and a
+  manager no `DashboardState` holds (`kirocrew run`, `kirocrew eval`) marks none
+  ([acp-client](acp-client.md), "Per-call silence timer")
 - `session_pool.py` — warm-provider spawn, inventory, claim, health, and discard
 - `session_background.py` — persistent and multiplexed background runtimes
 - `session_compaction.py` — context gates, compaction execution, verdicts,
@@ -629,8 +635,10 @@ the mode withholds is everything derived FROM it: consolidation, lessons,
 memory injection, the session summary, workflow and task snapshots. The
 harness's OWN record of the session is deleted when the provider shuts down
 (`AcpProvider.cleanup_session`): kiro-cli's `sessions/cli/<sid>.json` + `.jsonl`,
-or on the claude backend Claude Code's `projects/<project>/<sid>.jsonl`,
-`<sid>/` and `file-history/<sid>/` (`agent_sdk/claude_transcripts.py`). The
+on the claude backend Claude Code's `projects/<project>/<sid>.jsonl`,
+`<sid>/` and `file-history/<sid>/` (`agent_sdk/claude_transcripts.py`), or on the
+codex backend every rollout file for the thread under `CODEX_HOME`
+(`agent_sdk/codex_transcripts.py`). The
 metadata line is the file's privacy contract, and both slot save and
 turn-start binding treat it as a ratchet. When a writer tightens a line held by a
 live slot, the slot follows that mode on the event loop and its restricted-key
@@ -2174,7 +2182,11 @@ against sweep completeness, and are torn down at `close_all`.
   automatically. kiro-cli only: if the in-place compact fails, times out,
   or the provider lacks native support, falls back to the legacy
   **recycle** (kill session; context re-injected via
-  `build_session_context()` on next message). On claude a timed-out
+  `build_session_context()` on next message). When that recycle's
+  successor cannot start, the old session is kept. If its `/compact`
+  reported no status, kiro-cli may still finish it after the next prompt
+  is built, so the kept session arms the one-shot re-injection flag as
+  the KAS arm above does; a reported `failed` arms nothing. On claude a timed-out
   compact keeps the session, with the cooldown and the failure callback.
   Once the compaction held the turn semaphore, its `/compact` may already
   be on the wire and claude can still finish it, while the next turn's
@@ -6716,7 +6728,13 @@ to one manager, at `agent.cold_start_concurrency` background permits
 from the cached host reading without probing (the `auto` floor until the reading
 exists); the gateway's post-bind sizing task then grows them with
 `SessionManager.widen_cold_start_queues` (`PrioritySemaphore.widen_to`, which only
-adds background permits and leaves the person reserve as it is). The narrower common runtime chokepoint adds
+adds background permits and leaves the person reserve as it is). The same task then
+re-reads the host's available memory every 60 s while memory, not the cores, sets the
+`auto` width (`start_gate_widening`), and grows the queues again each time the width
+rises, so a gateway that boots while memory is short does not keep that moment's
+widths. The cached reading's memory figure only rises
+(`session_start_sizing.refresh_host_capacity`), so nothing narrows and no width passes
+what the cores give; `agent.spawn_min_memory_gb` still bounds memory at each start. The narrower common runtime chokepoint adds
 a gateway-wide `AcpRuntime.spawn()` coordinator capped at
 `agent.runtime_spawn_concurrency` concurrent spawn + `initialize` handshakes. Both
 default to `"auto"`, which `cold_start_sizing` derives from the effective

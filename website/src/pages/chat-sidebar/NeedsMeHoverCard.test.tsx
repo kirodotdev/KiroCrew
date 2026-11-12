@@ -306,14 +306,15 @@ describe('NeedsMeHoverCard', () => {
     expect(screen.queryByRole('button', { name: 'Approve Shell' })).toBeNull()
   })
 
-  it('a press refused as no longer pending shows the refusal as an error, not the muted expired label', async () => {
+  it('a press refused as no longer pending shows the refusal as status, not the muted expired label (#18203)', async () => {
     const { ApiError } = await vi.importActual<typeof import('../../api/client')>('../../api/client')
     api.decideApproval.mockRejectedValue(new ApiError(404, 'not pending'))
     mount()
     hover('gate')
     fireEvent.click(await screen.findByRole('button', { name: 'Approve Shell' }))
     const notice = await screen.findByText(/no longer waiting on it/)
-    expect(notice.closest('[role="alert"]')).not.toBeNull()
+    expect(notice.closest('[role="status"]')).not.toBeNull()
+    expect(notice.closest('[role="alert"]')).toBeNull()
     expect(screen.queryByText('Expired')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Approve Shell' })).toBeNull()
   })

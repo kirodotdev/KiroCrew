@@ -1174,17 +1174,25 @@ class VectorMemoryStore:
         return _semantic.get_preferences_context(self, query_text, cap)
 
     def get_semantic_context(
-        self, query_text: str = "", cap: int = 1500, *, facts_only: bool = False
+        self,
+        query_text: str = "",
+        cap: int = 1500,
+        *,
+        facts_only: bool = False,
+        relevance_rule: str = "off",
     ) -> str:
         """Format semantic memory for prompt injection with hybrid retrieval."""
         from kiro_crew import recall_pool as _recall_pool  # circular import at module level
 
-        pooled = _recall_pool.offload(
-            self, "semantic", {"query_text": query_text, "cap": cap, "facts_only": facts_only}
-        )
+        args: dict[str, object] = {"query_text": query_text, "cap": cap, "facts_only": facts_only}
+        if relevance_rule != "off":
+            args["relevance_rule"] = relevance_rule
+        pooled = _recall_pool.offload(self, "semantic", args)
         if pooled is not None:
             return pooled
-        return _semantic.get_semantic_context(self, query_text, cap, facts_only=facts_only)
+        return _semantic.get_semantic_context(
+            self, query_text, cap, facts_only=facts_only, relevance_rule=relevance_rule
+        )
 
     def _semantic_candidates_v2(
         self, query_text: str, *, recall_query: _RecallQuery | None = None
@@ -1454,6 +1462,8 @@ class VectorMemoryStore:
         directive_budget: int = 0,
         experience_budget: int = 0,
         authority_order: str = "off",
+        lesson_fold: str = "off",
+        relevance_rule: str = "off",
     ) -> str:
         """Format lessons for prompt injection, most relevant first."""
         from kiro_crew import recall_pool as _recall_pool  # circular import at module level
@@ -1470,6 +1480,8 @@ class VectorMemoryStore:
                 directive_budget,
                 experience_budget,
                 authority_order,
+                lesson_fold,
+                relevance_rule,
             )
             pooled = _recall_pool.offload(self, "lessons", job_args)
             if pooled is not None:
@@ -1485,6 +1497,8 @@ class VectorMemoryStore:
             directive_budget=directive_budget,
             experience_budget=experience_budget,
             authority_order=authority_order,
+            lesson_fold=lesson_fold,
+            relevance_rule=relevance_rule,
         )
 
     def turn_lessons(
@@ -1522,9 +1536,11 @@ class VectorMemoryStore:
         """Order *entries* by hybrid relevance to *query_text*, most relevant first."""
         return _lessons.rank_lessons(self, entries, query_text, recall_query=recall_query)
 
-    def _any_lesson_overlap(self, entries: list[tuple[dict, str]], query_text: str) -> bool:
+    def _any_lesson_overlap(
+        self, entries: list[tuple[dict, str]], query_text: str, *, significant: bool = False
+    ) -> bool:
         """Whether ANY entry shares a stemmed word with *query_text*."""
-        return _lessons.any_lesson_overlap(self, entries, query_text)
+        return _lessons.any_lesson_overlap(self, entries, query_text, significant=significant)
 
     @staticmethod
     def _stored_similarity_scorer(

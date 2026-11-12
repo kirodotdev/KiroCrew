@@ -228,7 +228,7 @@ def test_turning_tracing_off_during_a_slow_first_build_still_turns_it_off(tmp_pa
     monkeypatch.setattr(provider, "_build_live", slow_build)
     provider.reset_for_testing()
     try:
-        resolver = threading.Thread(target=provider.current)  # what traced() awaits
+        resolver = threading.Thread(target=provider.current)  # what watch_config() starts
         resolver.start()
         assert building.wait(default_timeout())
         config.write_text(json.dumps({"telemetry": {"traces_enabled": False}}), encoding="utf-8")
@@ -322,7 +322,7 @@ async def test_turning_tracing_off_mid_turn_keeps_that_turns_spans(spans, tmp_pa
 @pytest.mark.asyncio
 async def test_a_settings_write_mid_turn_keeps_that_turns_later_tool_spans(spans):
     async def stream():
-        provider._apply_config_change()  # a write: new turns re-read the switch
+        provider._apply_config_change()  # a write: the applier re-reads the switch
         assert provider.peek() is None
         tool_calls.note_tool_call_started("t1", kind="read", scope="acp-1", tool_name="read")
         tool_calls.record_tool_call_finished("t1", status="completed", scope="acp-1")

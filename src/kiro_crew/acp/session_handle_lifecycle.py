@@ -9,7 +9,8 @@ and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_abandoned_steering``, ``_awaited_responses``,
 ``_cancel_grace_secs``, ``_cancel_ts``, ``_cancelled``, ``_ingress_seq``,
-``_release_task``, ``_session_key``, ``_stale_probe``, ``_steering_answers``.
+``_own_ingress_seq``, ``_release_task``, ``_session_key``, ``_stale_probe``,
+``_steering_answers``.
 
 Instance fields read: ``_pending_elicitations``, ``_prompt_or_tool_seen``, ``_queue``,
 ``_runtime``, ``_session_id``, ``_steering_settled``, ``delete_delay_secs``,
@@ -21,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import mediated_request_capability, released_sessions, sandbox_launch_mark
@@ -383,8 +385,40 @@ def _cleanup_transcript(self: AcpSessionHandle) -> None:
     guard therefore protects nothing on KAS — that backend's session record is
     removed by the same verb that freed the session or, for a released session,
     by the later ``released_sessions`` sweep.
+
+    A host whose teardown verb keeps the record names Crew's own delete in
+    ``TeardownPolicy.delete_disposable_record``. On codex that is the thread's
+    rollout under the ``CODEX_HOME`` the runtime's child ran with, so the delete
+    gets the runtime's ``extra_env``, and only an incognito or temporary session's
+    rollout is deleted. This is the path for a subagent of such a chat on the
+    shared runtime, for ``new_conversation`` and for a late-start teardown, none of
+    which reach ``AcpProvider.cleanup_session``. A persistent session's rollout
+    stays, because ``session/load`` replays it.
     """
+    delete_record = _disposable_record_delete(self._runtime.acp_backend)
+    if delete_record is not None:
+        if self.memory_mode != "persistent":
+            delete_record(self._session_id, getattr(self._runtime, "_extra_env", None))
+        return
     self.cleanup_transcript_files(self._session_id)
+
+
+def _disposable_record_delete(
+    backend: object,
+) -> Callable[[str, Mapping[str, str] | None], bool] | None:
+    """The harness's ``delete_disposable_record`` for *backend*, else ``None``.
+
+    ``None`` too for a backend with no harness, which keeps the kiro-cli sweep.
+    Imported at call time: the harness package imports this layer.
+    """
+    from kiro_crew.acp.harness import harness_for
+
+    if not isinstance(backend, str):
+        return None
+    try:
+        return harness_for(backend).teardown.delete_disposable_record
+    except ValueError:
+        return None
 
 
 def cleanup_transcript_files(sid: str) -> None:
@@ -480,6 +514,12 @@ async def _wait_for_response(
             # completion was sitting in this buffer. A spurious bump only
             # defers one watchdog tick, so over-counting is fail-safe.
             self._ingress_seq += 1
+            if not msg.fanout_no_owner:
+                # A frame routed to this session (a response, or a
+                # notification that names it) is this session's own
+                # progress, so the guard may move the tool-idle clock for
+                # it. A co-tenant's fanned-out frame only voids one tick.
+                self._own_ingress_seq += 1
             buffered.append(msg)
         raise AcpTimeoutError(f"Timeout waiting for response to request {req_id}")
     finally:

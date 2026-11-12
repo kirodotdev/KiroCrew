@@ -55,6 +55,7 @@ if TYPE_CHECKING:
         sel,
         session_agent_selection_name,
         session_switch_notice,
+        slot_history_key,
         slot_not_found,
         switch_announcement,
         warm_project_agent_names,
@@ -486,6 +487,26 @@ async def switch_slot_agent(
         # kept the old agent. Resolved INSIDE the lock: the binding can land
         # while this request waits on it.
         session_key = effective_session_key(slot)
+        # The transcript the agent metadata is written to. A channel-born slot's
+        # conversation lives in the channel transcript (``slot_history_key``),
+        # which the restore scan and the Slack thread hydration both read; the
+        # ``dashboard:`` spelling names a file neither reads. Every other slot
+        # keeps its own ``dashboard:`` transcript, linked cron/workflow tabs
+        # included. Resolved once, so a rollback restores the file it wrote.
+        transcript_key = slot_history_key(slot) if slot.channel_origin else _history_key_for(name)
+
+        def _forget_slack_thread_agent() -> None:
+            """After a refusal restored the channel transcript, have Slack re-read it.
+
+            Slack hydration reads ``transcript_key`` too: a thread message landing
+            between this switch's metadata write and its restore cached the refused
+            agent. Called once the restore write has returned.
+            """
+            if slot.channel_origin and session_key.startswith("slack:"):
+                from kiro_crew.slack.handler import adopt_dashboard_thread_agent
+
+                adopt_dashboard_thread_agent(session_key, None)
+
         # Now serialize against every OTHER alias slot on this same session.
         # slot._lock is created per _ChatSlot and so is DISJOINT across
         # aliases. Keyed on the value resolved just above -- the same one the
@@ -1151,7 +1172,7 @@ async def switch_slot_agent(
         # agent after a gateway restart. INSIDE the lock: two racing switches
         # otherwise interleave their metadata writes, and a stalled earlier
         # write finishing last would restore the older agent on restart.
-        # Deliberately ``_history_key_for``, NOT ``session_key``: this names
+        # Deliberately ``transcript_key``, NOT ``session_key``: this names
         # the slot's TRANSCRIPT (the .jsonl the restart scan reads), not the
         # live session the reset above addressed — the same history-vs-session
         # split ``_cancel_target`` documents.
@@ -1163,7 +1184,7 @@ async def switch_slot_agent(
                 try:
                     await drained_to_thread(
                         conversation_log.update_metadata,  # type: ignore[union-attr]
-                        _history_key_for(name),
+                        transcript_key,
                         {
                             "agent": str(slot.agent),
                             "agent_kind": slot.agent_kind,
@@ -1179,6 +1200,7 @@ async def switch_slot_agent(
                         "Failed to restore agent metadata for slot %s", name, exc_info=True
                     )
                 finally:
+                    _forget_slack_thread_agent()
                     state.push_slots_update()
 
             try:
@@ -1188,7 +1210,7 @@ async def switch_slot_agent(
                 # chat/WS/heartbeat).
                 await drained_to_thread(
                     conversation_log.update_metadata,
-                    _history_key_for(name),
+                    transcript_key,
                     {
                         "agent": agent_name,
                         "agent_kind": new_agent_kind,
@@ -1241,7 +1263,7 @@ async def switch_slot_agent(
                 try:
                     await drained_to_thread(
                         state.conversation_log.update_metadata,
-                        _history_key_for(name),
+                        transcript_key,
                         {
                             "agent": str(slot.agent),
                             "agent_kind": slot.agent_kind,
@@ -1256,6 +1278,7 @@ async def switch_slot_agent(
                     logger.warning(
                         "Failed to restore agent metadata for slot %s", name, exc_info=True
                     )
+            _forget_slack_thread_agent()
             return web.json_response(
                 {"error": "slot session was rebound during the switch", "code": "session_rebound"},
                 status=409,
@@ -1325,6 +1348,10 @@ async def switch_slot_agent(
                 app=slot._app or "",
             )
 
+        # The durable selection this switch committed, with the agent object it
+        # was recorded for: what a Slack thread hydrating from the transcript
+        # would run, so the live thread entry below is published from it.
+        thread_selection: tuple[Any, Any] | None = None
         if slot.agent is not held_agent:
             # A different agent won the race and keeps its write; this answer
             # stays 200. Its durable selection is recorded only when the same
@@ -1353,12 +1380,14 @@ async def switch_slot_agent(
                         or effective_session_key(slot) != session_key
                     ):
                         await drained_to_thread(restore_agent_selection, session_key, raced_change)
-                    elif state.conversation_log and not slot.is_restricted:
-                        await drained_to_thread(
-                            state.conversation_log.update_metadata,
-                            _history_key_for(name),
-                            {"agent": raced_name, "agent_kind": str(slot.agent_kind or "")},
-                        )
+                    else:
+                        thread_selection = (raced_agent, raced_change)
+                        if state.conversation_log and not slot.is_restricted:
+                            await drained_to_thread(
+                                state.conversation_log.update_metadata,
+                                transcript_key,
+                                {"agent": raced_name, "agent_kind": str(slot.agent_kind or "")},
+                            )
             except asyncio.CancelledError:
                 if raced_change is not None:
                     await drained_to_thread(restore_agent_selection, session_key, raced_change)
@@ -1383,20 +1412,23 @@ async def switch_slot_agent(
                 finally:
                     # The protected drain may re-raise cancellation. History
                     # must still settle before the slot/session locks release.
-                    if state.conversation_log and not slot.is_restricted:
-                        await drained_to_thread(
-                            state.conversation_log.update_metadata,
-                            _history_key_for(name),
-                            {
-                                "agent": str(slot.agent),
-                                "agent_kind": slot.agent_kind,
-                                **(
-                                    {"crew_mode_agent": str(slot.crew_mode_agent or "")}
-                                    if crew_stamp_moves
-                                    else {}
-                                ),
-                            },
-                        )
+                    try:
+                        if state.conversation_log and not slot.is_restricted:
+                            await drained_to_thread(
+                                state.conversation_log.update_metadata,
+                                transcript_key,
+                                {
+                                    "agent": str(slot.agent),
+                                    "agent_kind": slot.agent_kind,
+                                    **(
+                                        {"crew_mode_agent": str(slot.crew_mode_agent or "")}
+                                        if crew_stamp_moves
+                                        else {}
+                                    ),
+                                },
+                            )
+                    finally:
+                        _forget_slack_thread_agent()
 
             try:
                 selection_change = await _guarded_selection(
@@ -1437,6 +1469,7 @@ async def switch_slot_agent(
                 )
             # A non-owner choice preserves the recorded session assignment.
             slot._memory_assignment_from_history = not owner_request
+            thread_selection = (held_agent, selection_change)
 
         owner_pick = slot.agent is held_agent and assignment_resolved and caller.owner
         if owner_pick:
@@ -1522,6 +1555,34 @@ async def switch_slot_agent(
                     )
                 if assigned_store and slot.memory_store != assigned_store:
                     slot.memory_store = assigned_store
+
+        # A channel-born Slack tab's next Slack message starts the session the
+        # reset tore down, on the agent Slack keeps for the thread, not on
+        # ``slot.agent``. Hand Slack the agent the slot holds now (a raced
+        # writer's win included), with no await since the last re-check. The
+        # name is the one hydration reads back from the transcript: the
+        # committed execution record's template (a crewmate alias is not an
+        # agent the runtime can launch), else the bare name when no record
+        # was written for the agent the slot holds.
+        if (
+            slot.channel_origin
+            and session_key.startswith("slack:")
+            and state._slots.get(slot.key) is slot
+            and effective_session_key(slot) == session_key
+        ):
+            from kiro_crew.execution_context import EXECUTION_CONTEXT_KEY
+            from kiro_crew.messaging.session_resume import session_agent_from_metadata
+            from kiro_crew.slack.handler import adopt_dashboard_thread_agent
+
+            thread_agent = str(slot.agent or "")
+            if thread_selection is not None and thread_selection[0] is slot.agent:
+                change = thread_selection[1]
+                if change is not None:
+                    # The record as the metadata line carries it, so the name is
+                    # the one hydration's own reader returns.
+                    recorded = {EXECUTION_CONTEXT_KEY: change.published}
+                    thread_agent = session_agent_from_metadata(recorded) or thread_agent
+            adopt_dashboard_thread_agent(session_key, thread_agent)
 
         # The switch is committed and the session reset: mark the boundary in
         # the transcript, still inside both locks. A re-pick of the bound agent

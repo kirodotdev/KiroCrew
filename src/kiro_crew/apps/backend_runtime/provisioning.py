@@ -167,7 +167,7 @@ def _deps_tree_stamp_current(root: Path, req_file: Path) -> bool:
             if platform_compat.is_link_or_junction(marker):
                 return None
             try:
-                mfd = os.open(str(marker), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                mfd = platform_compat.open_file_no_reparse(marker, links_only=True)
             except OSError:
                 return None
             with os.fdopen(mfd, "rb") as mfh:
@@ -740,12 +740,12 @@ def _provision_app_deps_locked(app_name: str, root: Path, pin: _PinnedDir) -> st
         provisioned = False
         if bool(digest) and not volatile:
             try:
-                # On Windows os.O_NOFOLLOW is absent; the is_link pre-check
-                # substitutes - a planted stamp link must read as
-                # "unprovisioned", not through to an arbitrary file.
+                # The pre-check is the fast refusal; the open itself refuses a
+                # link at the stamp name planted after it, on Windows too, so
+                # it reads as "unprovisioned", never through to another file.
                 if platform_compat.is_link_or_junction(stamp):
                     raise OSError("stamp is a symlink/junction")
-                sfd = os.open(str(stamp), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                sfd = platform_compat.open_file_no_reparse(stamp, links_only=True)
                 with os.fdopen(sfd, "rb") as sfh:
                     if stat.S_ISREG(os.fstat(sfh.fileno()).st_mode):
                         # Bounded read: a real stamp is one digest line; an

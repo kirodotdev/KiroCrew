@@ -197,6 +197,7 @@ interface SidePanelProps {
   pins?: ChatPin[]
   pinsLoading?: boolean
   onJumpToPin?: (messageTs: string, mid?: string) => void
+  onPutPinInComposer?: (messageTs: string, mid?: string) => void
   onUnpin?: (id: string) => void
   /** Only shape the copyable deep link a pin row offers. */
   slotTitle?: string
@@ -288,7 +289,7 @@ export default function SidePanel({
   projectDir, navLinks, navResolving, sources, selectedSourceUrl, onSelectSource, onReconcileSource, onDismissSource,
   issues, selectedIssueUrl, onSelectIssue, onReconcileIssue,
   onAddSourceToChat, onSubmitComments, connected = true, onFileSave, onClose, panelHidden,
-  pins, pinsLoading, onJumpToPin, onUnpin,
+  pins, pinsLoading, onJumpToPin, onPutPinInComposer, onUnpin,
   slotTitle, chatMode,
   expanded, fillWidth, canDockBottom = true,
   leadingTabs, segments, extraReserveW = 0, defaultWidth = 460, hiddenViews: hostHiddenViews, onActiveTabChange, pinSummary = false,
@@ -1248,7 +1249,7 @@ export default function SidePanel({
                   // rows as artifact tabs via onArtifactOpen.
                   onFileOpen={onFileOpen}
                   onArtifactOpen={onArtifactOpen}
-                  pins={pins} pinsLoading={pinsLoading} onJumpToPin={onJumpToPin} onUnpin={onUnpin}
+                  pins={pins} pinsLoading={pinsLoading} onJumpToPin={onJumpToPin} onPutPinInComposer={onPutPinInComposer} onUnpin={onUnpin}
                   slotTitle={slotTitle} chatMode={chatMode}
                   remoteEnvironmentName={remoteEnvironment?.name}
                   navLinks={navLinks} navResolving={navResolving}

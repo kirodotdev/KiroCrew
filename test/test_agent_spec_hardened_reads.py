@@ -1218,7 +1218,7 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # reader refuses as unreadable (refuse) rather than as "no spec"; a denial
     # there belongs to the sub-agent surface that asked to spawn. The second
     # label is the same walk over the parent session's ``<project>/.kiro/agents``.
-    "kiro_crew/subagent_parts/agent_policy.py": [
+    "kiro_crew/subagent_parts/spawn_allowlists.py": [
         ("spawn_available_agents", "subagent"),
         ("spawn_available_agents_project", "subagent"),
     ],
@@ -1449,7 +1449,7 @@ _EXPECTED_STRICT_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/slack/handler_runtime/agent_names.py": [("slack_resolve_agent", "slack")],
     # A spawn refused because the parent's allowlist is unknown names each spec
     # the reader refused; this re-read keeps the error class for that text.
-    "kiro_crew/subagent_parts/agent_policy.py": [
+    "kiro_crew/subagent_parts/spawn_allowlists.py": [
         ("spawn_available_agents", "subagent"),
         ("spawn_available_agents_project", "subagent"),
     ],

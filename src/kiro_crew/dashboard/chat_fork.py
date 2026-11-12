@@ -615,7 +615,7 @@ def _shape_fork_child(
 
     Synchronous and assignment-only. :func:`fork_slot` runs it in the
     push-suspended window that began at the mint, so the child's first
-    ``slots`` frame already shows the folder, tags and fork title set here.
+    ``slots`` frame already shows the folder, tags, color and fork title set here.
     ``promote`` titles the child as a kept copy ("Keep this chat") instead
     of a fork.
     """
@@ -648,6 +648,10 @@ def _shape_fork_child(
     # fetch racing the fork) must not share a revision with the inherited list,
     # or a delayed empty frame could become a client's next toggle base.
     new_slot.bump_tags_revision()
+    # Inherit the sidebar color so the fork stays in its parent's color group;
+    # either one can still be recolored on its own.
+    new_slot.color_index = slot.color_index
+    new_slot.color_hex = slot.color_hex
     parent_title = slot.title if slot._titled else "Untitled"
     parent_title, _ = redact_exfiltration_urls(parent_title)
     parent_title, _ = redact_credentials(parent_title)

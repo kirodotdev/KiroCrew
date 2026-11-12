@@ -61,7 +61,7 @@ begin on its own line; the assembly newline-terminates the caller's
 | 9 | `[USER PROFILE]` | onboarding answers in config | non-empty, `lessons` group |
 | 10 | `[WORKSPACE IDENTITY]` | `workspace_dir_for` | `kirocrew` agent only |
 | 11 | `[DOCUMENTATION]` | `_build_docs_section`, the packaged docs dir | `kirocrew` agent, `project` group |
-| 12 | `[Steering resources]` | `_load_steering_resources` → `file://*.md` in `~/.kiro/agents/kirocrew.json`, each anchored as kiro-cli anchors it (relative at the session's project, else `$HOME`; `~/` at `$HOME`; absolute at its own prefix), plus kiro-cli's inherited defaults (global steering; the project's steering and `AGENTS.md` when one is bound), front matter stripped; a `manual`/`auto`/`fileMatch` document withheld (`folder_steering.every_session_body`); gated by `context_assembly/inclusion.py` → `steering_resources_part` | **Claude Code backend**, `kirocrew` agent, `project` group, not a member chat; re-sent after a compaction (§2, item 8) |
+| 12 | `[Steering resources]` | `_load_steering_resources` → `file://*.md` in `~/.kiro/agents/kirocrew.json`, each anchored as kiro-cli anchors it (relative at the session's project, else `$HOME`; `~/` at `$HOME`; absolute at its own prefix), plus kiro-cli's inherited defaults (global steering; the project's steering and `AGENTS.md` when one is bound, except on Codex, which reads `AGENTS.md` from its working directory), front matter stripped; a `manual`/`auto`/`fileMatch` document withheld (`folder_steering.every_session_body`); gated by `context_assembly/inclusion.py` → `steering_resources_part` | **Claude Code and Codex backends** (`ACP_BACKENDS_CREW_LOADS_SPEC_STEERING`), `kirocrew` agent, `project` group, not a member chat; re-sent after a compaction (§2, item 8) |
 | 13 | `[THREAD CONVERSATION HISTORY]` | `build_session_replay` (lossless, newest first), else `_recall_rows` truncation | new, non-resumed session |
 | 14 | `[PREVIOUS TURN WAS CANCELLED …]` | `_build_stop_event_notes` | recent user stop |
 | 15 | `[Memory …]` + `[Memory activity index]` + `[Memory activity]` + `[Memory tools]` | `memory.py` → `get_context`, `activity_index`, `get_activity_context` | not temporary, `memory` group; the activity block also needs `memory.inject_activity` |
@@ -88,11 +88,11 @@ envelope decides), `harness` where KAS (`native_steering`) or kiro-cli (while th
 workspace inherits default resources, or for a document the agent's own
 `resources` name) loads it, and `no` on a harness with no path (`_project_steering_delivered`).
 Where Crew writes the text it reads the writer itself, not a copy of its rules: on
-Claude Code (the `kirocrew` template the turn resolves) the rows come from
+Claude Code and Codex (the `kirocrew` template the turn resolves) the rows come from
 `context_assembly.agent_spec.steering_resource_documents`, the one list
 `_load_steering_resources` joins, so a document the load keeps is `yes`, one it
-withholds is `no`, and one it reads from outside the two trees (`AGENTS.md`) gets
-its own row; folder documents are `yes` only when row 19's bounded section, rendered
+withholds is `no`, and one it reads from outside the two trees (`AGENTS.md`, on
+Claude Code) gets its own row; folder documents are `yes` only when row 19's bounded section, rendered
 at the same `caps.steering` after the same `_folder_steering_delivery_snapshot` skip
 (the live session's launch record included), keeps them, and `briefing` in a member
 chat, whose essentials envelope decides them. `GET /api/chat/slots/{slot}/steering`
@@ -106,7 +106,11 @@ build happens *after* the user's message arrives, so it lands directly on
 time-to-first-token: `build_session_context` stamps `_mark(...)` per group
 (`member`, `preamble`, `profile`, `workspace`, `docs`, `steering`,
 `thread_history`, `stop_notes`, `memory`, `skills`, `lessons`, `provenance`,
-`finalize`) and `_emit_context_section_timings` logs and histograms them.
+`finalize`) and `_emit_context_section_timings` logs and histograms them. A
+gateway makes the skills read once ahead of its first session
+(`skill_first_read.first_read_after_ready`, past readiness and on a worker
+thread), so that session's `skills` mark does not carry the process's first
+read; the build itself reads through the loader as before.
 
 ### What memory contributes at session start
 
@@ -394,8 +398,10 @@ on its next match, never drops the skill.
 kiro-cli compacts its own window and drops the session-start blocks with it.
 `SessionManager.mark_needs_reinjection` arms a one-shot flag on confirmed
 compaction, the Claude branch arms it when its compaction times out
-after taking the turn semaphore, and the harness-managed (KAS) branch when
-its `/compact` fails with no status reported
+after taking the turn semaphore, and a threshold `/compact` that fails
+with no status reported arms it on a session that failure keeps (the
+harness-managed (KAS) branch, or a kiro-cli restart whose successor cannot
+start)
 ([session](../system-specs/modules/session.md), "Context compaction"); the
 next turn reads it through `consume_reinjection` (owned by
 `messaging/turn_bracket.py`, re-exported from `messaging/dispatch.py`) and passes
@@ -452,8 +458,8 @@ re-adds, once:
    `[Learned corrections — relevant to this message …]` row above), the
    shown-lesson record restarts from this block, so that block does not repeat it.
 8. `[REINJECTED AFTER COMPACTION — steering resources]` — row 12's text, Claude
-   Code backend only, through the same `steering_resources_part` gate as session
-   start, payload scrubbed of structural markers. kiro-cli loads the agent's
+   Code and Codex backends only, through the same `steering_resources_part` gate as
+   session start, payload scrubbed of structural markers. kiro-cli loads the agent's
    `resources` natively and keeps them across its own compaction, so the kiro and
    KAS paths get nothing here.
 
@@ -549,7 +555,9 @@ second private window into the masked scratch root and names as the child's
 directory (its replacement inherits and adopts it). Reclamation is keyed on
 process liveness rather than on file age — a directory is removed only once every
 process group recorded in its `.owner` marker is dead **and** the whole tree has
-been idle past a grace window, and an ownerless directory is never deleted. On macOS the Seatbelt
+been idle past a grace window, and an ownerless directory is never deleted in place: after a
+week with no write in the default root, one with an allocator's name is moved into the sweep's
+quarantine. On macOS the Seatbelt
 deny over the masked root re-opens `file-read-metadata` on the literal
 directories above each window (`sandbox_plan.window_ancestors`) and nothing else:
 `realpath` of a window `lstat`s every component, so without it a harness that

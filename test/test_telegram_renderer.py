@@ -1329,10 +1329,8 @@ class TestApprovalDecider:
 
         async def _go() -> bool:
             d = TelegramApprovalDecider(session_key="telegram:1:0")
-            task = asyncio.ensure_future(d(SimpleNamespace(request_id="rq8")))
-            await _until_decider_waits(task, "telegram:1:0:rq8")
             assert TelegramApprovalDecider.resolve_global("telegram:1:0:rq8", True) is False
-            TelegramApprovalDecider._REGISTRY["telegram:1:0:rq8"].set_result(False)
+            task = asyncio.ensure_future(d(SimpleNamespace(request_id="rq8")))
             return await await_until(task, what="the approval decider's verdict")
 
         assert asyncio.run(_go()) is False

@@ -78,7 +78,11 @@ says so when that model was dropped.
 No argument is formally required. Without `message` the new session **starts
 empty** — nothing runs in it until the person types, or until you send it a
 message. With `message`, its first turn starts on that message in this same
-call, so you never send to a key you have not read back yet. The reply carries
+call, so you never send to a key you have not read back yet. An agent that
+auto-approves `session_create` but not `session_send` (a conductor, a team
+lead) is told so in its own prompt and leaves `message` out:
+"`session_create`'s `message` is refused for this agent
+(`message_needs_send_approval`): create, then `session_send`." The reply carries
 the new session's key:
 
 ```
@@ -126,8 +130,10 @@ Two things it deliberately does not take:
   agent, model, memory store and mode, project and folder — exactly what a human
   fork inherits, and for the same reason: a transcript belongs to the memory
   boundary it was written in, and a fork must stay inside it. A session bound to
-  a different agent is `session_create`'s job. One difference: a person's fork of a
-  pinned session is pinned, but a fork you make is never pinned.
+  a different agent is `session_create`'s job. Like a human fork, it also keeps
+  the source's sidebar color, so it sits in the same color group. One difference:
+  a person's fork of a pinned session is pinned, but a fork you make is never
+  pinned.
 - **No tail fork.** Only the head (everything up to the fork point) is offered.
 
 Forking another session is a **read** of its transcript, so naming a `source`
@@ -826,7 +832,7 @@ Refusals only a revive gives:
 |---|---|
 | `member_thread_target` | The match is a Bot's thread, which is not addressable |
 | `folder_not_found` | The `folder` you named does not exist; nothing was revived |
-| `creator_slot_cap_reached` | HTTP 409: you already hold the per-caller live-session cap |
+| `creator_slot_cap_reached` | HTTP 409: you already hold the per-caller live-session cap (`session.max_per_creator`, 50 by default). The message says how many you hold and where the owner raises the limit |
 | `resume_in_progress` | HTTP 409: the session is being resumed elsewhere. Try again |
 | `resume_conflict` | HTTP 409: the session is being deleted. Try again |
 | `resume_session_deleted` | HTTP 409: the session was deleted while it was being resumed |
@@ -1197,7 +1203,11 @@ retry.
 
 Rate limits are per caller, per verb, over a 300-second window: **20** session
 creates (forks included), **10** folder creates, **10** tag creates, **10** board-column creates. Capacity ceilings sit behind
-them: 500 live sessions, 50 per creator, 500 folders.
+them: 500 live sessions, 50 per creator, 500 folders. The per-creator number is
+the default of `session.max_per_creator`: the owner raises it, up to 450, in
+Settings > Chat > Sessions > Sessions per creator, and the change applies to
+the next create with no restart. An agent can only propose the change on a
+card that you apply.
 
 ## Combining two chats
 

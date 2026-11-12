@@ -37,7 +37,7 @@ import math
 import secrets
 import time
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
@@ -54,6 +54,13 @@ from kiro_crew.slack.approval_tokens import (
 #: signed direction covers approve and deny, and Trust from chat would be its own
 #: action for a maintainer to decide.
 BRIDGED_CHOICES = frozenset({"approve", "deny"})
+
+#: The answers a bridged ``ask_question`` card may offer: one per option, by
+#: position (``option_0`` is the first). Bounded by the card's own option cap.
+QUESTION_CHOICES = frozenset(f"option_{i}" for i in range(6))
+
+#: Each kind of bridged decision, and the answers it may offer.
+_CHOICES_BY_KIND = {"approval": BRIDGED_CHOICES, "question": QUESTION_CHOICES}
 
 
 def bridge_clock() -> float:
@@ -137,6 +144,7 @@ class _Binding:
     choices: dict[str, Any]
     deadline: float
     context: ActionContext
+    settle: Callable[[Any], bool] | None = None
 
 
 class BridgeActionRegistry:
@@ -161,26 +169,39 @@ class BridgeActionRegistry:
         crew_log_session: str = "",
         turn: int | None = None,
         owner: str = "",
+        kind: str = "approval",
+        settle: Callable[[Any], bool] | None = None,
     ) -> str:
         """Bind *decision* and return the token its bridged affordances carry.
 
-        *choices* maps each answer the bridged prompt may give, a subset of
-        :data:`BRIDGED_CHOICES`, to the value the decision future takes for it, in
-        that future's own terms (``True`` / ``False``, or ``"approved"`` /
-        ``"rejected"``), so a bridged deny can never land as a truthy value. Any
-        other answer is refused. *ttl_s* is the deadline of the surface that owns
-        the decision. Rebinding the same request replaces the earlier token.
-        *crew_log_session* and *turn* are where the decision's own crew-log entries
-        live, so an action's audit lands beside them (``bridge_action_audit``).
-        *owner* is the verified owner the prompt is bridged to, recorded with every
-        action so a refusal names whose prompt a stranger tried to answer.
+        *choices* maps each answer the bridged prompt may give to the value the
+        decision future takes for it, in that future's own terms (``True`` /
+        ``False``, or ``"approved"`` / ``"rejected"``), so a bridged deny can never
+        land as a truthy value. A tool approval (*kind* ``"approval"``) offers a
+        subset of :data:`BRIDGED_CHOICES`; an ``ask_question`` card (*kind*
+        ``"question"``) a subset of :data:`QUESTION_CHOICES`, each mapped to the
+        answers the dashboard would submit for that option. Any other answer is
+        refused. *settle*, when given, settles the decision in place of setting the
+        future, and returns False when it was already settled; a question needs it,
+        because its owner resolves a card, not a bare future. *ttl_s* is the deadline
+        of the surface that owns the decision. Rebinding the same request replaces
+        the earlier token. *crew_log_session* and *turn* are where the decision's own
+        crew-log entries live, so an action's audit lands beside them
+        (``bridge_action_audit``). *owner* is the verified owner the prompt is
+        bridged to, recorded with every action so a refusal names whose prompt a
+        stranger tried to answer.
         """
         if not choices:
             raise ValueError("a bridged decision needs at least one choice")
-        offered = set(choices) - BRIDGED_CHOICES
+        allowed = _CHOICES_BY_KIND.get(kind)
+        if allowed is None:
+            raise ValueError(f"unknown bridged decision kind {kind!r}")
+        if (kind == "question") != (settle is not None):
+            raise ValueError("a bridged question is settled through its card, and only it")
+        offered = set(choices) - allowed
         if offered:
             raise ValueError(
-                f"a bridged prompt offers approve and deny only, not {sorted(offered)}"
+                f"a bridged {kind} offers {sorted(allowed)} only, not {sorted(offered)}"
             )
         if any(value == TRUST for value in choices.values()):
             raise ValueError("a bridged answer can never resolve to the trust verdict")
@@ -196,6 +217,7 @@ class BridgeActionRegistry:
             nonce=nonce,
             choices=dict(choices),
             deadline=bridge_clock() + ttl_s,
+            settle=settle,
             context=ActionContext(
                 session_key=session_key,
                 approval_id=str(request_id),
@@ -262,7 +284,10 @@ class BridgeActionRegistry:
             return ActionOutcome.INVALID_CHOICE
         # The binding stays until its deadline, so a second press reads as already
         # answered rather than as a token nobody minted.
-        binding.decision.set_result(binding.choices[choice])
+        if binding.settle is None:
+            binding.decision.set_result(binding.choices[choice])
+        elif not binding.settle(binding.choices[choice]):
+            return ActionOutcome.ALREADY_ANSWERED
         binding.context = replace(binding.context, answered=choice)
         return ActionOutcome.ADMITTED
 

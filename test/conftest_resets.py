@@ -233,9 +233,12 @@ def _release_stt_engine():
     reading a different setting would silently get the earlier one.
     """
     yield
-    from kiro_crew.stt import engine as stt_engine
-
-    stt_engine._engine = None
+    # Read, never imported, here: this runs before the test's ``monkeypatch`` is
+    # undone, so a first import would execute the module (and numpy with it) under
+    # whatever ``sys.platform`` the test set. A module nobody imported holds no engine.
+    stt_engine = sys.modules.get("kiro_crew.stt.engine")
+    if stt_engine is not None:
+        stt_engine._engine = None
 
 
 @pytest.fixture(autouse=True)
@@ -491,6 +494,23 @@ def _reset_cjk_segmenter():
     module = sys.modules.get("kiro_crew.history_search")
     if module is not None:
         module.reset_cjk_segmenter_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _forget_app_turn_approver():
+    """Forget the gateway's app-turn approval prompt around each test.
+
+    ``agent_turn_sdk.set_turn_approver`` fills one process-global slot, and the
+    gateway boot fills it (``_init_task_runner``). A test that boots the gateway
+    would leave every later app turn in the worker asking that test's gateway.
+    """
+    module = sys.modules.get("kiro_crew.apps.agent_turn_sdk")
+    if module is not None:
+        module.set_turn_approver(None)
+    yield
+    module = sys.modules.get("kiro_crew.apps.agent_turn_sdk")
+    if module is not None:
+        module.set_turn_approver(None)
 
 
 @pytest.fixture(autouse=True)

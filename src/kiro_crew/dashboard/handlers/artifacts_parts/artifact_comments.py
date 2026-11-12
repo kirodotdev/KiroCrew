@@ -98,6 +98,8 @@ async def api_artifact_comments(request: web.Request) -> web.Response:
         art = await _run_off_loop(lambda: store.get(slug))
     except ArtifactNotFoundError as exc:
         return _err(str(exc), status=404)
+    except ArtifactValidationError as exc:  # a malformed slug
+        return _err(str(exc))
 
     # Surfaced to the UI so a provider-side failure (e.g. the remote comment op
     # not being reachable) is visible rather than silently dropped.
@@ -526,6 +528,8 @@ async def api_artifact_mark_review(request: web.Request) -> web.Response:
         await _run_off_loop(lambda: store.get(slug))
     except ArtifactNotFoundError as exc:
         return _err(str(exc), status=404)
+    except ArtifactValidationError as exc:  # a malformed slug
+        return _err(str(exc))
 
     comments = await _run_off_loop(lambda: store.list_comments(slug))
     target = next((c for c in comments if c.id == comment_id), None)
@@ -683,6 +687,8 @@ async def api_artifact_reopen_comment(request: web.Request) -> web.Response:
         await _run_off_loop(lambda: store.get(slug))
     except ArtifactNotFoundError as exc:
         return _err(str(exc), status=404)
+    except ArtifactValidationError as exc:  # a malformed slug
+        return _err(str(exc))
 
     if await _run_off_loop(lambda: store.update_comment(slug, comment_id, status="open")) is None:
         return _err("comment not found", status=404)

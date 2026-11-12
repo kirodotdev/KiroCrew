@@ -157,7 +157,18 @@ def configured_mcp_aliases(*, data_home: Path, user_home: Path) -> set[str]:
     return {mcp_server_alias(name) for name in names}
 
 
-def _load_mcp_json_by_source() -> dict[str, dict[str, Any]]:
+def _encoding_reason(path: Path) -> str | None:
+    """The fixed repair reason when *path* holds UTF-16 or marked UTF-32 text, else ``None``."""
+    try:
+        raw = safe_read_file_bytes(str(path))
+    except OSError:
+        return None
+    return None if raw is None else wide_bom_reason(raw)
+
+
+def _load_mcp_json_by_source(
+    skipped: list[tuple[Path, str]] | None = None,
+) -> dict[str, dict[str, Any]]:
     """Return ``{scope: {name: spec}}`` keyed by scope name.
 
     Reads every well-known MCP config location and bucketizes servers by
@@ -171,6 +182,10 @@ def _load_mcp_json_by_source() -> dict[str, dict[str, Any]]:
     monkeypatch :data:`_MCP_JSON_PATHS` to a shorter tuple for isolation, the
     corresponding scopes are recovered by looking up each patched path; any
     unknown path falls back to :data:`SCOPE_KIROCREW`.
+
+    *skipped* gets ``(path, reason)`` for each file skipped because it is saved
+    as UTF-16 or UTF-32 (:func:`~kiro_crew.user_json.wide_bom_reason`), so the
+    dashboard can name it.
     """
     result: dict[str, dict[str, Any]] = {
         SCOPE_KIROCREW: {},
@@ -191,23 +206,20 @@ def _load_mcp_json_by_source() -> dict[str, dict[str, Any]]:
             # JSONC-tolerant: Kiro itself reads these files with comments, so a
             # commented-out server must not drop every other server in the file.
             data = loads_user_jsonc(safe_read_file(str(p)))
-        except UnicodeDecodeError as exc:
-            # Bytes that are not UTF-8 are as unusable as bad JSON: skip the file.
-            # A UTF-16/UTF-32 file (a Windows redirect's default) carries the cause
-            # in its first bytes, so name the actionable repair the kiro-cli path
-            # names rather than the opaque ``'utf-8' codec can't decode`` message.
-            reason: str | None = None
-            try:
-                raw = safe_read_file_bytes(str(p))
-            except OSError:
-                raw = None
-            if raw is not None:
-                reason = wide_bom_reason(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            # Bytes that are not UTF-8, or not JSON, are unusable: skip the file.
+            # A UTF-16/UTF-32 file (a Windows redirect's default) fails one way or
+            # the other (UTF-16 without a mark decodes, then does not parse), and
+            # its first bytes carry the cause, so name the actionable repair the
+            # kiro-cli path names rather than the codec or parser message.
+            reason = _encoding_reason(p)
             logger.warning(
                 "Failed to load MCP config from %s: %s", p, reason if reason is not None else exc
             )
+            if reason is not None and skipped is not None:
+                skipped.append((p, reason))
             continue
-        except (json.JSONDecodeError, OSError) as exc:
+        except OSError as exc:
             # PermissionError (subclass of OSError) is raised by
             # safe_read_file when is_sensitive_path() blocks the read.
             logger.warning("Failed to load MCP config from %s: %s", p, exc)

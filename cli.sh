@@ -559,7 +559,15 @@ if command -v sha256sum >/dev/null 2>&1; then SHA_CMD="sha256sum"
 elif command -v shasum  >/dev/null 2>&1; then SHA_CMD="shasum -a 256"
 else _err_missing "need sha256sum or shasum to verify the download" coreutils; fi
 
-TMP="$(mktemp -d)"
+# A bare `mktemp -d` on macOS creates under the per-user temp directory and
+# does not read TMPDIR, so a TMPDIR that is set is named in the template: the
+# free-space message below tells the user to point TMPDIR at another disk.
+if [ -n "${TMPDIR:-}" ]; then
+  TMP="$(mktemp -d "${TMPDIR%/}/kirocrew-install.XXXXXX")" \
+    || err "could not create a scratch directory in $TMPDIR, the directory TMPDIR names. Create it, point TMPDIR at a directory you can write to, or unset TMPDIR, then re-run this installer. Nothing was changed."
+else
+  TMP="$(mktemp -d)"
+fi
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
 # ── Free space ───────────────────────────────────────────────────────────────

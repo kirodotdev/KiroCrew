@@ -232,6 +232,7 @@ from kiro_crew.mcp_gateway.daemon.launch import (  # noqa: F401
     TargetResolver,
     _approval_env_identity,
     _await_owner_port,
+    _backend_work_dir,
     _binds_from_environment,
     _call_with_approval_snapshot,
     _coherent_env_sidecars,
@@ -363,6 +364,7 @@ from kiro_crew.sandbox import (
 )
 from kiro_crew.security import redact
 from kiro_crew.sel import SecurityEventLog  # noqa: F401
+from kiro_crew.start_priority import StartPriority
 
 logger = logging.getLogger(__name__)
 
@@ -1135,6 +1137,7 @@ async def _acquire_backend(
     wait_deadline: Optional[float] = None,
     on_queued: Optional[OnQueued] = None,
     prewarm: bool = False,
+    priority: StartPriority = StartPriority.BACKGROUND,
 ) -> tuple[Backend, bool]:
     """Return ``(backend, was_spawned)`` for ``pool_key`` — spawning one via
     the resolver if absent.
@@ -1227,7 +1230,7 @@ async def _acquire_backend(
         slot: Any = None
         if admission is not None:
             permit = await admission.gate.acquire(
-                label=label, deadline=wait_deadline, on_queued=on_queued
+                label=label, deadline=wait_deadline, on_queued=on_queued, priority=priority
             )
             try:
                 charge = admission.budget.reserve(label=label, kind=charge_kind)
@@ -1454,6 +1457,9 @@ async def _acquire_backend(
         )
         if fresh_target is None or fresh_target[:2] != (command, args):
             raise _TargetUnknown(f"target approval changed for server {pool_key.server_name!r}")
+        # The backend starts in the freshly resolved cwd. The daemon's work dir is
+        # pinned in its env for its whole life (``manager.BACKEND_WORK_DIR_ENV``),
+        # so this is the same directory the verdict above judged.
         # The ssh-agent socket decision is re-judged here too: a grant withdrawn, or
         # a path refused, while this spawn queued must not reach the child. A
         # socket that became available meanwhile is left out, as first decided.
@@ -1467,7 +1473,7 @@ async def _acquire_backend(
             command=command,
             args=list(args),
             env=spawn_env,
-            work_dir=work_dir,
+            work_dir=fresh_target[3],
             # Containment yields only to temp keys cleared by the shared rule.
             # ``spawn_backend`` checks them again after secret resolution, so a
             # path hidden behind ``secret://`` cannot bypass the runtime check.

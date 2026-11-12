@@ -444,18 +444,36 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         assert "ledger_entry" not in prompt
 
     def test_prompt_and_skill_filter_the_batch_to_done_items(self, tmp_path, monkeypatch):
-        """``accept_batch`` is status-blind by design (it is the promotion seam), so
-        the procedure must filter it. Unfiltered, a ``progress`` worker whose stub
-        already satisfies a ``file`` condition earns a genuine ``pass`` and can be
-        closed under itself. Both the prompt and the skill have to state the
-        filter, because the agent copies whichever it read last.
+        """Only a ``done`` item may be evaluated. A ``progress`` worker whose stub
+        already satisfies a ``file`` condition would earn a genuine ``pass`` and be
+        closed under itself. Called with no document, ``accept_eval`` applies that
+        rule itself, and both the prompt and the skill say so. ``accept_batch`` is
+        status-blind by design (it is the promotion seam), so the skill still states
+        the filter for a document the conductor hands over itself.
         """
-        prompt = self._install(tmp_path, monkeypatch)["prompt"]
-        assert "Filter the `accept_batch`" in prompt
-        assert "whose status is `done`" in prompt
+        prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
+        assert "Call the `accept_eval` tool with no arguments" in prompt
+        assert "It never evaluates an item that is not `done`" in prompt
         body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        assert "Call the `accept_eval` tool with NO arguments" in body
+        assert "It evaluates `done` items only" in body
         assert "keep only the entries whose item is currently `status: done`" in body
         assert "Never pipe the unfiltered document" in body
+
+    def test_prompt_and_skill_settle_a_pass_with_one_write(self, tmp_path, monkeypatch):
+        """A pass is recorded and closed by one ``close`` that carries the verdict,
+        and a ``done`` wake goes straight to the evaluator. Both texts have to say
+        it, because the agent copies whichever it read last."""
+        prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
+        one_write = "`action=close` `state=accepted` `verdict=pass`"
+        assert one_write in prompt
+        assert "A wake naming a `done` item needs no read" in prompt
+        assert "Each answer carries `reported`" in prompt
+        body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        assert one_write in body
+        assert "A wake that names a `done` item is the one exception" in body
+        assert "returns the worker's report beside the verdict" in body
+        assert "A `done` whose report (`reported.summary` beside its verdict)" in body
 
     def test_prompt_and_skill_make_a_nested_conductor_report_upward(self, tmp_path, monkeypatch):
         """A second-level conductor is bound as its parent's worker, and the parent

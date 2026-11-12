@@ -154,7 +154,7 @@ _PROMPT_AND_STOP_HOOKS = {
 _RUN_NOWHERE = "does not run an agent's hooks"
 
 
-@pytest.mark.parametrize("backend", [ACP_BACKEND_CODEX, ACP_BACKEND_PI])
+@pytest.mark.parametrize("backend", [ACP_BACKEND_PI])
 def test_a_new_session_where_nothing_runs_spec_hooks_names_their_events(
     backend, agents_dir, notices
 ):
@@ -276,7 +276,7 @@ def test_pi_spec_hooks_count_as_run_nowhere_until_crew_fires_them(monkeypatch):
 
 def test_an_unreadable_spec_renders_no_run_nowhere_notice(agents_dir, notices):
     (agents_dir / "a1.json").write_text("{not json", encoding="utf-8")
-    assert _prepare(_client(ACP_BACKEND_CODEX), "a1", is_new=True) == ([], False, None)
+    assert _prepare(_client(ACP_BACKEND_PI), "a1", is_new=True) == ([], False, None)
     assert notices == []
 
 

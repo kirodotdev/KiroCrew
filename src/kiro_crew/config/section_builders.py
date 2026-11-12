@@ -69,9 +69,11 @@ from kiro_crew.config.memory_sections import (
     _coerce_embedding_provider,
     _read_auto_add_documents,
     kind_routing_mode_from,
+    lesson_fold_mode_from,
     lesson_origin_gate_mode_from,
     lesson_tier_policy_mode_from,
     member_lesson_dedup_mode_from,
+    relevance_rule_mode_from,
     rule_authority_order_mode_from,
 )
 from kiro_crew.config.sections import (
@@ -211,6 +213,10 @@ def _build_watchdog_config(watchdog_data: dict) -> WatchdogConfig:
         tool_stall_hard_cap_secs=section.read("tool_stall_hard_cap_secs", _safe_float),
         model_silent_probe_secs=section.read("model_silent_probe_secs", _safe_float),
         remote_flat_probe_secs=section.read("remote_flat_probe_secs", _safe_float),
+        builtin_tool_silence_secs=section.read("builtin_tool_silence_secs", _safe_float),
+        mcp_network_silence_secs=section.read("mcp_network_silence_secs", _safe_float),
+        mcp_stdio_silence_secs=section.read("mcp_stdio_silence_secs", _safe_float),
+        subagent_silence_secs=section.read("subagent_silence_secs", _safe_float),
         wellness_sample_secs=section.read("wellness_sample_secs", _safe_float),
     )
 
@@ -351,10 +357,12 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         writes_enabled=section.read("writes_enabled", _safe_bool),
         lesson_extraction_enabled=section.read("lesson_extraction_enabled", _safe_bool),
         kind_routing=kind_routing_mode_from(section.get("kind_routing")),
+        lesson_fold=lesson_fold_mode_from(section.get("lesson_fold")),
         lesson_origin_gate=lesson_origin_gate_mode_from(section.get("lesson_origin_gate")),
         lesson_tier_policy=lesson_tier_policy_mode_from(section.get("lesson_tier_policy")),
         rule_authority_order=rule_authority_order_mode_from(section.get("rule_authority_order")),
         member_lesson_dedup=member_lesson_dedup_mode_from(section.get("member_lesson_dedup")),
+        relevance_rule=relevance_rule_mode_from(section.get("relevance_rule")),
         inject_memory=section.read("inject_memory", _safe_bool),
         inject_lessons=section.read("inject_lessons", _safe_bool),
         inject_lessons_per_turn=section.read("inject_lessons_per_turn", _safe_bool),
@@ -738,9 +746,10 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         # Default False: a missing or unparseable value must mean "open no
         # thread", never the reverse.
         auto_link_sessions=section.read("auto_link_sessions", _safe_bool),
-        # Default False for both: an unparseable value must never declare the app
-        # an agent or open code channels.
+        # Default False for all three: an unparseable value must never declare the
+        # app an agent, open code channels or let a code channel dispatch work.
         agent_sessions=section.read("agent_sessions", _safe_bool),
+        code_channel_dispatch=section.read("code_channel_dispatch", _safe_bool),
         code_channels=section.read("code_channels", _safe_bool),
         code_channel_defaults=_build_code_channel_defaults(slack_data.get("code_channel_defaults")),
     )
@@ -976,6 +985,7 @@ def _build_wakatime_config(wakatime_data: dict) -> WakaTimeConfig:
         enabled=bool(section.get("enabled")),
         api_base_url=str(section.get("api_base_url") or section.default("api_base_url")),
         send_heartbeats=section.read("send_heartbeats", _safe_bool),
+        oauth_client_id=str(section.get("oauth_client_id") or section.default("oauth_client_id")),
     )
 
 

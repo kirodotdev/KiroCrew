@@ -152,6 +152,14 @@ class ResourcePressureNotifier:
         self._clock = clock
         self._next_sample = 0.0
         self._inflight = False
+        # Set by the worker thread at entry, read on the loop side after a
+        # probe timeout: a timed-out probe whose worker never started (the job
+        # was still queued in the shared executor and asyncio cancelled it) left
+        # `_inflight` stuck True forever, because the worker's finally never ran
+        # and sampling was disabled for the rest of the process. The loop clears
+        # the slot in that case. A worker that did start keeps the slot (a
+        # genuinely hung probe must not get a second thread beside it).
+        self._probe_started = False
         # Episode state. ``_episode_since`` doubles as the active flag (None =
         # no episode) and as the sustained-tight timer origin.
         self._episode_since: float | None = None
@@ -183,10 +191,12 @@ class ResourcePressureNotifier:
           watchdog's stall threshold) — a stalled probe forfeits its sample
           instead of starving the heartbeat until the watchdog kills the
           process;
-        * ``_inflight`` (cleared by the worker thread itself) ensures at most
-          one probe thread exists — after a timeout the abandoned thread
-          still occupies the slot, so a permanently hung probe disables
-          sampling rather than leaking a thread every interval.
+        * ``_inflight`` (cleared by the worker thread itself, or by the loop
+          when a timed-out probe never started) ensures at most one probe
+          thread exists — after a timeout a probe that did start still occupies
+          the slot, so a permanently hung probe disables sampling rather than
+          leaking a thread every interval, while a probe cancelled before it
+          ran releases the slot so sampling resumes.
         """
         try:
             now = self._clock()
@@ -194,12 +204,20 @@ class ResourcePressureNotifier:
                 return
             self._next_sample = now + SAMPLE_INTERVAL_SECS
             self._inflight = True
+            self._probe_started = False
             try:
                 status = await asyncio.wait_for(
                     asyncio.to_thread(self._run_probe), PROBE_TIMEOUT_SECS
                 )
             except (asyncio.TimeoutError, TimeoutError):
                 logger.debug("resource-pressure probe timed out; sample skipped")
+                # Release the slot when the worker never started: asyncio cancels
+                # a still-queued to_thread job, so its finally never runs and the
+                # slot would otherwise stay held for the life of the process. A
+                # worker that did start keeps the slot (its finally clears it, and
+                # a hung running probe must not get a second thread).
+                if not self._probe_started:
+                    self._inflight = False
                 return
             if self._slice_oom_reports or self._slice_oom_dropped:
                 self._deliver_slice_oom()
@@ -209,6 +227,10 @@ class ResourcePressureNotifier:
 
     def _run_probe(self) -> ResourceStatus:
         """Worker-thread wrapper: run the probe and release the in-flight slot."""
+        # First line, before any blocking work: tells the loop side the worker
+        # really started, so a timeout does not wrongly release the slot from
+        # under a running probe.
+        self._probe_started = True
         try:
             # Piggyback the agents-slice OOM check on the same off-loop
             # cadence: new OOM kills inside kirocrew-agents.slice are logged

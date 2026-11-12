@@ -463,6 +463,7 @@ describe('ChatPanel — Messages', () => {
     ['Pin the latest turn', 'pinLastPrompt', false],
     ['Simplified Tool Call Names', 'simplifiedToolNames', false],
     ['Tool calls start expanded', 'toolCallsStartExpanded', true],
+    ['Reasoning starts expanded', 'reasoningStartsExpanded', true],
     ['Show Context Percentage', 'showContextPct', true],
   ])('stores %s locally when flipped', async (label, key, expected) => {
     wrap()

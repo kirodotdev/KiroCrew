@@ -337,7 +337,7 @@ class TestOAuthNotice:
             seen.update(kw)
             return []
 
-        monkeypatch.setattr(spec_hooks, "_agent_spec_with_origin", lambda *_a: ({}, "user"))
+        monkeypatch.setattr(spec_hooks, "_agent_spec_with_origin", lambda *_a, **_k: ({}, "user"))
         monkeypatch.setattr(kas_agents, "spec_keys_without_carrier", lost)
         # Shaped like the provider a dashboard turn hands in: the session's facts
         # are on its ``client``, not on the provider itself.

@@ -421,7 +421,7 @@ nothing to act on there. The verbs deliberately speak kiro-cli's vocabulary:
 
 | Verb | Does | Output / exit |
 |---|---|---|
-| `kas login [--provider builder_id\|idc\|google\|github] [--start-url] [--region]` | device-code sign-in (the one transport that needs no callback to reach the host), polls until approved, saves to the vault | prints `Open <verification URL>` and `code: XXXX-XXXX`, exits 0 once stored; on a vault that already holds a usable identity prints `already signed in` and exits 0 (switching is `logout` then `login`) |
+| `kas login [--provider builder_id\|idc\|google\|github] [--start-url] [--region]` | device-code sign-in (the one transport that needs no callback to reach the host), polls until approved, saves to the vault | prints `Open <verification URL>` and `code: XXXX-XXXX`, exits 0 once stored; on a vault that already holds a usable identity prints `already signed in` and exits 0 (switching is `logout` then `login`). `--start-url` is only consumed by `idc` and `--region` only by the AWS providers (`builder_id`, `idc`); passed beside a provider that would ignore it, each is reported ignored on stderr and the sign-in proceeds with the chosen provider, rather than silently dropping the flag |
 | `kas whoami [--format json]` | who the vault is signed in as: `KasToken.is_usable` (the predicate the spawn reads) AND no refresh-rejected marker on the slot, so a sign-in doctor and the card call "expired -- sign in again" reads as signed out here too and `kas login` replaces it | exit 0 + the `kiro-cli whoami --format json` document (`auth/whoami.whoami_document`: `accountType`, and `startUrl` when recorded -- nothing else, never a token or e-mail); exit 1 when signed out |
 | `kas logout` | removes every stored identity (`KasLoginService.logout`) and bumps the store's **sign-out generation** (below) | a running gateway retires its agent processes on the next turn: the vault is in its identity fingerprint and the pre-turn identity-change check runs the same sweep the dashboard's sign-out runs; a dashboard login pending at that moment is refused when its code is approved |
 | `kas route` | which program owns the Kiro sign-in on this host | `kas-bundle` when `agent.acp_backend == "kas"` AND Crew owns the credential: the vault holds an identity (every KAS spawn then draws on it, so a sign-in never flips the answer back to kiro-cli), or the bundle route (`agent.kas_bundle` on, or chosen automatically because kiro-cli's relay cannot run here, `acp/kas_route.py`); `kiro-cli` otherwise; a config that cannot be read -- a load that raised, OR one the loader returned as defaults with `_base_unreadable` / `_overlay_unreadable` set (`auth/whoami.load_sign_in_owner_config`) -- is a plain-language error naming the path and the fault, exit 1: the owner is then UNKNOWN, never kiro-cli, so a remote script neither runs a kiro-cli branch on a bundle-route box nor signs the wrong store out. The predicate itself is `auth/whoami.agent_owns_sign_in(agent)`, the one in-process spelling |
@@ -645,9 +645,13 @@ engine instead ([aws-control.md](aws-control.md)).
   still stored after the cancel, so only a changed `identity` or `expires_at`
   between a status read taken right before the cancel and one after it counts as
   the attempt having landed (a cached read can predate a token refresh, which
-  moves `expires_at` too). "Use a different sign-in" is the smaller link back to
-  the chooser. The code screen shows when the code stops working, from the begin
-  answer's `expires_at`.
+  moves `expires_at` too). An attempt still pending when a status read says
+  signed in with no switch running (another tab or the CLI finished first) is
+  dropped, then cancelled through the same settle, so its poll stops. When that
+  cancel does not settle, the signed-in view says so with a notice that offers
+  Try again. "Use a different sign-in" is the smaller link back to the chooser.
+  The code screen shows when the code stops working, from the begin answer's
+  `expires_at`.
 - The persistent signal for a lapsed sign-in is the app-level **Kiro sign-in
   notice** (`website/src/components/KiroSignInNotice.tsx`, mounted in `App.tsx`
   above every route beside `CrashReportNotice`), because the card above lives on

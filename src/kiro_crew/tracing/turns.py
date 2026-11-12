@@ -568,7 +568,7 @@ def tool_started(
 ) -> None:
     """Open an ``execute_tool`` span under the turn open on ACP session *scope*."""
     # The open turn decides, on the tracer it started with: a settings write that
-    # makes the NEXT turn re-read the switch must not cut this turn's tool spans.
+    # re-reads the switch must not cut this turn's tool spans.
     if not _open_turns or not _bounded(scope, tool_call_id):
         return
     try:

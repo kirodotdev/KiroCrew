@@ -25,7 +25,7 @@ import { OverlayPortal } from '../../components/overlayRoot'
 import { useDndSensors } from '../../hooks/useDndSensors'
 import { useScrollEdgesY } from '../../hooks/useScrollEdges'
 import { railWidthFor } from '../../hooks/useRailWidth'
-import { busySlotKeys, mateNeedsYouByKey } from '../../lib/crewMode'
+import { busySlotKeys } from '../../lib/crewMode'
 import { haptic } from '../../lib/haptic'
 import { DOCK_MATES_LIMIT, dockMateOrder, starOrderWrites } from '../../lib/dockMates'
 import { i18nT } from '../../i18n/t'
@@ -113,18 +113,12 @@ function useDockMatesLoadNotice({ errorUpdatedAt, dataUpdatedAt }: { errorUpdate
   return { visible, dismiss }
 }
 
-/** Why a dock mate row carries its dot, most pressing first. The dot itself is
- *  the same one mark for every reason; the reason only names it. */
-type MateDot = 'needs_you' | 'unread' | 'working'
-const MATE_DOT_LABEL: Record<MateDot, string> = {
-  needs_you: 'pages.membersPage.filter_status_needs_you',
-  unread: 'pages.membersPage.unread_message',
-  working: 'pages.membersPage.drawer_working',
-}
-
-/** A per-mate live reading drives both the face and dot on either rail. */
+/** A per-mate live reading drives the face (working) and the dot (unread) on
+ *  either rail. The dot means one thing only: a message the person has not
+ *  read yet, so it clears the moment the thread is read. Working shows on the
+ *  face, never as a dot. */
 function MateNavItem({ m, ...props }: { m: MemberRosterRow } & Omit<ComponentProps<typeof NavItem>, 'navId' | 'path' | 'label' | 'icon' | 'badge'>) {
-  const { running, dot } = useAppSelector(s => {
+  const { running, unread } = useAppSelector(s => {
     const slot = (m.slot_key ? slotRowByKey(s.dashboard.slots, m.slot_key) : undefined)
       ?? s.dashboard.slots.find(row => row.mode === 'member' && row.agent === m.name)
     // Match the Mates page: live idle overrides the HTTP snapshot, while
@@ -132,13 +126,9 @@ function MateNavItem({ m, ...props }: { m: MemberRosterRow } & Omit<ComponentPro
     // still count as working.
     const key = slot?.key || m.slot_key
     const working = key && busySlotKeys(s.dashboard.slots, s.chat.subagentQueued).has(key) ? true : (slot ? false : !!m.running)
-    // Needs you and unread read the Mates page row's own sources.
-    const needsYou = !!key && !!mateNeedsYouByKey(s.dashboard.slots)[key]
-    const unread = !!key && s.dashboard.unreadSlots.includes(key)
-    const d: MateDot | null = needsYou ? 'needs_you' : unread ? 'unread' : working ? 'working' : null
-    return { running: working, dot: d }
+    // Unread reads the Mates page row's own source.
+    return { running: !!working, unread: !!key && s.dashboard.unreadSlots.includes(key) }
   }, shallowEqual)
-  const dotLabel = dot ? i18nT(MATE_DOT_LABEL[dot]) : ''
   return (
     <NavItem
       {...props}
@@ -146,8 +136,9 @@ function MateNavItem({ m, ...props }: { m: MemberRosterRow } & Omit<ComponentPro
       path={`/members?member=${encodeURIComponent(m.name)}`}
       label={crewDisplayName(m)}
       icon={<CrewAvatar seed={m.name} avatar={(m as { avatar?: unknown }).avatar} size={20} working={running ? 'subtle' : undefined} />}
-      badge={dot
-        ? <span role="status" aria-label={dotLabel} className={props.touch ? 'absolute top-1 right-2 w-2 h-2 bg-accent rounded-full z-10' : props.collapsed ? 'absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10' : 'absolute top-1/2 -translate-y-1/2 right-2 w-2 h-2 bg-accent rounded-full z-10'} />
+      badge={unread
+        ? <span role="status" aria-label={i18nT('pages.membersPage.unread_message')} className={props.touch ? 'absolute top-1 right-2 w-2 h-2 bg-accent rounded-full z-10' : props.collapsed ? 'absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10' : 'shrink-0 w-2 h-2 bg-accent rounded-full'} />
+
         : undefined}
     />
   )

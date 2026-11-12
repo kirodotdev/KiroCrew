@@ -1236,6 +1236,83 @@ class TestCronTranscriptResume:
         assert state.get_slot("cron-job1") is tab
 
 
+class TestTaskReviewTranscriptResume:
+    @pytest.mark.asyncio
+    async def test_a_resumed_review_transcript_saves_to_its_own_transcript(
+        self, tmp_path, monkeypatch
+    ):
+        """A task-runner review chat reopened from History keeps saving to its own transcript.
+
+        Unbound, the tab reads ``taskrunner_t1_chat_abc.jsonl`` but saves every new
+        turn to a second ``dashboard:taskrunner_t1_chat_abc`` file, which the delete
+        witness refuses, so the turns are never kept.
+        """
+        from kiro_crew.dashboard.chat import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("taskrunner:t1:chat:abc", "user", "review prompt")
+        log.append("taskrunner:t1:chat:abc", "assistant", "review answer")
+        line = {"linked_session_key": "taskrunner:t1:chat:abc"}
+        await asyncio.to_thread(log.update_metadata, "taskrunner:t1:chat:abc", line)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/taskrunner_t1_chat_abc/resume",
+                json={"key": "taskrunner_t1_chat_abc"},
+            )
+            assert resp.status == 200, await resp.text()
+
+        slot = state.get_slot("taskrunner_t1_chat_abc")
+        assert slot.linked_session_key == "taskrunner:t1:chat:abc"
+        slot.append("user", "follow-up after resume")
+        slot.drain()
+        assert _save_slot_to_history(state, slot) is True, "the resumed tab's save was refused"
+        assert (
+            log.read_messages("taskrunner:t1:chat:abc")[-1]["content"] == "follow-up after resume"
+        )
+        assert log.read_messages("dashboard:taskrunner_t1_chat_abc") == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["incognito", "temporary"])
+    async def test_a_resumed_private_review_transcript_keeps_its_mode_on_its_session(
+        self, tmp_path, monkeypatch, mode
+    ):
+        """The reopened tab runs on ``taskrunner:t1:chat:abc``, which no ``dashboard:`` mark names.
+
+        Unless the transcript's mode is admitted for that key, the restricted-session
+        gates let the tab's agent write what its mode refuses, and read memory when
+        temporary.
+        """
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.handlers._shared_session_memory import (
+            _blocks_reads_session,
+            is_restricted_session_key,
+        )
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path, context_builder=SimpleNamespace(_session_memory_modes={}))
+        log = state.conversation_log
+        log.append("taskrunner:t1:chat:abc", "user", "review prompt")
+        line = {"linked_session_key": "taskrunner:t1:chat:abc", "memory_mode": mode}
+        await asyncio.to_thread(log.update_metadata, "taskrunner:t1:chat:abc", line)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/taskrunner_t1_chat_abc/resume",
+                json={"key": "taskrunner_t1_chat_abc"},
+            )
+            assert resp.status == 200, await resp.text()
+
+        key = state.get_slot("taskrunner_t1_chat_abc").linked_session_key
+        assert key == "taskrunner:t1:chat:abc"
+        assert is_restricted_session_key(state, key)
+        request = SimpleNamespace(headers={"X-Session-Key": key})
+        assert _blocks_reads_session(state, request) is (mode == "temporary")
+
+
 # ── History key prefix handling ──
 
 

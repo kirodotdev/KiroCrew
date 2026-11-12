@@ -341,7 +341,11 @@ def _project_target(
             # copy registered.
             return _SERVICE
         spec, prompt_dir = kas_harness.resolve_projected_spec(
-            agents_dir, name, work_dir, own_notices
+            agents_dir,
+            name,
+            work_dir,
+            own_notices,
+            project_hooks=kas_harness.session_projects_folder_hooks(session_key),
         )
     except kas_agents_mod.KasAgentSpecAbsent:
         return _NOT_FOUND

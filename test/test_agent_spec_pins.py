@@ -342,7 +342,7 @@ def test_a_pin_without_a_usable_overlay_pools_nothing(tmp_path, pins, pinned_ove
 
 
 def test_the_parent_spawn_allowlist_is_the_pinned_parents(tmp_path, pins):
-    from kiro_crew.subagent_parts.agent_policy import _scan_parent_spawn_allowlists
+    from kiro_crew.subagent_parts.spawn_allowlists import _scan_parent_spawn_allowlists
 
     agents = tmp_path / "agents"
     _write(agents, "PkgA-lead.json", name="lead", toolsSettings=_spawn(["alpha"]))
@@ -359,7 +359,7 @@ def test_the_parent_spawn_allowlist_is_the_pinned_parents(tmp_path, pins):
 
 
 def test_a_broken_pin_leaves_the_parent_spawn_allowlist_unknown(tmp_path, pins):
-    from kiro_crew.subagent_parts.agent_policy import _scan_parent_spawn_allowlists
+    from kiro_crew.subagent_parts.spawn_allowlists import _scan_parent_spawn_allowlists
 
     agents = tmp_path / "agents"
     _write(agents, "PkgA-lead.json", name="lead", toolsSettings=_spawn(["alpha"]))

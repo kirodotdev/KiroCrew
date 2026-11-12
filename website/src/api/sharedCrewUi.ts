@@ -265,6 +265,36 @@ export function bylineFor(author: PublicPrincipal | null, selfId: string): Publi
   return author.id === selfId ? null : author
 }
 
+/** Rows that carry state rather than a message and draw on no surface: a run of
+ *  one person's messages reads past them. A `system` row is not among them,
+ *  because some draw (the stop card, a skill-load card) and the rest are rare
+ *  enough between two user messages that repeating the name there is harmless. */
+function isStateRow(m: { role: string }): boolean {
+  return m.role === 'done' || m.role === 'queued'
+}
+
+/** True when the user message at `index` continues a run of messages from the
+ *  same person, so its byline would repeat the one just above it. A run breaks
+ *  on a different author, an unstamped message, and any drawn row between the
+ *  two (an agent reply, a tool line, a notice). An Unknown author never
+ *  continues a run: two unattributed messages need not share a sender. Nor does
+ *  a steer row or an app's send: a confirmed or retracted steer draws no byline,
+ *  and an app's send is labelled with the app, so the message after one must
+ *  carry the person's name itself. */
+export function continuesAuthorRun(
+  messages: ReadonlyArray<{ role: string; meta?: Record<string, unknown> }>,
+  index: number,
+): boolean {
+  const author = messageAuthor(messages[index]?.meta)
+  if (!author || isUnknownPrincipal(author)) return false
+  for (let i = index - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (isStateRow(m)) continue
+    return m.role === 'user' && !m.meta?.steer && !appSender(m.meta) && messageAuthor(m.meta)?.id === author.id
+  }
+  return false
+}
+
 /** The setup paths, in the order the People surface offers them. */
 export const SETUP_PATH_ORDER: readonly SetupPath[] = ['tailscale', 'ssm', 'kiro_login']
 

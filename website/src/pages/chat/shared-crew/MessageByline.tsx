@@ -1,13 +1,14 @@
 /** The sender of a user message in a shared session, from the server's
- *  `meta.author` stamp. The viewer's own messages carry no label; a message
- *  anyone else wrote, the session creator included, carries the sender's name,
- *  so a right-aligned message without a name is always the reader's own. Until
+ *  `meta.author` stamp. The viewer's own messages carry no label and keep the
+ *  filled bubble; a message anyone else wrote, the session creator included, is
+ *  outlined (`OtherSenderBubble`) and named once per run of that person's
+ *  messages, so a filled message without a name is always the reader's own. Until
  *  the viewer read lands the session's creator stands in for the viewer
  *  (`bylineSelfId`). Bylines follow the same mode gate as the session list: a
  *  personal Crew, one that cannot attribute, or one whose mode is not known yet
  *  shows none. A message an app sent is the one exception: it always names the
  *  app, by its display name (`AppSenderByline`). */
-import { useContext, useSyncExternalStore } from 'react'
+import { useContext, useSyncExternalStore, type ReactNode } from 'react'
 import { ReactReduxContext } from 'react-redux'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../../../api/client'
@@ -39,12 +40,19 @@ function SenderLine({ name }: { name: string }) {
   )
 }
 
-function AuthoredBy({ author, slotKey }: { author: PublicPrincipal; slotKey?: string }) {
+/** The sender to name for a stamped message, or `null` when it is the viewer's
+ *  own or the Crew does not attribute. */
+function useOtherSender(author: PublicPrincipal, slotKey: string | undefined): PublicPrincipal | null {
   const team = useTeamAttribution()
   const attribution = useSlotAttribution(slotKey)
   const viewer = useSharedCrewViewer()
   const sender = bylineFor(author, bylineSelfId(viewer.data, attribution))
-  if (!team || !sender) return null
+  return team ? sender : null
+}
+
+function AuthoredBy({ author, slotKey }: { author: PublicPrincipal; slotKey?: string }) {
+  const sender = useOtherSender(author, slotKey)
+  if (!sender) return null
   return <SenderLine name={principalName(sender) || i18nT('sharedCrew.unattributed')} />
 }
 
@@ -81,9 +89,25 @@ export function AppSenderByline({ meta }: { meta?: Record<string, unknown> }) {
   return app ? <AppSenderLine id={app.name} /> : null
 }
 
-export function MessageByline({ meta, slotKey }: { meta?: Record<string, unknown>; slotKey?: string }) {
+/** `continuesRun`: the message above is the same person's
+ *  (`continuesAuthorRun`), so the name is said once per run of messages. An
+ *  app's label is not part of a run: it shows on every row an app sent. */
+export function MessageByline({ meta, slotKey, continuesRun = false }: { meta?: Record<string, unknown>; slotKey?: string; continuesRun?: boolean }) {
   if (appSender(meta)) return <AppSenderByline meta={meta} />
   const author = messageAuthor(meta)
-  if (!author) return null
+  if (!author || continuesRun) return null
   return <AuthoredBy author={author} slotKey={slotKey} />
+}
+
+function OtherSenderTone({ author, slotKey, children }: { author: PublicPrincipal; slotKey?: string; children: (other: boolean) => ReactNode }) {
+  return <>{children(useOtherSender(author, slotKey) !== null)}</>
+}
+
+/** Hands `children` whether this message is someone else's, by the byline's
+ *  own rule, so the bubble that is named is the bubble drawn apart. A message
+ *  with no author stamp runs no Shared Crew query. */
+export function OtherSenderBubble({ meta, slotKey, children }: { meta?: Record<string, unknown>; slotKey?: string; children: (other: boolean) => ReactNode }) {
+  const author = messageAuthor(meta)
+  if (!author) return <>{children(false)}</>
+  return <OtherSenderTone author={author} slotKey={slotKey}>{children}</OtherSenderTone>
 }

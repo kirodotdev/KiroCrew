@@ -15,6 +15,11 @@ import en from '../i18n/locales/en.manual.json'
 const props = { value: '', onChange: vi.fn(), onSend: vi.fn(), connected: false }
 
 describe('ChatInput offline placeholder follows the offline cause', () => {
+  it('says the gateway is connecting before the page\'s first socket opens or closes', () => {
+    renderWithProviders(<ChatInput {...props} />)
+    expect(screen.getByPlaceholderText(en.app.gateway_connecting)).toBeInTheDocument()
+  })
+
   it('keeps the plain offline wording when the gateway dropped with no cause', () => {
     const { store } = renderWithProviders(<ChatInput {...props} />)
     act(() => { store.dispatch(sseDisconnected()) })

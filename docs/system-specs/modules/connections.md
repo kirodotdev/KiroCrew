@@ -161,6 +161,10 @@ hand-built request cannot start a sign-in or a Test session for it. Cancel and
 Disconnect still reach every registry provider, so a grant stored before its
 provider was hidden stays revocable.
 
+Before each screen the cold mint runs the same discovery step the chat banner
+runs (`approve_discovered_oauth_endpoint`, see [security](security.md)), so a
+configured server whose own authorization server advertises the consent URL's
+exact host and path is not refused for its PKCE values.
 A cold mint whose URL is rejected by `oauth_url_contains_credential` disposes
 that dedicated process, protected PID, and ephemeral spec, then creates one
 fresh dedicated attempt with a new provider OAuth state. The retry keeps the
@@ -441,9 +445,15 @@ listener and PKCE verifier live in it. The watcher marks the row `granted` once 
 the server's `kiro.mcp.<hash>.tokens` entry from this sign-in: its appearing is the proof when
 none was there as the sign-in began, and with stale tokens already there the session must also
 report the server connected. The vault key is the MOUNTED entry's own `url` (a trailing slash
-makes a distinct key), not the registry url the start was asked with. The engine ends a sign-in with its connect attempt (60 s by
-default), and with it the listener, so a sign-in that ends without saved tokens is `expired`
-rather than left showing a URL nothing can redeem; the TTL still bounds the rest. That expiry
+makes a distinct key), not the registry url the start was asked with. The engine ends a sign-in with its connect attempt (the server's
+`timeout`, 300 s for a remote entry with none; see [acp-client](acp-client.md#kas-mcp-oauth-sign-in)),
+and with it the listener. It answers the reset at most 60 s in, while the attempt may still
+run, and the consent URL's own frame keeps the server `awaiting_auth`, so the watcher reads an
+answered sign-in as ended only once the report has the server `failed` (a timed-out or denied
+attempt). Such a sign-in without saved tokens is `expired` rather than left showing a URL
+nothing can redeem. An attempt that ends with no `failed` report (stale tokens and a 401 after
+consent, or a reset the engine skips) waits for the TTL, which bounds the rest; a new Connect
+replaces the row. That expiry
 carries no reason, so the card reads it as the sign-in window running out ("Sign-in timed
 out"), as for the kiro-cli mint. How the start ends (a URL published, granted at once, refused
 or failed) is audited on the mint's own SEL line with `route=kas`; the watcher's later
@@ -1471,7 +1481,7 @@ or the entry's `dcr_client_name`) once per card in the vault entry
 (`none` first), and registers again when the redirect or issuer differs, the
 secret has expired, or after `invalid_client` (the card then asks to reconnect).
 Every authorize, token and refresh call sends `resource`; `offline_access` is
-asked for when listed; the callback's `iss` is checked. All DCR sign-ins share
+asked for when listed; the callback's `iss` is checked. All DCR card sign-ins share
 the loopback port `registry.DCR_CALLBACK_PORT` (48100, which no pre-registered
 entry may use) and `state` picks the pending sign-in. A gateway with a public
 HTTPS `dashboard.url` (never the request's `Host`) registers
@@ -1492,6 +1502,35 @@ false`), and keeps the registered client. TickTick issues no refresh token (a
 which answers 401: its pair is served up to its recorded expiry (no refresh skew),
 then dropped with `needs_auth` so the card offers Connect again, and Disconnect
 deletes locally, leaving the card's manual revoke link.
+
+Crew can also hold an **owner-added remote server** (no card): an entry the
+owner recorded from the dashboard (`connections/owner_servers.py`, sealed
+`config.json`), at that exact url, under a name that is not a registry slug, at
+a url that is no registry provider's `mcp_url` (`crew_oauth._is_registry_url`:
+a card keeps that url's custody), not legacy `type: "sse"`, with no credential
+header. With the preview on a bridged chat backend, the MCP Servers page's Sign
+in runs Crew's sign-in (`dashboard/handlers/connections_custom_oauth.py`,
+`crew_oauth.signs_in_custom`). Its grant is keyed by name AND url
+(`crew_oauth.custom_key`: `custom-<sha256[:20]>`, vault entries
+`CONNECTIONS_CUSTOM_<KEY>_OAUTH_TOKENS` / `_CLIENT`), and a session bridges the
+entry only while that grant is held (`crew_oauth._custom_slug`). Discovery runs
+from the url without its query (`crew_oauth_dcr.prepare_custom`), which is also
+the `resource` and the audited url. Unlike a card it **commits no issuer**: it
+follows the one the url advertises, because the url is the owner's sealed record;
+`iss` is still checked. The client is the entry's `oauth.clientId` (public, or
+confidential with `clientSecret`), else Crew's own by DCR; the scopes are the
+entry's own (`kiro_entry_scopes`) ahead of a challenge's. Either client (the
+owner's, or one Crew just registered) is stored only with the pair it issued, in
+one vault write
+(`crew_oauth_dcr.keep_client`, `SecretVault.set_many_sync`), and `invalid_client`
+forgets only the stored client. An owner loopback `redirectUri`
+(`http://localhost|127.0.0.1:<port>/<path>`) gets its own listener for that one
+consent (`crew_oauth_dcr.own_listener`); without one the shared 48100 port or the
+gateway route above serves it, and any other redirect is refused. The consent
+link passes the banner gate because the sign-in records exactly the
+`authorization_endpoint` its discovery found (`record_discovered_oauth_endpoint`).
+After the first grant, live providers that apply an MCP change at their next turn
+are marked so they re-project with the bridge.
 
 **What the user sees.** `get_visible_providers` shows a pre-registered entry
 regardless of `launch_gate_passed` (vendor approval still hides), because until

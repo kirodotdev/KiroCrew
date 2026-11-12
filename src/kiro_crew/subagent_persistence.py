@@ -33,6 +33,10 @@ from kiro_crew.agent_sdk.claude_transcripts import (
     delete_claude_session_files,
     is_claude_provider_label,
 )
+from kiro_crew.agent_sdk.codex_transcripts import (
+    delete_codex_session_files,
+    is_codex_provider_label,
+)
 from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retry
 from kiro_crew.bounded_read import bounded_read
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
@@ -546,22 +550,24 @@ def _cleanup_retention_fallback(
 
 def _tombstone_cleanup_identities(
     agent_id: str, durable: list[dict[str, object]] | None = None
-) -> list[tuple[str, str, str]]:
+) -> list[tuple[str, str, str, str]]:
     """Return gateway-authorized cleanup generations only.
 
-    Tombstone and state identity fields live in the agent-writable run folder.
+    Each is ``(session id, provider, cwd, codex home)``. Tombstone and state
+    identity fields live in the agent-writable run folder.
     They remain compatibility/display hints, but cannot expand the set of provider
     transcripts prune may delete. Durable protected records and synchronous live
     gateway publication are the only deletion authorities.
     """
     records = _trusted_cleanup_records(agent_id, durable)
-    identities: list[tuple[str, str, str]] = []
+    identities: list[tuple[str, str, str, str]] = []
     for identity_record in records:
         sid = identity_record.get("session_id")
         if not isinstance(sid, str) or not sid:
             continue
         record_provider = identity_record.get("provider")
         record_cwd = identity_record.get("cwd")
+        record_codex_home = identity_record.get("codex_home")
         identities.append(
             (
                 sid,
@@ -571,9 +577,77 @@ def _tombstone_cleanup_identities(
                     else PROVIDER_LABEL_DEFAULT
                 ),
                 record_cwd if isinstance(record_cwd, str) else "",
+                record_codex_home if isinstance(record_codex_home, str) else "",
             )
         )
     return identities
+
+
+#: Runs a full pass left in place for a reason that holds until their files change:
+#: agent id -> (what the verdict was read from, when the retry window ends). A sweep
+#: skips such a run while both still hold, so a run this build cannot reclaim costs
+#: three stats a sweep instead of a full evaluation. See ``_unreclaimable_evidence``.
+_UNRECLAIMABLE_MEMO: dict[str, tuple[tuple[object, ...], float]] = {}
+
+
+def _file_identity(path: str) -> tuple[int, int, int] | None:
+    """Inode, size and modification time of *path*, or None when absent.
+
+    Not the change time: reading a protected record tightens its mode, which moves
+    the change time on every evaluation and would make no two samples equal.
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def _unreclaimable_evidence(
+    run_dir: Path, identity_reader: _CleanupIdentitySweepReader
+) -> tuple[object, ...]:
+    """Everything a "cannot be reclaimed yet" verdict on *run_dir* was read from.
+
+    The tombstone and the state (the death time, the session id, the owner), the
+    protected cleanup record, and the identities published in this process. A write
+    to any of them changes this value, and the run is then evaluated in full again.
+    """
+    base = os.fspath(run_dir)
+    return (
+        _file_identity(os.path.join(base, "tombstone.json")),
+        _file_identity(os.path.join(base, "state.json")),
+        _file_identity(identity_reader.record_file(run_dir.name)),
+        _live_cleanup_identities(run_dir.name),
+    )
+
+
+def _provider_cleanup_has_route(provider: str) -> bool:
+    """Whether :func:`_cleanup_session_files_sync` can delete *provider*'s files at all.
+
+    For a provider with no route that function answers False every time, so a retry
+    cannot succeed until this build changes. That function refuses a provider through
+    this predicate before it tries any route, so the two cannot disagree: a route
+    added there and not here fails its own test instead of being remembered as absent.
+    """
+    return (
+        provider == PROVIDER_LABEL_DEFAULT
+        or is_claude_provider_label(provider)
+        or is_codex_provider_label(provider)
+    )
+
+
+def _identity_cleanup_has_route(provider: str, codex_home: str = "") -> bool:
+    """Whether :func:`_cleanup_session_files_sync` can delete one identity's files at all.
+
+    A Codex identity names its store through *codex_home*. Without one the cleanup
+    cannot say which store the child wrote, so it answers False on every call, as it
+    does for a provider with no route. The sweep remembers that verdict through this
+    same predicate, so a Codex run recorded before stores were recorded is not
+    evaluated again every minute.
+    """
+    if is_codex_provider_label(provider):
+        return bool(codex_home)
+    return _provider_cleanup_has_route(provider)
 
 
 def prune_stale_tombstones(
@@ -609,9 +683,16 @@ def prune_stale_tombstones(
         identity_reader = _CleanupIdentitySweepReader(subagents_root)
     except (FileNotFoundError, OSError):
         return 0
+    seen: set[str] = set()
     for d in dirs:
         if not d.is_dir():
             continue
+        seen.add(d.name)
+        held = _UNRECLAIMABLE_MEMO.get(d.name)
+        if held is not None:
+            if now < held[1] and held[0] == _unreclaimable_evidence(d, identity_reader):
+                continue
+            del _UNRECLAIMABLE_MEMO[d.name]
         ts_path = d / "tombstone.json"
         if not ts_path.exists():
             continue
@@ -629,6 +710,10 @@ def prune_stale_tombstones(
             cutoff = delivered_cutoff if ts.get("cause") == "delivered" else default_cutoff
             died = _tombstone_died(ts, ts_path, now)
             if died <= cutoff:
+                # Sampled before any of it is read, so a write that lands during the
+                # evaluation leaves this unequal to the next sweep's sample.
+                evidence = _unreclaimable_evidence(d, identity_reader)
+                retry_until = died + _UNRECLAIMABLE_LOOKUP_MAX_AGE_SECS
                 tombstone_session_id = ts.get("session_id", "")
                 # One read serves every decision below; an invalid record raises.
                 durable = identity_reader.read(d.name)
@@ -771,15 +856,27 @@ def prune_stale_tombstones(
                     # migration. Bound that lookup window so an unavailable
                     # migration cannot accumulate private run folders forever.
                     if lookup_session_id and not cleanup_identities and within_retry_window:
+                        if claim_agent_id == d.name:
+                            # No trusted identity exists, and one can only arrive
+                            # as a record or a publication, which the evidence sees.
+                            _UNRECLAIMABLE_MEMO[d.name] = (evidence, retry_until)
                         continue
                     cleanup_succeeded = True
-                    for cleanup_sid, cleanup_provider, cleanup_cwd in cleanup_identities:
+                    for (
+                        cleanup_sid,
+                        cleanup_provider,
+                        cleanup_cwd,
+                        cleanup_codex_home,
+                    ) in cleanup_identities:
+                        # Only a Codex generation records a store. Other calls keep their shape.
+                        store = {"codex_home": cleanup_codex_home} if cleanup_codex_home else {}
                         try:
                             if (
                                 _cleanup_session_files_sync(
                                     cleanup_sid,
                                     cleanup_provider,
                                     cwd=cleanup_cwd,
+                                    **store,
                                 )
                                 is False
                             ):
@@ -793,6 +890,15 @@ def prune_stale_tombstones(
                                 exc_info=True,
                             )
                     if not cleanup_succeeded and within_retry_window:
+                        if claim_agent_id == d.name and not any(
+                            _identity_cleanup_has_route(provider, codex_home)
+                            for _sid, provider, _cwd, codex_home in cleanup_identities
+                        ):
+                            # Every transcript belongs to a provider this build has
+                            # no route to, so the next attempt fails the same way.
+                            # A provider with a route may have failed on a passing
+                            # fault, and is tried again on every sweep.
+                            _UNRECLAIMABLE_MEMO[d.name] = (evidence, retry_until)
                         continue
                     shutil.rmtree(d, ignore_errors=True)
                     if not d.exists():
@@ -806,6 +912,8 @@ def prune_stale_tombstones(
                     _release_retention_locks(retention_holders)
         except (OSError, ValueError, RecursionError):
             logger.debug("prune: tombstone processing failed for %s", d.name)
+    for gone in _UNRECLAIMABLE_MEMO.keys() - seen:
+        del _UNRECLAIMABLE_MEMO[gone]
     return pruned
 
 
@@ -813,7 +921,11 @@ def prune_stale_tombstones(
 
 
 def _cleanup_session_files_sync(
-    session_id: str, provider: str = PROVIDER_LABEL_DEFAULT, *, cwd: str = ""
+    session_id: str,
+    provider: str = PROVIDER_LABEL_DEFAULT,
+    *,
+    cwd: str = "",
+    codex_home: str = "",
 ) -> bool:
     """Delete provider session files, returning whether cleanup completed.
 
@@ -822,16 +934,38 @@ def _cleanup_session_files_sync(
     future provider cleanup implementation or transient filesystem recovery can
     retry instead of making the leaked transcript permanently unreachable.
 
-    The kiro-cli backend's replay log and Claude Code's own store (spelled from
-    the recorded *cwd*, ``agent_sdk.claude_transcripts``) are the transcripts this
-    function can reach. Any other *provider* is logged and its files are left in
-    place, since reporting success without deleting anything hides the leak.
+    The kiro-cli backend's replay log, Claude Code's own store (spelled from the
+    recorded *cwd*, ``agent_sdk.claude_transcripts``) and Codex's rollout under
+    the recorded *codex_home* (``agent_sdk.codex_transcripts``) are the
+    transcripts this function can reach. A Codex record without *codex_home*
+    cannot say which store its child wrote, so its cleanup is not done. Any
+    other *provider* is logged and its files are left in place, since reporting
+    success without deleting anything hides the leak.
     """
     if not session_id:
         return True
     if session_id in (".", ".."):
         return False
     try:
+        if not _identity_cleanup_has_route(provider, codex_home):
+            if is_codex_provider_label(provider):
+                logger.debug(
+                    "_cleanup_session_files_sync: no recorded Codex store for session %s; "
+                    "files retained",
+                    session_id,
+                )
+                return False
+            # Every other backend owns its own session storage, which this function
+            # has no route to. Report failure so prune retains retry metadata. The
+            # sweep remembers a "no route" verdict from this same predicate, so a
+            # route is named there first or it is never reached here.
+            logger.debug(
+                "_cleanup_session_files_sync: no cleanup route for provider %s; "
+                "session %s files retained",
+                provider,
+                session_id,
+            )
+            return False
         if provider == PROVIDER_LABEL_DEFAULT:
             sessions_dir = kiro_sessions_dir()
             succeeded = True
@@ -855,14 +989,9 @@ def _cleanup_session_files_sync(
             return succeeded
         if is_claude_provider_label(provider):
             return delete_claude_session_files(session_id, cwd)
-        # Every other backend owns its own session storage, which this function
-        # has no route to. Report failure so prune retains retry metadata.
-        logger.debug(
-            "_cleanup_session_files_sync: no cleanup route for provider %s; "
-            "session %s files retained",
-            provider,
-            session_id,
-        )
+        if is_codex_provider_label(provider):
+            # The recorded root is handed back as the CODEX_HOME the child ran with.
+            return delete_codex_session_files(session_id, {"CODEX_HOME": codex_home})
         return False
     except Exception:
         logger.warning(

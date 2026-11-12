@@ -134,6 +134,9 @@ _DURABLE_QUEUE_KEYS: tuple[str, ...] = (
     "id",
     "content",
     "meta",
+    # A tab can hold a card at its last revision across a restart; restoring the
+    # counter keeps the next edit above it, so the tab's ordering guard accepts it.
+    "edit_rev",
 )
 
 
@@ -453,13 +456,16 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
             # empty kind is what keeps them out of the system-injection paths.
             "kind": "",
             # PROCESS-LOCAL, and never round-trips: the writer admits only
-            # ``_DURABLE_QUEUE_KEYS`` (id, content, meta), so this key cannot be
+            # ``_DURABLE_QUEUE_KEYS`` (id, content, meta, edit_rev), so this key cannot be
             # set by editing the line -- which is the whole point of having it.
             # It records that this entry's provenance was established by a
             # previous process and cannot be vouched for by this one, which is
             # what :data:`RESTORED_QUEUE_KEY` is read for.
             RESTORED_QUEUE_KEY: True,
         }
+        edit_rev = item.get("edit_rev")
+        if isinstance(edit_rev, int) and not isinstance(edit_rev, bool) and edit_rev > 0:
+            entry["edit_rev"] = edit_rev
         restriction = _restored_source_channels(item)
         if restriction:
             entry[SOURCE_CHANNELS_KEY] = restriction
@@ -999,6 +1005,7 @@ class SlotQueueRepository:
                 item["meta"].pop("slack_sender", None)
                 # Nor are the editor's words in the linked thread, so they echo.
                 item["meta"].pop(PROMPT_ON_CHANNEL_META_KEY, None)
+            item["edit_rev"] = int(item.get("edit_rev") or 0) + 1
             if directive_user_origin:
                 item["_directive_user_origin"] = True
             else:

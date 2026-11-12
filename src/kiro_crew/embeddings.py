@@ -121,6 +121,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _InferJob,
         _install_bounded_decode,
         _install_metadata_kv_clear,
+        _runtime_has_blas,
         _trim_native_heap,
     )
     from kiro_crew.embeddings_model import (  # noqa: F401
@@ -164,7 +165,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _LINUX_X86_64_REQUIRED_CPU_FLAGS,
         _VENDOR_DIR,
         _WINDOWS_MSVC_RUNTIME_DLLS,
-        _harden_llama_null_streams,
         _install_diskcache_stub,
         _linux_aarch64_cpu_features,
         _linux_aarch64_has_dotprod,
@@ -174,8 +174,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _log_dropped_inherited_lib_path,
         _macos_x86_64_missing_cpu_flags,
         _missing_windows_msvc_runtime,
+        _native_quiet_enter,
+        _native_quiet_exit,
+        _NativeQuiet,
         _platform_libs_dirname,
         _publish_lib_path_for_import,
+        _quiet_native_log_without_redirect,
         verify_vendored_libs,
     )
     from kiro_crew.embeddings_ollama import (  # noqa: F401
@@ -260,6 +264,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         embedding_idle_evict_secs,
         embedding_weight_repack,
         embedding_work,
+        enter_work_phase,
+        work_phase,
     )
     from kiro_crew.embeddings_shared import (  # noqa: F401
         _EMBED_CACHE_MAX,
@@ -332,6 +338,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.cpu_affinity import (  # noqa: F401
         affinity_cpu_count,
+    )
+    from kiro_crew.embeddings_blas import (  # noqa: F401
+        blas_safe_ubatch,
+        runtime_has_blas_backend,
     )
     from kiro_crew.embeddings_child import (  # noqa: F401
         ChildLlama,

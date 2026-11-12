@@ -63,7 +63,12 @@ class TestQueueEditHelper:
         id2 = slot.queue_append("same")
         slot.queue_edit_by_id(id2, "changed")
         assert slot._queue[0] == {"id": id1, "content": "same", "kind": ""}
-        assert slot._queue[1] == {"id": id2, "content": "changed", "kind": ""}
+        assert slot._queue[1] == {
+            "id": id2,
+            "content": "changed",
+            "kind": "",
+            "edit_rev": 1,
+        }
 
     @pytest.mark.parametrize(
         "callback_name",
@@ -251,7 +256,37 @@ class TestQueueEditEndpoint:
 
         state.broadcast_ws.assert_any_call(
             "queue_edit",
-            {"slot": "chat-1", "queue_id": qid, "content": "new"},
+            {"slot": "chat-1", "queue_id": qid, "content": "new", "editRev": 1},
+        )
+
+    @pytest.mark.asyncio
+    async def test_edit_frames_count_the_revision(self):
+        state = _make_state()
+        slot = state.get_or_create_slot("chat-1")
+        qid = slot.queue_append("old")
+        state.broadcast_ws = MagicMock()
+
+        with patch("kiro_crew.sel.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            app = _make_app(state)
+            async with TestClient(TestServer(app)) as client:
+                first = await client.patch(
+                    f"/api/chat/slots/chat-1/queue/{qid}", json={"content": "a"}
+                )
+                second = await client.patch(
+                    f"/api/chat/slots/chat-1/queue/{qid}", json={"content": "b"}
+                )
+                assert "editRev" not in await first.json()
+                assert "editRev" not in await second.json()
+
+        state.broadcast_ws.assert_any_call(
+            "queue_edit",
+            {"slot": "chat-1", "queue_id": qid, "content": "a", "editRev": 1},
+        )
+
+        state.broadcast_ws.assert_any_call(
+            "queue_edit",
+            {"slot": "chat-1", "queue_id": qid, "content": "b", "editRev": 2},
         )
 
     @pytest.mark.asyncio
@@ -278,4 +313,5 @@ class TestQueueEditEndpoint:
             "content": "edited",
             "kind": "",
             "_directive_user_origin": True,
+            "edit_rev": 1,
         }

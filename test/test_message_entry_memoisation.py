@@ -193,7 +193,7 @@ def test_no_secret_survives_anywhere_in_the_cached_corpus() -> None:
     cached value."""
     for m in _corpus():
         _build_message_entry(m)
-    blob = "".join(_flatten(v) for v, _size in _entry_cache.values())
+    blob = "".join(_flatten(v) for v, _size, _line in _entry_cache.values())
     for secret in SECRETS:
         assert secret not in blob
 
@@ -244,7 +244,7 @@ def test_byte_counter_tracks_the_stored_entries() -> None:
     cache down to nothing, and one that drifts downward stops bounding at all."""
     for i in range(50):
         _build_message_entry({"role": "assistant", "content": f"m{i}" * 10, "ts": f"t{i}"})
-    assert chat_persistence._entry_cache_bytes == sum(s for _e, s in _entry_cache.values())
+    assert chat_persistence._entry_cache_bytes == sum(v[1] for v in _entry_cache.values())
 
 
 def test_a_concurrent_double_insert_does_not_inflate_the_byte_counter(
@@ -275,7 +275,7 @@ def test_a_concurrent_double_insert_does_not_inflate_the_byte_counter(
         assert not t.is_alive()
 
     assert len(_entry_cache) == 1
-    assert chat_persistence._entry_cache_bytes == sum(s for _e, s in _entry_cache.values())
+    assert chat_persistence._entry_cache_bytes == sum(v[1] for v in _entry_cache.values())
 
 
 def test_total_byte_ceiling_evicts(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -313,14 +313,14 @@ def test_an_oversized_entry_is_still_redacted(monkeypatch: pytest.MonkeyPatch) -
     assert AWS_KEY_ID not in _flatten(entry)
 
 
-# ── flush site: a window past the bound cannot hit, so it goes uncached ───────
+# ── flush site: only the newest rows that fit the bounds go through the cache ──
 
 
-def test_a_window_longer_than_the_bound_bypasses_the_cache(
+def test_a_window_longer_than_the_bound_caches_only_its_newest_rows(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Such a window evicts itself before the next save reaches it, so routing it
-    through the cache would pay the hashing cost for a guaranteed 0% hit rate."""
+    """Walking the whole window through a smaller LRU would evict each row before
+    the next save reached it; caching the newest rows that fit keeps them hot."""
     from kiro_crew.dashboard.chat import _save_slot_to_history
 
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -334,7 +334,8 @@ def test_a_window_longer_than_the_bound_bypasses_the_cache(
 
     _save_slot_to_history(state, slot, closed=True)
 
-    assert len(_entry_cache) == 0
+    cached = [v[0]["content"] for v in _entry_cache.values()]
+    assert cached == ["message 2", "message 3", "message 4"]
 
 
 def test_a_window_within_the_bound_still_uses_the_cache(
@@ -437,15 +438,14 @@ def test_the_window_payload_estimate_is_a_lower_bound() -> None:
     assert estimate <= actual
 
 
-def test_a_window_past_the_byte_ceiling_bypasses_the_cache(
+def test_a_window_past_the_byte_ceiling_caches_only_the_rows_that_fit(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Such a window self-evicts through the byte ceiling at a message count well
-    under the entry bound, so it hits 0% while still paying to hash every byte.
+    """The byte ceiling bounds the cached suffix the way the entry bound does.
 
     The message count stays under the entry bound and each message stays
-    under the per-entry cap, so neither of the other two bypasses can account for
-    an empty cache here.
+    under the per-entry cap, so only the byte ceiling can limit the cache here:
+    1000 bytes hold one 501-byte row, not two.
     """
     from kiro_crew.dashboard.chat import _save_slot_to_history
 
@@ -465,7 +465,7 @@ def test_a_window_past_the_byte_ceiling_bypasses_the_cache(
         len(m.get("content") or "") < chat_persistence._ENTRY_MAX_CACHEABLE_BYTES
         for m in slot.messages
     )
-    assert len(_entry_cache) == 0
+    assert [v[0]["content"][0] for v in _entry_cache.values()] == ["4"]
 
 
 # ── configurable bounds: the config values are what actually govern ───────────
@@ -584,9 +584,8 @@ def test_configured_entry_bound_governs_eviction() -> None:
 def test_flush_bypass_honors_the_configured_bounds(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The flush-site whole-window bypass reads the same configured bounds the
-    cache evicts by: a window that bypasses at the default entry bound takes the
-    cached path once the configured bound covers it."""
+    """The flush site sizes its cached suffix by the same configured bounds the
+    cache evicts by, read from config, not from a constant."""
     from kiro_crew.dashboard.chat import _save_slot_to_history
 
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -602,9 +601,9 @@ def test_flush_bypass_honors_the_configured_bounds(
     _save_slot_to_history(state, slot, closed=True)
     assert len(_entry_cache) > 0
 
-    # A memoised bound smaller than the window flips the SAME save to the
-    # uncached path -- proving the bypass reads the plumbed value, not a constant.
+    # A memoised bound smaller than the window shrinks the SAME save's cached
+    # suffix -- proving the flush site reads the plumbed value, not a constant.
     chat_persistence._entry_cache_bounds_cached = (3, 10**9)
     _entry_cache.clear()
     _save_slot_to_history(state, slot, closed=True)
-    assert len(_entry_cache) == 0
+    assert len(_entry_cache) == 3

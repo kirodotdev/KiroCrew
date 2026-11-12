@@ -65,6 +65,8 @@ vi.mock('../api/client', async () => ({
 
 import CrewChatWindow from '../pages/chat/crew-window/CrewChatWindow'
 import { createCrewWindowRenderers, PEER_SAFE_ROWS } from '../pages/chat/crew-window/crewWindowRenderers'
+import { mergeRenderers, resolveRenderer } from '../app-sdk/messageRenderers'
+import type { ChatMessage } from '../types'
 import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 import {
   openCrewWindow, closeCrewWindow, useCrewWindow, reloadCrewWindowForTest, writeCrewDraft,
@@ -110,21 +112,16 @@ function renderWindow() {
 
 const posted = () => mocks.crewPeerPost.mock.calls.map(c => [c[1], c[2]])
 
-/** The user bubble's More menu (Quote holds the row seat, as locally). */
-async function openMore(row = 0) {
-  await waitFor(() => expect(screen.getAllByTestId('user-more-actions').length).toBeGreaterThan(row), PEER_ROW_WAIT)
-  fireEvent.pointerDown(screen.getAllByTestId('user-more-actions')[row], { button: 0, ctrlKey: false, pointerType: 'mouse' })
-}
+/** Edit & Resend follows Copy on the user row while the row can be edited. */
+const editButtons = () => screen.queryAllByRole('button', { name: 'Edit & Resend' })
 async function openEdit(row = 0) {
-  await openMore(row)
-  fireEvent.click(await screen.findByRole('menuitem', { name: 'Edit & Resend' }))
+  await waitFor(() => expect(editButtons().length).toBeGreaterThan(row), PEER_ROW_WAIT)
+  fireEvent.click(editButtons()[row])
 }
 /** Whether the first user row offers Edit & Resend. */
 async function editOffered() {
-  await openMore()
-  const offered = !!screen.queryByRole('menuitem', { name: 'Edit & Resend' })
-  fireEvent.keyDown(document.activeElement || document.body, { key: 'Escape' })
-  return offered
+  await waitFor(() => expect(screen.getAllByLabelText('Copy').length).toBeGreaterThan(0), PEER_ROW_WAIT)
+  return editButtons().length > 0
 }
 
 /** Edit & Resend on the user bubble, the way the local chat rewinds: the
@@ -1088,6 +1085,18 @@ describe('CrewChatWindow', () => {
     detail = { running: true, messages: [{ role: 'user', content: 'hi', ts: 't1' }, permissionRow('7')] }
     renderWindow()
     expect(await screen.findByTestId('crew-window-approval-hint', undefined, PEER_ROW_WAIT)).toHaveTextContent('Approve runs this one command.')
+  })
+
+  it("draws a peer's project-hooks notice read-only, with no link that writes this hub's choice", () => {
+    const row = {
+      role: 'notice',
+      content: 'ℹ Project hooks are off for this folder.',
+      meta: { kind: 'spec_hooks', project_hooks: 'off', project_hooks_folder: '/work/repo' },
+    } as unknown as ChatMessage
+    const crew = createCrewWindowRenderers({ instanceId: 'cd-1', key: 'k1', name: 'devbox', canRewind: () => false, onRewind: () => {}, rewindDisabled: false })
+    const picked = resolveRenderer(row, mergeRenderers(crew))
+    expect(picked?.id).toBe('project_hooks')
+    expect(crew).toContain(picked)
   })
 
   it('lets in only shared rows decided safe for a peer (a new row falls back)', () => {

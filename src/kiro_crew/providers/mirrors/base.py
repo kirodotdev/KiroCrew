@@ -82,7 +82,8 @@ RESOURCES_NO_READER = (
     "no-reader: the harness is handed no spec file, so it loads neither scheme. "
     "skill:// still arrives as the skill directory Crew injects on every backend; "
     "file:// steering is not loaded from this field, since Crew's steering load "
-    "serves only the provider=claude_code seam (folder steering and crew member "
+    "serves only the default agent, on claude and codex "
+    "(ACP_BACKENDS_CREW_LOADS_SPEC_STEERING; folder steering and crew member "
     "context are separate routes); a custom agent's new session gets a notice "
     "naming those entries"
 )

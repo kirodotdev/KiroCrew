@@ -1863,7 +1863,8 @@ ones the packager never reads). The body is optional JSON:
   "managedBy": "your package manager's name",
   "checkCommand": "the command that prints an available version",
   "updateCommand": "the command that applies it",
-  "relaunchPath": "optional: the executable to relaunch after a successful apply"
+  "relaunchPath": "optional: the executable to relaunch after a successful apply",
+  "updatePrompts": "optional: \"edition\" when the edition's own update widget is the prompt"
 }
 ```
 
@@ -1879,6 +1880,25 @@ arguments. The value must be absolute or start with `~/`, which is the
 account's home read from the account entry, not from `HOME`. Anything else is
 ignored. A `relaunchPath` that is not on disk at relaunch time falls back to
 the bare relaunch, because relaunching a missing file brings nothing back.
+
+`updatePrompts: "edition"` is for an edition whose own top-bar widget
+(`registerTopBarWidgets`, see
+[extension-seams](../../website/docs/extension-seams.md)) offers and arms the
+update. Without it the dashboard opens its own prompts over that widget: the
+"Update available" popup (`UpdateFoundModal`, Download or Skip this version) on
+the lane's `found`, and the "Update ready" dialog (`UpdateModal`, Later or
+Restart and install now) on every `downloaded`, which the managed lane also emits
+for the arm the widget's own click made. The two surfaces then say different
+things about the same version. With the field set, the reporter
+(`runtime/update/state-reporter.js`) carries `updatePrompts: "edition"` on every
+lifecycle push and on `getInfo()`, and the dashboard opens neither prompt for
+them (`editionOwnsUpdatePrompts` in `hooks/useUpdateSubscription.ts`). Nothing
+else changes: the lane checks, arms and applies on quit exactly as below, the
+quit-time "Installing update" screen and an install failure still show, Settings
+→ About keeps its update card, and a policy-governed install still stands down
+the same way. `"edition"` is the only value read; any other value, and a marker
+without the field, keeps both prompts, so an install with no such marker behaves
+as before.
 
 A marker without `updateCommand` turns the updater off, and About shows the
 "updates are managed by …" message naming `managedBy`. A marker with
@@ -1942,6 +1962,13 @@ the 2026-11-10 decision "updates never restart a running gateway"):
   the recorded verdict and does not overwrite it. A failed write of the arm
   record fails the Install click (the renderer shows its retryable install
   error) instead of reporting an update as armed that nothing will apply.
+- **A repeated quit does not cost the apply.** The quit handler is registered
+  with `app.once`, so while the gateway stops (several seconds) a second Cmd+Q,
+  tray Quit or window close would find no listener and exit the app before the
+  apply. The handler therefore holds every quit that arrives while the apply is
+  in progress (`event.preventDefault()` and a re-arm), and the apply's own
+  `app.exit` is the only exit. The feed lane holds quits for its gateway stop
+  the same way. Pinned by `test/update-second-quit-keeps-apply.test.js`.
 - **An apply the quit left behind is finished at the next app start.** If the
   quit-time apply was interrupted or failed, the arm stays. The next start runs
   it in Electron main (`startup-apply.js`) before the gateway spawns and before
@@ -2015,7 +2042,8 @@ KIROCREW_MANAGED_INSTALL_MARKER=/path/to/marker.json bash packaging/build-deskto
 
 `build-desktop.sh` validates the file (a JSON object of string fields
 `managedBy` / `updateCommand` / `checkCommand`, plus an optional absolute or
-`~/` `relaunchPath`, under 8 KiB, with an
+`~/` `relaunchPath` and an optional `updatePrompts` that must be `"edition"`,
+under 8 KiB, with an
 `updateCommand` — a marker that disables updates while offering none fails the
 build rather than shipping silently) and copies it to
 `website/electron/EXTERNALLY-MANAGED`, which electron-builder packs **into

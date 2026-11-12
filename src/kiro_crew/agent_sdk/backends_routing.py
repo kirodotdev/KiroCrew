@@ -162,6 +162,20 @@ ACP_BACKENDS_META_IDENTITY: FrozenSet[str] = frozenset({ACP_BACKEND_GOOSE})
 # permission event can only narrow or veto.
 ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL: FrozenSet[str] = frozenset({ACP_BACKEND_KAS})
 
+# Backends whose ``tool_call`` frame says, in a field the harness writes, whether
+# an MCP server served the call, so the session handle can give each non-shell
+# call its own silence bound (``acp.tool_silence``): a built-in, an MCP tool on a
+# network or a stdio server, or a sub-agent call. kiro-cli names the server in
+# ``_meta.kiro.mcpServerName`` on an MCP call and stamps ``_meta.kiro.toolName``
+# on every tool, built-ins included (``acp_frames/kiro/tool-classes-b-live.jsonl``,
+# ``acp_frames/kiro/side-read-only-live.jsonl``); KAS names the server in
+# ``_meta.kiro.serverName`` on an MCP call and stamps the tool's ACP ``kind`` on a
+# built-in (``acp_frames/kas/mcp-live-apply-live.jsonl``,
+# ``acp_frames/kas/side-read-only-live.jsonl``). A harness outside the set keeps
+# the oracle-driven tool-stall rules alone: with no such field a quiet MCP call
+# reads as a built-in and would get the built-in's five-minute bound.
+ACP_BACKENDS_TOOL_SILENCE_TIMER: FrozenSet[str] = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+
 # Backends whose sub-agent calls the direct ``AcpClient`` tells apart from the
 # parent's (``acp.client_permissions._is_child_permission_frame``): a frame under a
 # foreign ``sessionId`` (kiro-cli's sub-agents run in their own session), or a
@@ -297,19 +311,28 @@ ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS = frozenset(
 #: ``userPromptSubmit``, ``agentSpawn`` and ``stop``. Every member of
 #: ``ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS`` is one, since Crew fires all five there.
 #:
-#: claude is a member of this set alone. Its harness is handed no spec, so nothing
-#: else runs the field, and none of these four events needs a permission request to
-#: fire on. ``preToolUse`` does: claude approves some calls inside the harness
-#: without asking, so a gating hook would be skipped on exactly those, and its
-#: ``preToolUse`` entries keep the session-start notice that says they do not run.
-#: That is why claude stays out of the gating set, whose every branch (the
-#: unreadable-spec block, the permission-request gate, the skipped informational
-#: fire) assumes each covered call reaches Crew as a permission request.
+#: claude and codex are members of this set alone. Neither harness is handed the
+#: spec, so nothing else runs the field, and none of these four events needs a
+#: permission request to fire on. ``preToolUse`` does, and each approves some calls
+#: inside the harness without asking: claude its pre-approved tools, codex every
+#: read and every command that stays inside its own sandbox under the ``read-only``
+#: mode Crew sets (the live codex captures needed a command asking to leave that
+#: sandbox to raise a request at all). A gating hook would be skipped on exactly
+#: those, so their ``preToolUse`` entries keep the session-start notice that says
+#: they do not run. That is why both stay out of the gating set, whose every branch
+#: (the unreadable-spec block, the permission-request gate, the skipped
+#: informational fire) assumes each covered call reaches Crew as a permission
+#: request.
+#:
+#: codex runs hooks of its own, but reads them from its own config layers
+#: (``~/.codex/hooks.json``, ``[hooks]`` in ``config.toml``), never from the Kiro
+#: spec, and codex-acp's ``session/new`` has no hooks field, so Crew firing the
+#: spec's hooks runs none of them twice.
 #:
 #: kiro-cli is NOT a member and must never become one: it runs the field itself,
 #: so membership would run every spec hook twice.
 ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS = ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS | frozenset(
-    {ACP_BACKEND_CLAUDE}
+    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX}
 )
 
 #: Backends on the direct ``AcpClient`` whose session never reads the agent spec's
@@ -331,6 +354,30 @@ ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS = ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
 #: commands kiro-cli allows. The other backends stay out until their seed is shown
 #: to make every shell and write call ask.
 ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS: FrozenSet[str] = frozenset({ACP_BACKEND_CLAUDE})
+
+#: Backends whose session never reads the agent spec's ``resources``, so Crew puts
+#: the steering documents its ``file://`` entries name into the prompt, with the
+#: global and project ``.kiro/steering`` trees kiro-cli adds to them
+#: (``context_assembly.inclusion.steering_resources_part``). Crew sends them at
+#: session start and again after a compaction, for the Kiro Crew default agent in a
+#: chat that is not a crew member's. Context assembly asks it by provider label
+#: (``agent_sdk.drivers.acp.crew_loads_spec_steering``).
+#:
+#: claude and codex are the members: each is handed no spec, and Crew's prompt text
+#: reaches each one. kiro-cli is NOT a member and must never become one: it reads
+#: the spec off disk, so membership would send every document twice. KAS is not
+#: either: it reports ``native_steering`` and loads the trees itself. The other
+#: harnesses stay out until their prompt is shown to carry the documents.
+ACP_BACKENDS_CREW_LOADS_SPEC_STEERING: FrozenSet[str] = frozenset(
+    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX}
+)
+
+#: Backends that read the project's ``AGENTS.md`` themselves from the session's
+#: working directory, so Crew's steering load leaves that file out
+#: (``agent_sdk.drivers.acp.reads_project_agents_md``). codex is the member: Crew
+#: sends the project as the ACP ``cwd``, and Codex's project-doc discovery reads
+#: ``AGENTS.md`` from it. claude is not: Crew's load is how the file reaches it.
+ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD: FrozenSet[str] = frozenset({ACP_BACKEND_CODEX})
 
 
 # ── How a harness is made to ask ──
@@ -463,6 +510,23 @@ ACP_BACKEND_PERMISSION_CONFIG: dict = {
     # the session's directory run without asking, which is the same residual Codex
     # has and the same OS credential mask compensates for.
     ACP_BACKEND_COPILOT: ("allow_all", "off"),
+}
+
+
+#: Harness id -> the ``(option_id, value)`` written INSTEAD of the
+#: :data:`ACP_BACKEND_PERMISSION_CONFIG` value when ``session/new`` advertises it.
+#: The required value stays the floor: an adapter that does not offer the preferred
+#: one keeps it, so an older adapter still runs as it did before.
+#:
+#: Codex's ``read-only`` mode makes Codex build its own OS sandbox (bubblewrap,
+#: Seatbelt) inside Crew's, which Crew's seccomp filter and macOS both refuse, so
+#: every shell command fails. ``external-sandbox`` (offered only
+#: when the harness sets ``CODEX_ACP_EXTERNAL_SANDBOX=true``) runs commands inside
+#: Crew's wrap with Codex's ``untrusted`` approvals, so commands and edits still
+#: ask. ``resolve_spawn_masks`` refuses every unwrapped tier, so the host sandbox
+#: this mode relies on is always there.
+ACP_BACKEND_PREFERRED_PERMISSION_CONFIG: dict = {
+    ACP_BACKEND_CODEX: ("mode", "external-sandbox"),
 }
 
 
@@ -734,6 +798,26 @@ def routing_for(backend: str) -> "Routing":
 def permission_config_for(backend: str) -> tuple:
     """The ``(option_id, value)`` *backend* needs, or ``("", "")`` when it needs none."""
     return ACP_BACKEND_PERMISSION_CONFIG.get(backend, ("", ""))
+
+
+def permission_value_for(backend: str, config_options: object) -> str:
+    """The value to write for *backend*'s permission option, given ``session/new``'s options.
+
+    The preferred value when the adapter advertises it, otherwise the required one.
+    """
+    option_id, required = permission_config_for(backend)
+    preferred_id, preferred = ACP_BACKEND_PREFERRED_PERMISSION_CONFIG.get(backend, ("", ""))
+    if not preferred or preferred_id != option_id or not isinstance(config_options, list):
+        return required
+    for option in config_options:
+        if not isinstance(option, dict) or option.get("id") != option_id:
+            continue
+        values = option.get("options")
+        if isinstance(values, list) and any(
+            isinstance(entry, dict) and entry.get("value") == preferred for entry in values
+        ):
+            return preferred
+    return required
 
 
 def permission_setting_for(backend: str) -> tuple:

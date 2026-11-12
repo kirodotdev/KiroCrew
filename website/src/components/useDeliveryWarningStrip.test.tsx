@@ -7,7 +7,7 @@ import { act, renderHook } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { Provider } from 'react-redux'
 import { store } from '../store'
-import { appendSlotMessage, confirmOptimisticSend, selectSlotMessages, selectSlotRunEpoch, startLocalTurn } from '../store/chatSlice'
+import { appendSlotMessage, confirmOptimisticSend, selectPendingTurn, selectSlotMessages, selectSlotRunEpoch, startLocalTurn } from '../store/chatSlice'
 import { useDeliveryWarningStrip } from './useDeliveryWarningStrip'
 import { removedSendsFor, warnDeliveryUnconfirmed, type DeliveryWarningSurface } from '../utils/deliveryWarning'
 import { i18nT } from '../i18n/t'
@@ -105,9 +105,9 @@ describe('useDeliveryWarningStrip', () => {
     store.dispatch(startLocalTurn(slot))
     warnDeliveryUnconfirmed(slot, { sendId: 'h4', surface: 'page', epoch: selectSlotRunEpoch(store.getState(), slot), sent: 'gone' })
     const m = mount(slot)
-    expect(store.getState().chat.pendingTurnSlot).toBe(slot)
+    expect(selectPendingTurn(store.getState(), slot)).toBe(true)
     act(() => { m.hook.result.current.onDismiss() })
-    expect(store.getState().chat.pendingTurnSlot).toBeNull()
+    expect(selectPendingTurn(store.getState(), slot)).toBe(false)
   })
 
   it('leaves a newer turn running when an older warned send is removed', () => {
@@ -120,7 +120,7 @@ describe('useDeliveryWarningStrip', () => {
     act(() => { m.hook.result.current.onDismiss() })
     expect(m.restored).toEqual([[slot, 'older']])
     expect(userRows(slot, 'h10')).toHaveLength(0)
-    expect(store.getState().chat.pendingTurnSlot).toBe(slot)
+    expect(selectPendingTurn(store.getState(), slot)).toBe(true)
   })
 
   it('a disabled host neither shows the strip nor removes anything', () => {

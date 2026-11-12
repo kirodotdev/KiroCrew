@@ -12,6 +12,7 @@ import { ICON_ACTION_ROW_CLS } from '../../utils/touchActions'
 import { isTouchDevice } from '../../utils/isTouchDevice'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import MessageErrorBoundary from '../../components/MessageErrorBoundary'
+import InfoTip from '../../components/InfoTip'
 import { lazyRetry } from '../../components/lazyRetry'
 import SelectionToolbar, { selectionTextFrom, useSelectionActions } from '../../components/SelectionToolbar'
 import { useAppSelectionActions } from '../../selectionActions/useAppSelectionActions'
@@ -527,10 +528,10 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" collisionPadding={forkWithHistory ? 8 : undefined} className={forkWithHistory ? 'min-w-[210px] max-w-[min(20rem,calc(100vw_-_1rem))]' : 'min-w-[210px]'}>
-          {/* Listed whenever Quote is offered, row seat or not: the bubble's
-              right-click menu leads with it, so the two look-alike menus on one
-              message agree about what it can do. */}
-          {quoteOffered && (
+          {/* Only when the row does not show Quote: More lists what the row
+              lacks. The right-click menu is a separate surface with no row
+              beside it, so it keeps Quote first on every reply. */}
+          {quoteOffered && !quoteRow && (
             <DropdownMenuItem className="[@media(hover:none)]:min-h-10" data-testid="quote-message-menu-item" onSelect={quoteShown}>
               <span className="flex items-center gap-2">
                 <Quote className="lucide-inline shrink-0" />
@@ -814,13 +815,19 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
             <span>{fmtTurnElapsed(turnStats.elapsed_ms)}</span>
             {/* Only a turn the gateway marked as one that rebuilt the prompt cache;
                 the hint says why it cost more than its neighbours. */}
-            {turnStats.cache === 'rewrite' && (
-              <span
-                className="ml-1 shrink-0 rounded-full border border-border px-1.5 text-[10px] leading-4 text-muted"
-                data-testid="turn-cache-rewrite"
-                title={i18nT('pages.chat.assistantMessage.turn_cache_rewritten_hint')}
-              >{i18nT('pages.chat.assistantMessage.turn_cache_rewritten')}</span>
-            )}
+            {turnStats.cache === 'rewrite' && (<>
+              <span aria-hidden="true">·</span>
+              {/* Plain footer text, then the app's one help-tip pattern: the
+                  glyph shows the reason on hover, on keyboard focus and on a
+                  tap, and gives it to a screen reader as a description. The
+                  empty `title` stops the footer's own title from applying
+                  here: an open tip drops its glyph's title, and the browser
+                  would otherwise show the footer summary as a second tooltip. */}
+              <span className="inline-flex shrink-0 items-center gap-0.5" data-testid="turn-cache-rewrite" title="">
+                {i18nT('pages.chat.assistantMessage.turn_cache_rewritten')}
+                <InfoTip text={i18nT('pages.chat.assistantMessage.turn_cache_rewritten_hint')} />
+              </span>
+            </>)}
           </>
         })()}
       </div>

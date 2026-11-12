@@ -4,7 +4,7 @@
  *  `SESSION_FILTERS` in ./filters. */
 import { DEFAULT_RECENT_WINDOW_MS } from '../recentWindow'
 import { DEFAULT_STALE_COLLAPSE_MS } from '../staleCollapse'
-import { safeSetItem } from '../../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import type { SidebarLane } from './types'
 
 // Recency window for the "Recent" filter: surfaces sessions whose last activity
@@ -191,9 +191,9 @@ const CONDUCTOR_SUPERSEDED_COLLAPSED_LS_KEY = 'mc-sidebar-conductor-collapsed'
  * "not one of mine".
  */
 export function readStoredLane(): SidebarLane {
-  const stored = localStorage.getItem(SIDEBAR_LANE_LS_KEY)
+  const stored = safeGetItem(SIDEBAR_LANE_LS_KEY)
   if (stored === 'tree' || stored === 'flat' || stored === 'conductor') return stored
-  return localStorage.getItem(FLAT_VIEW_LS_KEY) === '1' ? 'flat' : 'tree'
+  return safeGetItem(FLAT_VIEW_LS_KEY) === '1' ? 'flat' : 'tree'
 }
 
 /** The conductor rows the user has OPENED, or an empty set when the value is

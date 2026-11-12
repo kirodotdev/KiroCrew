@@ -55,7 +55,14 @@ from kiro_crew.apps.builtin_adoption_pins import (  # noqa: E402
 #: ``AppContext`` attributes above seam level 1, with the level that publishes each
 #: (app-kit-platform.md §32a, §32b, §36). An app reads them as ``ctx.<seam>`` or
 #: feature-detects them with ``getattr(<context>, "<seam>", None)``.
-_CONTEXT_SEAMS = {"turns": 2, "untrusted": 2, "lifecycle": 2, "auto_approve": 2}
+_CONTEXT_SEAMS = {
+    "turns": 2,
+    "untrusted": 2,
+    "lifecycle": 2,
+    "auto_approve": 2,
+    "app_token": 5,
+    "gateway_origin": 5,
+}
 
 #: A receiver whose last name says it is the app's context (``ctx``, ``self._ctx``,
 #: ``context``, ``app_ctx``). ``getattr``/``hasattr`` of a seam name counts on any

@@ -1062,10 +1062,12 @@ def read_app_secret(app_name: str) -> str:
 def replace_legacy_app_secret(app_name: str) -> str:
     """The stored secret, or a NEW one for an app an older version left a folder secret.
 
-    Called only where the new value reaches the app: the backend spawn, which hands it
-    over as ``KIROCREW_PROXY_SECRET``. The old file's bytes are never read, since a
-    sandbox could have read or planted them; the file is removed. An app with neither
-    gets none. Writes to disk, so never call it on the event loop.
+    Called where the app gets what the secret grants: the backend spawn, which hands it
+    over as ``KIROCREW_PROXY_SECRET``, and the load of the app's in-process hooks, whose
+    context mints app tokens with no secret (:func:`issue_in_process_app_token`). The
+    old file's bytes are never read, since a sandbox could have read or planted them;
+    the file is removed. An app with neither gets none. Writes to disk, so never call it
+    on the event loop.
     """
     # circular import: apps.protected_app_state -> member_records -> config
     from kiro_crew.apps import protected_app_state
@@ -1106,6 +1108,38 @@ def write_app_secret(app_name: str, secret: str) -> None:
     protected_app_state.write_secret(app_name, secret)
     with contextlib.suppress(OSError):
         _legacy_secret_path(app_name).unlink()
+
+
+def issue_in_process_app_token(app_name: str) -> str:
+    """An app token for code *app_name* runs in the gateway process, or ``""``.
+
+    ``AppContext.app_token`` calls this for an app's hooks, which hold no secret to
+    exchange: the gateway built that context for this app alone, so the context is the
+    proof of identity. The gate is the one :func:`validate_app_secret` applies first,
+    the owner-enable marker, so a hook task that outlives a disable gets nothing. The
+    token is the one the exchange route issues. Reads a sealed record, so never call it
+    on the event loop.
+    """
+    # circular import: apps.manager imports write_app_secret from token_auth
+    from kiro_crew.apps.host_exec_grants import host_exec_granted
+
+    if not app_name or not host_exec_granted(app_name):
+        _sel_fn().log_api_access(
+            caller=app_name or "unknown",
+            operation="app_token_exchange",
+            outcome="denied",
+            source="app_context",
+            error="app not enabled by the owner",
+        )
+        return ""
+    token = generate_token(app_name, app=app_name)
+    _sel_fn().log_api_access(
+        caller=app_name,
+        operation="app_token_exchange",
+        outcome="granted",
+        source="app_context",
+    )
+    return token
 
 
 def _evict_expired() -> None:

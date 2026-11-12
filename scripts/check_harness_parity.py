@@ -404,6 +404,9 @@ X_FEATURE_SETS: dict[str, frozenset[str] | None] = {
     "ACP_BACKENDS_HONOR_ZERO_TOOL_BAN": frozenset({"claude", "kas", "kiro", "opencode", "pi"}),
     "ACP_BACKENDS_MATE_WORKER_KIT": None,
     "ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL": None,
+    # kiro-cli 3.1.0 / 2.34.0 and KAS 0.66.62 / 0.66.43: the tool_call `_meta.kiro`
+    # server and tool stamps that tell an MCP call from a built-in.
+    "ACP_BACKENDS_TOOL_SILENCE_TIMER": None,
     # copilot's drop is off the wire (its log, no frame), so no capture can show it.
     "ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP": frozenset({"deepseek", "goose"}),
     "ACP_BACKENDS_UNMARKED_COMPACTION_PAIR": None,
@@ -443,6 +446,8 @@ X_FEATURE_SETS: dict[str, frozenset[str] | None] = {
     # inside session/prompt.
     "ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS": None,
     "ACP_BACKENDS_NATIVE_WORKFLOWS": None,
+    # claude's compaction frame is the standard ACP ``compaction_update``, not an X frame.
+    "ACP_BACKENDS_SENT_IMAGE_RECORD": frozenset({"codex", "kas", "kiro"}),
 }
 
 # Coverage is opt-out: every ``ACP_BACKENDS_*`` set is in X_FEATURE_SETS, here, or
@@ -501,6 +506,8 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
     "ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS": (
         "Crew-side: Crew's gate enforces the spec's shell and write allowlists"
     ),
+    "ACP_BACKENDS_CREW_LOADS_SPEC_STEERING": "Crew-side: steering files in the prompt text",
+    "ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD": "off the wire: AGENTS.md read from the cwd",
     "ACP_BACKENDS_LOCAL_CLEAR": "Crew-side: dashboard answers /clear",
     "ACP_BACKENDS_LOCAL_HARNESS_COMMANDS": "Crew-side: dashboard answers harness commands",
     "ACP_BACKENDS_CONTEXT_RECYCLE": "Crew-side: session recycle on full context",

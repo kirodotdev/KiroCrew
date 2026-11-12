@@ -1116,7 +1116,7 @@ async def _route_message(
         attachment_paths, text_blocks = await process_slack_files(orch, files, slack=_ingest_slack)
         _attachment_temp_paths = attachment_paths
 
-        # Image paths are inlined by ACP; opaque paths remain available to agent tools.
+        # Image paths are inlined by ACP; opaque and whole-text paths stay for agent tools.
         if attachment_paths:
             paths_text = "\n".join(attachment_paths)
             # Same layout as append_attachment_context: a fence the user left

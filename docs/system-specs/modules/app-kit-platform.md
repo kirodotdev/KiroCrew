@@ -2549,7 +2549,11 @@ owner-enable marker the gateway sealed is present, see dashboard-token-auth), an
 with it is the same scoped stream. `kirocrew_client.KiroCrewClient(app_name=...)`
 does the exchange (`authenticate()`) and `create_ws()` opens that socket. There is no
 second delivery channel, and an origin the gateway could not prove is omitted, so
-such a backend has none.
+such a backend has none. A backend that runs in the gateway process (`backend.hooks`
+and no spawn) gets no secret: `await ctx.app_token()` returns that same app-scoped
+token, passing `ctx.app_token` as the client's `on_auth_expired` renews it, and
+`ctx.gateway_origin()` returns the origin a spawned backend gets
+(`apps/gateway_origin.loopback_gateway_origin`, one rule for both).
 
 **`SlotOrigin` is declared by the layer that knows it, never derived.**
 `get_or_create_slot` cannot distinguish a person typing from a background
@@ -5612,7 +5616,7 @@ change lands in its owner.
 | `registry_pipeline/caches.py` | Everything under `cache/app-manifests`: manifest-cache and index-cache identity, paths, TTLs, reads and writes, expiry, garbage collection, and the legacy-filename migration |
 | `registry_pipeline/sources.py` | Which registries are in force: the bundled seed and edition rows, pinned and effective registries, identity keys, trust tiers, clone-host trust and sandbox mode, and the owner-designated same-repo carve-out with its SEL records |
 | `registry_pipeline/recovery.py` | The checkout slot (`app_source_dir`), move-aside with a refreshed retention clock, restore, the restorable subset, and the sweep of `.stale-*` / `.partial-*` siblings |
-| `registry_pipeline/checkout.py` | The git processes that fill a checkout: fetch by branch or pinned commit, clone-or-pull with origin and branch re-convergence, the origin read, bounded git-metadata reads, the timeouts, and the process-group kill |
+| `registry_pipeline/checkout.py` | The git processes that fill a checkout: fetch by branch or pinned commit, clone-or-pull with origin and branch re-convergence, the origin read, bounded git-metadata reads, the timeouts, the process-group kill, and the scratch dir a throwaway clone fills: `_mkdtemp_settled` makes it off the loop and removes it when a cancel lands during that hop, and `_rmtree_force_settled` removes it whole before a cancel propagates |
 | `registry_pipeline/store_art.py` | Store art for a not-installed app: the manifest paths that name it, and the owner-tier prewarm that writes its manifest and image bytes into the caches the blob proxy serves from, right after a fresh index fetch |
 | `registry_pipeline/indexes.py` | External index fetch, the configured-branch rule, fetch-then-swap caching, load with stale fallback, and the install-time owner-tier confirmation (`_owner_tier_confirmed`). A failed index clone that carries no URL or proxy credential logs git's exit code beside its redacted stderr tail, since the tail of a silent ssh failure is only git's generic `fatal` line |
 | `registry_pipeline/manifests.py` | An app's `app.json` for the store: subdirectory containment, fetch from the verified checkout or a throwaway clone, resolution through the cache, and the merge with its blob-proxy asset paths |
@@ -6789,7 +6793,14 @@ gateway's Application is wired in (`turn_host`, passed by both context builders,
 like `crewmate_host`); otherwise `None`. `run(key, text, *, agent, timeout_secs,
 cancel_ack_secs)` runs one turn under `ToolApprovalPolicy.HOOK_BASED` with
 `app=<ctx.name>`, so the PreToolUse gate resolves `POLICY ∩ PROFILE` for this app,
-and admits it through `run_admitted_or_raise(automation=True,
+and passes the gateway's approval prompt as `on_tool_approval`: `_init_task_runner`
+registers `agent_turn_sdk.set_turn_approver(lambda app:
+self._interactive_approval("app", requester=f"app {app}"))`, so a call the gate
+neither denies nor grants asks the owner as a cron job's does (`"app"` is in
+`_BACKGROUND_APPROVAL_SOURCES`, the deny-fast unattended window) instead of reaching
+`_resolve_permission`'s caller-less default approve. With no prompt registered (a
+bare test application) the turn passes none. The turn is admitted through
+`run_admitted_or_raise(automation=True,
 operation=BACKGROUND)`. Session acquisition is outside the budget; past it, or on
 the caller's cancellation, the provider is asked to cancel and the session is reset
 when it does not acknowledge, and the turn lease is always released, never the
@@ -6875,7 +6886,8 @@ Writers: `apps/agent_turn_sdk.py`, `apps/untrusted_text_sdk.py`, `apps/context.p
 `apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`,
 `apps/builtins/meetings/app.json`, `apps/builtins/meetings/backend/domain/session.py`,
 `apps/builtins/meetings/backend/domain/translate.py`. Tests:
-`test/test_app_agent_turn_sdk.py`, `test/test_app_untrusted_text_sdk.py`.
+`test/test_app_agent_turn_sdk.py`, `test/test_app_agent_turn_approval.py`,
+`test/test_app_untrusted_text_sdk.py`.
 
 ## 32b. `ctx.lifecycle`: an app's own switch and admission (seam level 2)
 
@@ -7037,7 +7049,7 @@ for the seams above level 1 it uses (`_seam_level_uses`): `agentTools`,
 `permissions.agentTurns` and `permissions.workerAutoApprove` in `app.json` (level 2),
 `credentialMasks` (level 3), and `ctx.turns`, `ctx.untrusted`, `ctx.lifecycle` or
 `ctx.auto_approve` in any `.py` file outside a `tests/` directory, a `test_*.py` or a
-`conftest.py` (level 2), read as an attribute of a context-named receiver or as a
+`conftest.py` (level 2), and `ctx.app_token` or `ctx.gateway_origin` there (level 5), read as an attribute of a context-named receiver or as a
 `getattr`/`hasattr` of that name on any receiver. A level below the highest one found
 is refused, naming what was found, by `compute` and `verify` alike, so a tree that
 feature-detects a seam and degrades still pins at that seam's level, and a host
@@ -7698,8 +7710,8 @@ data-home root, outside its data directory, so they keep their core rows until t
 store moves under `apps/ops-mission-control/data/` (#32681; see `ops-mission-control.md`,
 "Repository boundary").
 
-**Seam level.** The masks are level 3 (`APP_SDK_LEVEL` is 4 since §30.1's tool keys):
-an app that stores a credential reads `ctx.sdk_level` and, below 3, knows nothing masks
+**Seam level.** The masks are level 3 (level 4 adds §30.1's tool keys and level 5
+`ctx.app_token` and `ctx.gateway_origin`): an app that stores a credential reads `ctx.sdk_level` and, below 3, knows nothing masks
 the file.
 
 Writers: `apps/credential_masks.py`, `apps/manifest.py`, `apps/app_sdk_level.py`,

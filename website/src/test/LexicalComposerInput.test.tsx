@@ -9,6 +9,7 @@ import { IS_MAC } from '../hooks/useKeyboardShortcuts'
 import type { ComposerControl } from '../components/composerControl'
 import type { PromptHistoryItem } from '../components/composerPromptHistory'
 import { formatToken, type PasteBlock } from '../utils/pasteTokens'
+import { quoteIntoDraft } from '../chat-core/composer/quoteDraft'
 
 const block: PasteBlock = {
   id: 'paste-1',
@@ -184,6 +185,42 @@ describe('LexicalComposerInput', () => {
       />,
     )
     expect(await screen.findByTestId('paste-token-1')).toBeInTheDocument()
+  })
+
+  it('keeps the caret in the text when the host replaces the value, so the next typed text adds no blank lines', async () => {
+    const editorRef = createRef<LexicalEditor>()
+    function QuoteHost() {
+      const [value, setValue] = useState('')
+      return (
+        <>
+          <LexicalComposerInput value={value} blocks={[]} onChange={setValue} onBlocksChange={vi.fn()} onSend={vi.fn()} ariaLabel="Message input" placeholder="Write a message" editorRef={editorRef} />
+          <button onClick={() => setValue(prev => quoteIntoDraft(prev, 'a quoted line'))}>Quote</button>
+          <output data-testid="value">{JSON.stringify(value)}</output>
+        </>
+      )
+    }
+    render(<QuoteHost />)
+    await waitFor(() => expect(editorRef.current).not.toBeNull())
+    const editor = editorRef.current!
+    // The user has typed, so the editor holds a caret when the quote arrives.
+    await dispatchAtEnd(editor, CONTROLLED_TEXT_INSERTION_COMMAND, 'first comment')
+    fireEvent.click(screen.getByRole('button', { name: 'Quote' }))
+    const quoted = 'first comment\n\n> a quoted line\n\n'
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent(JSON.stringify(quoted)))
+    // Typed without moving the caret first: a caret left on the root would put
+    // this text in a second paragraph, which reads back as two more newlines.
+    act(() => { editor.dispatchCommand(CONTROLLED_TEXT_INSERTION_COMMAND, 'second comment') })
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent(JSON.stringify(quoted + 'second comment')))
+    expect(editor.getEditorState().read(() => $getRoot().getChildrenSize())).toBe(1)
+  })
+
+  it('does not give a caret to an editor that had none when the host replaces the value', async () => {
+    const editorRef = createRef<LexicalEditor>()
+    const props = { blocks: [], onChange: vi.fn(), onBlocksChange: vi.fn(), onSend: vi.fn(), ariaLabel: 'Message input', placeholder: 'Write a message', editorRef }
+    const { rerender } = render(<LexicalComposerInput value="plain" {...props} />)
+    await waitFor(() => expect(editorRef.current).not.toBeNull())
+    rerender(<LexicalComposerInput value="pushed by the host" {...props} />)
+    expect(editorRef.current!.getEditorState().read(() => $getSelection())).toBeNull()
   })
 
   it('copies and cuts selected paste chips as expanded text', async () => {

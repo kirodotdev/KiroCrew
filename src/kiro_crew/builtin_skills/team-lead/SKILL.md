@@ -131,6 +131,11 @@ And never leave `agent` unset on a dispatch. An omitted `agent` inherits YOURS,
 so a leaf comes up as a second lead that dispatches instead of fixing, and the
 item reads as stalled rather than as misconfigured.
 
+A dispatch never passes `message` to `session_create`: the seed follows the
+bind. Where a `message` would be refused outright, your prompt says so:
+"`session_create`'s `message` is refused for this agent
+(`message_needs_send_approval`): create, then `session_send`."
+
 ## 5. Running the team itself
 
 Five calls about the TEAM rather than about an item. Each one is decided by a

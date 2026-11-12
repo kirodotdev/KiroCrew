@@ -304,6 +304,55 @@ class TestRunLaunch:
         assert ("teardown", out.tag) in eng.calls
         assert "was removed" in out.error
 
+    @pytest.mark.parametrize(
+        ("exists", "confirms", "says", "never_says"),
+        [
+            (False, True, "was never created, so it is not billing", "was removed"),
+            (True, True, "was removed so it stops billing", "never created"),
+            (False, False, "did NOT confirm", "not billing"),
+            (RuntimeError("Throttling"), True, "was removed so it stops billing", "never created"),
+        ],
+    )
+    def test_a_failed_provision_says_whether_a_stack_existed(
+        self, tmp_path, exists, confirms, says, never_says
+    ):
+        """A refusal before CloudFormation (a denied CreateChangeSet, a subnet with no
+        egress) created no stack, so the card must not report one removed. The delete
+        runs whatever the lookup said, so an unconfirmed one keeps its billing warning."""
+
+        class ProbingEngine(FakeEngine):
+            def resource_exists(self, *, tag, profile, region):
+                self.calls.append(("resource_exists", tag))
+                if isinstance(exists, Exception):
+                    raise exists
+                return exists
+
+        s = _store(tmp_path)
+        job = s.create(profile="dev", region="us-east-1", size_key="balanced")
+        eng = ProbingEngine(
+            provision_exc=RuntimeError("AccessDenied: cloudformation:CreateChangeSet"),
+            teardown_confirms=confirms,
+        )
+        out = lj.run_launch(job, s, eng)
+
+        assert out.status == lj.FAILED
+        assert [c[0] for c in eng.calls if c[0] in ("resource_exists", "teardown")] == [
+            "resource_exists",
+            "teardown",
+        ]
+        assert says in out.error
+        assert never_says not in out.error
+
+    def test_the_ec2_engine_answers_existence_from_the_stack_lookup(self, monkeypatch):
+        from kiro_crew.cloud import launch_engine as le
+
+        stacks = {"kc-1": {"StackStatus": "ROLLBACK_COMPLETE"}}
+        monkeypatch.setattr(le.ec2, "find_stack", lambda tag, profile, region: stacks.get(tag))
+        eng = le.RealLaunchEngine()
+
+        assert eng.resource_exists(tag="kc-1", profile="", region="us-east-1") is True
+        assert eng.resource_exists(tag="kc-2", profile="", region="us-east-1") is False
+
     def test_a_failure_after_provisioning_does_not_tear_down_the_crew(self, tmp_path):
         # Once provisioning succeeded the crew exists; a later-step failure (register)
         # must NOT delete it — register even names it so the user can recover it. Only

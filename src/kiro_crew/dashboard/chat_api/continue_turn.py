@@ -4,7 +4,8 @@ failure streak that refuses a repeat, and ``POST /api/chat/slots/{slot}/end-wait
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
@@ -226,10 +227,13 @@ async def continue_slot_turn(
     slot: _ChatSlot,
     *,
     directive_user_origin: bool,
+    directive_channel_origin: bool = False,
     via: str = "",
     require_interrupted: bool = False,
     allow_restored_queue: bool = False,
     before_dispatch: Callable[[], None] | None = None,
+    prepare_dispatch: Callable[[], Awaitable[None]] | None = None,
+    dispatch_guard: Callable[[], AbstractContextManager[Any]] | None = None,
     extra_meta: dict[str, Any] | None = None,
     replaced: Callable[[], bool] | None = None,
 ) -> str:
@@ -251,7 +255,12 @@ async def continue_slot_turn(
     disk (``RESTORED_QUEUE_KEY=True``); agent tools leave it off to keep the
     original refusal. ``before_dispatch`` runs
     synchronously under the slot lock immediately before the queue insert and
-    may raise :class:`SlotContinueRefusal`. ``via`` is recorded on the
+    may raise :class:`SlotContinueRefusal`. ``prepare_dispatch`` is awaited
+    under the lock after the sub-agent probe, for a re-check that cannot run on
+    the event loop, and may raise it too. ``dispatch_guard`` wraps the final
+    synchronous stretch (before_dispatch, containment snapshot, insert).
+    ``directive_channel_origin`` stamps the recovery entry as channel text, so a
+    resumed turn keeps the channel's narrower authority. ``via`` is recorded on the
     ``dashboard_continue`` audit line when set. ``extra_meta`` is merged into
     the queue entry's ``meta`` (session control stamps the sending slot there,
     so a drain-time drop is reported back to it). ``replaced`` is checked after
@@ -339,6 +348,14 @@ async def continue_slot_turn(
             raise SlotContinueRefusal(
                 "sub-agents are running", "slot_subagents_running", response=subagents_denied
             )
+        if prepare_dispatch is not None:
+            # After the last probe: a re-check that must await (a policy read
+            # kept off the event loop). It may raise SlotContinueRefusal; the
+            # synchronous before_dispatch below still runs with no await between
+            # it and the insert.
+            await prepare_dispatch()
+            if replaced is not None and replaced():
+                raise SlotContinueRefusal("not found", "slot_not_found", status=404)
         if not _has_conversation(slot):
             raise SlotContinueRefusal("nothing to continue", "slot_empty")
         # The same session start has already failed twice in a row with nothing
@@ -377,35 +394,43 @@ async def continue_slot_turn(
                 "turn_not_failed",
             )
         resume = _MANUAL_RESUME_MSG if interrupted else _MANUAL_CONTINUE_MSG
-        if before_dispatch is not None:
-            # Synchronous, under the lock, with no await between it and the
-            # insert below: a caller whose authority was decided before the lock
-            # (session control) re-checks it at the last point where refusing
-            # still changes nothing.
-            before_dispatch()
-        # circular import: session_control imports this package's modules at module level.
-        from kiro_crew.dashboard import card_send
-        from kiro_crew.dashboard.session_control import containment_meta
+        # ``dispatch_guard`` (when given) is entered around the final check, the
+        # containment snapshot and the insert -- all synchronous -- and may raise
+        # SlotContinueRefusal on entry (a caller that must not wait on a lock the
+        # snapshot's readers take refuses instead of stalling the loop).
+        from contextlib import nullcontext  # this part runs on the facade's globals
 
-        # Admission stamp + provenance: recovery-kind entries are subject
-        # to drain re-validation like any other externally admitted content, and
-        # provenance follows the CALLER — the same request-identity split as
-        # api_chat. An app hitting Continue on its own slot must not gain the
-        # authenticated-human flag that gates session-mutating effects.
-        # The request being continued is a Dashboard card's: so is the continuation, with
-        # the same limits (the drain reads the mark off the entry).
-        _card_meta = (
-            {card_send.CARD_ORIGIN_META_KEY: True}
-            if card_send.latest_user_row_is_card(slot.messages)
-            else {}
-        )
-        slot.queue_insert(
-            0,
-            resume,
-            kind=SYNTHETIC_RECOVERY_KIND,
-            meta={**containment_meta(state, slot), **(extra_meta or {}), **_card_meta},
-            directive_user_origin=directive_user_origin and not _card_meta,
-        )
+        with dispatch_guard() if dispatch_guard is not None else nullcontext():
+            if before_dispatch is not None:
+                # Synchronous, under the lock, with no await between it and the
+                # insert below: a caller whose authority was decided before the lock
+                # (session control) re-checks it at the last point where refusing
+                # still changes nothing.
+                before_dispatch()
+            # circular import: session_control imports this package's modules at module level.
+            from kiro_crew.dashboard import card_send
+            from kiro_crew.dashboard.session_control import containment_meta
+
+            # Admission stamp + provenance: recovery-kind entries are subject
+            # to drain re-validation like any other externally admitted content, and
+            # provenance follows the CALLER — the same request-identity split as
+            # api_chat. An app hitting Continue on its own slot must not gain the
+            # authenticated-human flag that gates session-mutating effects.
+            # The request being continued is a Dashboard card's: so is the continuation, with
+            # the same limits (the drain reads the mark off the entry).
+            _card_meta = (
+                {card_send.CARD_ORIGIN_META_KEY: True}
+                if card_send.latest_user_row_is_card(slot.messages)
+                else {}
+            )
+            slot.queue_insert(
+                0,
+                resume,
+                kind=SYNTHETIC_RECOVERY_KIND,
+                meta={**containment_meta(state, slot), **(extra_meta or {}), **_card_meta},
+                directive_user_origin=directive_user_origin and not _card_meta,
+                directive_channel_origin=directive_channel_origin,
+            )
 
     # The queue entry is already committed; audit failure must not strand it.
     try:

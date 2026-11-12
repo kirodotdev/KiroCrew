@@ -24,7 +24,6 @@ lets the seam re-read and re-bill produces a second row and reddens the test.
 import asyncio
 import json
 import threading
-from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -53,11 +52,17 @@ def _isolated_shards(tmp_path, monkeypatch):
 
 
 def _rows(shard_dir):
-    day = datetime.now().astimezone().strftime("%Y-%m-%d")
-    path = shard_dir / f"{day}.jsonl"
-    if not path.exists():
-        return []
-    return [json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()]
+    """Every row in the isolated shard dir, read from whatever day files it holds.
+
+    No clock read: a run that crosses local midnight writes yesterday's file, and
+    a lookup by today's date would miss it.
+    """
+    return [
+        json.loads(ln)
+        for path in sorted(shard_dir.glob("[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].jsonl"))
+        for ln in path.read_text().splitlines()
+        if ln.strip()
+    ]
 
 
 def _stub_accessors(monkeypatch, *, usage):
@@ -162,6 +167,27 @@ async def test_claude_seam_cost_only_turn_is_still_recorded(_isolated_shards, mo
     (row,) = _rows(_isolated_shards)
     assert row["cost"] == pytest.approx(0.42)
     assert row["stop_reason"] == "timeout: turn ceiling"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delivered", [True, False])
+async def test_the_row_says_whether_the_cut_turn_streamed_reply_text(
+    _isolated_shards, monkeypatch, delivered
+):
+    # A turn stopped before any reply text is one message, not two, to the
+    # Session Activity counter that reads this field.
+    _stub_accessors(monkeypatch, usage=TurnUsage(cost_usd=0.1))
+    wrote = await chat_runner._persist_abnormal_turn_usage(
+        _FakeSlot(),
+        object(),
+        "chat-1-abc",
+        elapsed_ms=1000,
+        stop_reason=chat_runner.STOP_REASON_CANCELLED,
+        delivered=delivered,
+    )
+    assert wrote is True
+    (row,) = _rows(_isolated_shards)
+    assert row["delivered"] is delivered
 
 
 class _RealStats:

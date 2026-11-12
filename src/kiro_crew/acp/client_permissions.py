@@ -66,6 +66,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS,
     ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED,
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
+    permission_value_for,
     session_config_drift_issue,
 )
 from kiro_crew.constants import DENY_CAUSE_POLICY
@@ -80,11 +81,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.acp.client")
 
 
-# No CODEX_PATH constant: the adapter ships a compatible Codex binary as an npm
-# dependency and reads CODEX_PATH itself only to run a DIFFERENT one. An operator
-# who sets it reaches the child through the ambient environment copy, so naming it
-# here would imply a wiring that does not exist (its claude counterpart,
-# CLAUDE_CODE_EXECUTABLE, IS explicitly forwarded — the asymmetry is deliberate).
+# No CODEX_PATH constant here: the codex harness owns it
+# (``acp.harness.codex.CODEX_PATH_ENV``) and fills it on the runtime spawn with the
+# host's ``codex`` when that is at least the version of the Codex the adapter
+# bundles, as the claude host fills CLAUDE_CODE_EXECUTABLE.
 
 
 # The adapter release the gate contract was OBSERVED on: the frame corpus
@@ -149,7 +149,8 @@ async def _apply_session_permission_routing(self: AcpClient) -> None:
     decision, so the scope lives in one place instead of being re-derived here.
     """
     backend = self.backend
-    option_id, value = acp_tool_gate.permission_config_for(backend)
+    option_id, _required = acp_tool_gate.permission_config_for(backend)
+    value = permission_value_for(backend, self._acp_config_options)
     issue = acp_tool_gate.session_config_issue(backend, self._acp_config_options)
     if issue:
         # Not advertised: INDETERMINATE, never BYPASSED. The adapter may well

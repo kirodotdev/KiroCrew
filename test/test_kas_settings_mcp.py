@@ -2,7 +2,8 @@
 
 Covers ``useLegacyMcpJson`` (P1-17), glob ``disabledTools`` on the mcp.json
 servers KAS starts (P0-14), the undeclared ones a not-opted-in agent does not
-start (P0-13), and the 120 s default and ``mcp.initTimeout`` floor (P0-21, P1-37).
+start (P0-13), the 120 s default (300 s for a remote server) and the
+``mcp.initTimeout`` floor (P0-21, P1-37).
 """
 
 from __future__ import annotations
@@ -176,8 +177,9 @@ class TestUndeclaredFileServers:
         assert without_excluded_stubs([{"name": "pooled"}], stamped) == []
         assert finish_settings_mcp(stamped[0])["excludedTools"] == ["@pooled"]
 
-    def test_each_unreadable_file_gets_one_notice_line(self, home, work):
-        utf16 = b"\xff\xfe" + json.dumps({"mcpServers": {"x": {}}}).encode("utf-16-le")
+    @pytest.mark.parametrize("mark", [b"\xff\xfe", b""], ids=["marked", "unmarked"])
+    def test_each_unreadable_file_gets_one_notice_line(self, home, work, mark):
+        utf16 = mark + json.dumps({"mcpServers": {"x": {}}}).encode("utf-16-le")
         (home / "mcp.json").write_bytes(utf16)
         (work / ".kiro" / "settings").mkdir(parents=True)
         (work / ".kiro" / "settings" / "mcp.json").write_bytes(utf16)
@@ -270,7 +272,17 @@ class TestTimeout:
     def test_unset_timeout_gets_kiro_cli_default(self, home, work):
         out = _finish(_agent(mcpServers={"s": {"command": "x"}, "r": {"url": "https://h"}}), work)
         assert out["mcpServers"]["s"]["timeout"] == 120_000
-        assert out["mcpServers"]["r"]["timeout"] == 120_000
+        assert out["mcpServers"]["r"]["timeout"] == 300_000
+
+    def test_only_a_server_kas_reaches_by_url_gets_the_sign_in_wait(self, home, work):
+        # A remote entry Crew relays through a local launcher is a stdio server to
+        # KAS, and a longer ``mcp.initTimeout`` still raises the remote floor.
+        servers = {"r": {"url": "https://h"}, "bridged": {"url": "https://h", "command": "x"}}
+        out = _finish(_agent(mcpServers=servers), work)["mcpServers"]
+        assert out["bridged"]["timeout"] == 120_000
+        _write(home / "cli.json", {"mcp.initTimeout": 450_000})
+        out = _finish(_agent(mcpServers=servers), work)["mcpServers"]
+        assert out["r"]["timeout"] == 450_000
 
     def test_set_timeout_is_kept_and_alias_is_mapped(self, home, work):
         servers = {

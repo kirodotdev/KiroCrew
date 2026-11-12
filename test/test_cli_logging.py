@@ -1024,6 +1024,135 @@ class TestSetupCliLoggingServiceErrorFile:
         assert "kc-info-record" in self.console.getvalue()
 
 
+class _StuckConsole(io.StringIO):
+    """A console that stops reading: ``write`` blocks until ``release`` is set."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.writer_threads: set[int] = set()
+
+    def write(self, s: str) -> int:
+        self.writer_threads.add(threading.get_ident())
+        self.entered.set()
+        self.release.wait(10)
+        return super().write(s)
+
+
+class TestGatewayConsoleEchoOffLoop:
+    """A foreground gateway echoes to a terminal or pipe that can stop reading
+    (output paused with Ctrl-S, a stalled terminal app, an undrained pipe). The
+    echo runs on a listener thread, so the logging thread -- the event loop --
+    never waits on it, and the loop-stall watchdog never hard-exits over it."""
+
+    @pytest.fixture(autouse=True)
+    def _stuck_console(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr("kiro_crew.cli._fd_targets_file", lambda fd, path: False)
+        self.console = _StuckConsole()
+
+        def _basic_config(**_kwargs):
+            # The stdlib no-op rule, ignoring pytest's own capture handlers.
+            root = logging.getLogger()
+            ours = [
+                h
+                for h in root.handlers
+                if type(h) is logging.StreamHandler or isinstance(h, _CliLogQueueHandler)
+            ]
+            if not ours:
+                root.addHandler(logging.StreamHandler(self.console))
+
+        _floor_monkeypatch.setattr(logging, "basicConfig", _basic_config)
+        yield
+        self.console.release.set()
+
+    def test_stuck_console_does_not_block_the_logging_thread(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr("kiro_crew.cli._CONSOLE_DRAIN_TIMEOUT", 60.0, raising=False)
+        _setup_cli_logging("gateway", 1)
+        log = logging.getLogger("kiro_crew.test_console")
+        log.warning("first-record")
+        assert self.console.entered.wait(10)  # the listener is now stuck in write
+        log.warning("second-record")  # returns although the console is stuck
+        assert threading.get_ident() not in self.console.writer_threads
+        self.console.release.set()
+        _stop_log_queue_listener()
+        out = self.console.getvalue()
+        assert "first-record" in out
+        assert "second-record" in out
+
+    def test_no_console_handler_left_on_a_logger(self):
+        _setup_cli_logging("gateway", 1)
+        for lgr in (logging.getLogger(), logging.getLogger("kiro_crew")):
+            assert not any(type(h) is logging.StreamHandler for h in lgr.handlers)
+
+    def test_full_queue_drops_console_records_but_never_file_records(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr("kiro_crew.cli._CONSOLE_QUEUE_MAX", 3, raising=False)
+        _floor_monkeypatch.setattr("kiro_crew.cli._CONSOLE_DRAIN_TIMEOUT", 60.0, raising=False)
+        _setup_cli_logging("gateway", 1)
+        log = logging.getLogger("kiro_crew.test_console")
+        log.warning("rec-00")
+        assert self.console.entered.wait(10)
+        for i in range(1, 20):
+            log.warning("rec-%02d", i)  # past the cap: dropped, not blocking
+        assert threading.get_ident() not in self.console.writer_threads
+        self.console.release.set()
+        _stop_log_queue_listener()
+        assert 1 <= self.console.getvalue().count("rec-") <= 1 + 3
+        text = (config_dir() / "gateway.log").read_text(encoding="utf-8")
+        for i in range(20):
+            assert text.count(f"rec-{i:02d}") == 1
+
+    def test_stop_returns_while_the_console_is_stuck(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr("kiro_crew.cli._CONSOLE_DRAIN_TIMEOUT", 0.1, raising=False)
+        _setup_cli_logging("gateway", 1)
+        log = logging.getLogger("kiro_crew.test_console")
+        log.warning("stuck-record")
+        assert self.console.entered.wait(10)
+        log.warning("file-record")
+        _stop_log_queue_listener()  # exit must not wait on a console nobody reads
+        # Returned while the console is still stuck: nothing reached it yet.
+        assert self.console.getvalue() == ""
+        text = (config_dir() / "gateway.log").read_text(encoding="utf-8")
+        assert text.count("file-record") == 1
+
+    def test_file_tail_drains_before_the_console_within_one_budget(self, _floor_monkeypatch):
+        calls = []
+        real_stop = cli_mod._stop_console_queue_listener
+
+        def _spy(timeout=None):
+            # The file listener is already retired when the console's turn comes.
+            calls.append((cli_mod._LOG_QUEUE_LISTENER is None, timeout))
+            real_stop(timeout)
+
+        _setup_cli_logging("gateway", 1)
+        _floor_monkeypatch.setattr("kiro_crew.cli._stop_console_queue_listener", _spy)
+        log = logging.getLogger("kiro_crew.test_console")
+        log.warning("stuck-record")
+        assert self.console.entered.wait(10)
+        log.warning("file-record")
+        _stop_log_queue_listener(0.2)
+        ((file_first, budget),) = calls
+        assert file_first
+        assert budget is not None and 0.0 <= budget <= 0.2
+        text = (config_dir() / "gateway.log").read_text(encoding="utf-8")
+        assert text.count("file-record") == 1
+
+    def test_second_setup_keeps_the_console_echo(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr("kiro_crew.cli._CONSOLE_DRAIN_TIMEOUT", 60.0, raising=False)
+        self.console.release.set()
+        _setup_cli_logging("gateway", 1)
+        _setup_cli_logging("gateway", 1)
+        logging.getLogger("kiro_crew.test_console").warning("again-record")
+        _stop_log_queue_listener()
+        assert self.console.getvalue().count("again-record") == 1
+
+    def test_chat_keeps_its_synchronous_echo(self):
+        self.console.release.set()
+        _setup_cli_logging("chat", 1)
+        logging.getLogger("kiro_crew.test_console").info("chat-record")
+        assert "chat-record" in self.console.getvalue()  # no drain needed
+
+
 class TestChatConsoleShowsErrorsOnly:
     """``kirocrew chat`` without ``-v`` keeps its own records below ERROR out of
     the terminal; ``gateway.log`` still gets them."""

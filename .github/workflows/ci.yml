@@ -1282,11 +1282,12 @@ jobs:
         run: |
           # Reuse payload-free progress on full, reduced and repeated leaf runs.
           # A worker crash stays red; do not replace it and lose its failure report.
-          # faulthandler_timeout sits above the default 120 s per-test timeout. When
-          # SIGALRM cannot end a test (its thread stuck in C or without the GIL),
-          # faulthandler's C watchdog still dumps every thread's stack at 150 s. A
-          # test allowed a longer timeout dumps too past 150 s; a dump never fails it.
-          PROGRESS=(-p scripts.ci_pytest_progress --ci-progress-dir="$RUNNER_TEMP/pytest-progress" --max-worker-restart=0 -o faulthandler_timeout=150)
+          # When SIGALRM cannot end a test (its thread stuck in C or without the
+          # GIL), faulthandler's C watchdog dumps every thread's stack 30 s after
+          # that test's own timeout (scripts/ci_faulthandler_budget.py). Not a
+          # fixed faulthandler_timeout: a dump of a thread still running Python
+          # can segfault the worker, so it must never fire inside a test's budget.
+          PROGRESS=(-p scripts.ci_pytest_progress --ci-progress-dir="$RUNNER_TEMP/pytest-progress" --max-worker-restart=0 -p scripts.ci_faulthandler_budget --faulthandler-grace=30)
           # An explicit worker count, like the macOS lane's `-n 2`, instead of the
           # xdist budget: that budget reserves 5 GiB a worker for a FULL-suite
           # collection (at 3 GiB it granted a file shard 4 of the fleet runner's 8 cores).

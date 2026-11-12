@@ -965,11 +965,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }
   const {
     messageToDisplayIdx, navigateToTurn, chatNav, turnStepAnnouncement, chatPins, chatPinsLoading, isPinned, setPendingPinnedJump, handleEditLastRequest, handleJumpToPinnedMessage, handleJumpToQuote,
-    handleJumpToPin, handleTogglePinForMessage, handleUnpinById, pinError, pinStatus, dismissPinStatus, messageToDisplayIdxRef,
+    handleJumpToPin, handlePutPinInComposer, handleTogglePinForMessage, handleUnpinById, pinError, pinStatus, dismissPinStatus, messageToDisplayIdxRef,
   } = useTranscriptPins({
     embedded, dispatch, isMobile, activeSlot, messages, messagesRef, slotRunning, splitMode, crewWindow, slotHasMore, slotOldestIndex, cursorIsForActiveSlot, loadingOlder, activeViewIsBoundedPage,
     isWelcomeState, activeSlotRemoteBound, scrollerRef, search, navToDisplayIndex, pinnedJumpChrome, scrollToPinnedPrompt, setHighlightTs, splitFeatureEnabled, regenerating, setEditLast, editSeqRef,
-    renderedDisplayItems, renderedTranscript,
+    renderedDisplayItems, renderedTranscript, insertIntoComposer: insertDashboardReply,
   })
   // Search steps and clicks, the approval bar's "Show in chat", and ?msg= deep links.
   const { jumpToSearchResult } = useTranscriptJumps({
@@ -1258,7 +1258,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         panelSources={panelSources} dismissSource={dismissSource} reconcileIssueUrl={reconcileIssueUrl} reconcileSourceUrl={reconcileSourceUrl} search={search} selectedIssueUrl={selectedIssueUrl}
         selectedSourceUrl={selectedSourceUrl} selectIssueUrl={selectIssueUrl} selectSourceUrl={selectSourceUrl} tabsCtl={tabsCtl} submitComments={submitComments} currentSlot={currentSlot}
         handleAddToContext={handleAddToContext} sidePanelDock={sidePanelDock} sidePanelDockAnim={sidePanelDockAnim} effectiveSidebarWidth={effectiveSidebarWidth} toggleAct={toggleAct}
-        chatNav={chatNav} chatPins={chatPins} chatPinsLoading={chatPinsLoading} handleJumpToPin={handleJumpToPin} handleUnpinById={handleUnpinById} jumpToSearchResult={jumpToSearchResult}
+        chatNav={chatNav} chatPins={chatPins} chatPinsLoading={chatPinsLoading} handleJumpToPin={handleJumpToPin} handlePutPinInComposer={activeSlotRemoteBound || (splitMode && splitFeatureEnabled) || crewWindow ? undefined : handlePutPinInComposer} handleUnpinById={handleUnpinById} jumpToSearchResult={jumpToSearchResult}
         activeSlotTitle={activeSlotTitle} activitySlot={activitySlot} refreshActivitySlot={refreshActivitySlot} embedded={!!embedded || !!popout} chatPaneEl={chatPaneEl} hasTaskDashboard={hasTaskDashboard} sidebarOpen={sidebarOpen} sideOverlayPanelRef={sideOverlayPanelRef}
         sideOverlayPhase={sideOverlayPhase} sideOverlayX={sideOverlayX} panelFillWidth={panelFillWidth} panelMaximized={panelMaximized} panelReserve={panelReserve}
         pinSummary={sidePanelPinSummary} trackpad={panelTrackpad}

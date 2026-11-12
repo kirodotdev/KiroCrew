@@ -14,17 +14,18 @@ ignores, so a bridged note can never come back as a new turn or a new note.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from kiro_crew.notifications.bridge import BridgeTransportUnavailable
-from kiro_crew.notifications.bridge_actions import SLACK_ACTION_PREFIX
+from kiro_crew.notifications.bridge_actions import QUESTION_CHOICES, SLACK_ACTION_PREFIX
 from kiro_crew.notifications.bridge_approval_note import (
     ACTION_TOKEN_KEY,
     APPROVAL_DETAIL_KEY,
     SLACK_CARD_KEY,
     is_pending_approval_note,
 )
+from kiro_crew.notifications.bridge_question_note import OPTIONS_KEY, is_pending_question_note
 from kiro_crew.slack.format import SLACK_MAX_TEXT, escape_mrkdwn
 from kiro_crew.slack.retry import open_dm_with_retry
 
@@ -88,6 +89,74 @@ def action_blocks(text: str, token: str, detail: str) -> list[dict[str, Any]]:
     return blocks
 
 
+#: Slack's limit on a button's label.
+_BUTTON_LABEL_MAX = 75
+
+
+def button_label(label: str) -> str:
+    """*label* as a Slack button shows it: redacted, on one line, cut to the limit."""
+    shown = " ".join(_redact(label).split())
+    if len(shown) > _BUTTON_LABEL_MAX:
+        shown = shown[: _BUTTON_LABEL_MAX - 1].rstrip() + "…"
+    return shown
+
+
+def question_blocks(text: str, token: str, labels: list[str]) -> list[dict[str, Any]]:
+    """The Block Kit for a pending question: its text, then one button per option.
+
+    Each button's ``action_id`` names its option by position (``bridge_action_
+    option_0``) and its ``value`` is the token. A label is agent-authored, so it is
+    redacted and cut to Slack's button limit; a button label is ``plain_text``,
+    which Slack never parses as markup. The token appears in no text block.
+    """
+    buttons = []
+    for i, label in enumerate(labels):
+        buttons.append(
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": button_label(label)},
+                "action_id": f"{SLACK_ACTION_PREFIX}option_{i}",
+                "value": token,
+            }
+        )
+    blocks: list[dict[str, Any]] = []
+    if text and len(text) <= _SECTION_MAX:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": text}})
+    blocks.append({"type": "actions", "elements": buttons})
+    return blocks
+
+
+def _actions_for(
+    note: Mapping[str, Any],
+) -> tuple[str, Callable[[str], list[dict[str, Any]]] | None]:
+    """The note's action token and its block builder, or ``("", None)`` for none.
+
+    A pending approval needs something to show of the call (an Approve the owner
+    cannot read is not consent); a pending question needs every option it binds.
+    """
+    token = note.get(ACTION_TOKEN_KEY)
+    if not isinstance(token, str) or not token:
+        return "", None
+    if is_pending_approval_note(note):
+        detail = note.get(APPROVAL_DETAIL_KEY)
+        if isinstance(detail, str) and detail.strip():
+            return token, lambda last: action_blocks(last, token, detail)
+    elif is_pending_question_note(note):
+        labels = note.get(OPTIONS_KEY)
+        if (
+            isinstance(labels, list)
+            and labels
+            and len(labels) <= len(QUESTION_CHOICES)
+            and all(isinstance(label, str) and label for label in labels)
+        ):
+            shown = [button_label(label) for label in labels]
+            # Two buttons that read the same would send different answers the owner
+            # cannot tell apart; such a card is answered in the dashboard instead.
+            if all(shown) and len({s.casefold() for s in shown}) == len(shown):
+                return token, lambda last: question_blocks(last, token, labels)
+    return "", None
+
+
 def _text(note: Mapping[str, Any], field: str) -> str:
     value = note.get(field)
     return value if isinstance(value, str) else ""
@@ -125,8 +194,9 @@ class SlackBridgeSink:
 
     *state* is the gateway's ``DashboardState``; only its ``slack_client``,
     ``owner_id`` and ``bridge_actions`` are read. A pending-approval note carrying
-    an action token gets Approve and Deny buttons under its last part, and the
-    posted message is linked to the token.
+    an action token gets Approve and Deny buttons under its last part, a
+    pending-question note one button per option, and the posted message is linked
+    to the token.
     """
 
     transport = "slack"
@@ -148,22 +218,16 @@ class SlackBridgeSink:
         if not channel:
             raise BridgeTransportUnavailable("slack returned no DM channel for the owner")
         parts = render_slack_parts(note)
-        token = note.get(ACTION_TOKEN_KEY) if is_pending_approval_note(note) else ""
-        detail = note.get(APPROVAL_DETAIL_KEY)
-        # No buttons without what they approve: an Approve the owner cannot read
-        # is not consent.
-        has_detail = isinstance(detail, str) and bool(detail.strip())
-        token = token if isinstance(token, str) and has_detail else ""
+        token, build = _actions_for(note)
         # The buttons ride on the last part, so they sit under the whole note.
         last = parts.pop() if token and parts else ""
         # In order; a failed part raises, so the delivery is audited as an error
         # rather than completed with its tail missing.
         for part in parts:
             await client.post_message(channel, part)
-        if token:
-            ts = await client.post_blocks(
-                channel, action_blocks(last, token, str(detail)), last or "Approval needed"
-            )
+        if token and build is not None:
+            fallback = "Question waiting" if is_pending_question_note(note) else "Approval needed"
+            ts = await client.post_blocks(channel, build(last), last or fallback)
             registry = getattr(self._state, "bridge_actions", None)
             if registry is not None and ts:
                 registry.link_message(self.transport, f"{channel}:{ts}", token)

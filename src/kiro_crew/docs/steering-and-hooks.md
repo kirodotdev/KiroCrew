@@ -29,8 +29,8 @@ retype every conversation.
 Two different mechanisms put them there. kiro-cli loads both roots itself: the
 global one for every session it starts, and the workspace one because the
 session subprocess runs with the chat slot's project directory as its working
-directory. On the Claude Code backend, which does not read an agent spec's
-`resources` array, the gateway loads them explicitly —
+directory. On the Claude Code and Codex backends, which do not read an agent
+spec's `resources` array, the gateway loads them explicitly —
 `steering_target_admissible` and `_load_steering_resources` in
 `src/kiro_crew/context_assembly/agent_spec.py` anchor each `file://` entry the
 way kiro-cli does: a relative glob such as the shipped
@@ -38,7 +38,9 @@ way kiro-cli does: a relative glob such as the shipped
 bound), `~/` at `$HOME`, and an absolute path at its own glob-free prefix. They
 add what kiro-cli inherits by default: the global root `~/.kiro/steering`
 always (the host tree, which is the one folder steering skips as delivered),
-and the project's steering root and `AGENTS.md` when a project is bound. A hit is
+and the project's steering root and `AGENTS.md` when a project is bound. Codex
+reads the project's `AGENTS.md` itself from its working directory, so on Codex
+the gateway leaves that file out. A hit is
 admitted only when its resolved target stays under its entry's anchor, so a
 project steering link to a file outside the project is not read. An entry that
 cannot be globbed skips only itself.
@@ -87,7 +89,7 @@ Endpoints are plural nouns. Errors carry a stable `code` field.
 
 **On kiro-cli, Kiro Crew reports and edits the declaration; it does not decide
 delivery from it.** The two loads Kiro Crew runs itself, folder steering and the
-Claude Code backend's global-root load, apply one rule
+Claude Code and Codex global-root load, apply one rule
 (`every_session_body` in `src/kiro_crew/folder_steering.py`): a document
 declaring `manual`, `auto` or `fileMatch` is withheld, and the front matter is
 stripped from every document they deliver. What a mode causes on kiro-cli is the

@@ -119,8 +119,12 @@ class TestDeferredSubmission:
         members = 128
         manual_clock.install(monkeypatch, mcp_core)
         ids = iter(f"a{i}" for i in range(members))
+        beats = []
 
         def submit(path, body, **_kwargs):
+            if path == "/api/session-keepalive":
+                beats.append(body)
+                return {"ok": True}
             manual_clock.advance(8)
             return {"id": next(ids)}
 
@@ -135,9 +139,15 @@ class TestDeferredSubmission:
         started = manual_clock.monotonic()
         for index in range(members):
             assert step.step() is None
-            assert post.call_count == index + 1
+            assert post.call_count - len(beats) == index + 1
             assert entry.progressing(manual_clock.monotonic())
         assert manual_clock.monotonic() - started > PROGRESS_WEDGE_CEILING_SECS
+        # A submission that long is this call working: it beats all through it,
+        # naming no member, so the call's own silence timer never reads it as lost.
+        # A step starts every 8 s and a beat is due 30 s after the last one, so
+        # the beats land every 32 s until the last step starts.
+        assert len(beats) == (members - 1) * 8 // 32
+        assert all(b["phase"] == "submit" and b["subagent_ids"] == [] for b in beats)
         assert step.phase == "poll" and len(step.sa_ids) == members
         # The polling step retains no member prompts, and nothing reads as unsubmitted.
         assert step.agents_input == []

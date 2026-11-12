@@ -62,7 +62,7 @@ If the wedge survives the replacement, or the replacement lease is unobtainable,
 
 ### Unfinished Turns
 
-`_stream_task` asks `llm_helpers.unfinished_turn_error` at the turn's terminal event. A turn the backend never finished (stop reason `timeout` or `stale_recover`) is not the agent's reply: it takes the error branch and posts the error card as a system message, not the partial text and not silence. A finished turn and a user-requested stop (`cancelled`) post their text as before. `test/test_channel_prompt_busy.py` pins both.
+`_stream_task` asks `llm_helpers.unfinished_turn_error` at the turn's terminal event. A turn the backend never finished (stop reason `timeout` or `stale_recover`) is not the agent's reply: it takes the error branch and posts the error card as a system message, not the partial text and not silence. A finished turn and a user-requested stop (`cancelled`) post their text as before. `test/test_channel_prompt_busy.py` pins both. A prompt that ends because a call's own silence timer ran out is not the turn's end either: `_stream_task` streams the client through `continue_timed_out_calls`, which tells the same session the call timed out and goes on with the model's answer, at most `STOP_RECOVERY_MAX_RETRIES` times a turn, so the reply posted is that answer (see [acp-client](acp-client.md), "Per-call silence timer"; `test/test_timed_out_continuation.py` pins it).
 
 ### Message Routing
 

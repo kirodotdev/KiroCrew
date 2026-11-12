@@ -41,6 +41,7 @@ export interface DashboardState extends CloseWatchState {
    *  `hooks/websocket/relayClose.ts`); null while connected or for a plain
    *  drop. */
   offlineCause: OfflineCause | null
+  firstSocketPending: boolean // true until this page's first socket opens or closes: see useGatewayConnecting
   slots: ChatSlot[]
   /** Increments for every accepted authoritative full-slot frame/reply. */
   slotsGeneration: number
@@ -217,6 +218,7 @@ const initialState: DashboardState = {
   status: null,
   connected: false,
   offlineCause: null,
+  firstSocketPending: true,
   slots: [],
   slotsGeneration: 0,
   pinOrderRev: 0,
@@ -1059,6 +1061,7 @@ const dashboardSlice = createSlice({
     sseConnected(state) {
       const hadUnreadRelayHold = hasUnreadRelayHold(state)
       state.connected = true
+      state.firstSocketPending = false
       state.offlineCause = null
       state.slotsLoaded = false
       state.unreadDrainHeld = true
@@ -1067,7 +1070,7 @@ const dashboardSlice = createSlice({
       state.slotsHoldChannels = false
       relayUnreadIfHolding(state, hadUnreadRelayHold)
     },
-    sseDisconnected(state, action: PayloadAction<OfflineCause | null | undefined>) { state.connected = false; state.offlineCause = action.payload ?? null; state.unreadDrainHeld = true },
+    sseDisconnected(state, action: PayloadAction<OfflineCause | null | undefined>) { state.connected = false; state.firstSocketPending = false; state.offlineCause = action.payload ?? null; state.unreadDrainHeld = true },
     /** The `slotsPartial` label on a `slots` frame (see `unreadDrainHeld`).
      *  Dispatched for every frame, before its list: an absent field is an
      *  older gateway and reads as complete. */
@@ -1697,8 +1700,9 @@ const dashboardSlice = createSlice({
         //
         // Deliberately NOT gated on `slotsLoaded`, unlike the stale-close filter
         // above. `sseConnected` clears that flag on every reconnect while
-        // LEAVING the rows in place, and reconnect is the one caller that
-        // refetches while the WS replay backlog writes into those same rows — so
+        // LEAVING the rows in place, and a read a reconnect sends (after an
+        // empty or missing connect snapshot, `createReconnectSnapshotWait`)
+        // lands while the new socket's frames write into those same rows, so
         // gating here would switch the guard off precisely where the race is
         // most likely. A true cold boot needs no gate: `patchSlotRow` can only
         // stamp a row it found, an empty list has none, and the set is therefore

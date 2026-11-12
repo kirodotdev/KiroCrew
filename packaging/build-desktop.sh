@@ -1079,7 +1079,7 @@ if [ -n "${KIROCREW_MANAGED_INSTALL_MARKER:-}" ]; then
     let parsed;
     try { parsed = JSON.parse(buf.toString("utf8")); } catch (e) { console.error(`marker is not JSON: ${e.message}`); process.exit(1); }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) { console.error("marker must be a JSON object"); process.exit(1); }
-    const allowed = ["managedBy", "updateCommand", "checkCommand", "relaunchPath"];
+    const allowed = ["managedBy", "updateCommand", "checkCommand", "relaunchPath", "updatePrompts"];
     // The reader TRIMS each field and slices it to a cap (auto-update.js:
     // MANAGED_BY_MAX_CHARS / UPDATE_COMMAND_MAX_CHARS / CHECK_COMMAND_MAX_CHARS).
     // Validate the value the reader will actually see: a whitespace-only
@@ -1090,8 +1090,11 @@ if [ -n "${KIROCREW_MANAGED_INSTALL_MARKER:-}" ]; then
       if (!allowed.includes(k)) { console.error(`marker has unknown field "${k}" (allowed: ${allowed.join(", ")})`); process.exit(1); }
       if (typeof parsed[k] !== "string") { console.error(`marker field "${k}" must be a string`); process.exit(1); }
       if (parsed[k].trim() !== parsed[k]) { console.error(`marker field "${k}" has leading/trailing whitespace the reader would trim`); process.exit(1); }
-      if (parsed[k].length > caps[k]) { console.error(`marker field "${k}" is ${parsed[k].length} chars; the reader caps at ${caps[k]} and would truncate the command`); process.exit(1); }
+      if (k in caps && parsed[k].length > caps[k]) { console.error(`marker field "${k}" is ${parsed[k].length} chars; the reader caps at ${caps[k]} and would truncate the command`); process.exit(1); }
     }
+    // The reader honours one updatePrompts value and ignores any other, which
+    // would ship the core update dialogs beside the edition widget meant to own them.
+    if ("updatePrompts" in parsed && parsed.updatePrompts !== "edition") { console.error("marker field \"updatePrompts\" must be \"edition\", the only value the reader honours"); process.exit(1); }
     if (!parsed.updateCommand) { console.error("marker has no updateCommand: it would disable updates without offering any"); process.exit(1); }
     if (!parsed.checkCommand) { console.error("marker has updateCommand but no checkCommand: every managed-lane check will fail; no update will ever be offered"); process.exit(1); }
     // resolveRelaunchPath (auto-update.js) drops anything that is not absolute

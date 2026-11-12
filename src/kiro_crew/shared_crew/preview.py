@@ -27,11 +27,12 @@ import functools
 import json
 import logging
 import os
-import stat
 import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
+
+from kiro_crew.atomic_write import rewrite_in_place
 
 logger = logging.getLogger(__name__)
 
@@ -75,48 +76,13 @@ _WRITE_LOCK = threading.Lock()
 def write_stored(enabled: bool) -> None:
     """Persist the owner's choice. Does not change the running process's answer.
 
-    An existing record is rewritten IN PLACE, keeping its inode. A running Linux
-    sandbox bind-mounts that inode read-only at this name, and a rename over a
-    mount point in another namespace detaches the mount there, which would leave
-    the new file writable from inside that sandbox. A torn read during the
-    rewrite reads as off, the narrow answer. An absent record is created with
-    ``O_EXCL`` and written the same way, so a sandbox that pre-creates the name
-    first makes this open the existing file instead of renaming over it. A
-    symlink, reparse point or hard-linked record is refused, never followed.
+    The record is rewritten in place (:func:`atomic_write.rewrite_in_place`), so a
+    running Linux sandbox's read-only mount of it stays sealed. A torn read during
+    the rewrite reads as off, the narrow answer.
     """
-    path = _path()
     data = json.dumps({"enabled": bool(enabled)}, indent=2, sort_keys=True).encode("utf-8")
-    base = os.O_WRONLY | getattr(os, "O_BINARY", 0)
-    base |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     with _WRITE_LOCK:
-        try:
-            fd = os.open(path, base | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            _refuse_link(path)
-            fd = os.open(path, base)
-        try:
-            st = os.fstat(fd)
-            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
-                raise OSError(f"refusing to rewrite {path.name}: not a single-link regular file")
-            named = os.lstat(path)
-            if (named.st_dev, named.st_ino) != (st.st_dev, st.st_ino):
-                raise OSError(f"refusing to rewrite {path.name}: it changed while opening")
-            if hasattr(os, "fchmod"):
-                os.fchmod(fd, 0o600)
-            os.ftruncate(fd, 0)
-            while data:
-                data = data[os.write(fd, data) :]
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-
-
-def _refuse_link(path: Any) -> None:
-    """Raise when *path* is a symlink or a Windows reparse point."""
-    st = os.lstat(path)
-    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
-    if stat.S_ISLNK(st.st_mode) or (getattr(st, "st_file_attributes", 0) & reparse):
-        raise OSError(f"refusing to rewrite {path.name}: it is a link")
+        rewrite_in_place(_path(), data)
 
 
 def snapshot_at_start() -> bool:

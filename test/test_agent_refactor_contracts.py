@@ -3,7 +3,7 @@
 ``kiro_crew.agent`` is the import path everyone uses; the code lives under
 ``kiro_crew.agent_materialization``. Pinned: the module surface, the
 ``toolsSettings.subagent.availableAgents`` allowlist (read by
-``subagent_parts/agent_policy.py``) byte-for-byte on every path, the guest spec, and the
+``subagent_parts/spawn_allowlists.py``) byte-for-byte on every path, the guest spec, and the
 conductor prompts and grants. ``test_agent_refactor_spec_bytes.py`` freezes whole output.
 """
 
@@ -57,7 +57,7 @@ BASE_SURFACE: dict[str, str] = {
     "_CONDUCTOR_AGENT_FILENAME": "value str 923f5ca0627d569f",
     "_CONDUCTOR_CORE_GRANTS": "value tuple 7152a6eb169c7c40",
     "_CONDUCTOR_DASHBOARD_GRANTS": "value tuple 41cf09029e05ee1b",
-    "_CONDUCTOR_SYSTEM_PROMPT": "value str eb94688b1c3ce8dc",
+    "_CONDUCTOR_SYSTEM_PROMPT": "value str df77e4c7d4df4b41",
     "_CREW_ONLY_HOOK_EVENTS": "value frozenset 9d900cfb866f983a",
     "_DEFAULT_KIRO_HOOKS_DIR": "value host",
     "_DEFAULT_SPEC_OBSERVATION_ATTEMPTS": "value int 4e07408562bedb8b",
@@ -129,7 +129,7 @@ BASE_SURFACE: dict[str, str] = {
     "_WORKER_EXCLUDED_GRANTS": "value frozenset 1a2756dd420ed333",
     "_WORKER_MIRRORED_KEYS": "value tuple 27234a2a963813c9",
     "_WORKER_MIRRORED_SHAPES": "value dict 245618c04df2519f",
-    "_WORKER_SYSTEM_PROMPT": "value str 2420d5496ccf1181",
+    "_WORKER_SYSTEM_PROMPT": "value str 976f0b8249a8b0ef",
     "_WORKER_WORK_GRANTS": "value tuple 2617544a8ba41753",
     "_agent_identity_enabled": "callable _agent_identity_enabled() -> 'bool'",
     "_agentcore_capability_permitted": "callable _agentcore_capability_permitted() -> 'bool'",

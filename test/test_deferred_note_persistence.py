@@ -55,6 +55,7 @@ from kiro_crew.dashboard.slot_buffers import (
     DeferredHoldOutcome,
     DeferredHoldRebound,
     NoteEvidence,
+    _sanitize_restored_context,
     persist_deferred_notes_sync,
     serialize_deferred_notes,
     stamp_consumed_merge_cards_sync,
@@ -145,6 +146,31 @@ class TestEnqueueDurability:
             assert persisted[0]["session"] == effective_session_key(slot)
             assert persisted[0]["context"] is not None
             assert persisted[0]["id"], "the durable entry must carry the merge identity"
+        finally:
+            slot.task = None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("sent", [None, "false", 0])
+    async def test_a_non_bool_ephemeral_still_restores_its_context(
+        self, tmp_path: Path, monkeypatch, sent
+    ):
+        """The restore drops a context whose ``ephemeral`` is not a bool, so the
+        entry is built with a real bool and the 200 survives a restart."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "s1")
+        slot.task = asyncio.get_running_loop().create_future()
+        try:
+            async with self._make_client(state) as client:
+                resp = await client.post(
+                    "/api/chat/slots/s1/note",
+                    json={"content": "note during turn", "ephemeral": sent},
+                )
+                assert resp.status == 200
+
+            persisted = _meta(state, slot).get("deferred_notes")
+            assert isinstance(persisted, list) and len(persisted) == 1
+            assert _sanitize_restored_context(persisted[0]["context"]) is not None
         finally:
             slot.task = None
 

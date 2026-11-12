@@ -12,6 +12,7 @@ from typing import Any, Protocol
 from aiohttp import web
 
 from kiro_crew.dashboard import ws_chunk_scope as chunk_scope
+from kiro_crew.dashboard import ws_snapshot_hold as snapshot_hold
 from kiro_crew.dashboard.kiro_relay.caller import RELAY_TEAMMATE_WS_FLAG
 from kiro_crew.dashboard.turn_heartbeat import TurnHeartbeat
 from kiro_crew.write_buffer_level import level_is_progress_signal
@@ -164,6 +165,12 @@ WS_STALL_SECONDS = 5.0
 #: memory one tab can hold stays bounded.
 WS_HARD_MAX_BUFFERED_BYTES = 4 * WS_MAX_BUFFERED_BYTES
 
+#: Frames a socket may hold while it waits for its connect snapshot
+#: (``ws_snapshot_hold``), whose bytes ``WS_HARD_MAX_BUFFERED_BYTES`` caps. Each held
+#: frame keeps an entry the byte cap does not count, so the frames are capped too, at
+#: one per KiB of that ceiling.
+WS_HELD_MAX_FRAMES = WS_HARD_MAX_BUFFERED_BYTES // 1024
+
 #: Key on a tab's ``WebSocketResponse``: (when its window started, its buffer size
 #: at the last check), kept while the buffer is over ``WS_MAX_BUFFERED_BYTES``.
 _OVER_LIMIT_KEY = "_ws_over_limit"
@@ -249,6 +256,14 @@ class WebSocketHub:
         self._fold_watch_listeners: list[Callable[[], None]] = []
         #: The one ``heartbeat`` tick for every socket while any turn runs.
         self.turn_heartbeat = TurnHeartbeat(self.broadcast_heartbeat)
+        #: What a socket waiting for its connect snapshot may hold, and the checks
+        #: and drop the hold applies to it.
+        self._hold_ceiling = snapshot_hold.Ceiling(
+            max_bytes=WS_HARD_MAX_BUFFERED_BYTES,
+            max_frames=WS_HELD_MAX_FRAMES,
+            drop=self._drop_ws,
+            drop_if_stalled=self._drop_if_stalled,
+        )
 
     @property
     def _log(self) -> logging.Logger:
@@ -306,6 +321,10 @@ class WebSocketHub:
         # this loop only when startup has not already bound an authoritative one.
         self._serving_loop_provider()
         if self._drop_if_stalled(ws):
+            return
+        # A socket still waiting for its connect snapshot gets this frame right after it,
+        # or is dropped when holding it would pass the ceiling.
+        if snapshot_hold.held(ws, msg, self._hold_ceiling):
             return
         task = asyncio.ensure_future(ws.send_str(msg))
         self._owner._background_tasks.add(task)
@@ -774,15 +793,39 @@ class WebSocketHub:
         reads, or once the send has taken ``WS_OWNER_SEND_MAX_S`` in all. Where the
         level shows no reading (``level_is_progress_signal``, or a transport that
         reports no level), only ``WS_OWNER_SEND_MAX_S`` ends it.
+
+        A tab still waiting for its connect snapshot keeps ``msg`` until the snapshot
+        is queued (``ws_snapshot_hold``), and this waits for the send the release
+        starts, so ``msg`` counts only once that send completes and one that fails
+        raises here. A tab whose held frames ``msg`` would take past the ceiling is
+        dropped instead, and this raises at once. ``WS_OWNER_SEND_MAX_S`` bounds the
+        whole wait, held time included. The level is read only from the release on:
+        nothing reaches the buffer while ``msg`` is held, so a slow snapshot is not a
+        tab that stopped reading.
         """
-        if isinstance(msg, (bytes, bytearray, memoryview)):
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        send: asyncio.Future[None]
+        release = snapshot_hold.held_send(ws, msg, self._hold_ceiling)
+        if release is not None:
+            try:
+                released, _held = await asyncio.wait({release}, timeout=WS_OWNER_SEND_MAX_S)
+            finally:
+                release.cancel()
+            if not released:
+                raise TimeoutError(
+                    f"its connect snapshot was not sent in {WS_OWNER_SEND_MAX_S:g} s"
+                )
+            if release.cancelled():
+                raise ConnectionResetError("the socket was removed before its connect snapshot")
+            send = release.result()
+        elif isinstance(msg, (bytes, bytearray, memoryview)):
             send = asyncio.ensure_future(ws.send_bytes(bytes(msg)))
         else:
             send = asyncio.ensure_future(ws.send_str(msg))
         try:
-            loop = asyncio.get_running_loop()
             watch = level_is_progress_signal()
-            started = moved = loop.time()
+            moved = loop.time()
             last = _write_buffer_size(ws) if watch else None
             while True:
                 done, _pending = await asyncio.wait({send}, timeout=_OWNER_SEND_POLL_S)
@@ -1267,6 +1310,7 @@ class WebSocketHub:
         except ValueError:
             pass
         was_owner = ws in self._owner._owner_ws_clients
+        snapshot_hold.drop_held(ws)
         self._owner._owner_ws_clients.discard(ws)
         self._owner._ws_log_subscribers.discard(ws)
         self._owner._ws_subagent_subscribers.discard(ws)

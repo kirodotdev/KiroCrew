@@ -22,6 +22,7 @@ from kiro_crew.dashboard.state import (
     build_tool_stall_recovery_prompt,
 )
 from kiro_crew.recovery.ladder import L1_TOOL_CALL, SESSION_RECOVERY_MAX_ATTEMPTS, default_ladder
+from kiro_crew.timed_out_call import is_silence_timeout
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -188,6 +189,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
                 command=_stall_command,
                 stuck_input=_stuck,
                 processes_terminated=_terminated,
+                timed_out=is_silence_timeout(_stall_evidence or ""),
             )
             _queue_recovery(
                 turn,

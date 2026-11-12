@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.trust_patterns import ENV_ASSIGNMENT_RE
 
+from .call_views import once_per_call
 from .shell_normalizer_escapes import (  # noqa: F401  (also re-exported for importers)
     _ANSI_C_QUOTE_RE,
     _decode_ansi_c_body,
@@ -129,6 +130,7 @@ if TYPE_CHECKING:
 _GLOB_CHARS_RE = re.compile(r"[\[\]?*{}]")
 
 
+@once_per_call()
 def _program_basename(token: str) -> str:
     """The program name a token invokes, with shell wrappers stripped.
 
@@ -937,6 +939,7 @@ def _output_redirect_scan(raw: str, start: int = 0) -> "tuple[str, int] | None":
     return raw[match.end() : cut], cut
 
 
+@once_per_call()
 def _normalize_operand(token: str) -> str:
     """A token reduced to the text the shell will actually pass along.
 
@@ -959,6 +962,7 @@ def _normalize_operand(token: str) -> str:
 # what distinguishes ``bin/kirocrew token`` from ``cd kirocrew-wt-x``.
 
 
+@once_per_call()
 def _is_self_program(token: str) -> bool:
     """True if *token* names the Kiro Crew CLI itself, bare or via a path.
 
@@ -1699,6 +1703,7 @@ def _decode_shell_quoted_literals(cmd: str) -> str:
     return _ANSI_C_QUOTE_RE.sub(_replace, cmd)
 
 
+@once_per_call(fresh=list)
 def _shell_tokens(cmd: str) -> list[str]:
     """Tokenize *cmd* the way a POSIX shell hands argv to a program.
 

@@ -511,3 +511,11 @@ export interface McpGlobalScope {
   /** Human display label for the scope badge, e.g. "Claude". */
   label: string
 }
+
+/** An MCP config file the servers list skipped (`GET /api/mcp/unreadable`). */
+export interface McpUnreadableFile {
+  /** The file, with the home directory shown as `~`. */
+  file: string
+  /** The gateway's fixed repair reason, e.g. "it is saved as UTF-16; re-save it as UTF-8". */
+  reason: string
+}

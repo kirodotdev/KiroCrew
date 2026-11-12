@@ -155,6 +155,11 @@ GATEWAY_NOTICE_KAS_SIGNED_OUT = "kas_signed_out"
 # ``notice_args["binary"]``.
 GATEWAY_NOTICE_WINDOWS_SPAWN_BLOCKED = "windows_spawn_blocked"
 
+# A session start whose managed MCP servers missed the KAS readiness deadline
+# (``mcp_readiness_timeout``). Fixed text; no args. The row's English stays the
+# timeout's own message, for the log and the channel mirrors.
+GATEWAY_NOTICE_TOOLS_NOT_READY = "tools_not_ready"
+
 #: English fallback ``content`` for the recovery rows above. Plain language: no
 #: "backend", no "hiccup" (the parity test lints every ``GATEWAY_*_TEXT``).
 GATEWAY_CONNECTION_LOST_RETRYING_TEXT = "⟳ Connection lost — retrying…"

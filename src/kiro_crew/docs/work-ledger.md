@@ -156,7 +156,12 @@ returns is state. It does not return the conductor's goal or any sibling item: a
 worker has neither.
 
 A session that is not a dispatched worker gets `not_bound`, which is also how a
-root conductor learns it has no parent.
+root conductor learns it has no parent, and how a `kirocrew-worker` started with
+`spawn_run` learns that its task message is the whole task. A worker calls
+`work_brief` first whatever its first message says, so it never works out for
+itself whether it is bound, and one that is bound cannot skip its brief. Only
+`work_brief`'s refusal names the message as the task: a refused `work_report`
+may come from a worker whose item moved to another session.
 
 ## `work_report` — what a worker writes
 
@@ -259,11 +264,22 @@ crew member, which calls it, lands with the Crew panel.
 
 ## Why `done` is a claim
 
-A worker's `done` never closes an item. The conductor reads its whole ledger
-with `work_ledger_read` — every item, its own derived staleness flags, and a
-ready-to-evaluate batch — runs the acceptance evaluator against the item's own
-condition, and records the answer with `work_ledger_record` as a `verdict`.
-The evaluator is the `accept_eval` tool on `kirocrew-work`. It runs the
+A worker's `done` never closes an item. The conductor runs the acceptance
+evaluator against the item's own condition and records the answer with
+`work_ledger_record` as a `verdict`.
+The evaluator is the `accept_eval` tool on `kirocrew-work`. Called with no
+arguments it reads the stored condition of every item whose worker reported
+`done` from the conductor's own ledger, so the conductor reads nothing first and
+copies no document; an item that is not `done` is never evaluated. Each answer
+carries what the worker reported (`reported`: its summary and claimed `pr`), the
+`fails` so far and the worker's session key; an item that has read `pending` past
+its budget also carries `pending_overdue`, the conductor's last `decision` and its
+stored `acceptance`, and a bar that is not concrete yet comes back with its stored
+`acceptance` too. A reply too large for the tool-result limit leaves those fields
+out, stored bars first, and says so (`truncated`); if it is still too large it
+names the last items under `omitted` for a call of their own. A `pass` is
+then recorded and closed by one write, a `close` that carries the `verdict`.
+The tool runs the
 goal-conductor skill's bundled script in-process with typed arguments, takes no
 command or path to run, and is auto-approved for the conductor and the team
 lead, so an unattended verify cycle waits on no click. The script still runs by

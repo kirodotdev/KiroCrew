@@ -18,6 +18,7 @@ import {
   FILE_SEARCH_TIMEOUT_MS,
 } from '../api/client'
 import { __resetErrorJournalForTests, recentErrors } from '../utils/errorReport'
+import { apiErrorCode } from '../api/apiError'
 import { copyToClipboard } from '../utils/clipboard'
 import { resizeImageForModel } from '../utils/resizeImage'
 import { __resetArtifactWrites } from '../lib/artifactWrites'
@@ -475,6 +476,16 @@ describe('installFromRegistryStream', () => {
   it('throws before reading when the request itself is rejected', async () => {
     fetchMock.mockResolvedValue(res(500, 'gateway said no'))
     await expect(api.installFromRegistryStream('demo', () => {})).rejects.toThrow('gateway said no')
+  })
+
+  it('reads a JSON refusal before the stream as an ApiError, not raw JSON', async () => {
+    fetchMock.mockResolvedValue(
+      res(403, '{"error":"owner authorization required","code":"owner_only"}'),
+    )
+    const err = await api.installFromRegistryStream('demo', () => {}).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ApiError)
+    expect(apiErrorCode(err)).toBe('owner_only')
+    expect((err as Error).message).not.toContain('{"error"')
   })
 
   it('forwards the abort signal', async () => {

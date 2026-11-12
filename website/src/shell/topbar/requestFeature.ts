@@ -1,6 +1,6 @@
 import { useCallback } from 'react'
 import { useAppDispatch, useAppStore } from '../../store'
-import { appendSlotMessage, startLocalTurn, endLocalTurn, selectSlotRunEpoch } from '../../store/chatSlice'
+import { appendSlotMessage, startLocalTurn, endLocalTurn, selectPendingTurn, selectSlotRunEpoch } from '../../store/chatSlice'
 import { createChatForView, reportCreateFailure, showCreatedChat } from '../../lib/createdChatView'
 import { useAskingNavigate } from '../../components/NavigationLeaveGuard'
 import { mintSendId } from '../../utils/sendDelivery'
@@ -49,17 +49,12 @@ export function useRequestFeature(colorTheme: string) {
     // unconditional running flag would mark that session busy for a turn it
     // never started (review finding on #4198). The running flag goes through
     // `startLocalTurn`, the same mark a composer send leaves: it flips the
-    // visible footer and records the send as UNCONFIRMED, so a switch away
-    // while the POST is in flight parks the slot idle rather than busy -- a
-    // refused receipt after that switch has no active mirror left to clear.
-    // The mark is dispatched only while the created slot is still ACTIVE:
-    // `pendingTurnSlot` is one field for the whole store, so marking a slot
-    // the user already left would overwrite the guard of whatever slot they
-    // are sending from now, and a stale idle snapshot could unlock that
-    // composer mid-send. A slot the user left before the create settled
-    // simply gets no optimistic running flag, exactly as before.
+    // visible footer when the slot is on screen and records the send as
+    // UNCONFIRMED for that slot alone, so a switch away while the POST is in
+    // flight parks the slot idle rather than busy, with its mark kept for
+    // the way back.
     dispatch(appendSlotMessage({ slot, message: { role: 'user', content: visibleMessage, cls: '', ts: new Date().toISOString(), meta } }))
-    if (appStore.getState().chat.activeSlot === slot) dispatch(startLocalTurn(slot))
+    dispatch(startLocalTurn(slot))
     const sendEpoch = selectSlotRunEpoch(appStore.getState(), slot)
     // A send the server never accepted has to say so where the request landed
     // (#4198): an HTTP 4xx/5xx RESOLVES rather than rejecting, so the catch
@@ -91,7 +86,7 @@ export function useRequestFeature(colorTheme: string) {
         },
       }))
       const state = appStore.getState()
-      if (state.chat.pendingTurnSlot === slot && selectSlotRunEpoch(state, slot) === sendEpoch) dispatch(endLocalTurn(slot))
+      if (selectPendingTurn(state, slot) && selectSlotRunEpoch(state, slot) === sendEpoch) dispatch(endLocalTurn(slot))
     }
     try {
       // maxAge bounds the seed's lifetime: if the visible send below fails,

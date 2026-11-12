@@ -732,10 +732,20 @@ class FolderWatcher:
             # For every file, not only an AsciiDoc name: the reader is picked by
             # the resolved suffix, so a `.md` link to an `.adoc` file inlines too.
             included: set[str] = set()
+            # Chunks the pipeline reached, so a failed ingest is charged for the
+            # extraction calls it spent before failing.
+            attempted = [0]
+
+            def _count_extracted(stage: str, done: int, _total: int,
+                                 _attempted: list[int] = attempted) -> None:
+                if stage == "extracting":
+                    _attempted[0] = done
+
             item_ids, outcome = await self._ingest_file(
                 file_path, source_id, namespace, props, old_ids, root=uri,
                 embed_priority=embed_priority,
                 include_paths=include_paths, included=included,
+                on_progress=_count_extracted,
                 on_duplicate=lambda text_hash: self._record_deduped_state(
                     source_id, file_path, content_hash, mtime, now, text_hash, included))
             if item_ids is None:
@@ -757,6 +767,12 @@ class FolderWatcher:
 
                 await run_to_completion(_fail_preserving_reason)
                 stats["failed"] += 1
+                if chunk_budget and attempted[0]:
+                    chunks_ingested += attempted[0]
+                    if chunks_ingested >= chunk_budget:
+                        stats["chunks"] = chunks_ingested
+                        stats["budget_reached"] = 1
+                        break
             elif outcome == "deduped":
                 # Refused by the pre-ingest gate: this exact content is already in
                 # the Library under another source. 'deduped' -- the same status the
@@ -1334,6 +1350,7 @@ class FolderWatcher:
                            embed_priority: int = PRIORITY_NORMAL,
                            include_paths: frozenset[str] | None = None,
                            included: set[str] | None = None,
+                           on_progress: Callable[[str, int, int], None] | None = None,
                            ) -> tuple[list[str] | None, str]:
         """Ingest one file.
 
@@ -1341,6 +1358,9 @@ class FolderWatcher:
         AsciiDoc ``include::`` may expand into; every other reader ignores it.
         *included* collects the targets the read inlined, and is recorded with
         the committed group.
+
+        *on_progress* is forwarded to the pipeline, so the caller can charge a
+        failed ingest for the chunks it reached.
 
         Returns ``(item_ids, outcome)`` where *outcome* is ``"done"``,
         ``"failed"`` (``item_ids`` is ``None``), or ``"deduped"`` -- the
@@ -1509,6 +1529,7 @@ class FolderWatcher:
                 on_duplicate=_record_refused,
                 embed_priority=embed_priority,
                 count_toward_import_budget=False,
+                on_progress=on_progress,
                 include_paths=include_paths, included=included)
 
             if refused:

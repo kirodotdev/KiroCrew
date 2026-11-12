@@ -55,11 +55,15 @@ export const selectSendAccepted = (state: RootState, slot: string, sendId: strin
   selectSendConfirmed(state, slot, sendId) || selectSlotMessages(state, slot).some(m =>
     m.role === 'queued' && m.meta?.sendId === sendId && !m.meta?.optimistic)
 export const selectSlotStreamState = (state: RootState, slot: string): SlotState =>
-  slot === state.chat.activeSlot ? state.chat.slotState : (state.chat.slotRun[slot]?.state ?? 'idle')
+  slot === state.chat.activeSlot ? state.chat.slotState : (state.chat.slotRun?.[slot]?.state ?? 'idle')
 /** The turn-start count for `slot` (see `ChatState.runEpoch`): the identity a
  *  settlement captures so a late answer about one turn cannot idle the next. */
 export const selectSlotRunEpoch = (state: RootState, slot: string): number =>
   state.chat.runEpoch?.[safeKey(slot)] ?? 0
+/** Whether `slot` has a local send still awaiting server confirmation, on
+ *  screen (`pendingTurnSlot`) or not (its run entry's `pendingTurn`). */
+export const selectPendingTurn = (state: RootState, slot: string): boolean =>
+  state.chat.pendingTurnSlot === slot || !!state.chat.slotRun?.[safeKey(slot)]?.pendingTurn
 
 const EMPTY_TOOLLOG: ToolActivity[] = []
 /** Per-slot tool log, falling back to the global active mirror. */
@@ -200,7 +204,7 @@ export const selectContinuable = (state: RootState, slot?: string | null): boole
   const other = key && key !== c.activeSlot ? key : null
   const dashSlot = slotRowByKey(state.dashboard.slots, key)
   if (other) {
-    if (selectSlotStreamState(state, other) !== 'idle' || c.pendingTurnSlot === other || dashSlot?.running || dashSlot?.stopping) return false
+    if (selectSlotStreamState(state, other) !== 'idle' || selectPendingTurn(state, other) || dashSlot?.running || dashSlot?.stopping) return false
   } else if (c.slotRunning || c.slotStopping || c.pendingTurnSlot) return false
   if (dashSlot?.subagents_running) return false
   // A relay archive has NO continue: `relay_archive_refusal` rejects

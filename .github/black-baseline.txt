@@ -346,7 +346,6 @@ test/test_cron_sdk.py
 test/test_cron_slack_delivery.py
 test/test_cron_thread_routing.py
 test/test_cron_timezone_display.py
-test/test_dashboard.py
 test/test_dashboard_branding.py
 test/test_dashboard_cron_batch_delete_handler.py
 test/test_dashboard_file_io.py
@@ -506,7 +505,6 @@ test/test_mcp_gateway_cluster_fixes.py
 test/test_mcp_gateway_control_plane.py
 test/test_mcp_gateway_exclusive_backend.py
 test/test_mcp_gateway_image_budget.py
-test/test_mcp_gateway_oversize.py
 test/test_mcp_gateway_shutdown_and_env.py
 test/test_mcp_gateway_stub_optin.py
 test/test_mcp_gateway_stub_paths.py
@@ -592,7 +590,6 @@ test/test_release_promotion.py
 test/test_remote_artifacts.py
 test/test_resolve_skill_root_package.py
 test/test_resource_health_endpoint.py
-test/test_resource_pressure_notify.py
 test/test_reveal_in_file_manager.py
 test/test_reveal_path.py
 test/test_route_registry.py

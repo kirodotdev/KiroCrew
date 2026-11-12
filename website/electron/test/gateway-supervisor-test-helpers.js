@@ -205,7 +205,9 @@ function harness(overrides = {}) {
     clearIntervalFn: overrides.timers ? overrides.timers.clearIntervalFn : undefined,
     processRef,
     dirname: "/virtual/electron",
-    capturePySpyDumpFn: overrides.capturePySpyDumpFn,
+    // The real dump spawns py-spy, whose exit lands after a host-dependent number of loop turns.
+    capturePySpyDumpFn: overrides.capturePySpyDumpFn
+      || (async () => ({ ok: false, reason: "py-spy does not run in this harness" })),
   });
 
   return { supervisor, store, logs, warnings, errors, spawnCalls, tunnelCalls, fsMod };

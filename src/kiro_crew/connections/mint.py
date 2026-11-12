@@ -68,6 +68,7 @@ from kiro_crew.config.loader import data_home
 from kiro_crew.connections.tool_test import _classify as _classify_tool_inventory
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.mcp_grant import grant_fingerprint, grant_observed
+from kiro_crew.mcp_oauth_discovery import approve_discovered_oauth_endpoint
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.runtime_ownership import (
     RuntimeTeardownCommitted,
@@ -1111,6 +1112,13 @@ async def start_oauth_mint(
                 if req.get("serverName") == slug and req.get("oauthUrl"):
                     oauth_url = str(req["oauthUrl"])
                     break
+            if oauth_url:
+                # The same discovery step the chat banner runs: a configured server
+                # whose own authorization server is on neither endpoint list has its
+                # PKCE values scanned as secrets unless discovery from the URL the
+                # operator configured advertises this exact (host, path). It never
+                # raises and makes no request for a URL refused for any other reason.
+                await approve_discovered_oauth_endpoint(mcp_server_alias(slug), oauth_url)
             credential_bearing = (
                 await asyncio.to_thread(oauth_url_contains_credential, oauth_url)
                 if oauth_url
@@ -1240,8 +1248,14 @@ async def start_oauth_mint(
     except Exception as exc:  # noqa: BLE001 — background task; record, never raise
         logger.warning("OAuth mint for %r failed: %s", slug, type(exc).__name__)
         await _dispose_mint(holdings)
-        # Coarse code only — never provider- or exception-supplied text.
-        reason = "mint_" + type(exc).__name__.lower()[:32]
+        # Coarse code only — never provider- or exception-supplied text. A missing
+        # kiro-cli is named on its own: this route always runs on kiro-cli, whatever
+        # backend chats use, and a bare ``AcpError`` gives the card nothing to say.
+        reason = (
+            "mint_kiro_cli_missing"
+            if getattr(exc, "kiro_cli_missing", False) is True
+            else "mint_" + type(exc).__name__.lower()[:32]
+        )
         async with _mints_lock:
             entry = _mints.get(slug)
             if entry is not None and entry.get("token") == my_token:

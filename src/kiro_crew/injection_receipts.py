@@ -60,11 +60,16 @@ FINDINGS: Final = "findings"
 TURN_LESSONS: Final = "turn_lessons"
 #: ``memory.rule_authority_order``: the rule-block ids its order would add or drop.
 RULE_AUTHORITY_ORDER: Final = "rule_authority_order"
+#: ``memory.lesson_fold``: the rule-block ids it would fold, as ``[leader, folded]`` pairs.
+LESSON_FOLD: Final = "lesson_fold"
+#: ``memory.relevance_rule``: the findings, task-fact and activity ids its rule
+#: would add or drop, each block recorded as one part.
+RELEVANCE_RULE: Final = "relevance_rule"
 
 #: The blocks a line always names, recorded with :func:`record`.
 _BLOCK_KINDS: Final[tuple[str, ...]] = (LESSONS, FINDINGS, TURN_LESSONS)
 #: Stage fields, recorded with :func:`record_stage` and named only when recorded.
-STAGE_KINDS: Final[tuple[str, ...]] = (RULE_AUTHORITY_ORDER,)
+STAGE_KINDS: Final[tuple[str, ...]] = (RULE_AUTHORITY_ORDER, LESSON_FOLD, RELEVANCE_RULE)
 
 #: Every name a record is keyed by.
 KINDS: Final[tuple[str, ...]] = _BLOCK_KINDS + STAGE_KINDS
@@ -108,11 +113,26 @@ def replay(records: dict[str, dict[str, Any]]) -> None:
         return
     for kind, entry in records.items():
         if kind in STAGE_KINDS and isinstance(entry, dict):
+            parts = entry.get("parts")
+            if isinstance(parts, dict) and parts:
+                for part, ids in parts.items():
+                    if isinstance(part, str) and isinstance(ids, dict):
+                        _put_stage(
+                            sink,
+                            kind,
+                            entry.get("mode"),
+                            entry.get("policy"),
+                            _str_list(ids.get("would_add")),
+                            _str_list(ids.get("would_drop")),
+                            part,
+                        )
+                continue
             sink[kind] = _stage_entry(
                 entry.get("mode"),
                 entry.get("policy"),
                 _str_list(entry.get("would_add")),
                 _str_list(entry.get("would_drop")),
+                _pair_list(entry.get("pairs")) if "pairs" in entry else None,
             )
         elif kind in KINDS and isinstance(entry, dict):
             ids = entry.get("ids")
@@ -156,13 +176,75 @@ def _str_list(raw: object) -> list[str]:
     return [i for i in raw if isinstance(i, str)] if isinstance(raw, list) else []
 
 
-def _stage_entry(mode: object, policy: object, add: list[str], drop: list[str]) -> dict[str, Any]:
-    return {
+def _pair_list(raw: object) -> list[list[str]]:
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [
+        [pair[0], pair[1]]
+        for pair in raw
+        if isinstance(pair, (list, tuple))
+        and len(pair) == 2
+        and all(isinstance(key, str) and key for key in pair)
+    ]
+
+
+def current_ids(kind: str) -> list[str]:
+    """The ids tier *kind* last recorded in this collection; empty outside one."""
+    sink = _SINK.get()
+    entry = sink.get(kind) if sink is not None else None
+    return _str_list(entry.get("ids")) if isinstance(entry, dict) else []
+
+
+def _stage_entry(
+    mode: object,
+    policy: object,
+    add: list[str],
+    drop: list[str],
+    pairs: list[list[str]] | None = None,
+) -> dict[str, Any]:
+    entry: dict[str, Any] = {
         "mode": mode if isinstance(mode, str) else "",
         "policy": policy if isinstance(policy, int) and not isinstance(policy, bool) else 0,
         "would_add": add,
         "would_drop": drop,
     }
+    # Only a stage that groups rows names pairs, so every other stage field keeps
+    # its four keys.
+    if pairs is not None:
+        entry["pairs"] = pairs
+    return entry
+
+
+def _put_stage(
+    sink: dict[str, dict[str, Any]],
+    kind: str,
+    mode: object,
+    policy: object,
+    add: list[str],
+    drop: list[str],
+    part: str,
+) -> None:
+    """Store one stage record; with *part*, replace only that part's ids.
+
+    A stage that gates several blocks records each block as a part, so a block
+    rendered again replaces its own ids and leaves the other blocks'. The line
+    carries the union.
+    """
+    if not part:
+        sink[kind] = _stage_entry(mode, policy, add, drop)
+        return
+    previous = sink.get(kind)
+    raw = previous.get("parts") if isinstance(previous, dict) else None
+    parts: dict[str, dict[str, list[str]]] = dict(raw) if isinstance(raw, dict) else {}
+    parts[part] = {"would_add": add, "would_drop": drop}
+    entry = _stage_entry(
+        mode,
+        policy,
+        sorted({i for ids in parts.values() for i in ids["would_add"]}),
+        sorted({i for ids in parts.values() for i in ids["would_drop"]}),
+    )
+    entry["parts"] = parts
+    sink[kind] = entry
 
 
 def record_stage(
@@ -172,12 +254,16 @@ def record_stage(
     policy: int,
     would_add: Iterable[object] = (),
     would_drop: Iterable[object] = (),
+    pairs: Iterable[tuple[str, str]] | None = None,
+    part: str = "",
 ) -> None:
     """Record what stage *kind*'s new policy would change in this composition.
 
     *would_add* and *would_drop* are rows (or their keys) the new policy would put
-    into or take out of the block the prompt carries. Like :func:`record`, a later
-    record replaces an earlier one and a call outside a collection is a no-op.
+    into or take out of the block the prompt carries. *pairs*, for a stage that
+    groups rows, are ``(kept key, folded key)`` pairs. Like :func:`record`, a later
+    record replaces an earlier one and a call outside a collection is a no-op;
+    with *part*, only the earlier record of that part is replaced.
     """
     if kind not in STAGE_KINDS:
         raise ValueError(f"unknown receipt stage {kind!r}")
@@ -189,7 +275,16 @@ def record_stage(
         named = (row if isinstance(row, str) else row_key(row) for row in rows)
         return [key for key in named if key]
 
-    sink[kind] = _stage_entry(mode, policy, keys(would_add), keys(would_drop))
+    if part:
+        _put_stage(sink, kind, mode, policy, keys(would_add), keys(would_drop), part)
+        return
+    sink[kind] = _stage_entry(
+        mode,
+        policy,
+        keys(would_add),
+        keys(would_drop),
+        _pair_list(list(pairs)) if pairs is not None else None,
+    )
 
 
 def build_line(
@@ -204,13 +299,15 @@ def build_line(
     store: str,
     now: datetime | None = None,
 ) -> dict[str, Any] | None:
-    """The receipt line for one composition, or ``None`` when no lesson tier rendered.
+    """The receipt line for one composition, or ``None`` when nothing was recorded.
 
     A turn whose composition rendered no lesson block (a per-turn build after the
-    session start, with no per-message lessons) writes no line: the lessons in
-    front of the model are still the ones the session's earlier lines recorded.
+    session start, with no per-message lessons) and recorded no stage writes no
+    line: the lessons in front of the model are still the ones the session's
+    earlier lines recorded. A stage record alone (an activity block gated with
+    lessons switched off) still writes one, so its shadow data is kept.
     """
-    if not any(kind in receipts for kind in _BLOCK_KINDS):
+    if not any(kind in receipts for kind in KINDS):
         return None
     stamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     head, sep, _ = session_key.partition(":")
@@ -238,6 +335,7 @@ def build_line(
                 stage.get("policy"),
                 _str_list(stage.get("would_add")),
                 _str_list(stage.get("would_drop")),
+                _pair_list(stage.get("pairs")) if "pairs" in stage else None,
             )
     return line
 

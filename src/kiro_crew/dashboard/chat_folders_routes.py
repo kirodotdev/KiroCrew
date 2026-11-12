@@ -371,7 +371,9 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     # stamped once at create from the authenticated caller and is not a field a
     # request can hand over, take, or clear.
     changes: dict[str, object] = {}
-    if "name" in body:
+    # Test the VALUE, like the MCP twin: ``str(None)`` would rename the folder
+    # to "None", so an explicit null leaves the name as it is.
+    if body.get("name") is not None:
         new_name = str(body["name"]).strip()[:100]
         if not new_name:
             return web.json_response({"error": "name required"}, status=400)

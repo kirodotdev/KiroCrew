@@ -129,6 +129,9 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/usage/turns", handlers.api_usage_turns)
     app.router.add_get("/api/wakatime/stats", handlers.api_wakatime_stats)
     app.router.add_get("/api/wakatime/export", handlers.api_wakatime_export)
+    app.router.add_post("/api/wakatime/oauth/authorize", handlers.api_wakatime_oauth_authorize)
+    app.router.add_get("/api/wakatime/oauth/callback", handlers.api_wakatime_oauth_callback)
+    app.router.add_post("/api/wakatime/oauth/disconnect", handlers.api_wakatime_oauth_disconnect)
     app.router.add_get("/api/telemetry/beacon", handlers.api_beacon_status)
     app.router.add_get("/api/telemetry/collection", handlers.api_collection_status)
     # Owner-only, closed one-field body, no disk write (handlers/telemetry_ui_control.py).
@@ -252,6 +255,8 @@ def register(app: web.Application) -> None:
     # legitimate caller is the owner's browser.
     app.router.add_get("/api/security/credential-redaction", handlers.api_credential_redaction_get)
     app.router.add_put("/api/security/credential-redaction", handlers.api_credential_redaction_put)
+    app.router.add_get("/api/project-hooks/consent", handlers.api_project_hooks_consent_get)
+    app.router.add_put("/api/project-hooks/consent", handlers.api_project_hooks_consent_put)
     app.router.add_post("/api/security/redacted-value", handlers.api_owner_value_reveal)
     app.router.add_get("/api/approvals", handlers.api_approvals)
     app.router.add_post("/api/approvals/{id}/{action}", handlers.api_approval_resolve)

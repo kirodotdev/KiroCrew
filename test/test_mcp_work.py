@@ -66,6 +66,16 @@ def test_the_brief_tool_declares_an_empty_schema():
     assert MCP_WORK_SCHEMAS["work_brief"].fields == []
 
 
+def test_the_brief_tool_says_what_not_bound_means():
+    """The same rule the worker prompt and the refusal carry, where a caller that
+    has only the tool list reads it."""
+    definition = next(t for t in mcp_work._list_tools() if t["name"] == "work_brief")
+    assert (
+        "Answers 'not_bound' when no item is bound to this session: the message you "
+        "were given is then your whole task." in definition["description"]
+    )
+
+
 def test_work_ledger_read_advertises_the_five_optional_filters():
     """Every parameter narrows or shapes the read and none is required, so a
     conductor that passes nothing still gets its whole board — and the advertised

@@ -439,6 +439,7 @@ def main() -> None:
     cli_parser_agent.register_chat_parser(sub, _jail_opts)
     cli_parser_gateway.register_doctor_parser(sub)
     cli_parser_gateway.register_ledger_sweep_parser(sub)
+    cli_parser_gateway.register_tmp_parser(sub)
 
     # gateway
     gw_parser = cli_help.add_command(sub, "gateway")
@@ -962,6 +963,10 @@ def main() -> None:
             older_than_days=args.older_than_days,
             purge_unreadable=args.purge_unreadable,
         )
+    elif args.command == "tmp":
+        importlib.import_module("kiro_crew.temp_reclaim").run_command(
+            args.paths, dry_run=args.dry_run
+        )
     elif args.command == "manifest":
         _manifest(
             alias=getattr(args, "alias", None),
@@ -1274,6 +1279,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.cli_knowledge import _knowledge_stats  # noqa: F401
     from kiro_crew.cli_logging import (  # noqa: F401
+        _CONSOLE_DRAIN_TIMEOUT,
+        _CONSOLE_OFF_LOOP_COMMANDS,
+        _CONSOLE_QUEUE_LISTENER,
+        _CONSOLE_QUEUE_MAX,
         _GATEWAY_LOG_DETACHED,
         _GATEWAY_LOG_HANDLER,
         _GATEWAY_LOG_MAX_BYTES,
@@ -1283,12 +1292,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _LONG_LIVED_COMMANDS,
         _chat_console_filter,
         _CliLogQueueHandler,
+        _ConsoleQueueHandler,
+        _ConsoleQueueListener,
         _fd_is_regular_file,
         _fd_targets_file,
         _FdTrackingRotatingFileHandler,
+        _move_console_echo_off_loop,
         _prune_older_boot_logs,
         _redirect_fds_to,
         _rotate_boot_logs,
+        _stop_console_queue_listener,
+        _stop_file_log_listener,
         _stop_log_queue_listener,
         drain_log_queue_before_hard_exit,
     )

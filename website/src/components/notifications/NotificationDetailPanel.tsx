@@ -326,10 +326,10 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
                 testId="notif-approval-refusal"
                 message={refusalCopy}
               />
-              {/* A refused decide failed, so it is an error; see the no
-                  hand-off note above. */}
-              <ErrorNotice
-                variant="inline"
+              {/* A decide that found the approval gone is status, not an
+                  error: nothing the user did failed. */}
+              <StatusNotice
+                tone="info"
                 className={refusalCopy !== null ? 'mt-2' : 'mt-4'}
                 testId="notif-approval-retired"
                 message={retired ? i18nT('components.approvalCard.approval_no_longer_pending') : null}
@@ -344,12 +344,11 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
                 testId="notif-decision-recorded"
                 message={decidedDismissFailed ? i18nT('components.notifications.notificationFeed.decision_recorded') : null}
               />
-              {/* Boxed beside the boxed StatusNotice above it, so the two
-                  read as one pair; on a retired row it stays inline under
-                  "no longer pending". */}
+              {/* Boxed beside the boxed StatusNotice above it (decision
+                  recorded, or no longer pending), so the two read as one
+                  pair. */}
               <ErrorNotice
-                variant={decidedDismissFailed ? 'block' : 'inline'}
-                className={decidedDismissFailed ? 'mt-1' : retired ? 'mt-2' : 'mt-4'}
+                className="mt-1"
                 testId="notif-dismiss-failed"
                 message={dismissFailed ? decidedClearFailedCopy() : null}
               />

@@ -401,10 +401,10 @@ class TestLaunchResume:
         assert "is live on AWS" not in out
 
     def test_stale_saved_tag_failed_stack_is_not_resumed(self, monkeypatch):
-        # Defense in depth for a cloud.json written by an OLD build that saved
-        # last_tag before the deploy confirmed: if the saved tag points at a
-        # FAILED / no-instance stack, `launch` must NOT resume it (aborting at
-        # "instance not ready") — it must fall through to a fresh new launch.
+        # A new launch saves last_tag before provisioning, so the saved tag may
+        # point at a FAILED / no-instance stack: `launch` must NOT resume it
+        # (aborting at "instance not ready") — it must fall through to a fresh
+        # new launch.
         cfg = LaunchState(profile="dev", region="us-west-2", last_tag="kc-broken")
         _patch_post_launch(monkeypatch)
 
@@ -654,10 +654,9 @@ class TestLaunchResume:
             x == "i-new" for x in calls["login"]
         )  # sign-in + verify both check i-new
 
-    def test_failed_new_launch_does_not_persist_tag(self, monkeypatch):
-        # A FAILED first launch must NOT persist last_tag — otherwise cloud.json
-        # points at a rolled-back / no-instance stack and the next `launch`
-        # resumes it and aborts at "instance not ready" instead of retrying clean.
+    def test_failed_new_launch_keeps_the_record_naming_its_stack(self, monkeypatch):
+        # The tag is saved before provisioning, so a FAILED launch leaves the record naming
+        # the stack it tried to create: `status` and `destroy` find what it left behind.
         cfg = LaunchState(profile="dev", region="us-west-2", last_tag="")
         _patch_post_launch(monkeypatch)
         save_calls: list[tuple[str, str, str]] = []
@@ -675,17 +674,58 @@ class TestLaunchResume:
         monkeypatch.setattr(wizard, "_new_tag", lambda: "kc-new")
         monkeypatch.setattr(ec2, "list_stacks", lambda *_a, **_k: [])
         monkeypatch.setattr(ec2, "get_stack_failures", lambda *_a, **_k: [])
+        monkeypatch.setattr(ec2, "find_stack", lambda *_a, **_k: None)
         monkeypatch.setattr(ec2, "deploy", lambda **_k: (_ for _ in ()).throw(aws.AWSError("no")))
 
         assert wizard.launch(profile="dev", region="us-west-2", assume_yes=True) == 1
-        # NOTHING persisted on failure — the broken tag never reaches cloud.json.
-        assert save_calls == []
+        assert save_calls == [("dev", "us-west-2", "kc-new")]
 
-    def test_a_record_that_cannot_be_written_does_not_abort_the_launch(self, monkeypatch):
-        """The deploy is BILLED by the time the record is written, so the write cannot fail it.
+    @pytest.mark.parametrize(
+        ("status", "missing_action", "keep", "bills"),
+        [
+            (
+                "ROLLBACK_COMPLETE",
+                "iam:PassRole",
+                False,
+                "It holds no instance, so it does not bill.",
+            ),
+            ("CREATE_FAILED", "", True, "It may still be billing until you remove it."),
+        ],
+    )
+    def test_a_failed_deploy_names_the_stack_it_left_and_how_to_remove_it(
+        self, monkeypatch, capsys, status, missing_action, keep, bills
+    ):
+        """The line names the tag, Region and profile the stack is in, so it reaches the
+        stack even when the launch record could not be written."""
+        cfg = LaunchState(profile="", region="us-east-1", last_tag="")
+        _patch_post_launch(monkeypatch)
+        monkeypatch.setattr(wizard.LaunchState, "load", classmethod(lambda cls, *a: cfg))
+        monkeypatch.setattr(wizard.LaunchState, "record", classmethod(lambda cls, **k: None))
+        monkeypatch.setattr(wizard, "_new_tag", lambda: "kc-new")
+        monkeypatch.setattr(ec2, "list_stacks", lambda *_a, **_k: [])
+        monkeypatch.setattr(ec2, "get_stack_failures", lambda *_a, **_k: [])
+        looked_up: list[tuple] = []
+        monkeypatch.setattr(
+            ec2,
+            "find_stack",
+            lambda *a, **_k: looked_up.append(a) or {"StackStatus": status},
+        )
+        err = aws.AWSError("cloudformation deploy failed", missing_action=missing_action)
+        monkeypatch.setattr(ec2, "deploy", lambda **_k: (_ for _ in ()).throw(err))
 
-        A failed write warns and continues: sign-in and the dashboard tunnel matter more
-        to the operator than a pointer.
+        rc = wizard.launch(profile="dev", region="us-west-2", assume_yes=True, keep_on_failure=keep)
+
+        assert rc == 1
+        assert looked_up == [("kc-new", "dev", "us-west-2")]
+        out = capsys.readouterr().out
+        assert f"The stack kirocrew-kc-new is still in your account ({status}). {bills}" in out
+        assert "kirocrew cloud destroy --tag kc-new --region us-west-2 --profile dev" in out
+
+    def test_a_record_that_cannot_be_written_does_not_abort_the_launch(self, monkeypatch, capsys):
+        """A pointer is never worth failing a launch over.
+
+        A failed write warns and continues: the deploy, sign-in and the dashboard tunnel
+        matter more to the operator than a pointer.
         """
         cfg = LaunchState(profile="dev", region="us-west-2", last_tag="")
         calls = _patch_post_launch(monkeypatch)
@@ -707,12 +747,13 @@ class TestLaunchResume:
         assert rc == 0, "a pointer that could not be saved failed a launch that succeeded"
         # The steps AFTER the record still ran: that is the whole point.
         assert calls["login"], "sign-in was skipped because the pointer could not be saved"
-        # And it is not silent: the operator is told, and told how to reach the instance.
+        # And it is not silent: the operator is told, and told the flags that reach the stack.
         assert any("launch record" in w for w in warnings), warnings
+        assert "pass --tag kc-new --region us-west-2 --profile dev" in capsys.readouterr().out
 
-    def test_successful_new_launch_persists_tag_after_deploy(self, monkeypatch):
+    def test_successful_new_launch_persists_tag(self, monkeypatch):
         # On a SUCCESSFUL launch the tag IS persisted (so a later `launch`/status
-        # can resume it) — but only after the deploy confirms.
+        # can resume it).
         cfg = LaunchState(profile="dev", region="us-west-2", last_tag="")
         _patch_post_launch(monkeypatch)
         save_calls: list[tuple[str, str, str]] = []
@@ -1138,6 +1179,34 @@ class TestDeployProgressInterrupt:
             )
         assert proc.terminated is True
 
+    def test_ctrl_c_during_a_launch_names_the_stack_it_may_leave(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        # The deploy child stops, CloudFormation does not: the user is told which stack may
+        # still be creating and billing, how to check it and how to remove it, and the
+        # record already names it so a bare `kirocrew cloud status` finds it.
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        _patch_post_launch(monkeypatch)
+        monkeypatch.setattr(wizard, "_new_tag", lambda: "kc-new")
+        monkeypatch.setattr(ec2, "list_stacks", lambda *_a, **_k: [])
+
+        def _interrupted(**_k):
+            raise KeyboardInterrupt()
+
+        monkeypatch.setattr(wizard, "_deploy_with_progress", _interrupted)
+
+        with pytest.raises(KeyboardInterrupt):
+            wizard.launch(profile="dev", region="us-west-2", assume_yes=True)
+
+        out = capsys.readouterr().out
+        rate = f"${wizard.sizes.default_tier().approx_usd_per_hr:.2f}/hr"
+        assert "AWS may still be creating kirocrew-kc-new" in out and rate in out, out
+        scope = "--tag kc-new --region us-west-2 --profile dev"
+        assert out.index(f"kirocrew cloud status {scope}") < out.index(
+            f"kirocrew cloud destroy {scope}"
+        ), out
+        assert LaunchState.load().last_tag == "kc-new"
+
 
 class TestSizeKeyGuard:
     def test_unknown_size_key_returns_clean_error(self, monkeypatch, capsys):
@@ -1158,9 +1227,10 @@ class TestSizeKeyGuard:
 class TestThePriorPointerIsClearedBeforeANewStackExists:
     """A failed pointer write may leave "no target", never "the wrong target".
 
-    The post-deploy write may fail only because the old pointer is already gone; else a
-    bare `cloud destroy` would delete `kc-old` irreversibly. Real `launch()` and a real
-    record on disk, since the property is what is on disk at two moments.
+    The old pointer is gone before the new tag is written, so no failed write can leave
+    `kc-old` saved while a new stack comes up for a bare `cloud destroy` to delete
+    irreversibly. Real `launch()` and a real record on disk, since the property is what is
+    on disk at two moments.
     """
 
     @staticmethod
@@ -1179,8 +1249,8 @@ class TestThePriorPointerIsClearedBeforeANewStackExists:
             status="CREATE_COMPLETE",
         )
 
-    def test_a_failed_post_deploy_write_does_not_leave_the_old_tag(self, tmp_path, monkeypatch):
-        """`kc-old` saved, `--new` succeeds, the record write hits ENOSPC.
+    def test_a_failed_record_write_does_not_leave_the_old_tag(self, tmp_path, monkeypatch):
+        """`kc-old` saved, `--new` succeeds, the new tag's write hits ENOSPC.
 
         The launch still succeeds (rc 0) and the pointer left is EMPTY, not the old stack's.
         """
@@ -1227,9 +1297,9 @@ class TestThePriorPointerIsClearedBeforeANewStackExists:
     def test_a_declined_clear_aborts_before_provisioning(self, tmp_path, monkeypatch):
         """A refusal is not a commit.
 
-        A decline means another launch recorded its tag in between. Provisioning anyway,
-        then failing the record write, would leave a pointer to the OTHER launch's live
-        stack for a bare `destroy` to delete.
+        A decline means another launch recorded its tag in between. Writing this launch's
+        tag anyway, and failing that write, would leave a pointer to the OTHER launch's
+        live stack for a bare `destroy` to delete.
         """
         self._saved(tmp_path, monkeypatch)
         _patch_post_launch(monkeypatch)
@@ -1279,11 +1349,11 @@ class TestThePriorPointerIsClearedBeforeANewStackExists:
         assert rc == 0
         assert LaunchState.load().last_tag == "kc-new"
 
-    def test_the_pointer_is_already_gone_when_provisioning_starts(self, tmp_path, monkeypatch):
+    def test_the_new_tag_is_on_disk_when_provisioning_starts(self, tmp_path, monkeypatch):
         """The ordering, observed from inside the deploy rather than inferred from the source.
 
-        Clearing it after the deploy would satisfy the end-state test above while leaving the
-        whole window this fixes: the old tag on disk with a new stack coming up.
+        Writing it after the deploy would still end with `kc-new` saved, while leaving the
+        window an interrupted launch falls into: a new stack coming up that no record names.
         """
         self._saved(tmp_path, monkeypatch)
         _patch_post_launch(monkeypatch)
@@ -1300,9 +1370,35 @@ class TestThePriorPointerIsClearedBeforeANewStackExists:
         rc = wizard.launch(profile="dev", region="us-west-2", assume_yes=True, force_new=True)
 
         assert rc == 0
-        assert seen["tag_on_disk"] == "", seen
-        # And the successful launch still records its own tag afterwards.
+        assert seen["tag_on_disk"] == "kc-new", seen
         assert LaunchState.load().last_tag == "kc-new"
+
+    def test_a_rejected_profile_never_replaces_the_saved_record(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """`--new` skips discovery, so only an up-front check keeps `user@site` off disk.
+
+        Saved, it would be the default every bare `cloud list`/`status`/`destroy` refuses.
+        """
+        self._saved(tmp_path, monkeypatch)
+        _patch_post_launch(monkeypatch)
+        monkeypatch.setattr(wizard, "_new_tag", lambda: "kc-new")
+        deploys: list[str] = []
+
+        def _deploy(**kw):
+            deploys.append(kw["profile"])
+            return self._deploy_ok(**kw)
+
+        monkeypatch.setattr(wizard, "_deploy_with_progress", _deploy)
+
+        rc = wizard.launch(profile="user@site", region="us-west-2", assume_yes=True, force_new=True)
+
+        assert LaunchState.load() == LaunchState(
+            profile="dev", region="us-west-2", last_tag="kc-old"
+        )
+        assert rc == 1
+        assert deploys == [], "provisioning started with a rejected profile"
+        assert "profile: invalid format" in capsys.readouterr().out
 
     def test_resuming_the_saved_stack_does_not_clear_its_pointer(self, tmp_path, monkeypatch):
         """Only a NEW stack invalidates the old pointer.

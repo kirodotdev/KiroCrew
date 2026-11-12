@@ -7,6 +7,7 @@ interact with gateway services only through this interface.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -22,6 +23,7 @@ from kiro_crew.apps.crewmate_sdk import CrewmateSDK
 from kiro_crew.apps.cron_sdk import CronSDK
 from kiro_crew.apps.embed_sdk import EmbedSDK
 from kiro_crew.apps.event_bus import EventBus
+from kiro_crew.apps.gateway_origin import loopback_gateway_origin
 from kiro_crew.apps.job_sdk import JobSDK
 from kiro_crew.apps.lifecycle_sdk import AppLifecycleSDK
 from kiro_crew.apps.scrub_sdk import ScrubSDK
@@ -140,6 +142,36 @@ class AppContext:
 
     def __post_init__(self) -> None:
         self.untrusted = UntrustedTextSDK(self.name)
+
+    async def app_token(self) -> str:
+        """An app token for this app's own calls to the gateway REST API, or ``""``.
+
+        The token is the one ``POST /api/apps/<name>/token`` issues, so the token
+        middleware confines it to the manifest's ``permissions.api``. Code that runs
+        in the gateway process gets no app secret: the gateway keeps the secret where
+        no sandbox reads it, and a hook has nothing to hand on to a child. ``""``
+        when the owner has not enabled the app. Pass this method as the Python
+        client's ``on_auth_expired`` to renew the token after a 401 or 403.
+
+        Not gated by a permission: an app token reaches only what the app's
+        declared API already allows. The import is lazy so this module keeps its
+        aiohttp-free import.
+        """
+        from kiro_crew.dashboard.token_auth import issue_in_process_app_token
+
+        return await asyncio.to_thread(issue_in_process_app_token, self.name)
+
+    def gateway_origin(self) -> str:
+        """The gateway's origin for this app's own calls to it, or ``""``.
+
+        The origin a spawned backend gets in ``KIROCREW_GATEWAY_ORIGIN``, read when
+        called: ``http://127.0.0.1:<port>`` (``[::1]`` for an IPv6-loopback bind)
+        from the port the gateway holds. ``""`` when the gateway has no such
+        evidence or is bound to one specific interface, which a call on this host
+        cannot reach with an Origin-less request; a hook then has no base URL and
+        must not guess one.
+        """
+        return loopback_gateway_origin()
 
     async def require_owner(self, request: Any, operation: str) -> Any | None:
         """``None`` when *request* comes from the dashboard owner; else the refusal.

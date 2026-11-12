@@ -378,6 +378,8 @@ describe('phone chat page: one top bar', () => {
     localStorage.setItem('mc-onboarded', '1')
     const { store } = renderWithProviders(<App />, { route: '/settings' })
     await screen.findByTestId('settings-page')
+    // The page's first socket is still opening: nothing has failed yet (#34947).
+    expect(screen.queryByTestId('mobile-offline-strip')).toBeNull()
     // Drive the transport state explicitly rather than resting on the store's
     // initial value. The strip is the only generic
     // offline signal below the breakpoint, and it hangs off the bar out of
@@ -385,6 +387,10 @@ describe('phone chat page: one top bar', () => {
     act(() => { store.dispatch(sseDisconnected()) })
     const strip = screen.getByTestId('mobile-offline-strip')
     expect(strip).toHaveTextContent('Gateway offline')
+    // An ErrorNotice that announces itself: nothing else on the phone speaks the outage.
+    expect(strip).toHaveAttribute('role', 'alert')
+    // Its words sit on the danger tint, so they take the tint's contrast-safe text token.
+    expect(within(strip).getByText(/Gateway offline/)).toHaveClass('text-danger-text')
     expect(strip.parentElement).toBe(header())
     expect(strip).toHaveClass('absolute')
     // It hangs over the top of <main>: a readout must not swallow the taps

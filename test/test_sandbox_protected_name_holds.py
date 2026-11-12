@@ -484,7 +484,17 @@ class TestLeafOnlyPopulationIsRecorded:
     #: next start, which the boot-time apply installs on. Sealed read-only so an agent
     #: cannot arm one. It sits at the data-home root beside writable siblings and is
     #: published by a rename, so leaf-only is the only hold, as for ``computer_use.json``.
-    EXPECTED: dict[str, int] = {"standard": 330, "cc": 337, "strict": 338}
+    #: One more root-level directory, three entries per tier: ``update-staging`` -- the
+    #: self-update engine's wheel download directory, masked whole so no sandboxed
+    #: writer can replace a wheel between its digest check and pip's install. It moved
+    #: out of the sandbox read-write ``trust/``; at the data-home root beside writable
+    #: siblings, so leaf-only is the only hold, as for ``web-push``.
+    #: One more root-level file, ``project_hooks_consent.json`` -- the owner's
+    #: per-folder choice to run a checkout's own agent-spec hooks on KAS, sealed
+    #: read-only so an agent cannot turn a folder's hooks on for itself; a file at
+    #: the data-home root, so leaf-only is the only hold, as for
+    #: ``ssh_auth_sock_consent.json``.
+    EXPECTED: dict[str, int] = {"standard": 336, "cc": 343, "strict": 344}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

@@ -925,9 +925,17 @@ function createFeedLane({
       // recovering (see reportUpdaterFailure), so there is no gateway to restore.
       log.info("[update] deferred install on quit");
       let stillRunning = null;
+      // The stop takes seconds, and a second quit during it would find no
+      // listener (this one was registered with app.once) and exit before the
+      // install. Hold it for the stop, as the freshness gate above does.
+      quitPathVerifying = true;
+      app.once("before-quit", deferredInstallOnQuit);
       try { await stopGateway(); } catch (err) {
         stillRunning = gatewayStillRunning(err) ? err : null;
         log.error("[update] stop on quit errored", err);
+      } finally {
+        quitPathVerifying = false;
+        app.removeListener("before-quit", deferredInstallOnQuit);
       }
       // The user asked to QUIT: with a gateway from this app's bundle still
       // running, quit without installing rather than replace its files. The

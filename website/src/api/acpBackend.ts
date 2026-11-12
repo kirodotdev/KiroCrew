@@ -26,6 +26,14 @@ export const ACP_BACKEND_KAS = 'kas'
 /** kiro-cli and its KAS relay: the harnesses backed by the Kiro service. */
 export const KIRO_HARNESS_BACKENDS: readonly string[] = [ACP_BACKEND_KIRO, ACP_BACKEND_KAS]
 
+/** Claude Code's id (`ACP_BACKEND_CLAUDE` on the gateway). */
+export const ACP_BACKEND_CLAUDE = 'claude'
+
+/** The harnesses whose turns record a dollar cost (`TurnUsage.cost_usd`).
+ *  shortcut: Claude Code only, the one harness a live capture shows reporting
+ *  cost; add another once its capture shows the same. */
+export const DOLLAR_HARNESS_BACKENDS: readonly string[] = [ACP_BACKEND_CLAUDE]
+
 /** The harness an install runs when it holds no choice (absent or `''`). */
 export const DEFAULT_ACP_BACKEND = ACP_BACKEND_KAS
 
@@ -77,6 +85,17 @@ export function isKiroBackend(cfg: AcpBackendConfig | undefined): boolean {
 export function reportsCredits(cfg: AcpBackendConfig | undefined): boolean {
   if (cfg === undefined) return false
   return KIRO_HARNESS_BACKENDS.includes(configuredAcpBackend(cfg))
+}
+
+/**
+ * True only when a LOADED config names a harness in `DOLLAR_HARNESS_BACKENDS`,
+ * whose turns record tokens and a dollar cost. Named positively, like
+ * `reportsCredits`: a harness that reports neither (codex, pi) shows no token
+ * or dollar figures rather than zeros. `undefined` (not loaded, or failed) is
+ * neither, so nothing renders on a guess.
+ */
+export function reportsDollars(cfg: AcpBackendConfig | undefined): boolean {
+  return cfg !== undefined && DOLLAR_HARNESS_BACKENDS.includes(configuredAcpBackend(cfg))
 }
 
 /**

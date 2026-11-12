@@ -397,8 +397,10 @@ def install() -> None:
     # Write the launcher BEFORE loading: a loaded agent whose Program does not
     # exist fails to spawn and KeepAlive would retry it in a tight loop.
     write_live_program(render_live_program(kirocrew_bin()))
-    if PLIST_PATH.exists():
-        _bootout(wait=True)
+    # Boot out whatever launchd still holds, plist or not: a job whose plist is
+    # gone (an earlier uninstall launchd refused, or a hand-deleted file) is
+    # still loaded, and bootstrapping over it fails with "5: Input/output error".
+    _bootout(wait=True)
     _write_plist_atomic(render_plist())
     domain = _pod_launchd.domain()
     load_res = _bootstrap_into(domain)

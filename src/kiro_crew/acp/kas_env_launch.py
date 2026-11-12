@@ -565,7 +565,7 @@ def bridge_array(
                 if isinstance(p, dict) and isinstance(p.get("name"), str)
             }
             url = element.get("url")
-            entry = {"url": url, "headers": headers}
+            entry = {"url": url, "headers": headers, "type": element.get("type")}
             name = str(element.get("name") or "")
             crew = crew_entry({"url": url}, name, entry, session_key, agent_id, backend)
             shim = acp_server_element(name, crew) if crew is not None else None

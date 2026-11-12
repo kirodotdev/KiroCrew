@@ -7,17 +7,22 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_files import is_kirocrew_default_agent
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS
 from kiro_crew.agent_sdk.kas_engine import discards_mcp_oauth
 from kiro_crew.agent_sdk.spec_hooks import (
+    _MAX_SPEC_HOOKS,
     OverlongHookCommand,
     crew_fired_spec_hooks,
+    kas_hook_checkout,
+    kas_project_hooks_state,
     merge_user_hook_files,
     observer_spec_hooks,
     overlong_spec_hook_commands,
+    post_tool_matchers_no_builtin_meets,
     project_hook_files_present,
     provider_session_key,
     session_agent,
@@ -28,6 +33,7 @@ from kiro_crew.agent_sdk.spec_hooks import (
     spec_steering_resources,
     spec_tools_settings_applied_nowhere,
     spec_tools_settings_unapplied,
+    unmet_post_tool_matchers_sentence,
     withheld_project_spec_hooks,
 )
 from kiro_crew.dashboard.agent_welcome import AGENT_WELCOME_KIND
@@ -55,6 +61,7 @@ from kiro_crew.dashboard.state import (
 )
 from kiro_crew.hooks import (
     HOOK_EVENT_AGENT_SPAWN,
+    HOOK_EVENT_POST_TOOL_USE,
     HOOK_EVENT_PRE_TOOL_USE,
     HOOK_EVENT_STOP,
     HOOK_EVENT_USER_PROMPT_SUBMIT,
@@ -195,7 +202,7 @@ async def _prepare_spec_hooks(
     Only for a backend whose capabilities say Crew fires the spec's hooks: kiro-cli
     runs the field itself, and firing it here too would run every hook twice, so
     every other session gets ``([], False, None)``. A backend where Crew fires
-    only the hooks that cannot refuse a call (claude) gets those, from
+    only the hooks that cannot refuse a call (claude, codex) gets those, from
     :func:`_prepare_observer_spec_hooks`.
 
     On a new session, a spec that sets a key nothing carries to this backend gets
@@ -250,6 +257,7 @@ async def _prepare_spec_hooks(
                 # The session and app the KAS projection judged `trustedAgents` for.
                 governance_session_key=provider_session_key(client),
                 governance_app=app if isinstance(app, str) else None,
+                kas_checkout=kas_hook_checkout(client),
                 **by_session,
             )
         )
@@ -297,7 +305,14 @@ async def _prepare_spec_hooks(
         )
     if is_new:
         await _surface_overlong_hook_commands(
-            state, slot, agent, spec_project_dir(client), by_session.get("session_key", "")
+            state,
+            slot,
+            agent,
+            spec_project_dir(client),
+            by_session.get("session_key", ""),
+            # The same folder agent's hooks the firing path reads, so a too-long
+            # one the session drops is named here too.
+            kas_checkout=kas_hook_checkout(client),
         )
     if is_new:
         # A withheld project spec yields the user-level spec in its place, so
@@ -311,11 +326,157 @@ async def _prepare_spec_hooks(
         # where the user files now run.
         if is_kas:
             await _surface_withheld_project_hook_files(state, slot, client)
+            await _surface_kas_project_hooks(state, slot, client, agent)
     return hooks, False, work_dir
 
 
-def _pre_tool_hooks_run_nowhere_notice(agent: str) -> str:
-    """The session-start notice for ``preToolUse`` spec hooks on an observer-only backend."""
+#: ``meta.project_hooks`` of the KAS project-hooks notice row
+#: (``website/src/pages/chat/ProjectHooksNotice.tsx`` matches on these).
+PROJECT_HOOKS_NOTICE_OFF = "off"
+PROJECT_HOOKS_NOTICE_ON = "on"
+PROJECT_HOOKS_NOTICE_KIRO_CLI = "kiro_cli"
+
+
+#: The longest command a notice row shows, and the most rows it lists: every hook
+#: Crew would fire (``spec_hooks._MAX_SPEC_HOOKS``), so "Turn on" never enables a
+#: hook the owner was not shown.
+_PROJECT_HOOK_COMMAND_CHARS = 500
+_PROJECT_HOOK_ROWS = _MAX_SPEC_HOOKS
+
+
+def _project_hooks_notice_text(agent: str, state_: str, path: str) -> str:
+    # State first, then who supplies the checks, where they live and what they
+    # do, in one term, "project hooks", so the owner can decide before choosing.
+    source = (
+        f"This repo's agent file {path} gives agent {agent} checks that run as "
+        "commands on this computer before and after its tool calls and around your messages."
+    )
+    if state_ == PROJECT_HOOKS_NOTICE_KIRO_CLI:
+        return (
+            f"ℹ Project hooks are running because you trusted this folder in kiro-cli. {source} "
+            "Turn off stops them in Crew only; kiro-cli's trust is unchanged."
+        )
+    if state_ == PROJECT_HOOKS_NOTICE_ON:
+        return f"ℹ Project hooks are running because you turned them on for this folder. {source}"
+    return (
+        f"ℹ Project hooks are off for this folder. {source} Open Show commands to read them first."
+    )
+
+
+def _project_hooks_saved_text(agent: str, state_: str, path: str) -> str:
+    """The notice text for the state a successful click on a *state_* row leads to:
+    Turn on from ``off`` leads to ``on``; Turn off from ``on`` or ``kiro_cli`` to ``off``."""
+    after = (
+        PROJECT_HOOKS_NOTICE_ON if state_ == PROJECT_HOOKS_NOTICE_OFF else PROJECT_HOOKS_NOTICE_OFF
+    )
+    return _project_hooks_notice_text(agent, after, path)
+
+
+#: Each hook event in plain words, for the row's command list.
+_PROJECT_HOOK_WHEN = {
+    HOOK_EVENT_AGENT_SPAWN: "when the agent starts",
+    HOOK_EVENT_USER_PROMPT_SUBMIT: "when you send a message",
+    HOOK_EVENT_PRE_TOOL_USE: "before a tool runs",
+    HOOK_EVENT_POST_TOOL_USE: "after a tool runs",
+    HOOK_EVENT_STOP: "when a turn ends",
+}
+
+
+def _cut_hook_command(command: str) -> str:
+    """*command* cut to the row's bound, with a visible marker and its full length.
+
+    The owner reads this row before turning the hooks on, so a cut must never
+    look like the whole command.
+    """
+    if len(command) <= _PROJECT_HOOK_COMMAND_CHARS:
+        return command
+    return f"{command[:_PROJECT_HOOK_COMMAND_CHARS]}… (cut, {len(command)} chars)"
+
+
+def _project_hook_rows(hooks: tuple[tuple[str, str], ...]) -> list[dict[str, str]]:
+    """The notice's read-only ``(event, command)`` rows, bounded.
+
+    Each command is redacted WHOLE before it is cut: a cut first could split a
+    credential so the redactor cannot recognise what is left of it.
+    """
+    return [
+        {
+            "event": event,
+            "when": _PROJECT_HOOK_WHEN.get(event, event),
+            "command": _cut_hook_command(_redact_display_text(command)),
+        }
+        for event, command in hooks[:_PROJECT_HOOK_ROWS]
+    ]
+
+
+async def _surface_kas_project_hooks(
+    state: "DashboardState", slot: "_ChatSlot", client: Any, agent: str
+) -> None:
+    """One notice row, with a Turn on / Turn off link, for a folder agent's own hooks.
+
+    Only for a KAS session whose agent is project-only and sets ``hooks``
+    (:func:`kas_project_hooks_state`). When they run because kiro-cli trusts the
+    folder, the row shows once per folder (``project_hooks_consent``). The other
+    paths (sub-agent, task runner, channel) never show it: they only read the
+    stored choice. Best-effort: a failed check renders nothing.
+    """
+    from kiro_crew.project_hooks_consent import mark_kiro_cli_notice_shown
+
+    checkout = kas_hook_checkout(client)
+    agent = session_agent(client, agent)
+    if not checkout or not agent:
+        return
+    try:
+        found = await asyncio.to_thread(kas_project_hooks_state, agent, checkout)
+        state_ = found.state
+        if state_ == PROJECT_HOOKS_NOTICE_KIRO_CLI and not await asyncio.to_thread(
+            mark_kiro_cli_notice_shown, checkout
+        ):
+            return
+    except Exception:  # noqa: BLE001 - a notice must never fail a turn
+        logger.debug("could not check %r's folder hooks for the notice", agent, exc_info=True)
+        return
+    if not state_:
+        return
+    append_and_surface(
+        state,
+        slot,
+        "notice",
+        _redact_display_text(_project_hooks_notice_text(agent, state_, found.path)),
+        "msg msg-info",
+        meta={
+            "kind": SPEC_HOOKS_NOTICE_KIND,
+            "project_hooks": state_,
+            "project_hooks_folder": checkout,
+            # Read-only list for the row's "Show commands": redacted like the
+            # row's text, cut to a bounded size.
+            "project_hooks_commands": _project_hook_rows(found.hooks),
+            # The same notice for the state a successful click leads to, so the
+            # card never reads "off" next to "Saved".
+            "project_hooks_saved_text": _redact_display_text(
+                _project_hooks_saved_text(agent, state_, found.path)
+            ),
+        },
+    )
+
+
+def _post_tool_matchers_unmet_notice(agent: str, matchers: list[str]) -> str:
+    """The session-start notice for the ``postToolUse`` matchers no built-in tool meets."""
+    return f"ℹ {unmet_post_tool_matchers_sentence(agent, matchers)}"
+
+
+def _pre_tool_hooks_run_nowhere_notice(agent: str, *, others_run: bool = True) -> str:
+    """The session-start notice for ``preToolUse`` spec hooks on an observer-only backend.
+
+    *others_run* is False when some of the spec's ``postToolUse`` matchers meet no
+    built-in tool (:func:`_post_tool_matchers_unmet_notice` names them), so the
+    notice does not say that the other hooks run.
+    """
+    if not others_run:
+        return (
+            f"ℹ Agent {agent} has hooks on preToolUse. This backend does not "
+            "run an agent's preToolUse hooks, so they have no effect in this session."
+        )
     return (
         f"ℹ️ Agent {agent} has hooks on preToolUse. This backend does not run an "
         "agent's preToolUse hooks, so they have no effect in this session. Its "
@@ -340,7 +501,7 @@ async def _prepare_observer_spec_hooks(
     is_new: bool,
 ) -> tuple[list, bool, str | None]:
     """:func:`_prepare_spec_hooks` on a backend where Crew fires the spec's hooks on
-    the events that cannot refuse a tool call (claude).
+    the events that cannot refuse a tool call (claude, codex).
 
     The spec's ``preToolUse`` hooks are left out: the harness approves some calls
     without a permission request, so such a hook could not gate them, and a new
@@ -379,12 +540,24 @@ async def _prepare_observer_spec_hooks(
         return [], False, work_dir
     observed = observer_spec_hooks(hooks)
     if is_new:
+        unmet = post_tool_matchers_no_builtin_meets(client, observed)
         if len(observed) < len(hooks):
             append_and_surface(
                 state,
                 slot,
                 "notice",
-                _redact_display_text(_pre_tool_hooks_run_nowhere_notice(agent)),
+                _redact_display_text(
+                    _pre_tool_hooks_run_nowhere_notice(agent, others_run=not unmet)
+                ),
+                "msg msg-info",
+                meta={"kind": SPEC_HOOKS_NOTICE_KIND},
+            )
+        if unmet:
+            append_and_surface(
+                state,
+                slot,
+                "notice",
+                _redact_display_text(_post_tool_matchers_unmet_notice(agent, unmet)),
                 "msg msg-info",
                 meta={"kind": SPEC_HOOKS_NOTICE_KIND},
             )
@@ -434,15 +607,25 @@ async def _surface_overlong_hook_commands(
     agent: str,
     project_dir: str | None,
     session_key: str,
+    *,
+    kas_checkout: str | None = None,
 ) -> None:
     """One notice row naming the spec hooks dropped for a command over the length limit.
 
+    *kas_checkout* is a KAS session's folder (``spec_hooks.kas_hook_checkout``), so a
+    folder agent's own too-long hook is named as its firing path drops it.
     Best-effort: a spec that cannot be read renders no row rather than failing the turn.
     """
     by_session = {"session_key": session_key} if session_key else {}
     try:
         hooks = await asyncio.to_thread(
-            functools.partial(overlong_spec_hook_commands, agent, project_dir, **by_session)
+            functools.partial(
+                overlong_spec_hook_commands,
+                agent,
+                project_dir,
+                kas_checkout=kas_checkout,
+                **by_session,
+            )
         )
     except Exception:  # noqa: BLE001 - an informational row must never fail a turn
         logger.debug("too-long spec hooks for %r could not be read", agent, exc_info=True)
@@ -594,10 +777,11 @@ async def _notice_unread_steering(
 ) -> None:
     """One notice row naming the custom agent's ``file://`` steering *client* never loads.
 
-    Only a custom agent: the default agent's steering trees reach a mirrored
-    harness by other routes (folder steering, member essentials), so a row there
-    could claim a loss that did not happen. Best-effort: a spec that cannot be
-    read renders no row rather than failing the turn.
+    Only a custom agent: Crew's steering load serves the default agent alone. On
+    Claude Code and Codex it sends the default agent's entries and steering trees
+    itself, and elsewhere folder steering or member essentials can carry them, so
+    a row there could claim a loss that did not happen. Best-effort: a spec that
+    cannot be read renders no row rather than failing the turn.
     """
     agent = session_agent(client, agent)
     if not agent or is_kirocrew_default_agent(agent):
@@ -624,8 +808,9 @@ def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: An
     tested one and the command that installs it. One more on a session whose MCP
     servers start without part of their env or headers, naming each server and the
     key names it lost, never a value. One more on a KAS session told to turn telemetry
-    off, since Crew cannot confirm the engine applied it. One more on a claude session
-    that runs in Default instead of the Auto it asked for, naming the ways back."""
+    off, since Crew cannot confirm the engine applied it; a chat shows that one once
+    (``_telemetry_notice_is_new``). One more on a claude session that runs in Default
+    instead of the Auto it asked for, naming the ways back."""
     for name in (
         "steer_upgrade_notice",
         "agent_prompt_upgrade_notice",
@@ -636,8 +821,27 @@ def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: An
         "mode_pinned_notice",
     ):
         notice = getattr(client, name, "")
-        if isinstance(notice, str) and notice:
-            append_and_surface(state, slot, "notice", _redact_display_text(notice), "msg msg-info")
+        if not (isinstance(notice, str) and notice):
+            continue
+        if name == "telemetry_unconfirmed_notice" and not _telemetry_notice_is_new(slot, notice):
+            continue
+        append_and_surface(state, slot, "notice", _redact_display_text(notice), "msg msg-info")
+
+
+def _telemetry_notice_is_new(slot: "_ChatSlot", notice: str) -> bool:
+    """Whether *slot*'s chat has yet to show telemetry *notice*; marks it shown.
+
+    Every KAS session a chat creates or reloads carries the notice, and nothing the
+    user does in the chat ends it, so the chat shows it once. It shows again only
+    when the text differs from the last one shown: the opt-out stopped applying to
+    this chat, or applies again. The mark is saved on the chat's metadata line, so
+    a restart does not repeat the notice.
+    """
+    mark = hashlib.sha256(notice.encode()).hexdigest()[:16]
+    if slot._telemetry_notice_shown == mark:
+        return False
+    slot._telemetry_notice_shown = mark
+    return True
 
 
 #: Notice text per ``settings_withheld_cause`` answer (see ``LLMProvider``).

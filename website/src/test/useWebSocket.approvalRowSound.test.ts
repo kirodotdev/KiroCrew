@@ -21,7 +21,6 @@ import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
 import { store as globalStore } from '../store'
-import { api } from '../api/client'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { MC_NOTIFICATION_EVENT, type McNotificationDetail } from '../hooks/notificationEvent'
 
@@ -189,19 +188,16 @@ describe('interactive approval sound from the permission row', () => {
     expect(kinds).toEqual(['approval', 'approval'])
   })
 
-  it('stays silent through reconnect catch-up and resumes after it settles', async () => {
+  it('stays silent through reconnect catch-up and resumes after its connect snapshot', async () => {
     const ws = await connect()
     ws.frame('chat_message', permissionRow(SLOT, 'req-1', 'mid-1'))
     expect(kinds).toEqual(['approval'])
-    let finishSync!: () => void
-    vi.mocked(api.chatSlots).mockImplementationOnce(() => new Promise(resolve => {
-      finishSync = () => resolve([])
-    }))
     act(() => ws.open())
-    // A row replayed before the catch-up fetch settles is silent.
+    // A row replayed before the reconnect's connect snapshot is silent.
     ws.frame('chat_message', permissionRow(SLOT, 'req-2', 'mid-2'))
     expect(kinds).toEqual(['approval'])
-    await act(async () => finishSync())
+    // The connect snapshot ends the catch-up window.
+    ws.frame('slots', [{ key: SLOT, messages: 1, running: true }])
     ws.frame('chat_message', permissionRow(SLOT, 'req-3', 'mid-3'))
     expect(kinds).toEqual(['approval', 'approval'])
   })

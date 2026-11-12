@@ -1,4 +1,5 @@
 import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
+import { useQuery } from '@tanstack/react-query'
 import { renderWithProviders } from '../test/helpers'
 import UpdateModal from './UpdateModal'
 import { i18nT } from '../i18n/t'
@@ -10,6 +11,7 @@ type UpdateState = {
   phase?: 'check' | 'download' | 'install'
   installHandoff?: 'windows-installer' | 'automatic-relaunch'
   armed?: boolean
+  updatePrompts?: 'edition'
 }
 
 const install = vi.fn<() => Promise<unknown>>()
@@ -438,5 +440,47 @@ describe('a shell that predates arming', () => {
     expect(screen.queryByRole('button', { name: i18nT('components.updateModal.install_on_quit') })).toBeNull()
     expect(install).not.toHaveBeenCalled()
     delete (window as unknown as { updateAPI?: unknown }).updateAPI
+  })
+})
+
+/**
+ * Prints the ['update-state'] payload UpdateModal reads, so a test can wait
+ * until a push has reached the component before asserting what it left closed.
+ */
+function StateProbe() {
+  const { data } = useQuery<UpdateState | null>({
+    queryKey: ['update-state'], queryFn: () => null, enabled: false, staleTime: Infinity,
+  })
+  return <span data-testid="update-state-probe">{data ? `${data.state} ${data.version ?? ''}${data.armed ? ' armed' : ''}` : ''}</span>
+}
+
+describe('an edition update widget that owns the prompts', () => {
+  const probe = () => screen.getByTestId('update-state-probe')
+  beforeEach(() => {
+    install.mockReset()
+    install.mockResolvedValue({ ok: true })
+    ;(window as unknown as { updateAPI?: unknown }).updateAPI = { armsOnQuit: true, install }
+  })
+  afterEach(() => {
+    delete (window as unknown as { updateAPI?: unknown }).updateAPI
+  })
+
+  it('opens no ready dialog for a build its lane readied or for the arm the widget made', async () => {
+    const rendered = renderWithProviders(<><UpdateModal /><StateProbe /></>)
+    const push = async (next: UpdateState) => {
+      await act(async () => { rendered.queryClient.setQueryData(['update-state'], next) })
+    }
+    await push({ ...downloaded, updatePrompts: 'edition' })
+    await waitFor(() => expect(probe()).toHaveTextContent('downloaded 9.9.9'))
+    expect(dialog()).toBeNull()
+    await push({ ...downloaded, armed: true, updatePrompts: 'edition' })
+    await waitFor(() => expect(probe()).toHaveTextContent('downloaded 9.9.9 armed'))
+    expect(dialog()).toBeNull()
+    expect(install).not.toHaveBeenCalled()
+  })
+
+  it('still shows the install takeover while the quit applies the update', async () => {
+    await mount({ state: 'installing', version: '9.9.9', updatePrompts: 'edition' })
+    expect(await screen.findByRole('alert')).toBeInTheDocument()
   })
 })

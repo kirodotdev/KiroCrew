@@ -77,6 +77,9 @@ _SYNC_TIMEOUT_SECS = 2.0
 _NEXT_SYNC_ATTR = "_config_pending_next_sync"
 _SYNC_TASK_ATTR = "_config_pending_sync_task"
 _PUBLISHED_ATTR = "_config_pending_published"
+#: Set while a ``resolved`` mark is only in memory: its log rewrite failed, so the
+#: next sync writes again rather than leave a restart to read the old record.
+_RESOLVED_UNSAVED_ATTR = "_config_pending_resolved_unsaved"
 
 
 def _snapshot() -> dict:
@@ -288,7 +291,10 @@ async def _publish(state: Any, pending: list[dict]) -> None:
 
     current = {p["leaf"]: p["signature"] for p in pending}
     notes = _notes(state)
-    seen = {(r.get("leaf"), r.get("signature")) for _, r in notes}
+    # A resolved note (applied, discarded or put back by hand) answers for a version
+    # that STOPPED being pending: the same bytes going pending again later -- a file
+    # removed twice, a script re-applying one edit -- is a new event and is notified.
+    seen = {(r.get("leaf"), r.get("signature")) for _, r in notes if not r.get("resolved")}
     # Versions this process already announced: the owner can delete a note and the log
     # cap can drop one, and neither may bring the same version's note back.
     published = getattr(state, _PUBLISHED_ATTR, None) or {}
@@ -317,12 +323,23 @@ async def _publish(state: Any, pending: list[dict]) -> None:
         # The delivery already queued its row; persist the record so a restart
         # does not notify the same version again.
         await state._rewrite_notifications_async()
+    resolved = False
     for note, record in notes:
-        if note.get("acked") or current.get(record.get("leaf")) == record.get("signature"):
+        if current.get(record.get("leaf")) == record.get("signature"):
+            continue
+        if not record.get("resolved"):
+            # Marked even on a note the owner already read, so its version can be
+            # notified again if it goes pending again.
+            record["resolved"] = True
+            resolved = True
+        if note.get("acked"):
             continue
         ts = note.get("ts")
         if isinstance(ts, str):
             await state.ack_notification(ts)
+    if resolved or getattr(state, _RESOLVED_UNSAVED_ATTR, False):
+        saved = await state._rewrite_notifications_async()
+        setattr(state, _RESOLVED_UNSAVED_ATTR, saved is False)
     if getattr(state, _PUBLISHED_ATTR, None) != current:
         setattr(state, _PUBLISHED_ATTR, current)
         state.broadcast_ws_owners(WS_EVENT, {"count": len(current)})

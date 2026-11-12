@@ -289,6 +289,16 @@ HARNESS_BACKGROUND_HOLD_SECS_MAX = 86400
 # 0 is meaningful (observe-only) and is the floor, so a negative clamps DOWN to it
 # and disables the arm rather than enabling it.
 RECONCILE_MAX_KILLS_MAX = 5
+# ``session.max_per_creator`` (default ``DEFAULT_MAX_PER_CREATOR``): how many live
+# sessions one creator may hold. Shared by the Settings write gate, the
+# ``_SECURITY_BOUNDED_FIELDS`` sweep and the read at each session create
+# (``dashboard.state.max_slots_per_creator``). The floor keeps a decomposed goal's
+# sessions startable. The ceiling is the live-session ceiling
+# (``dashboard.state.MAX_LIVE_SLOTS``, 500) minus a reserve of 50, so a creator at
+# the highest setting still leaves 50 sessions to everyone else. This module
+# cannot import the dashboard, so ``test_slot_cap_config.py`` pins that relation.
+MAX_PER_CREATOR_MIN = 10
+MAX_PER_CREATOR_MAX = 450
 # knowledge.* budgets. These share a floor of 0, but 0 is MEANINGFUL for several
 # of them (a zero budget disables that sweep), so the floor is deliberately not
 # enforced by clamping a negative up to 0 -- see `_safe_nonnegative_int`, which

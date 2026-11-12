@@ -43,6 +43,7 @@ def _handle(**overrides: object) -> SimpleNamespace:
         memory_mode="persistent",
         child_fidelity_aware=False,
         delete_delay_secs=0.0,
+        keepalive_routed=False,
         set_model=AsyncMock(),
     )
     base.update(overrides)
@@ -262,6 +263,7 @@ class TestTheApply:
                 memory_mode="ephemeral",
                 child_fidelity_aware=True,
                 delete_delay_secs=1800.0,
+                keepalive_routed=True,
             ),
         )
         provider.mark_mcp_config_changed()
@@ -274,6 +276,17 @@ class TestTheApply:
         # This turn's admission opted the OLD handle in; the new one must not fall
         # back to the fail-closed default mid-turn.
         assert runtime.new_handle.child_fidelity_aware is True
+        # The registry /api/session-keepalive reads still holds this provider, so the
+        # new handle keeps timing its calls on Kiro Crew's own servers.
+        assert runtime.new_handle.keepalive_routed is True
+
+    @pytest.mark.asyncio
+    async def test_a_handle_no_keepalive_reaches_stays_unrouted_across_the_swap(self) -> None:
+        runtime = _runtime()
+        provider = _provider(runtime, _handle(keepalive_routed=False))
+        provider.mark_mcp_config_changed()
+        await provider.apply_pending_mcp_reinjection()
+        assert runtime.new_handle.keepalive_routed is False
 
     @pytest.mark.asyncio
     async def test_a_pinned_model_is_re_applied(self) -> None:

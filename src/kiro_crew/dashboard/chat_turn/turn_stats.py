@@ -1311,6 +1311,7 @@ async def _persist_abnormal_turn_usage(
     stop_reason: str,
     since: object = _NO_PRIOR_STATS,
     usage: TurnUsage | None = None,
+    delivered: bool | None = None,
 ) -> bool:
     """Write the usage row for a turn ending without ``EVENT_COMPLETE``.
 
@@ -1353,6 +1354,9 @@ async def _persist_abnormal_turn_usage(
     ``usage`` is the turn's billing when the caller already read it (the Stop
     footer shares the one read, because ``provider_last_turn_usage`` consumes
     the accumulated total); ``None`` reads it here.
+
+    ``delivered`` is whether the turn streamed any reply text, as on the
+    complete path's row; ``None`` leaves the field off.
     """
     try:
         if usage is None:
@@ -1375,6 +1379,7 @@ async def _persist_abnormal_turn_usage(
             transcript=slot_history_key(slot),
             elapsed_ms=elapsed_ms,
             model_source=client,
+            delivered=delivered,
             # Abnormal-turn histogram sampling is out of this change's scope
             # (the usage ROW is the deliverable); opt the row's persist out of
             # the metric so it does not file a sample under slot.key, which for a

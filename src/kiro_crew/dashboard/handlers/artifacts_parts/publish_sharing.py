@@ -170,6 +170,8 @@ async def api_artifact_publish(request: web.Request) -> web.Response:
         existing_pub = (await _run_off_loop(lambda: get_default_store().get(slug))).publication
     except ArtifactNotFoundError:
         existing_pub = None
+    except ArtifactValidationError as exc:  # a malformed slug
+        return _err(str(exc))
     # Reject an explicit provider switch on an already-published artifact rather
     # than silently ignoring it. publish() reuses the existing
     # publication's provider, so honoring a switch here would leave the original
@@ -261,6 +263,8 @@ async def api_artifact_update_sharing(request: web.Request) -> web.Response:
         existing_pub = (await _run_off_loop(lambda: get_default_store().get(slug))).publication
     except ArtifactNotFoundError:
         existing_pub = None
+    except ArtifactValidationError as exc:  # a malformed slug
+        return _err(str(exc))
     share_provider = (
         existing_pub.provider if existing_pub and existing_pub.provider else DEFAULT_PROVIDER
     )
@@ -458,6 +462,8 @@ async def api_artifact_pull_latest(request: web.Request) -> web.Response:
         art = await _run_off_loop(lambda: store.get(slug))
     except ArtifactNotFoundError as exc:
         return _err(str(exc), status=404)
+    except ArtifactValidationError as exc:  # a malformed slug
+        return _err(str(exc))
 
     if art.publication is None and art.fork_metadata is None:
         return _err("artifact does not track an upstream", status=400)
@@ -597,6 +603,8 @@ async def api_artifact_overwrite_remote(request: web.Request) -> web.Response:
             extra={"slug": slug},
         )
         return _err(str(exc), status=404)
+    except ArtifactValidationError as exc:  # a malformed slug
+        return _err(str(exc))
     # Resolve the destination the bytes actually go to: the existing
     # publication's provider. An unpublished artifact can't be overwritten —
     # publish_sync reports that cleanly, but it must not bypass the gate, so

@@ -76,7 +76,7 @@ from urllib.parse import urlencode
 # Same cross-module reuse as ``mcp_dashboard``: the authenticated loopback client
 # to the gateway lives in ``mcp_core``, and its heavy dependencies are
 # function-local so importing it here is cheap.
-from kiro_crew import work_preview
+from kiro_crew import work_preview, work_verify
 from kiro_crew.mcp_core import _get, _post, _resolve_session_key, require_strict_session_key
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
@@ -87,7 +87,7 @@ from kiro_crew.validation import (
     sanitize_string,
     validate_tool_args,
 )
-from kiro_crew.work_vocab import worker_statuses
+from kiro_crew.work_vocab import ACCEPTANCE_SHAPES, worker_statuses
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +123,8 @@ _REPORT_PATH = "/api/work-ledger/report"
 _READ_PATH = "/api/work-ledger"
 _RECORD_PATH = "/api/work-ledger/record"
 _REBUILD_PATH = "/api/work-ledger/rebuild"
+#: A code channel's conductor's ``accept_eval``, evaluated by the gateway.
+_ACCEPT_EVAL_PATH = "/api/work-ledger/accept-eval"
 
 #: Fields ``work_ledger_record`` forwards. The action selects which of them it
 #: REQUIRES; a field an action has no use for is generally IGNORED rather than
@@ -385,8 +387,9 @@ def _ledger_tool_definitions() -> list[dict[str, Any]]:
                 "work and treat title + acceptance as the definition of done. Takes no "
                 "arguments — which item you are bound to is resolved from your own "
                 "session, not supplied. It does not return the conductor's goal or any "
-                "sibling item: you have neither. Answers 'not_bound' when this session "
-                "is not a dispatched worker."
+                "sibling item: you have neither. Answers 'not_bound' when no item is "
+                "bound to this session: the message you were given is then your whole "
+                "task."
             ),
             "inputSchema": {"type": "object", "properties": {}},
         },
@@ -604,11 +607,14 @@ def _ledger_tool_definitions() -> list[dict[str, Any]]:
                 "refused|unsupported> (<reason>)', plus what to do when none runs; your "
                 "own monitor_start replaces that default; "
                 "'decide' records what you decided and why (the one field a worker reads "
-                "as an instruction); 'verdict' records accept_eval.py's verdict and the "
+                "as an instruction); 'verdict' records accept_eval's verdict and the "
                 "fail count; 'accept' promotes a worker's claimed pr into the item's "
                 "acceptance once you have checked it; 'close' stamps a terminal state, "
                 "and when the item's worker session is still open the reply warns that "
                 "its report channel is now cut (bind a new item to it to restore it). "
+                "A close that carries verdict records it first, then closes: settle "
+                "a pass with action=close state=accepted verdict=pass. If the verdict "
+                "write is refused the item stays open. "
                 "Caps refuse rather than truncate, naming the field. The whole write is "
                 "one 64 KB crew-log line as JSON (a non-ASCII character can count up to twelve "
                 "bytes), so a write at every field cap with non-ASCII text can be "
@@ -647,9 +653,8 @@ def _ledger_tool_definitions() -> list[dict[str, Any]]:
                     "acceptance": {
                         "type": "object",
                         "description": (
-                            "create / accept: the accept_eval.py condition object, stored "
-                            'verbatim — e.g. {"kind": "pr_checks", "pr": 123, '
-                            '"repo": "owner/name"}.'
+                            "create / accept: the condition object accept_eval judges, "
+                            "stored verbatim. " + ACCEPTANCE_SHAPES
                         ),
                     },
                     "worker_session_key": {
@@ -666,7 +671,7 @@ def _ledger_tool_definitions() -> list[dict[str, Any]]:
                     "verdict": {
                         "type": "string",
                         "enum": ["pass", "fail", "pending", "refused", "error"],
-                        "description": "verdict: accept_eval.py's own five-value answer.",
+                        "description": ("verdict, or close: accept_eval's own five-value answer."),
                     },
                     "state": {
                         "type": "string",
@@ -686,7 +691,10 @@ def _ledger_tool_definitions() -> list[dict[str, Any]]:
                     },
                     "fails": {
                         "type": "integer",
-                        "description": "verdict: acceptance attempts that came back fail.",
+                        "description": (
+                            "verdict, or a close with verdict: acceptance attempts "
+                            "that came back fail."
+                        ),
                     },
                     "concurrency_cap": {
                         "type": "integer",
@@ -718,15 +726,26 @@ _CHECK_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "accept_eval",
         "description": (
-            "Run the goal-conductor acceptance evaluator (scripts/accept_eval.py) on "
-            "an accept_batch document and return its results JSON: one "
-            "{id, verdict, evidence} per item, verdict pass|fail|pending|refused|"
-            "error. Pass the accept_batch from a full work_ledger_read as the "
-            "arguments, after keeping only the entries whose status is done. Same "
+            "Run the goal-conductor acceptance evaluator (scripts/accept_eval.py) and "
+            "return its results JSON: one {id, verdict, evidence} per item, verdict "
+            "pass|fail|pending|refused|error. Call it with NO arguments to check "
+            "every item on your own ledger whose worker reported done, or with "
+            "item_id for one of them: it reads each bar itself, so you need no "
+            "work_ledger_read first and copy no document. An item that is not "
+            "done is never evaluated. A done item it cannot judge is listed under "
+            "'skipped' with the reason. Each answer read from the ledger also "
+            "carries what that read would show: 'reported' (the worker's own "
+            "summary and claimed pr, a claim, never the bar), 'fails' so far, "
+            "'worker_session_key', 'pending_overdue' with your 'decision' when "
+            "set, and the stored 'acceptance' of an overdue item or of a bar that is "
+            "not concrete. To evaluate a document of your own instead, pass "
+            "accept_batch entries as items, after keeping only the entries whose "
+            "status is done. Same "
             "kinds and refusals as the script: pr_checks, pr_merged, file, "
             "human_approval, edition_check; a 'cmd' kind is refused. No argument "
-            "names a command or a path to run. Read-only: record each verdict with "
-            "work_ledger_record action=verdict in a later step."
+            "names a command or a path to run. Read-only: settle a pass with "
+            "work_ledger_record action=close state=accepted verdict=pass, and record "
+            "any other answer with action=verdict, in a later step."
         ),
         "inputSchema": {
             "type": "object",
@@ -736,13 +755,17 @@ _CHECK_TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "maxItems": 256,
                     "items": {"type": "object"},
                     "description": (
-                        'The accept_batch items: [{"id": "it_...", "accept": '
+                        "Only to evaluate a document of your own: accept_batch "
+                        'items, [{"id": "it_...", "accept": '
                         '{"kind": "pr_checks", "pr": 123, "repo": "owner/name"}, '
                         '"status": "done"}].'
                     ),
-                }
+                },
+                "item_id": {
+                    "type": "string",
+                    "description": ("Without items: check only this ledger item (it_<8 hex>)."),
+                },
             },
-            "required": ["items"],
         },
     },
 ]
@@ -802,8 +825,87 @@ def _screen_file_item(item: Any) -> tuple[Any, dict[str, str] | None]:
     return {**item, "accept": {**accept, "path": canonical}}, None
 
 
-def _accept_eval(args: dict[str, Any]) -> str:
-    screened = [_screen_file_item(item) for item in args["items"]]
+_ANSWERS_HINT = (
+    "Over the reply budget. Stored acceptances were left out first, then every "
+    "other field carried beside an answer, then the last results, whose ids are "
+    "under 'omitted'. Every answer still here is complete. Read one item's row "
+    "with work_ledger_read item_id=<id>; check an omitted item with accept_eval "
+    "item_id=<id>."
+)
+
+
+def _fit_answers(document: dict[str, Any], budget: int = _READ_BUDGET_CHARS) -> str:
+    """Render a ledger-fed evaluator reply under *budget* chars, as valid JSON.
+
+    What rides beside an answer comes from the ledger, where a stored bar can be
+    tens of thousands of characters and a board can hold hundreds of items, so the
+    reply is fitted the way :func:`fit_ledger` fits a read: a cut by the transport
+    would tear the JSON and lose the last items' answers. An answer that stays
+    keeps its own ``id``, ``verdict``, ``evidence`` and ``why`` whole. While the
+    text is over budget, and saying so in the reply (``truncated``,
+    ``truncation_hint``):
+
+    1. every stored ``acceptance`` goes (``elided_acceptance_for`` names the items);
+    2. every other row fact goes (``row_facts_omitted``);
+    3. results go from the end, their ids listed under ``omitted``, so the caller
+       can ask for each by ``item_id``. Skip reasons stay: at the store's item cap
+       they are a fraction of the budget.
+    """
+    text = _render(document)
+    if len(text) <= budget:
+        return text
+    answers = [*document["results"], *document.get("skipped", [])]
+    document["truncated"] = True
+    document["truncation_hint"] = _ANSWERS_HINT
+    elided = [str(answer.get("id")) for answer in answers if "acceptance" in answer]
+    for answer in answers:
+        answer.pop("acceptance", None)
+    if elided:
+        document["elided_acceptance_for"] = elided
+        text = _render(document)
+        if len(text) <= budget:
+            return text
+    for answer in answers:
+        for key in work_verify.ROW_FACT_KEYS:
+            answer.pop(key, None)
+    document["row_facts_omitted"] = True
+    text = _render(document)
+    if len(text) <= budget:
+        return text
+    results = document["results"]
+
+    def _keep(count: int) -> str:
+        document["results"] = results[:count]
+        document["omitted"] = [str(result.get("id")) for result in results[count:]]
+        return _render(document)
+
+    # Fewer results never render larger, so the most that fit is found by bisection.
+    kept, upper = 0, len(results)
+    while kept < upper:
+        middle = (kept + upper + 1) // 2
+        if len(_keep(middle)) <= budget:
+            kept = middle
+        else:
+            upper = middle - 1
+    return _keep(kept)
+
+
+def _accept_eval(args: dict[str, Any], board: dict[str, Any] | None = None) -> str:
+    """Evaluate ``args["items"]``, or with none the ``done`` items of *board*.
+
+    *board* is the caller's own full ledger read. Which of its items are evaluated
+    is :func:`kiro_crew.work_verify.select_done`'s rule, and the ones it leaves out
+    ride back under ``skipped`` beside the evaluator's ``results``. Each answer about
+    a board item also carries :func:`kiro_crew.work_verify.row_facts` for it, so a
+    caller that made no read of its own still sees what the worker reported, and
+    that reply is fitted to the read budget (:func:`_fit_answers`).
+    """
+    skipped: list[dict[str, Any]] = []
+    if board is None:
+        items = args["items"]
+    else:
+        items, skipped = work_verify.select_done(board, args.get("item_id"))
+    screened = [_screen_file_item(item) for item in items]
     document, code = _skill_script("accept_eval").evaluate_document(
         {"items": [item for item, refused in screened if refused is None]}
     )
@@ -814,6 +916,13 @@ def _accept_eval(args: dict[str, Any]) -> str:
                 refused if refused is not None else next(evaluated) for _, refused in screened
             ]
         }
+        if skipped:
+            document["skipped"] = skipped
+        if board is not None:
+            facts = work_verify.row_facts(board)
+            for answer in (*document["results"], *skipped):
+                answer.update(facts.get(str(answer.get("id")), {}))
+            return _fit_answers(document)
     # Evidence quotes gh / edition output, so it is redacted like every reply here.
     return redact(json.dumps(document, indent=2, ensure_ascii=False))
 
@@ -877,12 +986,46 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # never runs for them. Admission is the gateway's ledger gate instead: the
         # channel, restricted-session and unknown-session refusals every ledger
         # route applies. A caller with no ledger has no batch to evaluate.
-        resp = _get(f"{_READ_PATH}?compact=true", session_key=caller_key)
+        #
+        # With no document the same read is taken whole: it is also where the bars
+        # come from, so the caller's own ledger gate admits the call and feeds it.
+        from_ledger = name == "accept_eval" and args.get("items") is None
+        if from_ledger:
+            resp = _get(_READ_PATH, session_key=caller_key)
+        else:
+            resp = _get(f"{_READ_PATH}?compact=true", session_key=caller_key)
         if resp.get("error"):
             return _refusal(f"{name} runs only for a session that holds a work ledger", resp)
 
     if name == "accept_eval":
-        return _accept_eval(args)
+        if args.get("items") is not None and args.get("item_id") is not None:
+            return (
+                "Error: item_id picks one item of your own ledger; leave it out when "
+                "you pass a document as items [invalid_value, field=item_id]"
+            )
+        if from_ledger and resp.get("published_fields_only"):
+            # A code channel's conductor reads published fields only (a derived
+            # state, no status and no bars), so its own read has nothing to
+            # evaluate. The gateway evaluates the stored bars and answers verdicts.
+            # It runs each done item's checks in turn (up to two subprocesses, each
+            # bounded by the evaluator's own timeout), so the read waits for them all.
+            # shortcut: capped at an hour; a board that needs longer is evaluated by
+            # item_id, one item per call.
+            rows = resp.get("items") or []
+            done = sum(1 for row in rows if isinstance(row, dict) and row.get("state") == "done")
+            if args.get("item_id") is not None:
+                done = 1
+            per_item = 2 * _skill_script("accept_eval").TIMEOUT_SECS
+            wait = min(3600, 30 + per_item * max(done, 1))
+            if args.get("item_id") is not None:
+                one = urlencode({"item_id": args["item_id"]})
+                resp = _get(f"{_ACCEPT_EVAL_PATH}?{one}", session_key=caller_key, timeout=wait)
+            else:
+                resp = _get(_ACCEPT_EVAL_PATH, session_key=caller_key, timeout=wait)
+            if resp.get("error"):
+                return _refusal("could not evaluate your work ledger", resp)
+            return _render(resp)
+        return _accept_eval(args, resp if from_ledger else None)
 
     if name == "work_brief":
         resp = _get(_BRIEF_PATH, session_key=caller_key)
@@ -948,7 +1091,27 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 
     if name == "work_ledger_record":
         payload = {k: v for k, v in args.items() if k in _RECORD_FIELDS}
-        resp = _post(_RECORD_PATH, payload, session_key=caller_key)
+        if payload.get("action") == "close" and payload.get("verdict") is not None:
+            # A close that carries the evaluator's answer is the two writes the
+            # conductor made one model round trip apart, in their one valid order:
+            # the verdict, then the close it justifies. Each is this tool's own
+            # write on its own route, sent as the caller. A refused verdict stops
+            # here, so an item is never closed on an answer that did not land.
+            verdict = {k: payload.pop(k) for k in ("verdict", "fails") if k in payload}
+            first = _post(
+                _RECORD_PATH,
+                {"action": "verdict", "item_id": payload.get("item_id"), **verdict},
+                session_key=caller_key,
+            )
+            if first.get("error"):
+                return _refusal("could not record the verdict, so the item was not closed", first)
+            resp = _post(_RECORD_PATH, payload, session_key=caller_key)
+            if resp.get("error"):
+                # Said apart from a plain refused write: the verdict is on the
+                # item now, so the retry is the close alone.
+                return _refusal("the verdict was recorded but the item was not closed", resp)
+        else:
+            resp = _post(_RECORD_PATH, payload, session_key=caller_key)
         if resp.get("error"):
             return _refusal("could not write the work ledger", resp)
         item = resp.get("item") or {}
@@ -957,7 +1120,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             line = (
                 f"Recorded {action}. item={item.get('item_id') or '(unknown)'} "
                 f"state={item.get('state') or '(unset)'} "
-                f"verdict={item.get('verdict') or '(none)'}"
+                # A code channel's projection names the verdict ``ci``.
+                f"verdict={item.get('verdict') or item.get('ci') or '(none)'}"
             )
             if action == "bind":
                 from kiro_crew.conductor_patrol import reply_line

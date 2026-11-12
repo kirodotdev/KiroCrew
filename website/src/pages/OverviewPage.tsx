@@ -8,6 +8,8 @@ import { useUptime } from '../hooks/useUptime'
 import { Uptime } from '../components/Uptime'
 import { api } from '../api/client'
 import type { WakaTimeStats } from '../api/client'
+import { reportsDollars } from '../api/acpBackend'
+import type { AcpBackendConfig } from '../api/acpBackend'
 import { Card, CardTitle, StatCard, Btn, ContentSkeleton } from '../components/ui'
 import { TunnelStatus } from '../components/TunnelStatus'
 import { TailnetMobileCard } from '../components/TailnetMobileCard'
@@ -20,6 +22,8 @@ import { isOverviewBuiltinSuppressed } from './overviewBuiltins'
 import { UsageTab, WakaTimeTab } from './overview'
 import { useProvider } from '../providers'
 import { providerUsageQuery } from '../api/providerUsageQuery'
+import { failedWithNoData } from '../api/queryState'
+import { reportForError } from '../utils/errorReport'
 
 import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
@@ -83,8 +87,22 @@ function DrillIn({ title, onBack, children, hideTitle = false }: { title: string
 function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
   const provider = useProvider()
   const { data, isError, error } = useQuery(providerUsageQuery(provider))
+  const cfgQuery = useQuery<AcpBackendConfig>({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+  })
   const b = data?.billing
   const today = data?.sessions.today
+  // Today's tokens and cost, from the bucket of the gateway's own local day
+  // (the token history's totals cover 30 days, and the browser may sit in
+  // another zone), and only on a harness that bills in dollars: a credit-billed
+  // install's Today line stays sessions and messages.
+  // With no config ever read, the harness is unknown and the Today line drops
+  // its tokens and cost; the notice says so instead of leaving them silently off.
+  const harnessUnread = failedWithNoData(cfgQuery)
+  const todayTokens = reportsDollars(cfgQuery.data) && data?.localDay
+    ? data.tokenDailyHistory?.find(d => d.date === data.localDay)
+    : undefined
   return (
     <Card>
       <CardTitle>
@@ -96,6 +114,9 @@ function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
       {provider.capabilities.usageBilling && isError && (
         <ErrorNotice title={data ? i18nT('pages.sessionsTab.could_not_refresh') : undefined} message={error?.message} askAgent testId="overview-usage-error" />
       )}
+      {provider.capabilities.usageBilling && harnessUnread && (
+        <ErrorNotice message={i18nT('pages.overviewPage.today_harness_unread')} report={reportForError(cfgQuery.error)} askAgent testId="overview-usage-harness-unread" />
+      )}
       {!provider.capabilities.usageBilling ? (
         <div className="text-[13px] text-muted">{i18nT('pages.overview.usageTab.usage_tracking_is_not_available_for', { provider: provider.displayName })}</div>
       ) : !data ? (
@@ -106,7 +127,12 @@ function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
             <div data-testid="overview-usage-refreshing" className="skeleton h-4 rounded max-w-[320px]" />
           ) : (
             <div className="text-[13px] text-muted">
-              {todayLine(today?.sessions, today?.messages, data.tokens?.total, data.costUsd)}
+              {todayLine(
+                today?.sessions,
+                today?.messages,
+                todayTokens && todayTokens.input + todayTokens.output + todayTokens.cacheCreate + todayTokens.cacheRead,
+                todayTokens?.costUsd,
+              )}
             </div>
           )}
           {b?.plan && (

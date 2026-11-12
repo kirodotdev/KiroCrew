@@ -24,6 +24,8 @@ from kiro_crew.dashboard import ws_slot_diff as _ws_slot_diff
 from kiro_crew.dashboard.chat_utils import effective_session_key, subagent_event_slot
 from kiro_crew.dashboard.kiro_relay.caller import RELAY_TEAMMATE_WS_FLAG, is_relay_teammate
 from kiro_crew.dashboard.origin import check_origin
+from kiro_crew.dashboard.skill_read_ahead import read_ahead as read_skills_ahead
+from kiro_crew.dashboard.slot_list_pass import shared_slot_pass
 from kiro_crew.dashboard.slot_retention import note_foreground
 from kiro_crew.dashboard.state import (
     PERSISTED_SUBAGENT_REPLAY_KEEP,
@@ -57,6 +59,7 @@ from kiro_crew.dashboard.ws_event_scope import (
     slots_envelope_extras,
     visible_subagent_slot_keys,
 )
+from kiro_crew.dashboard.ws_heartbeat import LagTolerantWebSocketResponse
 from kiro_crew.dashboard.ws_side_frames import (  # noqa: F401 -- re-exported: callers import them from here
     SIDE_CLOSED_EVENT,
     SIDE_KIND,
@@ -67,6 +70,11 @@ from kiro_crew.dashboard.ws_side_frames import (  # noqa: F401 -- re-exported: c
     broadcast_side_queue,
     broadcast_side_result,
     broadcast_thread_reply,
+)
+from kiro_crew.dashboard.ws_snapshot_hold import (
+    drop_superseded_slot_frames,
+    hold_frames,
+    release_held,
 )
 from kiro_crew.dashboard.ws_subagent_send import (  # noqa: F401 (re-exported)
     SUBAGENT_REPLAY_BATCH_THRESHOLD,
@@ -778,7 +786,7 @@ async def _serve_ws(
     )
 
     owner_request = is_owner_dashboard_request(request)
-    ws = web.WebSocketResponse(heartbeat=30)
+    ws = LagTolerantWebSocketResponse(heartbeat=30)
     await ws.prepare(request)
 
     # Warm the self-managed GitLab allowlist BEFORE the first serialization.
@@ -832,6 +840,11 @@ async def _serve_ws(
             await ws.close(code=WSCloseCode.POLICY_VIOLATION, message=b"app disabled")
             return ws
 
+    # Registered before the slot list below is awaited: the tab sends its catch-up
+    # reads as soon as the handshake is answered, so a change after one of them must
+    # reach this socket. The hub holds those frames until the connect snapshot is out
+    # (``ws_snapshot_hold``), so the snapshot stays the first frame.
+    hold_frames(ws)
     state.register_ws(ws, owner=owner_request)
     registered.append(ws)
 
@@ -901,13 +914,25 @@ async def _serve_ws(
     _app_replay_slots: list[str] = []
     try:
         is_dashboard_user = ws.get("_is_dashboard_user", False)
-        all_slots = state.serialize_slots(
-            include_check_status=owner_request, dashboard_user=is_dashboard_user
+        # Shared with the connects and slot-list GETs of a reconnect storm (see
+        # slot_list_pass), not one full serialization on the loop each.
+        slot_pass = await shared_slot_pass(
+            state, include_check_status=owner_request, dashboard_user=is_dashboard_user
+        )
+        all_slots = slot_pass.rows
+        # The shared pass can outlast the connect-time scope read, so an app's
+        # scopes are re-judged here: a disable that landed meanwhile narrows
+        # this frame. ``ws["_allowed_events"]`` stays the connect-time set,
+        # which the hub intersects live.
+        snapshot_events = (
+            effective_allowed_events(ws_app, allowed_events)
+            if ws_app and not is_dashboard_user
+            else allowed_events
         )
         if is_dashboard_user:
             slots_data = all_slots
         elif ws_app:
-            slots_data = filter_slots_for_app(all_slots, ws_app, allowed_events, state)
+            slots_data = filter_slots_for_app(all_slots, ws_app, snapshot_events, state)
         else:
             # Unknown identity (neither flag nor app) — deny by default.
             slots_data = []
@@ -920,7 +945,7 @@ async def _serve_ws(
         envelope_extras: dict[str, object] = (
             {"yolo": state._yolo}
             if ws.get("_is_dashboard_user", False)
-            else dict(slots_envelope_extras(allowed_events, yolo=state._yolo))
+            else dict(slots_envelope_extras(snapshot_events, yolo=state._yolo))
         )
         # Seed the folder tree on the CONNECT-TIME push (dashboard users only) —
         # this is the frame that populates the sidebar on a cold page load, so it
@@ -960,13 +985,14 @@ async def _serve_ws(
             # detectable as a change rather than as a first sighting.
             "gitlabHostsGeneration": gitlab_hosts_generation(),
             "governanceGeneration": initial_answer_generation,
-            "slotsPartial": getattr(state, "slot_list_rebuilding", False) is True,
+            # The holds the pass's rows were taken under, not the state's now: a
+            # restore that finished during the wait would label them complete.
+            "slotsPartial": slot_pass.partial,
         }
         if is_dashboard_user:
-            held_keys = list(state.slot_list_held_keys())
-            if held_keys:
-                snapshot_frame["slotsHeldKeys"] = held_keys
-            if state.slot_list_hold_channels() is True:
+            if slot_pass.held_keys:
+                snapshot_frame["slotsHeldKeys"] = list(slot_pass.held_keys)
+            if slot_pass.hold_channels:
                 snapshot_frame["slotsHoldChannels"] = True
         # Same offender diagnostic as the slots broadcast.
         # ``send_json`` is ``send_str(dumps(data))``, so dumping here is
@@ -982,7 +1008,17 @@ async def _serve_ws(
             exc.add_note(_slots_serialization_note(slots_data, path="ws-connect-snapshot"))
             logger.warning("slots connect snapshot failed to serialize", exc_info=True)
             raise
-        await ws.send_str(snapshot_payload)
+        snapshot_send = asyncio.ensure_future(ws.send_str(snapshot_payload))
+        # A slot list or patch held meanwhile is older than the snapshot's: it is dropped, the
+        # diff base it would have set is reset, and a slots push settles the socket on
+        # the current list instead.
+        if drop_superseded_slot_frames(ws):
+            ws.pop(_ws_hub.SLOT_DIFF_SEQ_KEY, None)
+            state.push_slots_update()
+        # The held frames queue right behind the snapshot, before it drains, so a tab
+        # that stops reading it still fills the buffer the hub's stall check reads.
+        release_held(ws)
+        await snapshot_send
         # After the snapshot (the first frame by contract): ask a capable tab for its watch.
         if ws.get(_ws_hub.FOLD_DELTA_WS_FLAG, False):
             hello = {"type": _ws_hub.FOLD_HELLO_FRAME, "data": _ws_hub.fold_hello_payload(ws)}
@@ -1051,6 +1087,8 @@ async def _serve_ws(
                     )
     except Exception:
         pass
+    # A connect whose snapshot failed still gets the frames held for it.
+    release_held(ws)
 
     # Background task: push dashboard status periodically
     async def _push_status() -> None:
@@ -1834,6 +1872,9 @@ async def _serve_ws(
                                 announce=data.get("announce") is True,
                             )
                             note_foreground(state, id(ws), data.get("slot"))
+                            # A due re-walk of the slot's skill scope starts now,
+                            # not beside its first prompt build.
+                            read_skills_ahead(state, data.get("slot"))
                     elif msg_type == "slot_read":
                         _relayed = _handle_slot_read(
                             state,

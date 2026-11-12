@@ -650,13 +650,13 @@ _CREW_SECRET_LEAVES: list[str] = [
     # opens the path directly, not through this gate.
     "shared_crew_preview.json",
     "ssh_auth_sock_consent.json",
+    "project_hooks_consent.json",
     # The owner's credential-redaction switch. Same class of control as the
     # consent records above: the record is what AUTHORIZES the credential scrubber
     # to stand down in the owner's dashboard file viewer (the one surface it
     # governs), so an agent that could write it would switch off the pass that
-    # keeps the secrets it can read out of that view. A missing or unreadable
-    # file reads as ENABLED, so fencing the
-    # write is what keeps the switch the owner's. The owner-gated dashboard
+    # keeps the secrets it can read out of that view. A missing or unreadable file
+    # reads as ENABLED, so fencing the write is what keeps the switch the owner's. The owner-gated dashboard
     # ``/api/security/credential-redaction`` handler is the only writer and opens
     # the path directly, not through this gate.
     "credential_redaction.json",
@@ -683,6 +683,11 @@ _CREW_SECRET_LEAVES: list[str] = [
     # opens these paths directly rather than through this gate, so publishing keeps
     # working.
     "auth-store-staging",
+    # The self-update engine's wheel download directory: the wheel sits here between its
+    # SHA-256 check and pip's install. Same top-level whole-directory shape as the entry
+    # above; the engine opens it directly. Also sandbox-masked
+    # (``sandbox_leaves._UPDATE_STAGING_LEAF``).
+    "update-staging",
     # Mediated-secret owner-signed egress policy: writable, it would let an agent try
     # to authorize its own origin. Only the gateway and owner CLI open it, directly.
     "secret-request-policy",

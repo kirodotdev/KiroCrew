@@ -374,7 +374,8 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_begin_local_turn_marker",
             "async function",
-            "(state: 'DashboardState', slot: '_ChatSlot', generation: 'int') -> 'None'",
+            "(state: 'DashboardState', slot: '_ChatSlot', generation: 'int', opener: "
+            "\"'dict[str, Any] | None'\" = None) -> 'None'",
         ),
         (
             "_clear_local_turn_marker",
@@ -386,7 +387,8 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_local_turn_opening_row",
             "function",
-            "(slot: '_ChatSlot') -> \"'dict[str, Any] | None'\"",
+            "(slot: '_ChatSlot', opener: \"'dict[str, Any] | None'\" = None) "
+            "-> \"'dict[str, Any] | None'\"",
         ),
         (
             "_retire_local_turn_marker",
@@ -441,7 +443,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_persist_abnormal_turn_usage",
             "async function",
-            "(slot: \"'_ChatSlot'\", client: 'object', session_key: 'str', *, elapsed_ms: 'int', stop_reason: 'str', since: 'object' = <object object>, usage: 'TurnUsage | None' = None) -> 'bool'",
+            "(slot: \"'_ChatSlot'\", client: 'object', session_key: 'str', *, elapsed_ms: 'int', stop_reason: 'str', since: 'object' = <object object>, usage: 'TurnUsage | None' = None, delivered: 'bool | None' = None) -> 'bool'",
         ),
     ),
     "turn_failures": (

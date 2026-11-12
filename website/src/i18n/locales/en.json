@@ -2159,6 +2159,7 @@
       "meeting": {
         "agentsPaused": "The agents stopped after repeated failures.",
         "attachPrompt": "Paste a link to share with the agents",
+        "attachRequired": "Enter a link.",
         "back": "Back",
         "endAndReview": "End and review",
         "leaveUnsent": "Leave with unsent text?",
@@ -3378,6 +3379,7 @@
       "editor": {},
       "fileTree": {
         "delete_file": "Delete {{file}}",
+        "delete_file_button": "Delete file",
         "files": "Files",
         "main": "Main",
         "new_file": "New file",
@@ -3465,6 +3467,7 @@
         "log": "Log",
         "main_document": "Main document",
         "new_file_prompt": "Name the new file, for example methods.tex",
+        "new_file_name_required": "Enter a file name.",
         "papers": "Papers",
         "pull": "Pull",
         "save_and_compile_hint": "Press Cmd+S (Ctrl+S on Windows and Linux) to save and compile.",
@@ -5130,6 +5133,9 @@
       "cancel": "Cancel",
       "cancel_running_execution": "Cancel running execution",
       "currently_running": "Currently running…",
+      "hide_idle_runs": "Hide idle runs",
+      "idle_runs_hidden_one": "{{count}} idle run hidden",
+      "idle_runs_hidden_other": "{{count}} idle runs hidden",
       "loading_logs": "Loading logs…",
       "next": "Next →",
       "no_execution_history_yet": "No execution history yet",
@@ -5978,7 +5984,8 @@
     },
     "trustDropdown": {
       "trust": "Trust",
-      "trust_all_tools": "Trust all tools for this session"
+      "trust_all_tools": "Trust all tools for this session",
+      "trust_unavailable": "Trust is not available for this request. Allow it once or reject it."
     },
     "tunnelStatus": {
       "tunnel": "Tunnel"
@@ -7116,8 +7123,8 @@
         "pin_message": "Pin message",
         "unpin_message": "Unpin message",
         "turn_credits": "{{credits}} credits",
-        "turn_cache_rewritten": "Cache rewritten",
-        "turn_cache_rewritten_hint": "The prompt cache was rebuilt this turn, so its input was billed at the cache-write rate."
+        "turn_cache_rewritten": "Cache rebuilt",
+        "turn_cache_rewritten_hint": "This reply had to store the whole conversation again, so it cost more than usual."
       },
       "browserLiveCard": {
         "allow_explainer_asked_once": "Your browser is asking “Allow remote debugging?”. Click Allow and {{productName}} can work in the tab. Asked once; {{productName}} only touches tabs it opens itself.",
@@ -7217,6 +7224,7 @@
         "retry_session_busy": "Session busy — resume to pick up where it stopped.",
         "retry_turn_stalled": "Turn stalled — resume to pick up where it stopped.",
         "retry_tool_stalled": "Tool appeared stalled — resume to pick up where it stopped.",
+        "retry_tools_not_ready": "The agent could not start because its built-in tools were not ready in time. Your message is still here — resume to try again. If it keeps happening, the gateway log has the details.",
         "retry_backend_hiccup": "The agent hit a brief problem — resume to pick up where it stopped.",
         "default_model": "Change default model",
         "default_model_hint": "Open Settings → Chat → Default Model. New sessions start on this value.",
@@ -7548,6 +7556,7 @@
         "kas_signed_out": "Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro Agent → Kiro sign-in, then send your message again.",
         "kas_signed_out_sign_in_below": "Not signed in to Kiro. Sign in below, then send your message again.",
         "windows_spawn_blocked": "Windows would not start the agent program ({{binary}}). AppLocker, an EDR product or group policy on this computer likely blocked it. Ask your IT administrator to allow that file, then start a new chat.",
+        "tools_not_ready": "The agent could not start because its built-in tools were not ready in time. Your message is still here. Try again in a moment. If it keeps happening, the gateway log has the details.",
         "kas_route_relay": "Your agent runs through kiro-cli.",
         "kas_route_bundle": "Your agent runs on {{productName}}'s own engine.",
         "kas_route_lead": "{{route}} {{message}}"
@@ -7599,6 +7608,7 @@
         "copy_preview": "Copy text",
         "copied": "Copied",
         "copy_link": "Copy link to message",
+        "put_in_composer": "Put in composer",
         "unpin": "Unpin",
         "copy_text_failed": "Couldn’t copy the text. Jump to the message and select the text to copy it.",
         "copy_link_failed": "Couldn’t copy the link. Check that this page may use the clipboard, then try again.",
@@ -9769,6 +9779,8 @@
         "billing": "Billing",
         "cache_creation": "Cache creation",
         "cache_read": "Cache read",
+        "cost_usd": "Cost",
+        "cost_usd_compact": "Cost: {{cost}}",
         "credits_used": "Credits used",
         "credits_used_compact": "Credits used: {{credits}} · {{pct}}",
         "credits_used_pct": "Credits used (%)",
@@ -9942,6 +9954,7 @@
       "view_details": "View details",
       "wakatime": "WakaTime",
       "wakatime_not_connected": "Not connected",
+      "today_harness_unread": "Couldn’t read the agent backend setting, so today’s tokens and cost can’t be shown.",
       "today_line": "Today: {{summary}}",
       "today_sessions_one": "{{amount}} session",
       "today_sessions_other": "{{amount}} sessions",
@@ -10606,6 +10619,8 @@
         "simplified_tool_call_names": "Simplified Tool Call Names",
         "tool_calls_start_expanded": "Tool calls start expanded",
         "tool_calls_start_expanded_desc": "Open tool call rows with their input and output showing, instead of collapsed. Rows you open or close by hand keep your choice.",
+        "reasoning_starts_expanded": "Reasoning starts expanded",
+        "reasoning_starts_expanded_desc": "Open reasoning rows with their text showing, instead of collapsed. Rows you open or close by hand keep your choice.",
         "soft_stop_budget_seconds": "Soft-stop budget (seconds)",
         "split_view_session_grid": "Split View (Session Grid)",
         "session_folder_root": "New Session Folders",
@@ -11428,7 +11443,7 @@
         "type_fargate": "Fargate",
         "type_ssh": "SSH",
         "type_ssm": "SSM",
-        "unverified_cloud_note": "{{productName}} cannot verify whether this crew has AWS resources",
+        "unverified_cloud_note": "{{productName}} cannot tell from here whether it launched this crew or you added it. Remove only takes it off this list and leaves the machine as it is; stop or delete the machine yourself if you no longer need it.",
         "up_to_warm": "Up to {{n}} stay warm at once",
         "use_my_edits_anyway": "Apply my edits to the crew as it is now",
         "your_code": "Your code: {{code}}",

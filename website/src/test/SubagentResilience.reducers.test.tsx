@@ -4,6 +4,8 @@
  *    (⟳ on the running-card); fresh tool/chunk activity clears it.
  *  - sseSubagentDone with `stopped: true` renders a neutral 'stopped' terminal
  *    state (no error), preserving the user-stop-is-not-a-failure semantics.
+ *  - sseSubagentDone clears the stall fields, so a finished card is not
+ *    ranked as stalled.
  */
 import { describe, it, expect } from 'vitest'
 import { createTestStore } from './helpers'
@@ -141,5 +143,17 @@ describe('subagent turn-resilience reducers', () => {
     const SLOT = spawn(store)
     store.dispatch(sseSubagentDone({ slot: SLOT, id: ID, elapsed: 3, stopped: true }))
     expect(sub(store).status).toBe('stopped')
+  })
+
+  it('done clears the stall fields', () => {
+    const store = createTestStore()
+    const SLOT = spawn(store)
+    store.dispatch(sseSubagentStalled({ slot: SLOT, id: ID, stalled: true, idle_secs: 240 }))
+    store.dispatch(sseSubagentDone({ slot: SLOT, id: ID, elapsed: 300, outcome: 'completed' }))
+    const a = sub(store)
+    expect(a.status).toBe('done')
+    expect(a.stalled).toBe(false)
+    expect(a.idleSecs).toBeUndefined()
+    expect(a.stalledAt).toBeUndefined()
   })
 })

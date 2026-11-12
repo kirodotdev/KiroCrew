@@ -498,7 +498,13 @@ class TestTeardown:
         A ``session/close`` sent as a notification is ignored, so ``notification=False``
         is the load-bearing half.
         """
-        assert adapter.teardown == TeardownPolicy(method=METHOD_SESSION_CLOSE, notification=False)
+        from kiro_crew.agent_sdk.codex_transcripts import delete_codex_session_files
+
+        assert adapter.teardown == TeardownPolicy(
+            method=METHOD_SESSION_CLOSE,
+            notification=False,
+            delete_disposable_record=delete_codex_session_files,
+        )
 
     def test_teardown_evicts_one_session_and_leaves_the_other_running(self, adapter):
         """The property the eviction set is built on, against the peer's model of
@@ -971,7 +977,13 @@ class TestOneFactReadThreeWays:
         assert _build_provider(ACP_BACKEND_CODEX).is_session_sharing_eligible is True
         # Membership does NOT soften the teardown: the verb is the disposing one.
         assert ACP_BACKEND_CODEX in ACP_BACKENDS_SESSION_EVICTION
-        assert adapter.teardown == TeardownPolicy(method=METHOD_SESSION_CLOSE, notification=False)
+        from kiro_crew.agent_sdk.codex_transcripts import delete_codex_session_files
+
+        assert adapter.teardown == TeardownPolicy(
+            method=METHOD_SESSION_CLOSE,
+            notification=False,
+            delete_disposable_record=delete_codex_session_files,
+        )
         # And the restore is resolved from the sessionId alone, with no Crew-side
         # transcript -- the property that makes a closed session continuable.
         assert ACP_BACKEND_CODEX in ACP_BACKENDS_HARNESS_OWNED_SESSIONS
@@ -1466,6 +1478,21 @@ class TestTheRuntimeArmsCodexPermissionRouting:
         assert plane.methods.index(METHOD_SESSION_NEW) < plane.methods.index(
             METHOD_SET_CONFIG_OPTION
         )
+
+    @pytest.mark.asyncio
+    async def test_external_sandbox_is_written_when_the_adapter_offers_it(self):
+        """read-only nests Codex's own sandbox inside Crew's, which cannot start."""
+        response = _codex_session_new_response()
+        response["configOptions"][0]["options"].append({"value": "external-sandbox"})
+        rt = _codex_runtime()
+        plane = _ControlPlane(response)
+
+        with ExitStack() as stack:
+            plane.install(rt, stack)
+            await rt.create_session(cwd="/w", agent="kirocrew")
+
+        writes = plane.params_for(METHOD_SET_CONFIG_OPTION)
+        assert [(w["configId"], w["value"]) for w in writes] == [("mode", "external-sandbox")]
 
     @pytest.mark.asyncio
     async def test_a_rejected_write_terminates_the_session_and_refuses(self):

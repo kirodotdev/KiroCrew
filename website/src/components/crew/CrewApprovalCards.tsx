@@ -6,6 +6,7 @@ import { ApiError, isTerminalApprovalRefusal } from '../../api/apiError'
 import { useAppSelector } from '../../store'
 import { Btn } from '../ui'
 import ErrorNotice from '../ErrorNotice'
+import StatusNotice from '../StatusNotice'
 import { i18nT } from '../../i18n/t'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { useCrewWorkerSummary, crewWorkersQueryKey } from '../../pages/chat/command-center/CrewWorkerList'
@@ -151,6 +152,8 @@ function CrewApprovalCard({ root, request, compact = false, tree = 'crew' }: { r
     mutation.mutate(action)
   }
   if (done) return null
+  // A gone request no longer asks for a decision, so the card drops its warn tone.
+  const tone = gone ? { border: 'border-border', icon: 'text-muted' } : { border: 'border-warn', icon: 'text-warn' }
   if (compact) {
     const busy = mutation.isPending || gone
     // An MCP tool ("@server/tool_name") reads as its tool's own name: its raw
@@ -159,9 +162,9 @@ function CrewApprovalCard({ root, request, compact = false, tree = 'crew' }: { r
     const call = mcpTool ? mcpTool[1].replace(/_/g, ' ') : approvalTitle({ id: approval.request_id, tool: approval.tool, tool_input: approval.tool_input, tool_purpose: approval.tool_purpose }) || approval.tool || i18nT('components.crewMode.approval_tool_unknown')
     const small = 'inline-flex items-center justify-center h-7 px-2.5 rounded-md text-[12px] font-medium border transition-colors disabled:opacity-40 shrink-0'
     return (
-      <article aria-labelledby={headingId} className="rounded-lg border border-warn bg-card px-2.5 py-2 space-y-1 text-text" data-testid="crew-approval-card" data-worker={worker}>
+      <article aria-labelledby={headingId} className={`rounded-lg border ${tone.border} bg-card px-2.5 py-2 space-y-1 text-text`} data-testid="crew-approval-card" data-worker={worker}>
         <div className="flex items-center gap-2 min-w-0">
-          <ShieldCheck size={14} aria-hidden="true" className="shrink-0 text-warn" />
+          <ShieldCheck size={14} aria-hidden="true" className={`shrink-0 ${tone.icon}`} />
           <h3 id={headingId} className="flex-1 min-w-0 text-[13px] truncate" title={`${title}: ${call}`}>
             <span className="font-semibold">{title}</span><span className="text-muted">: </span><span>{call}</span>
           </h3>
@@ -185,14 +188,14 @@ function CrewApprovalCard({ root, request, compact = false, tree = 'crew' }: { r
               title={trustHint} onClick={() => decide('trust')}>{i18nT('components.crewMode.ultra_trust')}</button>
           )}
         </div>
-        {/* The same failure surface and wording as the full card below. */}
+        {/* The same notices and wording as the full card below. */}
+        <StatusNotice tone="info" testId="crew-approval-gone" message={gone ? i18nT('components.approvalCard.approval_no_longer_pending') : null} />
         <ErrorNotice
           variant="inline"
-          message={!mutation.error ? undefined
-            : gone ? i18nT('components.approvalCard.approval_no_longer_pending')
-              : mutation.error instanceof ApiError && mutation.error.message
-                ? i18nT('components.approvalCard.decision_not_recorded_error', { error: mutation.error.message })
-                : i18nT('components.approvalCard.decision_failed')}
+          message={!mutation.error || gone ? undefined
+            : mutation.error instanceof ApiError && mutation.error.message
+              ? i18nT('components.approvalCard.decision_not_recorded_error', { error: mutation.error.message })
+              : i18nT('components.approvalCard.decision_failed')}
           askAgent
           testId="crew-approval-failure"
         />
@@ -202,13 +205,13 @@ function CrewApprovalCard({ root, request, compact = false, tree = 'crew' }: { r
   return (
     <article
       aria-labelledby={headingId}
-      className="rounded-lg border border-warn bg-card p-3 space-y-2 text-text"
+      className={`rounded-lg border ${tone.border} bg-card p-3 space-y-2 text-text`}
       data-testid="crew-approval-card"
       data-worker={worker}
     >
       <h3 id={headingId} className="flex items-center gap-1.5 text-[13px] font-semibold min-w-0">
-        <ShieldCheck size={15} aria-hidden="true" className="shrink-0 text-warn" />
-        <span className="truncate">{i18nT('components.crewMode.approval_title', { name: title })}</span>
+        <ShieldCheck size={15} aria-hidden="true" className={`shrink-0 ${tone.icon}`} />
+        <span className="truncate">{gone ? title : i18nT('components.crewMode.approval_title', { name: title })}</span>
       </h3>
       {task && <p className="text-[12px] text-muted break-words line-clamp-2">{task}</p>}
       <p className="text-[12px] break-words">
@@ -229,13 +232,14 @@ function CrewApprovalCard({ root, request, compact = false, tree = 'crew' }: { r
           drops the card; a refusal with the server's own message quotes it (a
           sign-in that lapsed included; the client's silent refresh retries it);
           a transport failure with no answer says the decision may not have
-          landed, and the buttons stay for one more try. */}
+          landed, and the buttons stay for one more try. The gone refusal is
+          status, not an error: nothing the user did failed. */}
+      <StatusNotice tone="info" testId="crew-approval-gone" message={gone ? i18nT('components.approvalCard.approval_no_longer_pending') : null} />
       <ErrorNotice
-        message={!mutation.error ? undefined
-          : gone ? i18nT('components.approvalCard.approval_no_longer_pending')
-            : mutation.error instanceof ApiError && mutation.error.message
-              ? i18nT('components.approvalCard.decision_not_recorded_error', { error: mutation.error.message })
-              : i18nT('components.approvalCard.decision_failed')}
+        message={!mutation.error || gone ? undefined
+          : mutation.error instanceof ApiError && mutation.error.message
+            ? i18nT('components.approvalCard.decision_not_recorded_error', { error: mutation.error.message })
+            : i18nT('components.approvalCard.decision_failed')}
         askAgent
         testId="crew-approval-failure"
       />

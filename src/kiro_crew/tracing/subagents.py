@@ -118,7 +118,7 @@ def pin_origin(agent_id: str, sessions: Any, parent_session_key: str) -> None:
 def _origin_for(agent_id: str, conversation_key: str = "") -> Origin | None:
     """*agent_id*'s origin; a continuation takes the origin of the run it continues."""
     with _lock:
-        first = conversation_key.removeprefix("subagent:") if conversation_key else ""
+        first = conversation_key.removeprefix("subagent:")
         return (_origins.get(first) if first else None) or _origins.get(agent_id)
 
 

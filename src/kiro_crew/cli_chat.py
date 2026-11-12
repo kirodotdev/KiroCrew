@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.acp._dispatch import is_shell_kind
 from kiro_crew.acp.client import AcpError, AcpTimeoutError
+from kiro_crew.agent_sdk.drivers.acp_vocab import continue_timed_out_calls
 from kiro_crew.agent_sdk.host_auth import for_terminal
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
@@ -1415,7 +1416,9 @@ async def _send_and_print(
     # once this turn ends, so what the person typed still reaches the agent.
     undelivered: list[str] = []
     try:
-        async for event in provider.stream(message):
+        # A call whose own silence timer ends the prompt is handed back to the
+        # model inside this turn, on the same session (``acp.timed_out_continuation``).
+        async for event in continue_timed_out_calls(provider.stream, message):
             if event.kind == EVENT_TEXT_CHUNK:
                 print(event.text, end="", flush=True)
             elif event.kind == EVENT_PERMISSION_REQUEST:

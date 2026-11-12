@@ -847,6 +847,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.mcp_discovery_config import (  # noqa: F401
         _MALFORMED_TRANSPORT_MAX,
         _display_transport,
+        _encoding_reason,
         _mcp_names_from_file,
         _server_from_spec,
         configured_mcp_aliases,

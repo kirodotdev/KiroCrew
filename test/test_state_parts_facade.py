@@ -396,6 +396,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     ),
     "todo_task_text": ("function", False, False, "(self, task_id: 'str') -> 'str | None'"),
     "turn_running": ("property", False, False, "(self) -> 'bool'"),
+    "_turn_lineage_generation": ("function", False, False, "(self) -> 'int'"),
     "unattended": ("property", False, False, "(self) -> 'bool'"),
     "unregister_approval": (
         "function",
@@ -416,6 +417,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
 #: A fresh ``_ChatSlot("k")`` before the split: field -> ("value", repr) for a plain
 #: value, or ("type", qualified type name) for an object, a clock or a minted id.
 _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
+    "__weakref__": ("value", "None"),
     "_acp_client": ("value", "None"),
     "_acp_pipe_death_retries": ("value", "0"),
     "_active_fallback_model": ("value", "''"),
@@ -653,6 +655,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_synthesis_rechecks": ("value", "0"),
     "_tab_id": ("value", "''"),
     "_task": ("value", "None"),
+    "_telemetry_notice_shown": ("value", "''"),
     "_title_epoch": ("value", "0"),
     "_title_in_flight": ("value", "False"),
     "_title_low_signal": ("value", "False"),
@@ -682,8 +685,10 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_turn_channel_narrowed": ("value", "False"),
     "_turn_channel_origin": ("value", "False"),
     "_turn_generation": ("value", "0"),
+    "_turn_lineage": ("type", "builtins.tuple"),
     "_turn_in_flight_generation": ("value", "0"),
     "_turn_in_flight_prompt": ("value", "None"),
+    "_restored_turn_marker": ("value", "None"),
     "_turn_owner_sent": ("value", "False"),
     "_turn_agent_started": ("value", "False"),
     "_turn_reply_mids": ("value", "[]"),
