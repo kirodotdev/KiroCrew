@@ -1,4 +1,4 @@
-import React, { useRef } from 'react'
+import React, { useLayoutEffect, useRef } from 'react'
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { UseVirtualChatOptions, UseVirtualChatReturn } from '../hooks/virtualizer/types'
@@ -37,9 +37,15 @@ const renderRow = () => <span />
 // `shell={false}` is ChatPage's welcome hero: the host and its stable ref are
 // mounted while no scroller exists, exactly as the page's first render on an
 // empty slot and its conversation -> empty -> conversation round trip.
-function MainHost({ shell = true, id = 'main' }: { shell?: boolean; id?: string }) {
+function MainHost({ shell = true, id = 'main', onScope }: {
+  shell?: boolean
+  id?: string
+  /** Each committed width scope and whether it could be measured in its commit. */
+  onScope?: (bucket: number, measurable: boolean) => void
+}) {
   const scrollerRef = useRef<HTMLDivElement | null>(null)
   const { widthBucket: scrollerWidthBucket, canMeasure, bindScroller } = useTranscriptWidth()
+  useLayoutEffect(() => { onScope?.(scrollerWidthBucket, canMeasure()) }, [scrollerWidthBucket, canMeasure, onScope])
   const virt = useVirtualChat({
     items, getKey: keyAt, sessionId: id,
     heightScopeKey: `${id}:tables1:w${scrollerWidthBucket}`, canMeasure,
@@ -147,6 +153,13 @@ describe.each(hosts)('%s width-cache ownership', (sessionId, prefix) => {
     // width-scope effect. Deliver only the latter, keeping publication pending.
     const widths = active.filter(observer => observer !== rows)
     expect(widths).toHaveLength(2)
+    // The pane leaves long enough for its width to be published, comes back,
+    // and the rows report before the publisher: the committed scope matches the
+    // pane but not the published table width, so that measurement is refused too.
+    act(() => { paneWidth = 1020; widths[0].fire(); vi.advanceTimersByTime(PANE_WIDTH_REST_MS) })
+    act(() => { paneWidth = 1220; rows.fire() })
+    expect(persisted(`${prefix}:w1216`, 0)).toBe(100)
+    act(() => { widths[0].fire(); vi.advanceTimersByTime(PANE_WIDTH_REST_MS) })
     act(() => { paneWidth = 1020; widths[1].fire(); vi.advanceTimersByTime(200) })
     expect(shell.style.getPropertyValue(PANE_WIDTH_PROPERTY)).toBe('1220px')
     const currentRows = () => Observer.all.find(observer => observer.targets.has(shell)
@@ -160,6 +173,9 @@ describe.each(hosts)('%s width-cache ownership', (sessionId, prefix) => {
     expect(persisted(`${prefix}:w1024`, 0)).toBeUndefined()
     act(() => { vi.advanceTimersByTime(PANE_WIDTH_REST_MS); currentRows().fire() })
     expect(shell.style.getPropertyValue(PANE_WIDTH_PROPERTY)).toBe('1020px')
+    expect(persisted(`${prefix}:w1024`, 0)).toBeUndefined()
+    // The scope moves at the settle re-check after that publish.
+    act(() => { vi.advanceTimersByTime(200); currentRows().fire() })
     expect(persisted(`${prefix}:w1024`, 0)).toBe(300)
     expect(persisted(`${prefix}:w1216`, 0)).toBe(100)
   })
@@ -232,6 +248,45 @@ describe.each(hosts)('%s width-cache ownership', (sessionId, prefix) => {
     view.unmount()
     expect(new HeightCache(oldScope).peek('row-m0')).toBe(100)
     expect(new HeightCache(newScope).peek('row-m60')).toBe(360)
+  })
+})
+
+describe('width scope settle', () => {
+  it('commits a new scope only once its table width is published, so the swap commit can measure', () => {
+    const scopes: [number, boolean][] = []
+    const record = (bucket: number, measurable: boolean) => { scopes.push([bucket, measurable]) }
+    const view = render(<MainHost id="settle" onScope={record} />)
+    const shell = view.container.querySelector<HTMLElement>('.chat-container')!
+    const widths = () => Observer.all.filter(observer => observer.targets.has(shell) && observer.targets.size === 1)
+    act(() => { paneWidth = 1020; for (const observer of widths()) observer.fire(); vi.advanceTimersByTime(PANE_WIDTH_REST_MS) })
+    scopes.length = 0
+    // The pane lays out at a new width before any observer reports it, and the
+    // settle interval armed for the previous width ends first (WebKit).
+    act(() => { paneWidth = 700; vi.advanceTimersByTime(200) })
+    act(() => { for (const observer of widths()) observer.fire() })
+    act(() => { vi.advanceTimersByTime(200) })
+    expect(shell.style.getPropertyValue(PANE_WIDTH_PROPERTY)).toBe('700px')
+    expect(scopes).toEqual([[704, true]])
+  })
+
+  it('moves a scope the pane already left to the pane width before that commit paints', () => {
+    const scopes: [number, boolean][] = []
+    const record = (bucket: number, measurable: boolean) => { scopes.push([bucket, measurable]) }
+    const view = render(<MainHost id="stale" onScope={record} />)
+    const shell = view.container.querySelector<HTMLElement>('.chat-container')!
+    const widths = () => Observer.all.filter(observer => observer.targets.has(shell) && observer.targets.size === 1)
+    act(() => { paneWidth = 1314; for (const observer of widths()) observer.fire() })
+    scopes.length = 0
+    // The settle reads 1314; a sidebar sliding back in moves the pane, and the
+    // publisher publishes it, before React commits that scope.
+    act(() => {
+      vi.advanceTimersByTime(200)
+      paneWidth = 1234
+      widths()[0].fire()
+      vi.advanceTimersByTime(PANE_WIDTH_REST_MS)
+    })
+    expect(shell.style.getPropertyValue(PANE_WIDTH_PROPERTY)).toBe('1234px')
+    expect(scopes).toEqual([[1312, false], [1232, true]])
   })
 })
 
