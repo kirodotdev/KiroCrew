@@ -1159,6 +1159,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     if _fallback:
         _turn_project = _fallback
         turn._turn_project = _turn_project
+        slot._turn_project_pin = (slot._turn_generation, _turn_project)
     if not is_new and slot._pending_reset_history_key == session_key and client.cwd:
         # The deferred project reset is still armed for the session this
         # turn holds (attached sub-agents keep the process alive), so the

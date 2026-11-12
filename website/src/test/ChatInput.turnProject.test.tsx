@@ -71,4 +71,20 @@ describe('ChatInput running-reply project from the server', () => {
     rerender(<ChatInput {...props} project={B} turnProject={null} isRunning />)
     expect(title()).toContain('This reply finishes in RepoA.')
   })
+
+  it('keeps the server reading once the reply ends while attached sub-agents keep the composer busy', () => {
+    // Start in A, pick B, reload: mounted on B, the server names A.
+    const { rerender } = renderWithProviders(<ChatInput {...props} project={B} turnProject={A} isRunning />)
+    expect(screen.getByTestId('composer-project-pending')).toBeInTheDocument()
+    // The reply ends with sub-agents attached: the server stops naming a turn
+    // project, but the deferred reset is still armed and A is still in use.
+    rerender(<ChatInput {...props} project={B} turnProject={null} isRunning projectLocked />)
+    expect(title()).toContain('Switching to RepoB from your next message.')
+    expect(screen.getByTestId('composer-project-pending')).toBeInTheDocument()
+    expect(screen.getByTestId('composer-project-switch-status')).toHaveTextContent('Switching to RepoB from your next message.')
+    // The sub-agents finish: the pick applies, and a later busy window starts fresh.
+    rerender(<ChatInput {...props} project={B} turnProject={null} />)
+    rerender(<ChatInput {...props} project={B} turnProject={null} isRunning />)
+    expect(screen.queryByTestId('composer-project-pending')).toBeNull()
+  })
 })

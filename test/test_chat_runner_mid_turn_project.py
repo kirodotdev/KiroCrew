@@ -249,3 +249,27 @@ async def test_deferred_reset_turn_describes_the_reused_process_directory(tmp_pa
     assert opened.call_args.kwargs["cwd"] == str(old)
     # The summary a reloading client reads names the reused process too.
     assert slot_ref["summary"] == str(old)
+
+
+@pytest.mark.asyncio
+async def test_summary_names_the_fallback_directory_after_a_hidden_scratch_project(
+    tmp_path, monkeypatch
+):
+    """A restored chat whose stored project is an earlier runtime's hidden
+    scratch directory runs in the default directory instead. The summary a
+    reloading client reads names that directory, not the inaccessible one."""
+    scratch = tmp_path / "old-scratch"
+    default = tmp_path / "default-dir"
+    default.mkdir()
+    slot_ref: dict = {}
+    state = _turn_state(tmp_path, monkeypatch, slot_ref, str(scratch))
+    slot = state.get_or_create_slot(SLOT_NAME)
+    slot.project = str(scratch)
+    slot_ref["slot"] = slot
+    monkeypatch.setattr(chat_runner, "_fallback_turn_project", AsyncMock(return_value=str(default)))
+
+    slot.append("user", "Look at the repo.")
+    await run_as_slot_task(slot, chat_runner._run_chat(state, slot, "Look at the repo."))
+    await asyncio.wait_for(drain_background_tasks(state), 30)
+
+    assert slot_ref["summary"] == str(default)

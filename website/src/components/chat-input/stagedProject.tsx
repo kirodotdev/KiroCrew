@@ -77,16 +77,20 @@ export function useStagedProject(
   if (!isRunning) {
     baselines.current.delete(key)
   } else {
-    const held = baselines.current.get(key)
-    if (held && (held.turnKey === turnKey || projectLocked)) {
-      start = held.start
-      held.turnKey = turnKey
-    } else baselines.current.set(key, { start: project, turnKey })
+    let held = baselines.current.get(key)
+    if (!held || (held.turnKey !== turnKey && !projectLocked)) {
+      held = { start: project, turnKey }
+      baselines.current.set(key, held)
+    } else held.turnKey = turnKey
+    // The server's own reading of the running turn's directory wins once the
+    // turn has claimed its session (#20352): a composer mounted after a
+    // reload would otherwise capture the already-picked project as the start.
+    // It is kept for the rest of the busy window, because the server stops
+    // naming it when the reply ends while attached sub-agents keep the
+    // composer busy and the old directory in use.
+    if (typeof turnProject === 'string') held.start = turnProject
+    start = held.start
   }
-  // The server's own reading of the running turn's directory wins once the
-  // turn has claimed its session (#20352): a composer mounted after a reload
-  // would otherwise capture the already-picked project as the start.
-  if (typeof turnProject === 'string') start = turnProject
   const pending = isRunning && !!project && stripTrailingSeparators(project) !== stripTrailingSeparators(start || '')
   if (!isRunning) return { turnStartProject: start, pending: false, midTurnNote: '', pendingNote: '' }
   const startName = start ? folderName(start) : i18nT('components.chatInput.project')
