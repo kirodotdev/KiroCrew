@@ -2,7 +2,7 @@
 
 ## Overview
 
-Append-only, tamper-evident audit trail for tool invocations, MCP calls, and dashboard API mutations: every security-relevant decision is written as one signed event. Retention is bounded by age (365 days) and by size (the newest 7 closed 32 MiB segments); whichever is tighter wins (see Retention).
+Append-only, tamper-evident audit trail for tool invocations, MCP calls, and dashboard API mutations: every security-relevant decision is written as one signed event. Retention is bounded by age (365 days) and by size (the newest 7 closed 32 MiB segments, a count an operator can raise); whichever is tighter wins (see Retention).
 
 See also the SEL section in [`security.md`](security.md) for the threat-model view of these events.
 
@@ -176,6 +176,16 @@ Two bounds, and the tighter wins:
 
 - **Age:** 365 days (`_RETENTION_DAYS`), pruned daily by the heartbeat service (`_PRUNE_TICKS`).
 - **Size:** the live log rotates at 32 MiB (`_SEGMENT_MAX_BYTES`) and only the newest 7 closed segments are kept (`_SEGMENT_KEEP`), so on a busy host evidence can age out before 365 days.
+
+An operator raises the keep count with `sel.keep` in `config.json` (with the `config.local.json` overlay), up to `_SEGMENT_KEEP_CEILING` (64). The ceiling bounds the daily prune: `_prune_segments_locked` reads each aged-out segment in full under the install-wide chain lock, during which loop-side critical audits fail closed, so a raised count lengthens that hold to at most 64 x 32 MiB (about nine times the 7-segment worst case). It is a core-owned section the config schema does not model (`validation._CORE_OWNED_TOP_KEYS`), so Crew never writes a default copy of it. Size, a lower count and the age bound are not tunable: raise-only keeps the shipped bounds as the floor.
+
+Every process that writes the log can rotate and trim it, each at its own moment, so the count must reach every one of them and none may trim below a count it did not just read:
+
+- `sel_rotation._read_operator_keep` reads the config files beside the log through the loader's endorsed read. A clean read answers the count (absent or null = the default, out of range = clamped with one warning); anything else answers "unknown": an unreadable or malformed file, a wrong type, or a file this process read before and now finds missing (an editor's save window).
+- The writer thread reads it at the top of each batch that may rotate, before the chain lock (`_refresh_operator_keep`), so the read holds no lock a critical audit fails closed on.
+- `_enforce_segment_retention_locked` trims to the operator's count only in a batch whose own read was clean (`_keep_fresh`); any other batch keeps up to `_SEGMENT_KEEP_CEILING`. A batch that reaches the cap while it waits for the chain lock still rotates and trims only to the ceiling; the next rotation's read trims the rest. An unknown read never falls back to 7, the setting that deletes the most, and never leaves the count unbounded.
+- A `config.json` missing when read counts as unknown once this process has read it, or once the gateway has recorded a saved copy of it (`loosening_provenance.endorsed_bytes`): either way it is an editor mid-save, not an absent file. Where the sandbox seals the file the reader is served that copy instead and never sees it missing.
+- Residuals: a process from an earlier release still trims at 7. A malformed `config.json` makes every process keep up to the ceiling until it is fixed. A deleted `config.json` does the same until the gateway recreates it at its next start. A deleted `config.local.json` does the same in each process that had read it, until that process restarts. A process whose first read lands while an editor rewrites `config.local.json`, or rewrites a `config.json` whose saved copy is unreadable, reads only what is on disk and trims to that.
 
 ## Integration Points
 

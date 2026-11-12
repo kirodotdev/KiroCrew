@@ -90,6 +90,8 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "_reanchor_if_replaced": ("function", False, "fa6cfecd5574", "sel_append"),
     "_reanchor_now": ("function", False, "b60c5fea256e", "sel_append"),
     "_record_signature_matches": ("function", False, "dff636aaefc0", "sel_trust_root"),
+    # Not at the split: the writer thread's pre-lock read of the operator's keep count.
+    "_refresh_operator_keep": ("function", False, "b60c5fea256e", "sel_rotation"),
     "_rotate_under_lock": ("function", False, "b60c5fea256e", "sel_rotation"),
     "_rotation_event": ("function", False, "20d63be29459", "sel"),
     "_rotation_window": ("function", False, "c323b5c58041", "sel_rotation"),

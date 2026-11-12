@@ -928,6 +928,31 @@ The desktop app's list of remote Crews it can open through the Kiro relay. See [
 |-----|-------------|---------|
 | `power.on_battery` | What Knowledge Library background sweeps do while this machine runs on battery; nothing else reads it yet. `normal` ignores the power source; `reduced` cuts each sweep to a quarter of `knowledge.sweep_chunk_budget`, at least 10 chunks and never more than the configured budget; `paused` skips the sweeps until the machine is back on mains. A document you add yourself always ingests; a folder you add ingests its first paced batch at once, and the rest of a large folder arrives with the sweeps, so under `paused` it waits for mains. A host that cannot report its power source counts as plugged in. Read on Linux and Windows; macOS always counts as plugged in for now | `"normal"` |
 
+### Security event log
+
+The security event log keeps its newest 7 closed 32 MiB segments, and drops
+events older than 365 days. To keep more history, raise the segment count with
+`sel.keep` in `config.json`:
+
+```json
+{ "sel": { "keep": 30 } }
+```
+
+`sel.keep` is any whole number from 7 to 64; without it the count stays 7. A
+smaller one keeps 7 and a larger one keeps 64, with one warning. A higher count
+also makes the daily prune read more: once events age past 365 days it reads
+each expired segment in full while the log is locked, so 64 segments (2 GiB) is
+the most it allows. It can only raise the count: the shipped bounds are the
+audit trail's floor, so the segment size, a smaller count and the 365 days are
+not settings. Every Kiro Crew process reads it again before it trims old
+segments by count, so a change applies at the next rotation without a restart.
+A process that cannot read it cleanly keeps up to 64 segments: a `config.json`
+that is not valid JSON, or a `sel.keep` that is not a whole number, does that
+until it is fixed. It logs a warning, once per process, that names the file or
+the key and never the value. A hand edit on a Linux host where the agent sandbox
+seals `config.json` is held as a pending change until it is applied in Settings
+→ Security.
+
 ### Top level
 
 | Key | Description | Default |
