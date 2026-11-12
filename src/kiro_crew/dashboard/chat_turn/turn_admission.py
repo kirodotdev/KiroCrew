@@ -42,6 +42,7 @@ if TYPE_CHECKING:
         invalidate_stale_kas_session,
         logger,
         publish_turn_identity,
+        read_beside_claim,
         record_activity,
         record_agent_selection,
         refresh_materialized_agents,
@@ -1021,6 +1022,11 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             execution_context=execution_context,
             prefetch_memory=True,
         )
+    if _starts_fresh and not is_slash:
+        # This turn builds a session-start context once its claim ends. A re-walk
+        # of the chat's skill scope that is due starts now, beside the claim, and
+        # not beside that build, when the session's MCP servers are starting too.
+        read_beside_claim(state, selected_binding[1] or "")
     # The crew log this slot was last writing to, read BEFORE allocation
     # publishes the successor's id over it. A slot outlives its ACP session, so
     # when the session below cold-starts under a NEW id the crew log gains a new

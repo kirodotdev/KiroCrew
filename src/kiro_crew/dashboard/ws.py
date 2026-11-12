@@ -24,6 +24,7 @@ from kiro_crew.dashboard import ws_slot_diff as _ws_slot_diff
 from kiro_crew.dashboard.chat_utils import effective_session_key, subagent_event_slot
 from kiro_crew.dashboard.kiro_relay.caller import RELAY_TEAMMATE_WS_FLAG, is_relay_teammate
 from kiro_crew.dashboard.origin import check_origin
+from kiro_crew.dashboard.skill_read_ahead import read_ahead as read_skills_ahead
 from kiro_crew.dashboard.slot_retention import note_foreground
 from kiro_crew.dashboard.state import (
     PERSISTED_SUBAGENT_REPLAY_KEEP,
@@ -1834,6 +1835,9 @@ async def _serve_ws(
                                 announce=data.get("announce") is True,
                             )
                             note_foreground(state, id(ws), data.get("slot"))
+                            # A due re-walk of the slot's skill scope starts now,
+                            # not beside its first prompt build.
+                            read_skills_ahead(state, data.get("slot"))
                     elif msg_type == "slot_read":
                         _relayed = _handle_slot_read(
                             state,

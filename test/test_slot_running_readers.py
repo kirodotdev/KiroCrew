@@ -279,6 +279,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("warm_task_brief.py", "_still_current"),
                 ("warm_task_brief.py", "_wait_for_idle_turn"),
                 ("ws.py", "_handle_slot_focused"),
+                # A slot a send has reserved is past the moment a read ahead of
+                # its first message could help.
+                ("skill_read_ahead.py", "read_ahead"),
             }
         },
         **{

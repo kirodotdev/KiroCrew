@@ -5362,6 +5362,43 @@ covers the global scope only; a trusted project's scope is first read by the fir
 session in that project. A failed read is logged at debug, and the first session then
 reads for itself. Not started in test mode.
 
+**A due re-walk starts while the person types, not beside the prompt build.** Tier 2
+answers at once, but the re-walk it queues then runs beside whatever asked. When the
+first read after `_ITER_CACHE_TTL_SECS` is a session start's own, that is the prompt
+build, after the person has sent the message, and the two compete for the path gate.
+A person opening a chat a minute or more after the last session start is the ordinary
+case. The dashboard already announces a slot on composer focus and on a key press (the
+`slot_focused` frame, at most one per ten seconds per slot), so on an owner's frame
+`dashboard/skill_read_ahead.read_ahead` asks the loader for that slot's scope
+(`scoped_skills`, on a worker thread): a list that is still fresh is returned as it is,
+and an expired one queues its re-walk then. It reads only for a slot whose next turn
+builds a session-start context (no live session, or a started one no turn has claimed),
+at most once per scope every `MIN_INTERVAL_SECS` and never twice at once. The floor
+matches the frame's own throttle and sits well under the list's lifetime on purpose: a
+read of a fresh list refreshes nothing, so a floor as long as the lifetime could make
+the one read that matters wait a whole lifetime. The lifetime itself is unchanged, and
+it stays the bound on an out-of-band change, which sends no signal. Nothing is kept
+outside the loader, and nothing but the skill catalog is read: no memory, agent spec,
+steering file or hook.
+
+**A turn that starts its session asks as its claim begins.** A message no frame came
+before (an API client, a tab left alone and then a message pasted and sent at once)
+would start its re-walk inside its own build. `_turn_admit` therefore calls
+`skill_read_ahead.read_beside_claim` for a turn that builds a session-start context
+and is not a slash command, just before the session claim, with the project the claim
+itself uses. The claim lasts seconds, and tens of seconds when the session starts many
+MCP servers, so a due re-walk ends long before the build begins. This is also why the
+build used to look slower with more MCP servers: nothing in the build reads a server
+declaration or grows with their number, but a longer claim puts more session starts
+past the list's lifetime, and each of those paid the re-walk inside its build. The
+call shares the frame's one read in flight but not its floor, because a frame may have
+read a list seconds before it expired and the claim is the last moment before the
+build; a turn starts a session once, so it cannot repeat fast. It keeps nothing and
+leaves the lifetime and the out-of-band bound as they are; the build that follows reads the
+re-walked list, so a change made before the send is in that turn's context. A turn
+that takes a session already started has a claim too short to hide a re-walk; the
+frame is what covers that chat.
+
 The scope key is a digest of the skills root, the resolved `extra_paths` and the
 trusted project key (`_catalog_scope_id`), because two loaders can share a project
 and still enumerate different trees. Stored rows keep their **ordinal**: enumeration
