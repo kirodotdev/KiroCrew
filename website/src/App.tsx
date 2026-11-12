@@ -138,7 +138,7 @@ const EmbedSettingsPage = lazyPage(() => import('./pages/EmbedSettingsPage'))
 const DeveloperPage = lazyPage(() => import('./pages/DeveloperPage'))
 const SchedulePage = lazyPage(() => import('./pages/SchedulePage'))
 const AppPage = lazyPage(() => import('./pages/AppPage'))
-const AppDetailPage = lazyPage(() => import('./pages/AppDetailPage'))
+const AppDetailPage = lazyPage(() => import('./pages/AppDetailRoute'))
 const MigrationPage = lazyPage(() => import('./pages/MigrationPage'))
 const HooksPage = lazyPage(() => import('./pages/HooksPage'))
 
