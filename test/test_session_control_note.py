@@ -299,7 +299,7 @@ async def test_a_note_held_across_a_restart_is_read_unless_its_session_left_reac
         persisted[0]["context"]["admission"][sc.QUEUED_CONTAINMENT_META_KEY].pop("workspace")
     child.task = None
     child._deferred_notes = sanitize_restored_deferred_notes(persisted)
-    child.flush_deferred_notes()
+    child.flush_deferred_notes(markers_only=False)
     if change == "workspace":
         child.workspace = "other-workspace"
     if change in ("forged_mirror", "workspace_lost"):

@@ -234,6 +234,90 @@ class TestRunnerWiring:
         assert is_synthetic_recovery_item(slot._queue[0])
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("blocks", [True, False], ids=["hook-continues", "hook-ends"])
+    async def test_a_held_marker_waits_for_a_stop_hook_continuation(self, tmp_path, blocks) -> None:
+        """A Stop hook that blocks queues the reply that finishes the item, so a held
+        section marker must not be released ahead of it. A hook that lets the turn end
+        releases it."""
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.session_directive import SECTION_MARKER_ROLE
+
+        stdout = '{"decision": "block", "reason": "Read the log first."}' if blocks else "ok"
+        state, slot, run_chat = _harness(tmp_path, stdout)
+        slot._deferred_notes.append(
+            {
+                "content": "— End of section: item-42 —",
+                "cls": "",
+                "context": None,
+                "session": effective_session_key(slot),
+                "role": SECTION_MARKER_ROLE,
+                "meta": {"label": "item-42"},
+            }
+        )
+
+        # Read at the dispatch point: the stub declines to start the next turn, so the
+        # cycle would then end and flush everything, which no real continuation allows.
+        seen: dict[str, object] = {}
+
+        async def _dispatch(_state, s, *a, **k):
+            if "drawn" not in seen:
+                seen["drawn"] = [m for m in s.messages if m.get("role") == SECTION_MARKER_ROLE]
+                seen["held"] = [
+                    n for n in s._deferred_notes if n.get("role") == SECTION_MARKER_ROLE
+                ]
+                seen["queued"] = bool(s._queue)
+            return False
+
+        with patch("kiro_crew.dashboard.chat_runner._start_next_queued_turn", new=_dispatch):
+            await run_chat(state, slot, "do the thing")
+
+        if blocks:
+            assert "drawn" in seen, "fixture: the turn never reached its dispatch point"
+            assert seen["queued"], "fixture: the hook continuation was not queued"
+            assert not seen["drawn"], "the marker was released ahead of the hook's continuation"
+            assert seen["held"], "the marker was lost instead of held"
+        else:
+            assert any(
+                m.get("role") == SECTION_MARKER_ROLE for m in slot.messages
+            ), "a turn the hook let end never drew its marker"
+
+    @pytest.mark.asyncio
+    async def test_a_held_marker_waits_while_an_earlier_continuation_is_queued(
+        self, tmp_path
+    ) -> None:
+        """Two blocking hooks queue two continuations. The first one runs and queues
+        nothing itself, but the second still owes the reply the marker closes."""
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.session_directive import SECTION_MARKER_ROLE
+
+        state, slot, run_chat = _harness(tmp_path, "ok")
+        slot.queue_insert(
+            0, f"{HOOK_CONTINUATION_RECOVERY_PREFIX}\nsecond reason", kind=SYNTHETIC_RECOVERY_KIND
+        )
+        slot._deferred_notes.append(
+            {
+                "content": "— End of section: item-42 —",
+                "cls": "",
+                "context": None,
+                "session": effective_session_key(slot),
+                "role": SECTION_MARKER_ROLE,
+                "meta": {"label": "item-42"},
+            }
+        )
+        seen: dict[str, object] = {}
+
+        async def _dispatch(_state, s, *a, **k):
+            if "drawn" not in seen:
+                seen["drawn"] = [m for m in s.messages if m.get("role") == SECTION_MARKER_ROLE]
+            return False
+
+        with patch("kiro_crew.dashboard.chat_runner._start_next_queued_turn", new=_dispatch):
+            await run_chat(state, slot, "first reason")
+
+        assert "drawn" in seen, "fixture: the turn never reached its dispatch point"
+        assert not seen["drawn"], "the marker was released ahead of the queued continuation"
+
+    @pytest.mark.asyncio
     async def test_an_ordinary_stop_hook_ends_the_turn(self, tmp_path) -> None:
         """Exit 0 with plain output is the common case and must not continue."""
         state, slot, run_chat = _harness(tmp_path, "checked 3 files, all clean")

@@ -553,6 +553,23 @@ def _record_queued_crew_steers(state: DashboardState, consumed: list[dict]) -> N
             logger.warning("crew steer: a queued steer was not recorded", exc_info=True)
 
 
+def _next_queued_is_recovery_continuation(slot: _ChatSlot) -> bool:
+    """Whether the head of the queue continues THIS turn rather than succeeding it.
+
+    A recovery re-queue (a continuation or a false-tool-blocker replay): the reply
+    it produces is the one a pending boundary CLOSES, not the first row of the next
+    unit of work. Releasing a held marker ahead of it would therefore place the
+    boundary one row too early, and permanently — the row is in the transcript.
+
+    Distinct from the origin-tag withhold beside it, which asks whether the successor
+    is a USER turn. A cron notification IS a successor whose rows a boundary precedes;
+    this one is not a successor at all.
+    """
+    if not slot._queue:
+        return False
+    return is_synthetic_recovery_item(slot._queue[0])
+
+
 async def _start_next_queued_turn(
     state: DashboardState,
     slot: _ChatSlot,
@@ -652,29 +669,6 @@ async def _start_next_queued_turn(
     # the queue is read for dispatch, so a later entry cannot inherit it.
     _forget_swept_replays(slot)
 
-    # Above the dequeue, so a held note's visible line lands before this turn's
-    # user row: its context half drains inside _turn_build_prompt via take_turn_context.
-    # Withheld when the next queued item carries a structural origin tag -- a cron
-    # notification or a runner-injected recovery prompt -- for the same reason
-    # _finish_queue_cycle withholds from synthesis: a note is owed to the next
-    # USER turn, and that cycle's own flush delivers it afterwards.
-    if not (slot._queue and slot._queue[0].get("kind")):
-        try:
-            slot.flush_deferred_notes()
-        except Exception:
-            # Everything below this point is the successor handoff -- the dequeue,
-            # the row append and spawn_guarded_turn. A raise here would return
-            # without dispatching, leaving the queued work stranded, so degrade to
-            # "the held note waits for the next seam" and carry on.
-            logger.warning(
-                "flush_deferred_notes failed before the queue drain for slot %s",
-                slot.key,
-                exc_info=True,
-            )
-
-    if not slot._queue:
-        return False
-
     # The promise-only recovery continuation is queue_insert(0)'d at
     # the promising turn's completion, but a Stop, a queued user follow-up, or a
     # late steer can intervene afterward. `_requeue_unconsumed_steers` degrades an
@@ -702,7 +696,24 @@ async def _start_next_queued_turn(
     # announced action must not be dispatched.
     # Same comparison for the session-scoped count: a stop issued on a linked
     # channel surface moves only that one.
-    if await _purge_superseded_continuations(state, slot):
+    superseded = bool(slot._queue) and await _purge_superseded_continuations(state, slot)
+
+    # Above the dequeue, so a held note lands before this turn's user row. Read after the
+    # purge, which can drop a recovery (it continues this turn, so nothing is due before it).
+    if not _next_queued_is_recovery_continuation(slot):
+        # Notes wait out a tagged successor (cron, runner prompt); a marker is a boundary.
+        structural_next = bool(slot._queue and slot._queue[0].get("kind"))
+        try:
+            slot.flush_deferred_notes(markers_only=structural_next)
+        except Exception:
+            # A raise here would strand the queued work, so the held rows wait instead.
+            logger.warning(
+                "flush_deferred_notes failed before the queue drain for slot %s",
+                slot.key,
+                exc_info=True,
+            )
+
+    if not slot._queue or superseded:
         return False
 
     # The self-queued replays (the model-access swap, the lost-session reconnect,
