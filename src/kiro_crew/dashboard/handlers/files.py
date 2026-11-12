@@ -710,6 +710,9 @@ _ALLOWED_TEXT_EXT = {
     # unknown extension as text, this just lets them past the upload boundary.
     ".rem",
     ".ret",
+    # Saved email messages (RFC 5322 / MIME): ASCII headers plus a body whose
+    # binary parts are base64 or quoted-printable, so they read as plain text.
+    ".eml",
     ".py",
     ".js",
     ".ts",
