@@ -41,7 +41,7 @@ from kiro_crew.dashboard.chat_title import (
     title_then_refresh,
 )
 from kiro_crew.history import HUMAN_TURN_META_KEY
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 _HUMAN = {HUMAN_TURN_META_KEY: True}
 _FIRST = "write the database failover drill"
@@ -105,7 +105,7 @@ class _Generator:
         if getattr(self, "_hold", False):
             gate = asyncio.Event()
             self.release.append(gate)
-            await asyncio.wait_for(gate.wait(), TURN_WAIT_SECS)
+            await await_until(gate, what="the release of a held title generation")
         reply = self.replies.pop(0) if self.replies else ""
         if isinstance(reply, Exception):
             raise reply

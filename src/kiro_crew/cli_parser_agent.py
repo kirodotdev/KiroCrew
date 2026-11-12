@@ -948,7 +948,7 @@ def register_workspace_parser(sub: _Commands) -> None:
         "--dir",
         default=None,
         help=(
-            "Workspace directory NAME, relative to the KiroCrew data home "  # brand-ok: help text kept as it was
+            "Workspace directory NAME, relative to the Kiro Crew data home "
             "(default: workspace-<name>). Any path resolving outside the data "
             "home is rejected."
         ),
@@ -959,7 +959,7 @@ def register_workspace_parser(sub: _Commands) -> None:
     ws_update.add_argument(
         "--dir",
         help=(
-            "New workspace directory NAME, relative to the KiroCrew data home. "  # brand-ok: help text kept as it was
+            "New workspace directory NAME, relative to the Kiro Crew data home. "
             "Any path resolving outside the data home is rejected."
         ),
     )
