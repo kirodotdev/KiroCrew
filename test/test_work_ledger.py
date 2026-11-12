@@ -336,6 +336,28 @@ def test_items_are_derived_from_the_directory_and_sorted_oldest_first():
     assert wl.list_work_items("never-existed") == []
 
 
+def test_items_are_listed_oldest_first_by_instant_across_an_offset_change(monkeypatch):
+    # A DST fall-back night in US Pacific: 01:50 PDT is 08:50Z, and the later
+    # 01:10 PST is 09:10Z. As strings, "01:10" sorts before "01:50".
+    now = ["2026-11-01T01:50:00-07:00"]
+    monkeypatch.setattr(wl, "_now_iso", lambda: now[0])
+    first = _new_item(title="one")
+    now[0] = "2026-11-01T01:10:00-08:00"
+    second = _new_item(title="two")
+    listed = [item.item_id for item in wl.list_work_items(CONDUCTOR)]
+    assert listed == [first, second]
+
+
+def test_items_use_the_shared_stamp_parser_for_naive_calendar_end(monkeypatch):
+    now = ["2026-11-01T01:50:00-07:00"]
+    monkeypatch.setattr(wl, "_now_iso", lambda: now[0])
+    first = _new_item(title="one")
+    now[0] = "9999-12-31T23:59:59"
+    last = _new_item(title="last")
+    listed = [item.item_id for item in wl.list_work_items(CONDUCTOR)]
+    assert listed == [first, last]
+
+
 def test_bind_writes_the_binding_and_refuses_a_second_one():
     item_id = _new_item()
     wl.apply_conductor_action(CONDUCTOR, "bind", item_id=item_id, worker_session_key=WORKER)

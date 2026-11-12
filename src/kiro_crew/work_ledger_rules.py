@@ -42,7 +42,9 @@ from kiro_crew.work_ledger_records import (
     WorkItem,
     WorkLedgerError,
     _finite_int,
+    _parse_iso,
     logger,
+    parse_stamp,
 )
 from kiro_crew.work_vocab import (
     WORK_MAX_DEPTH_MAX,
@@ -569,33 +571,3 @@ def _is_placeholder(value: Any) -> bool:
     field is a wrong type, which the type rules refuse.
     """
     return isinstance(value, str) and value.strip().lower() in ACCEPTANCE_PLACEHOLDERS
-
-
-def _parse_iso(value: str) -> datetime | None:
-    try:
-        return datetime.fromisoformat(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def parse_stamp(value: str) -> datetime | None:
-    """An ISO-8601 stamp as an AWARE datetime, or ``None`` when it is not one.
-
-    :func:`_now_iso` writes local time with an offset; a stamp without one (a caller's
-    ``since``, an older record) is taken as local time, because comparing naive with
-    aware raises and a read filter must never raise.
-
-    A naive stamp at either end of the calendar (``0001-01-01T00:00:00``,
-    ``9999-12-31T23:59:59``) may not shift into the local zone, and the platform raises
-    ``OverflowError`` or ``ValueError`` depending on the host. Such a sentinel is read as
-    UTC, so ``since=0001-01-01T00:00:00`` means "everything", never a failed read.
-    """
-    parsed = _parse_iso(value)
-    if parsed is None:
-        return None
-    if parsed.tzinfo is not None:
-        return parsed
-    try:
-        return parsed.astimezone()
-    except (OverflowError, ValueError, OSError):
-        return parsed.replace(tzinfo=timezone.utc)
