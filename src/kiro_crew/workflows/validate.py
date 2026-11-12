@@ -862,7 +862,15 @@ def validate(source: str, *, max_bytes: int = MAX_SCRIPT_BYTES) -> ValidationRes
     Returns a ``ValidationResult``; never raises on bad scripts (errors are
     collected). Only raises if ``source`` is not a string.
     """
-    if len(source.encode("utf-8")) > max_bytes:
+    try:
+        size = len(source.encode("utf-8"))
+    except UnicodeEncodeError:
+        # JSON allows a lone "\ud800", and a decoded request body can carry one.
+        # It cannot be encoded, so it can never be stored or run: report it.
+        return ValidationResult(
+            ok=False, errors=["script contains an unpaired surrogate character"]
+        )
+    if size > max_bytes:
         return ValidationResult(ok=False, errors=[f"script exceeds max size of {max_bytes} bytes"])
     try:
         tree = ast.parse(source)
