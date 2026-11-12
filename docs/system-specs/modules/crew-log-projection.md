@@ -870,7 +870,10 @@ units it reads. Its budget is `delta + K`, where `delta` is what the read answer
 
 Inside a pass, every read adds to the pass, so a digest check during a session resume is
 counted against that session fold. `resolve` stops reading at the last cited seq, so it
-costs the span.
+costs the span. `get`, `page` and a `strict_seq=False` `iter_from` (`read_page`) on a
+unit of one segment bisect its bytes by seq first, so they cost about one 16 KiB span
+plus their answer; a unit of more segments, or a seek that cannot prove its window, reads
+from the top as before.
 
 `K` is 256, the same number as `checkpoint.MIN_ADVANCE_ENTRIES`, from the busy host's numbers: session
 savepoints there never lagged their unit by more than 255 entries (16,372 files), a
