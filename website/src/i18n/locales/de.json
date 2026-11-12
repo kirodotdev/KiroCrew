@@ -17393,6 +17393,7 @@
         "total_turns": "Durchläufe insgesamt",
         "usage_tracking_is_not_available_for": "Nutzungserfassung ist für {{provider}} nicht verfügbar.",
         "spend_over_time": "Ausgaben im Zeitverlauf (Credits)",
+        "spend_over_time_usd": "Ausgaben im Zeitverlauf (USD)",
         "harness_unread": "Die Einstellung des Agent-Backends konnte nicht gelesen werden, daher kann das Ausgabendiagramm nicht erkennen, ob diese Installation in Credits abrechnet."
       },
       "vectorMemoryCard": {
@@ -17776,6 +17777,7 @@
       "view_details": "Details anzeigen",
       "wakatime": "WakaTime",
       "wakatime_not_connected": "Nicht verbunden",
+      "today_harness_unread": "Die Einstellung des Agent-Backends konnte nicht gelesen werden, daher können die heutigen Tokens und Kosten nicht angezeigt werden.",
       "today_line": "Heute: {{summary}}",
       "today_sessions_one": "{{amount}} Sitzung",
       "today_sessions_other": "{{amount}} Sitzungen",

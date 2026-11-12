@@ -572,6 +572,26 @@ class TestApiKiroUsage:
                 assert data["refreshing"] is False
 
     @pytest.mark.asyncio
+    async def test_carries_the_token_history_of_the_usage_shards(self):
+        """The tokens and dollar cost a harness without a credit plan reports."""
+        history = {"total_input": 7, "cost_usd": 2.5, "daily_history": [{"date": "2026-11-10"}]}
+        with (
+            patch.object(
+                usage_mod, "_cached_parse_sessions", return_value=usage_mod._empty_session_summary()
+            ),
+            patch.object(usage_mod, "_parse_token_history", return_value=history),
+            patch.object(usage_mod, "get_usage_cache", return_value={}),
+        ):
+            app = web.Application()
+            app.router.add_get("/api/usage/kiro", api_kiro_usage)
+            async with TestClient(TestServer(app)) as client:
+                status, data = await _get_settled_usage(client)
+        assert status == 200
+        assert data["tokens"] == history
+        # The gateway's own local day, the key the token history files days under.
+        assert len(data["local_day"]) == 10 and data["local_day"][4] == "-"
+
+    @pytest.mark.asyncio
     async def test_slow_session_scan_returns_billing_then_refreshes(self):
         release = usage_mod.asyncio.Event()
         finished = usage_mod._empty_session_summary()

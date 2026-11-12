@@ -16950,6 +16950,7 @@
         "total_turns": "총 턴",
         "usage_tracking_is_not_available_for": "{{provider}}에서는 사용량 추적을 사용할 수 없습니다.",
         "spend_over_time": "기간별 지출 (크레딧)",
+        "spend_over_time_usd": "기간별 지출 (미국 달러)",
         "harness_unread": "에이전트 백엔드 설정을 읽을 수 없어 지출 차트에서 이 설치의 크레딧 과금 여부를 판단할 수 없습니다."
       },
       "vectorMemoryCard": {
@@ -17316,6 +17317,7 @@
       "view_details": "자세히 보기",
       "wakatime": "WakaTime",
       "wakatime_not_connected": "연결 안 됨",
+      "today_harness_unread": "에이전트 백엔드 설정을 읽지 못해 오늘의 토큰과 비용을 표시할 수 없습니다.",
       "today_line": "오늘: {{summary}}",
       "today_sessions_other": "세션 {{amount}}개",
       "today_messages_other": "메시지 {{amount}}개",
