@@ -132,7 +132,7 @@ class _Flight:
         self.result: list[dict] | None = None
 
 
-_flights: dict[tuple[str, str, int], _Flight] = {}
+_flights: dict[tuple[str, str, int, bool], _Flight] = {}
 _flights_lock = threading.Lock()
 
 

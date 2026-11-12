@@ -268,7 +268,10 @@ def search_chat_history(name: str, args: dict[str, Any]) -> str:
     # not a fixed limit*3 over-fetch: heavy incognito/workspace/date drops on
     # the first page could otherwise starve a caller whose real matches rank
     # lower, returning "no results" while hits exist.
-    ranked: list[dict] = cl.search_sessions(query, limit=mcp_core._search_history_scan(query))
+    # The excerpt is built below for the rows kept, so the ranking reads none.
+    ranked: list[dict] = cl.search_sessions(
+        query, limit=mcp_core._search_history_scan(query), snippets=False
+    )
     # Said in the reply, empty or not: a session older than the scan window was
     # never searched, and "no matches" must not read as "not in history".
     coverage_note = search_coverage_note(ranked)
