@@ -173,7 +173,10 @@ def _create_browse_dir_sync(parent: str, name: str) -> tuple[str, str]:
     without delete sharing locks the chain against renames while ``mkdir`` runs,
     once its final path is confirmed to be *parent*. A swap is ``parent_changed``.
     """
-    base = os.path.realpath(os.path.expanduser(parent))
+    try:
+        base = os.path.realpath(os.path.expanduser(parent))
+    except ValueError:  # a NUL byte or a lone surrogate in the path
+        return "not_found", parent
     target = os.path.abspath(os.path.join(base, name))
     if os.path.normcase(os.path.dirname(target)) != os.path.normcase(base):
         return "invalid_name", target

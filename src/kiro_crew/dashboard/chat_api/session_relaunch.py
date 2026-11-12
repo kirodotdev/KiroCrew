@@ -716,6 +716,16 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     if project:
+        # A NUL byte, or a lone surrogate the filesystem encoding cannot carry,
+        # makes expanduser/realpath raise ValueError; refuse it lexically first.
+        try:
+            unusable = b"\x00" in os.fsencode(project)
+        except UnicodeEncodeError:
+            unusable = True
+        if unusable:
+            return web.json_response(
+                {"error": "Not a directory", "code": "not_a_directory"}, status=400
+            )
         project = os.path.realpath(os.path.expanduser(project))
         if not os.path.isdir(project):
             return web.json_response({"error": "Not a directory"}, status=400)

@@ -986,8 +986,11 @@ async def api_worktree_create(request: web.Request) -> web.Response:
     # takes to answer, so all of it runs on a worker thread, per the repo's
     # no-blocking-calls-on-the-loop rule.
     roots = await asyncio.to_thread(_allowed_repo_roots, request.app.get("state"))
-    submitted = os.path.normpath(os.path.expanduser(repo))
-    repo_root = _match_allowed_root(submitted, roots)
+    try:
+        submitted = os.path.normpath(os.path.expanduser(repo))
+    except ValueError:  # a NUL byte or a lone surrogate in the path
+        submitted = ""
+    repo_root = _match_allowed_root(submitted, roots) if submitted else None
     if repo_root is None:
         sel().log_api_access(
             caller=caller,
