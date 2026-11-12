@@ -651,7 +651,12 @@ engine instead ([aws-control.md](aws-control.md)).
   cancel does not settle, the signed-in view says so with a notice that offers
   Try again. "Use a different sign-in" is the smaller link back to the chooser.
   The code screen shows when the code stops working, from the begin answer's
-  `expires_at`.
+  `expires_at`. A poll the gateway never answered (a fetch rejection, or a
+  502/503/504 with no `code`, from a fronting proxy: a restart or a dropped link,
+  `api/queryClient.ts` `isUnansweredRead`) ends on the failure screen with a
+  sentence saying the connection to Kiro Crew was lost and to start over, never
+  the browser's "Failed to fetch"; a coded answer, such as the poll's 502
+  `auth_service_unreachable`, keeps its own text.
 - The persistent signal for a lapsed sign-in is the app-level **Kiro sign-in
   notice** (`website/src/components/KiroSignInNotice.tsx`, mounted in `App.tsx`
   above every route beside `CrashReportNotice`), because the card above lives on

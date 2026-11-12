@@ -2875,6 +2875,7 @@
       "sign_in_failed_body": "Something went wrong while waiting for approval",
       "no_kiro_profile_body": "This account has no Kiro profile, so it can't run chats. Sign in with an account that has a Kiro subscription.",
       "profile_lookup_failed_body": "We couldn't look up your Kiro profile. Start over to try again.",
+      "connection_lost_body": "We lost the connection to {{productName}}, which may have restarted. Start over to sign in again.",
       "sign_in_status_unavailable": "We could not check sign-in status",
       "sign_in_to_kiro": "Sign in to Kiro",
       "signing_in_with": "Signing in with {{provider}}",
