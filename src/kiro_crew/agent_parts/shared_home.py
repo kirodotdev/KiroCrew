@@ -548,16 +548,19 @@ def _worktree_declined_spec_hint() -> str:
 
     A gateway whose code runs from a linked git worktree is refused the shared agent
     home, so on a home with no specs nothing ever writes one and every session fails
-    as "definition is missing" with no hint why. Empty when that is not the cause.
-    Read-only: ``audit=False`` emits no audit event and no warning.
+    as "definition is missing" with no hint why. Empty when that is not the cause:
+    a home that holds ``kirocrew.json`` was written by someone, so a spec missing
+    from it is not this guard's doing. Read-only: ``audit=False`` emits no audit
+    event and no warning.
     """
     if not _in_linked_git_worktree(Path(__file__).resolve()):
+        return ""
+    if (kiro_agents_dir_path() / AGENT_FILENAME).exists():
         return ""
     if _decline_shared_agent_home(audit=False) is None:
         return ""
     return (
         " This gateway runs from a linked git worktree, so it is not allowed to write "
         f"agent definitions into the shared agent home {kiro_agents_dir_path()}. "
-        "Run it from a main clone or a regular install, or start it with a home that "
-        "already has the agent definitions."
+        "Run it from a main clone or a regular install."
     )

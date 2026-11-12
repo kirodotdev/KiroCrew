@@ -135,12 +135,8 @@ async def test_agent_no_app_declares_gets_the_generic_reason(agents_dir, tmp_pat
     assert str(caught.value) == 'The agent "worker" can\'t start: its agent definition is missing.'
 
 
-@pytest.mark.asyncio
-async def test_a_worktree_gateway_refused_the_shared_home_says_so(
-    agents_dir, tmp_path, monkeypatch
-):
-    """A linked-worktree gateway on an empty shared home never writes a
-    spec, so the refusal names the guard and the way out, not a missing file."""
+def _run_from_worktree_on_shared_home(agents_dir, tmp_path, monkeypatch) -> None:
+    """This checkout is a linked worktree and *agents_dir* is the shared home."""
     wt = tmp_path / "wt"
     (wt / "src" / "kiro_crew").mkdir(parents=True)
     (wt / ".git").write_text("gitdir: /somewhere/KiroCrew/.git/worktrees/wt\n", encoding="utf-8")
@@ -153,6 +149,30 @@ async def test_a_worktree_gateway_refused_the_shared_home_says_so(
     monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", agents_dir)
     monkeypatch.setattr(agent_mod, "ambient_agents_dir", lambda: agents_dir)
     assert agent_mod._decline_shared_agent_home(audit=False) is not None
+
+
+@pytest.mark.asyncio
+async def test_a_worktree_gateway_with_specs_on_the_shared_home_keeps_the_plain_reason(
+    agents_dir, tmp_path, monkeypatch
+):
+    """A home that already holds kirocrew.json was written by an install, so one
+    agent missing from it is not the worktree guard's doing: no hint."""
+    _run_from_worktree_on_shared_home(agents_dir, tmp_path, monkeypatch)
+    (agents_dir / agent_mod.AGENT_FILENAME).write_text("{}", encoding="utf-8")
+
+    with pytest.raises(AcpAgentUnavailable) as caught:
+        await _start("worker", tmp_path)
+
+    assert str(caught.value) == 'The agent "worker" can\'t start: its agent definition is missing.'
+
+
+@pytest.mark.asyncio
+async def test_a_worktree_gateway_refused_the_shared_home_says_so(
+    agents_dir, tmp_path, monkeypatch
+):
+    """A linked-worktree gateway on an empty shared home never writes a
+    spec, so the refusal names the guard and the way out, not a missing file."""
+    _run_from_worktree_on_shared_home(agents_dir, tmp_path, monkeypatch)
 
     with pytest.raises(AcpAgentUnavailable) as caught:
         await _start("worker", tmp_path)
