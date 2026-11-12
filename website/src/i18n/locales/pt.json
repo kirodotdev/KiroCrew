@@ -7053,6 +7053,8 @@
       "turn_interrupted_restored_queue_many": "O último turno foi interrompido. Retomar executa de novo só esse turno. Suas {{count}} mensagens na fila não serão enviadas sozinhas: abra a fila ({{count}} na fila ^) e envie cada uma com Enviar agora (⚡).",
       "turn_interrupted_restored_queue_other": "O último turno foi interrompido. Retomar executa de novo só esse turno. Suas {{count}} mensagens na fila não serão enviadas sozinhas: abra a fila ({{count}} na fila ^) e envie cada uma com Enviar agora (⚡).",
       "upload_file": "Enviar arquivo",
+      "upload_file_title": "Enviar arquivo · Ctrl+Shift+U",
+      "upload_file_title_mac": "Enviar arquivo · ⌘⇧U",
       "use_a_skill": "Usar uma habilidade",
       "used": "Usado",
       "voice_input": "Entrada de voz",

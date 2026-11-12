@@ -7053,6 +7053,8 @@
       "turn_interrupted_restored_queue_many": "Le dernier tour a été interrompu. Reprendre relance seulement ce tour. Tes {{count}} messages en file d’attente ne partiront pas tout seuls : ouvre la file ({{count}} en file d’attente ^), puis envoie chacun avec Envoyer maintenant (⚡).",
       "turn_interrupted_restored_queue_other": "Le dernier tour a été interrompu. Reprendre relance seulement ce tour. Tes {{count}} messages en file d’attente ne partiront pas tout seuls : ouvre la file ({{count}} en file d’attente ^), puis envoie chacun avec Envoyer maintenant (⚡).",
       "upload_file": "Importer un fichier",
+      "upload_file_title": "Importer un fichier · Ctrl+Maj+U",
+      "upload_file_title_mac": "Importer un fichier · ⌘⇧U",
       "use_a_skill": "Utiliser une compétence",
       "used": "Utilisé",
       "voice_input": "Saisie vocale",

@@ -6869,6 +6869,8 @@
       "turn_interrupted_restored_queue_one": "Letzter Durchlauf wurde unterbrochen. „Wieder aufnehmen“ wiederholt nur diesen Durchlauf. {{count}} wartende Nachricht geht nicht von selbst raus: Öffne die Warteschlange ({{count}} in Warteschlange ^) und sende sie mit „Jetzt senden“ (⚡).",
       "turn_interrupted_restored_queue_other": "Letzter Durchlauf wurde unterbrochen. „Wieder aufnehmen“ wiederholt nur diesen Durchlauf. {{count}} wartende Nachrichten gehen nicht von selbst raus: Öffne die Warteschlange ({{count}} in Warteschlange ^) und sende jede mit „Jetzt senden“ (⚡).",
       "upload_file": "Datei hochladen",
+      "upload_file_title": "Datei hochladen · Strg+Umschalt+U",
+      "upload_file_title_mac": "Datei hochladen · ⌘⇧U",
       "use_a_skill": "Einen Skill verwenden",
       "used": "Verbraucht",
       "voice_input": "Spracheingabe",

@@ -6685,6 +6685,8 @@
       "turn_interrupted_restored_card": "이전 턴이 중단되었습니다. ‘재개’는 그 턴만 다시 실행합니다. 대기 중인 메시지는 자동으로 보내지지 않습니다. ‘지금 보내기’(⚡)로 보내세요.",
       "turn_interrupted_restored_queue_other": "이전 턴이 중단되었습니다. ‘재개’는 그 턴만 다시 실행합니다. 대기 중인 메시지 {{count}}개는 자동으로 보내지지 않습니다. 대기열({{count}}개 대기 중 ^)을 열고 각각 ‘지금 보내기’(⚡)로 보내세요.",
       "upload_file": "파일 업로드",
+      "upload_file_title": "파일 업로드 · Ctrl+Shift+U",
+      "upload_file_title_mac": "파일 업로드 · ⌘⇧U",
       "use_a_skill": "스킬 사용",
       "used": "사용됨",
       "voice_input": "음성 입력",

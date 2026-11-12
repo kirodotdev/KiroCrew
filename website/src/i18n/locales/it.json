@@ -7053,6 +7053,8 @@
       "turn_interrupted_restored_queue_many": "L'ultimo turno è stato interrotto. Riprendi riesegue solo quel turno. I tuoi {{count}} messaggi in coda non partiranno da soli: apri la coda ({{count}} in coda ^), poi invia ciascuno con Invia ora (⚡).",
       "turn_interrupted_restored_queue_other": "L'ultimo turno è stato interrotto. Riprendi riesegue solo quel turno. I tuoi {{count}} messaggi in coda non partiranno da soli: apri la coda ({{count}} in coda ^), poi invia ciascuno con Invia ora (⚡).",
       "upload_file": "Carica file",
+      "upload_file_title": "Carica file · Ctrl+Maiusc+U",
+      "upload_file_title_mac": "Carica file · ⌘⇧U",
       "use_a_skill": "Usa una skill",
       "used": "Utilizzato",
       "voice_input": "Input vocale",
