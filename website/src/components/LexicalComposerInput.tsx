@@ -145,6 +145,11 @@ interface LexicalComposerInputProps {
 
 function $replaceComposerValue(value: string, blocks: PasteBlock[]): void {
   const root = $getRoot()
+  // Clearing the root leaves a caret the editor already had on the ROOT. A
+  // caret there is not in the text: the editor keeps it on the root when focus
+  // lands on the editor element, and the next typed text then opens a second
+  // paragraph, which reads back as two more newlines in the value.
+  const hadCaret = $getSelection() !== null
   root.clear()
   const paragraph = $createParagraphNode()
   root.append(paragraph)
@@ -156,6 +161,10 @@ function $replaceComposerValue(value: string, blocks: PasteBlock[]): void {
     cursor = range.end
   }
   appendPlainText(value.slice(cursor), node => paragraph.append(node))
+  // End of the new text, where a textarea leaves the caret after its value is
+  // set. An editor with no caret (first render, never focused) keeps none, so
+  // a pushed value never moves the page's selection into it.
+  if (hadCaret) paragraph.selectEnd()
 }
 
 function sameBlocks(left: PasteBlock[], right: PasteBlock[]): boolean {
@@ -906,7 +915,12 @@ export default function LexicalComposerInput({
 
   return (
     <LexicalComposer initialConfig={initialConfig}>
-      <div className={`relative min-h-[44px] ${className}`}>
+      {/* The editor takes this box's height. That only resolves when the host
+          gave the box one: under a height the user dragged, the host passes
+          `flex-1 min-h-0`, and the editor then fills the box and scrolls
+          inside it. With no such height the percentage is `auto` and the
+          editor is as tall as its draft. */}
+      <div className={`relative min-h-[44px] [&>[data-lexical-composer]]:h-full ${className}`}>
         <PlainTextPlugin
           contentEditable={
             <ContentEditable
