@@ -1228,6 +1228,11 @@ def _otlp_endpoint_rows(value: object, default: list) -> list:
     return [dict(row) if isinstance(row, dict) else row for row in value]
 
 
+def _dict_or_default(value: object, default: dict) -> dict:
+    """A copy of *value* when it is a dict, else *default*."""
+    return dict(value) if isinstance(value, dict) else default
+
+
 def _build_telemetry_config(telemetry_data: dict) -> TelemetryConfig:
     section = _sections.SectionReader(TelemetryConfig, telemetry_data)
     return TelemetryConfig(
@@ -1242,6 +1247,13 @@ def _build_telemetry_config(telemetry_data: dict) -> TelemetryConfig:
         # which skips a bad one with a warning rather than failing the load.
         otlp_endpoints=section.read("otlp_endpoints", _otlp_endpoint_rows),
         traces_enabled=bool(section.get("traces_enabled")),
+        traces_otlp_endpoint=str(section.get("traces_otlp_endpoint")),
+        # Shape only: a non-object never reaches here (the load-time schema check
+        # drops it with a masked warning, so no header is sent); tracing/otlp.py
+        # checks each pair and turns export off, with a warning, for one it
+        # cannot use.
+        traces_otlp_headers_secret=section.read("traces_otlp_headers_secret", _dict_or_default),
+        traces_otlp_headers_env=section.read("traces_otlp_headers_env", _dict_or_default),
         beacon_enabled=bool(section.get("beacon_enabled")),
         beacon_endpoint=str(section.get("beacon_endpoint")),
     )

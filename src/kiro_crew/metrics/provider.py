@@ -1355,6 +1355,32 @@ def _otlp_destinations(
     )
 
 
+def trace_destination_permitted(dest: Any) -> bool:
+    """Whether the policy permits *dest*'s host for spans, audited like a metric build.
+
+    The traces signal (``tracing/otlp.py``) answers to the same ``otlp_hosts``
+    policy, ceiling and SEL row as metrics, through this module's resolution.
+    """
+    return bool(
+        otlp_governance.governed_destinations(
+            (dest,), _policy_ceiling(), audit=True, redact=_policy_redactor()
+        )
+    )
+
+
+def gate_trace_exporter(exporter: Any, endpoint: str) -> None:
+    """Hold every span export of *exporter* to the policy in force at that export."""
+    from opentelemetry.sdk.trace.export import SpanExportResult
+
+    otlp_governance.gate_exporter(
+        exporter,
+        endpoint,
+        _policy_ceiling,
+        redact=_policy_redactor(),
+        refused=SpanExportResult.FAILURE,
+    )
+
+
 _FOREIGN_SIGNAL_ROUTES = (("/v1/traces", "traces"), ("/v1/logs", "logs"))
 
 
@@ -1437,8 +1463,9 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
     foreign = _foreign_signal_route(endpoint)
     if foreign is not None:
         logger.warning(
-            "OTLP destination %r points at an OTLP %s route, but Kiro Crew exports "
-            "metrics only (no %s); use the collector's /v1/metrics URL",
+            "OTLP destination %r points at an OTLP %s route, but this setting "
+            "exports metrics only (no %s); use the collector's /v1/metrics URL "
+            "(traces are sent to telemetry.traces_otlp_endpoint)",
             dest.name,
             foreign,
             foreign,
