@@ -354,10 +354,17 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         # choice ``15``, but the loader reads only the int and would run the default.
         value = allowed[allowed.index(value)]
     elif spec["type"] == "int":
+        raw = value
         try:
             value = body_int(value)
         except (TypeError, ValueError):
             return _deny("must be an integer", f"{path_key}={value}")
+        if isinstance(raw, bool) or (isinstance(raw, float) and raw != value):
+            # Saved as before (back-compat), but said: `true` lands as 1 and
+            # 3600.9 as 3600, which no caller meant.
+            logger.warning(
+                "config PATCH %s: %r is not a whole number; read as %d", path_key, raw, value
+            )
         lo, hi = spec.get("min", 0), spec.get("max", 999999)
         if value < lo or value > hi:
             return _deny(f"must be between {lo} and {hi}", f"{path_key}={value}")
@@ -369,6 +376,11 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         if clamp_fn is not None and isinstance(value, bool):
             # bool is an int subclass: `true` must not save as a 1 s budget.
             return _deny("must be a number", f"{path_key}={value}")
+        if isinstance(value, bool):
+            # No clamp here, so `true` still saves as 1.0 as before; logged.
+            logger.warning(
+                "config PATCH %s: %r is not a number; read as %r", path_key, value, float(value)
+            )
         try:
             value = float(value)
         except (TypeError, ValueError):
