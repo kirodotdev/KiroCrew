@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, memo, useRef, useId, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
-import { Copy, ClipboardType, Check, Code, Eye, ClipboardList, CheckCircle, RefreshCw, ChevronLeft, ChevronRight, GitFork, Loader2, Link2, Compass, Clock, MessageSquare, Pin, PinOff, MoreHorizontal, Share2, X, Quote } from 'lucide-react'
+import { Copy, ClipboardType, Check, Code, Eye, ClipboardList, CheckCircle, RefreshCw, ChevronLeft, ChevronRight, Split, Loader2, Link2, Compass, Clock, MessageSquare, Pin, PinOff, MoreHorizontal, Share2, X, Quote } from 'lucide-react'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
 import MessageContextMenu, { type MessageMenuItem } from './MessageContextMenu'
 import MessageActionMenuItems, { useMessageActionsFor, useMessageActionsLoadFailed } from '../../messageActions/MessageActionMenuItems'
@@ -631,7 +631,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
             >
               <span className={`flex items-center gap-2 ${forkIndex === undefined || tailForkEmpty || busyAction !== null ? 'opacity-50' : ''}`}>
                 {/* The spinner takes the icon's place, so the label keeps its column. */}
-                {plainForkSpinning ? <Loader2 size={13} className="shrink-0 animate-spin" /> : <GitFork size={13} className="shrink-0" />}
+                {plainForkSpinning ? <Loader2 size={13} className="shrink-0 animate-spin" /> : <Split size={13} className="shrink-0" />}
                 <span>{forkWithHistory && busyAction === 'fork' ? i18nT('pages.chat.assistantMessage.fork_in_progress') : plainForkLabel}</span>
               </span>
               {forkIndex === undefined && <span id={`${reasonId}-fork`} data-testid="fork-unavailable-reason" className="text-[11px] leading-4 text-muted pl-[21px]">
@@ -656,7 +656,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
               {/* The column is this wrapper's, not the item's: a className on the item that sets its flow restyles the primitive. */}
               <span className="flex w-full min-w-0 flex-col items-start justify-center gap-0.5">
                 <span data-testid="fork-with-history-label" className={`flex items-center gap-2 ${busyAction !== null ? 'opacity-50' : ''}`}>
-                  {busyAction === 'fork-with-history' ? <Loader2 size={13} className="shrink-0 animate-spin" /> : <GitFork size={13} className="shrink-0" />}
+                  {busyAction === 'fork-with-history' ? <Loader2 size={13} className="shrink-0 animate-spin" /> : <Split size={13} className="shrink-0" />}
                   <span>{i18nT(busyAction === 'fork-with-history' ? 'pages.chat.assistantMessage.fork_in_progress' : 'pages.chat.assistantMessage.fork_earlier_messages')}</span>
                 </span>
                 <span id={`${reasonId}-fork-history-hint`} data-testid="fork-with-history-hint" className={`text-[11px] leading-4 text-muted pl-[21px] ${busyAction !== null ? 'opacity-50' : ''}`}>
@@ -700,7 +700,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
   // The row Copy's tooltip says where the other format is, wherever the
   // bubble's menu actually draws (never on touch: see MessageContextMenu).
   const richByRightClick = !touch && contextItems.some(item => item.id === 'copy-rich')
-  const forkButton = forkRow ? <button className={ROW_ACTION_CLS} disabled={busyAction !== null} data-testid="fork-from-here" title={forkLabel} aria-label={forkLabel} onClick={() => { void runForkAction() }}>{busyAction === 'fork' ? <Loader2 size={14} className="animate-spin" /> : <GitFork size={14} />}</button> : null
+  const forkButton = forkRow ? <button className={ROW_ACTION_CLS} disabled={busyAction !== null} data-testid="fork-from-here" title={forkLabel} aria-label={forkLabel} onClick={() => { void runForkAction() }}>{busyAction === 'fork' ? <Loader2 size={14} className="animate-spin" /> : <Split size={14} />}</button> : null
   const regenButton = regenRow ? <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title={i18nT('pages.chat.assistantMessage.regenerate')} aria-label={i18nT('pages.chat.assistantMessage.regenerate_response')} onClick={onRegenerate}><RefreshCw size={14} /></button> : null
 
   return <div data-role="assistant" className="group/msg">
