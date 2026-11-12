@@ -469,6 +469,10 @@ def maybe_reexec(argv: list[str], *, log: object = None) -> None:
     }
     _warn(log, f"live target set: executing {kcbin}")
     try:
+        start_dir = os.getcwd()
+    except OSError:
+        start_dir = None
+    try:
         os.chdir(target)
     except OSError as exc:
         # A cwd we cannot enter is not fatal on its own, and refusing the whole
@@ -491,8 +495,14 @@ def maybe_reexec(argv: list[str], *, log: object = None) -> None:
     except OSError as exc:
         # Fail SAFE: an exec that could not even start leaves this process
         # intact, so continue booting the installed build rather than dying with
-        # no gateway at all.
+        # no gateway at all -- in the directory it was started in, not the
+        # target's, so it boots exactly as it would with no pointer.
         _warn(log, f"could not execute the live target {kcbin}: {exc}")
+        if start_dir is not None:
+            try:
+                os.chdir(start_dir)
+            except OSError as back:
+                _warn(log, f"could not return to the start directory {start_dir}: {back}")
 
 
 def _warn(log: object, message: str) -> None:

@@ -815,6 +815,23 @@ class TestMaybeReexec:
         assert len(failed) == 1, messages
         assert failed[0].endswith(": exec failed")
 
+    def test_a_failed_exec_boots_from_the_directory_it_started_in(self, tmp_path, monkeypatch):
+        """An exec that fails falls back to the installed build, in its own cwd."""
+        checkout = _make_valid_checkout(tmp_path)
+        write_target(checkout)
+        start = tmp_path / "start"
+        start.mkdir()
+        monkeypatch.chdir(start)
+        monkeypatch.setattr(sys, "argv", ["/other/bin/kirocrew", "gateway"])
+        monkeypatch.delenv(EXEC_MARKER, raising=False)
+
+        def raise_oserror(*args, **kwargs):
+            raise OSError("exec failed")
+
+        monkeypatch.setattr(os, "execve", raise_oserror)
+        maybe_reexec(["gateway"], log=MagicMock())
+        assert Path(os.getcwd()).resolve() == start.resolve()
+
     def test_chdir_failure_warned_but_exec_still_happens(self, tmp_path, monkeypatch):
         """A cwd we cannot enter is warned, not fatal — the exec still fires."""
         checkout = _make_valid_checkout(tmp_path)
