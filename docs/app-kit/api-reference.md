@@ -1521,7 +1521,10 @@ line = await ctx.turns.run_oneshot(prompt, label="translate")
 A key is `<app>-<id>`, where *id* is 1 to 400 of `A-Z a-z 0-9 . _ -`; any other key
 raises `ValueError` before anything runs. You choose neither the identity nor the
 approval: every tool `run` asks for is decided by the host's tool gate with your
-app's name, so the operator's profile for your app applies, and `run_oneshot`
+app's name, so the operator's profile for your app applies, and a call the gate
+neither denies nor grants goes to the owner's approval prompt, as a cron job's
+does (Slack DM and dashboard, denied after the short unattended window when
+nobody answers). `run_oneshot`
 rejects every tool. The operator's `capabilities.spawn` row for your app bounds
 which agents you may run, as it does for `ctx.spawn`: when spawning is off for your
 app, or the agent (for `agent=""`, the default agent; for `run_oneshot`,

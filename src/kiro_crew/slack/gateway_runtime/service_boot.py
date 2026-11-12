@@ -668,6 +668,15 @@ def _init_task_runner(self: GatewayOrchestrator) -> None:
     # deferred pass, where the nested def above drops the narrowing from the assignment.
     self.task_runner._on_approval = _task_approval  # type: ignore[union-attr]
 
+    # An app turn (``AgentTurnSDK.run``: a meeting's agents) passes this prompt as
+    # its approver, as a cron job does. Without it a call the hook gate neither
+    # denies nor grants is approved with nobody asked.
+    from kiro_crew.apps import agent_turn_sdk
+
+    agent_turn_sdk.set_turn_approver(
+        lambda app: self._interactive_approval("app", requester=f"app {app}")
+    )
+
 
 async def _init_dashboard(self: GatewayOrchestrator) -> None:
     """Start the dashboard web server."""

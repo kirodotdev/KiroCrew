@@ -538,6 +538,9 @@ def _interactive_approval(
                     if is_background
                     else DashboardState._APPROVAL_TIMEOUT
                 )
+                # Read by the cleanup below even when the wait is cancelled,
+                # so a cancelled caller is not turned into a dashboard wait.
+                outcome = "expired"
                 try:
                     outcome = await asyncio.wait_for(pending.future, timeout=approval_timeout)
                     # Answered on Slack or the dashboard: a loop paused for

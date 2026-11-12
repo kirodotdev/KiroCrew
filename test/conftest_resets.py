@@ -497,6 +497,23 @@ def _reset_cjk_segmenter():
 
 
 @pytest.fixture(autouse=True)
+def _forget_app_turn_approver():
+    """Forget the gateway's app-turn approval prompt around each test.
+
+    ``agent_turn_sdk.set_turn_approver`` fills one process-global slot, and the
+    gateway boot fills it (``_init_task_runner``). A test that boots the gateway
+    would leave every later app turn in the worker asking that test's gateway.
+    """
+    module = sys.modules.get("kiro_crew.apps.agent_turn_sdk")
+    if module is not None:
+        module.set_turn_approver(None)
+    yield
+    module = sys.modules.get("kiro_crew.apps.agent_turn_sdk")
+    if module is not None:
+        module.set_turn_approver(None)
+
+
+@pytest.fixture(autouse=True)
 def _disable_dev_fleet_background_tasks(_floor_monkeypatch):
     """Stop dev-fleet's app-startup hook from starting its background loops.
 

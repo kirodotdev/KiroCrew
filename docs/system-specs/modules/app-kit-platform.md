@@ -6789,7 +6789,14 @@ gateway's Application is wired in (`turn_host`, passed by both context builders,
 like `crewmate_host`); otherwise `None`. `run(key, text, *, agent, timeout_secs,
 cancel_ack_secs)` runs one turn under `ToolApprovalPolicy.HOOK_BASED` with
 `app=<ctx.name>`, so the PreToolUse gate resolves `POLICY ∩ PROFILE` for this app,
-and admits it through `run_admitted_or_raise(automation=True,
+and passes the gateway's approval prompt as `on_tool_approval`: `_init_task_runner`
+registers `agent_turn_sdk.set_turn_approver(lambda app:
+self._interactive_approval("app", requester=f"app {app}"))`, so a call the gate
+neither denies nor grants asks the owner as a cron job's does (`"app"` is in
+`_BACKGROUND_APPROVAL_SOURCES`, the deny-fast unattended window) instead of reaching
+`_resolve_permission`'s caller-less default approve. With no prompt registered (a
+bare test application) the turn passes none. The turn is admitted through
+`run_admitted_or_raise(automation=True,
 operation=BACKGROUND)`. Session acquisition is outside the budget; past it, or on
 the caller's cancellation, the provider is asked to cancel and the session is reset
 when it does not acknowledge, and the turn lease is always released, never the
@@ -6875,7 +6882,8 @@ Writers: `apps/agent_turn_sdk.py`, `apps/untrusted_text_sdk.py`, `apps/context.p
 `apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`,
 `apps/builtins/meetings/app.json`, `apps/builtins/meetings/backend/domain/session.py`,
 `apps/builtins/meetings/backend/domain/translate.py`. Tests:
-`test/test_app_agent_turn_sdk.py`, `test/test_app_untrusted_text_sdk.py`.
+`test/test_app_agent_turn_sdk.py`, `test/test_app_agent_turn_approval.py`,
+`test/test_app_untrusted_text_sdk.py`.
 
 ## 32b. `ctx.lifecycle`: an app's own switch and admission (seam level 2)
 
