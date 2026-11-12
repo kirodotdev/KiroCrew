@@ -451,6 +451,28 @@ ACP_BACKENDS_INLINE_COMPACTION = frozenset(
 # that title is never taken for a compaction.
 ACP_BACKENDS_UNMARKED_COMPACTION_PAIR = frozenset({ACP_BACKEND_CODEX})
 
+# The harnesses whose sessions keep a ``prompt_blocks.SentImageLedger``: the ones
+# whose compaction, started by Crew or by the harness itself, sends a frame this
+# client reads, so the record is forgotten whenever the conversation drops its
+# pictures. A harness not shown to report its own compaction stays out and inlines
+# a named picture on every turn, so the model is never told it holds a picture a
+# silent compaction dropped (harness-parity H6).
+#
+# - kiro: ``_kiro.dev/compaction/status`` (``acp_frames/kiro/compaction-live.jsonl``).
+# - kas: ``summarization_started`` / ``summarization_completed`` on its own
+#   (``acp_frames/kas/auto-compaction-live.jsonl``).
+# - codex: the marked compaction ``tool_call_update`` on a manual ``/compact``
+#   and on a native auto-compaction alike (``acp_frames/codex/compact-live.jsonl``).
+# - claude: the standard ACP ``compaction_update`` the adapter sends because Crew
+#   declares ``session.compaction`` (acp-client spec, "Native adapter compaction
+#   lifecycle"), and the ``Compacting...`` text notice of an adapter that sends none.
+#
+# Out: opencode, goose and pi send nothing this client reads for a compaction
+# they start on their own; copilot, strands and deepseek have no capture of one.
+ACP_BACKENDS_SENT_IMAGE_RECORD = frozenset(
+    {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE}
+)
+
 # How long each backend's provider keeps a conversation's prompt prefix cached
 # after the last request, in seconds, for ``session.idle_compaction``. A backend
 # absent from the table, or whose resolver answers ``None``, has a lifetime Crew

@@ -32,6 +32,7 @@ import json
 import logging
 import os
 import re
+from collections.abc import Iterable
 from pathlib import Path
 
 from kiro_crew.hooks import (
@@ -113,6 +114,128 @@ IMAGE_SIZE_NOTE = "[image not attached: image size limit]"
 #: ``promptCapabilities.image``, so the picture is never sent and never taken
 #: as seen.
 IMAGE_UNSUPPORTED_NOTE = "[image not attached: this agent does not accept images]"
+#: Written after a picture's path when the session's conversation already holds
+#: the same bytes, so the model knows it has the picture without a second copy.
+ALREADY_SENT_NOTE = "[image not attached: already sent earlier in this conversation]"
+
+#: Distinct pictures one session's record holds. It bounds what the record
+#: retains, not what a conversation may be sent: what a conversation's replayed
+#: history may carry in total is the backend's contract, not this builder's. A
+#: picture committed past the bound reached the conversation but gets no row, so
+#: naming it again inlines it again, as it would with no record; each commit that
+#: leaves digests out logs how many, and a held digest is never evicted to make
+#: room. A hundred replayed pictures are about 160,000 tokens of every request,
+#: so a conversation that reaches this is near its window already.
+MAX_RECORDED_IMAGES = 100
+
+
+class SentImageLedger:
+    """The pictures one ACP session's conversation already holds, by the sha256
+    of their file bytes.
+
+    The backend keeps every image block a session was sent and replays it on
+    every later turn, so inlining the same bytes again only grows each request.
+    Text that recurs every cycle (a work-ledger snapshot, a nudge body, a quoted
+    reply) names the same path each time, and without this record each cycle
+    adds one more full-size block until the backend refuses every request.
+
+    :func:`build_prompt_blocks` reads the ledger, through one prompt's
+    :class:`StagedImages`, to leave a held picture as its path and note, and
+    stages the digests it inlined on that prompt's own staging. The owner of the
+    session commits a prompt's staging once the backend has answered that
+    prompt, so a prompt that never reached the conversation inlines its pictures
+    again on the next try, and forgets every digest when the conversation stops
+    carrying its pictures (a completed compaction, a clear, a new or
+    reloaded session). Different bytes at the same path are a different picture
+    and are inlined.
+    """
+
+    def __init__(self) -> None:
+        self._sent: set[str] = set()
+        # Bumped by every forget, so a staging taken before it cannot commit
+        # pictures into the conversation that replaced the one it was built for.
+        self._generation = 0
+
+    def holds(self, digest: str) -> bool:
+        """Whether the conversation already holds the picture with *digest*."""
+        return digest in self._sent
+
+    def staging(self) -> StagedImages:
+        """A fresh record for ONE prompt's inlined pictures.
+
+        Each prompt takes its own, so an abandoned build (a prompt cancelled
+        while its images were still being encoded on a worker thread) can only
+        ever write to the staging nobody will commit."""
+        return StagedImages(self, self._generation)
+
+    def forget(self) -> None:
+        """The conversation has dropped its pictures: hold nothing, and let no
+        staging taken before now commit."""
+        self._sent = set()
+        self._generation += 1
+
+    def _record(self, digests: frozenset[str], generation: int) -> None:
+        if generation != self._generation:
+            return
+        fresh = sorted(digests - self._sent)
+        room = max(0, MAX_RECORDED_IMAGES - len(self._sent))
+        if len(fresh) > room:
+            # The record is full: these pictures reached the conversation but
+            # are not held, so naming one again inlines it again. A held digest
+            # is not evicted to make room, and the count left out is logged.
+            logger.warning(
+                "acp prompt: %d sent picture(s) not recorded, past the record's limit of %d",
+                len(fresh) - room,
+                MAX_RECORDED_IMAGES,
+            )
+            fresh = fresh[:room]
+        self._sent.update(fresh)
+
+
+class StagedImages:
+    """The pictures one prompt inlined, waiting for the backend's answer to that
+    prompt.
+
+    The builder reads the session's ledger through it and stages what it inlined
+    on it; only :meth:`commit`, called by the owner when the backend answers this
+    same prompt, moves them into the ledger.
+    """
+
+    def __init__(self, ledger: SentImageLedger, generation: int) -> None:
+        self._ledger = ledger
+        self._generation = generation
+        self._digests: frozenset[str] = frozenset()
+
+    def holds(self, digest: str) -> bool:
+        """Whether the session's conversation already holds *digest*."""
+        return self._ledger.holds(digest)
+
+    def stage(self, digests: Iterable[str]) -> None:
+        """Record the digests this prompt inlined."""
+        self._digests = frozenset(digests)
+
+    def commit(self) -> None:
+        """The backend answered this prompt: its pictures are now held, unless
+        the conversation was compacted or cleared since this staging was taken."""
+        self._ledger._record(self._digests, self._generation)
+        self._digests = frozenset()
+
+
+def command_drops_pictures(command: str, *, compacts_inline: bool) -> bool:
+    """Whether the slash *command*, sent as prompt text, drops the
+    conversation's pictures inside its own turn with no frame the client reads
+    as a compaction: ``compact`` on a backend that compacts inside the turn
+    (*compacts_inline*).
+
+    ``clear`` is not here: no member of ``ACP_BACKENDS_SENT_IMAGE_RECORD`` runs it
+    in its own prompt handler. kiro runs it over its command channel and
+    reports it with a clear status, which forgets on arrival, and the dashboard
+    answers it itself on kas, claude and codex (``ACP_BACKENDS_LOCAL_CLEAR``).
+    goose, which does run it in its prompt handler, keeps no record. A command
+    that drops nothing costs one more copy of a picture, never a lost one.
+    """
+    return command == "compact" and compacts_inline
+
 
 #: A marker-shaped token the USER typed, in any case. Escaped before the builder
 #: writes its own, so only a marker this function produced reads as an
@@ -131,6 +254,7 @@ def build_prompt_blocks(
     max_image_b64_bytes: int = MAX_IMAGE_B64_BYTES,
     max_prompt_image_blocks: int = MAX_PROMPT_IMAGE_BLOCKS,
     max_prompt_image_b64_bytes: int = MAX_PROMPT_IMAGE_B64_BYTES,
+    sent_images: StagedImages | None = None,
 ) -> list[dict]:
     """Return ACP prompt blocks for *message*.
 
@@ -159,6 +283,14 @@ def build_prompt_blocks(
     escaped in every segment, since unescaped it claims an attachment. A plain
     string is one user segment.
 
+    *sent_images* is this prompt's own staging on the session's record of the
+    pictures its conversation already holds (:meth:`SentImageLedger.staging`).
+    A picture whose bytes the conversation holds stays a path followed by
+    :data:`ALREADY_SENT_NOTE` instead of becoming a second block, and the
+    digests this call inlined are staged on it for the caller to commit once the
+    backend has answered this prompt. ``None`` (a one-off prompt with no session
+    record) inlines every readable picture.
+
     ``allow_image=False`` (the caller's text is ABOUT a session, not an
     attachment) leaves the path in the text untouched. ``agent_accepts_image=False``
     (the agent did not advertise ``promptCapabilities.image``) sends no image
@@ -186,6 +318,8 @@ def build_prompt_blocks(
     # an unescaped one as "a picture is attached to this request". A plain string
     # is one user segment. Pinned by test_injected_context_image_refs.TestTheInvariant.
     user_spans = _user_spans(message)
+    # sha256 of each picture this call inlined, staged on *sent_images* below.
+    inlined_digests: list[str] = []
 
     if allow_image:
         seen: set[str] = set()
@@ -325,6 +459,12 @@ def build_prompt_blocks(
                 # places -- a cap never turns a duplicate into a dropped picture.
                 markers[raw] = raw_digests[raw_digest]
                 continue
+            if sent_images is not None and sent_images.holds(raw_digest):
+                # The conversation already holds these bytes and the backend
+                # replays them on every turn, so a second block only adds their
+                # full size to this and every later request.
+                notes[raw] = ALREADY_SENT_NOTE
+                continue
             # The suffix selects path CANDIDATES; the bytes decide what reaches
             # the wire. Require a complete sniff window so a truncated header
             # cannot become a pass-through image when Pillow is unavailable.
@@ -388,6 +528,7 @@ def build_prompt_blocks(
             images.append({"type": "image", "data": data, "mimeType": out_mime})
             markers[raw] = marker
             raw_digests[raw_digest] = marker
+            inlined_digests.append(raw_digest)
             prompt_b64_bytes += len(data)
         if past_block_cap:
             logger.warning(
@@ -402,6 +543,8 @@ def build_prompt_blocks(
         # attachment on a backend that takes none either.
         text = _rewrite_text(message, [], {}, {})
 
+    if sent_images is not None:
+        sent_images.stage(inlined_digests)
     return [{"type": "text", "text": str(text)}, *images]
 
 

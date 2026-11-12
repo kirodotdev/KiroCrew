@@ -446,6 +446,8 @@ X_FEATURE_SETS: dict[str, frozenset[str] | None] = {
     # inside session/prompt.
     "ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS": None,
     "ACP_BACKENDS_NATIVE_WORKFLOWS": None,
+    # claude's compaction frame is the standard ACP ``compaction_update``, not an X frame.
+    "ACP_BACKENDS_SENT_IMAGE_RECORD": frozenset({"codex", "kas", "kiro"}),
 }
 
 # Coverage is opt-out: every ``ACP_BACKENDS_*`` set is in X_FEATURE_SETS, here, or

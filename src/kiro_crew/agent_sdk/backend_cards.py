@@ -606,6 +606,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "which frame shape the compaction parser reads; the compaction itself is "
         "the manual_compact line"
     ),
+    "ACP_BACKENDS_SENT_IMAGE_RECORD": (
+        "whether a picture a later prompt names again is re-sent or left as its path "
+        "with a note. The model has the picture either way; outside the set each turn "
+        "carries one more copy, and a wrong membership is a defect -- a picture a "
+        "silent compaction dropped would be withheld"
+    ),
     "ACP_BACKENDS_HARNESS_MANAGED_COMPACTION": (
         "what answers a full context on a harness Crew cannot hand /compact to. The "
         "card already reports whether /compact works, which is the part a reader "

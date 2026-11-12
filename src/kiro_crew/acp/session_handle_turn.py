@@ -28,7 +28,8 @@ Instance fields written: ``_abandoned_prompt_id``, ``_announced_subagent_roster`
 
 Instance fields read: ``_abandoned_steering``, ``_awaited_responses``, ``_batch_window``,
 ``_cloud_replayed_permissions``, ``_engine_fallback``, ``_mode_model_unjudged``,
-``_queue``, ``_runtime``, ``_session_id``, ``_session_key``, ``_steering_cancel_tasks``.
+``_queue``, ``_runtime``, ``_sent_images``, ``_session_id``, ``_session_key``,
+``_steering_cancel_tasks``.
 """
 
 from __future__ import annotations
@@ -60,7 +61,13 @@ from kiro_crew.acp.elicitation import (
     elicitation_reply,
     is_elicitation_request,
 )
-from kiro_crew.acp.prompt_blocks import build_prompt_blocks, summarize_prompt_structure
+from kiro_crew.acp.prompt_blocks import (
+    SentImageLedger,
+    StagedImages,
+    build_prompt_blocks,
+    command_drops_pictures,
+    summarize_prompt_structure,
+)
 from kiro_crew.acp.session_handle_lifecycle import _CANCEL_GRACE_SECS
 from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeError
 from kiro_crew.acp.session_handle_watchdog import _WORKING_NEVER_LOGGED
@@ -144,6 +151,15 @@ async def wait_turn_done(self: AcpSessionHandle, timeout: float = 30.0) -> bool:
 # ── Prompt ──
 
 
+def _forget_sent_images(self: AcpSessionHandle) -> None:
+    """A completed compaction summarized the conversation or a clear wiped it,
+    dropping the pictures it was sent: a later prompt naming one inlines it
+    again."""
+    sent_images: SentImageLedger | None = getattr(self, "_sent_images", None)
+    if sent_images is not None:
+        sent_images.forget()
+
+
 async def prompt(
     self: AcpSessionHandle,
     message: str,
@@ -167,11 +183,21 @@ async def prompt(
     read or inlined, whatever the agent advertises. For a prompt that is
     text ABOUT a session, where a path is quoted history, not an attachment.
 
+    A picture this session's conversation already holds (the same file bytes)
+    is not inlined again; see :class:`~kiro_crew.acp.prompt_blocks.SentImageLedger`.
+
     ``prompt_gate`` is called under the write lock, right before the prompt is
     written; whatever it raises ends the turn with nothing sent.
     """
+    sent_images: SentImageLedger | None = getattr(self, "_sent_images", None)
+    # This prompt's own staging, taken on the loop before the build: a build
+    # abandoned on its worker thread (a cancel mid-encode) can only write to the
+    # staging of the prompt that was cancelled, which nothing commits, never to
+    # the next prompt's.
+    staged: StagedImages | None = None
 
     async def _build() -> tuple[str, dict[str, Any]]:
+        nonlocal staged
         if self._kas_compact_request(message):
             # The engine's own compaction verb, not prompt text: KAS reads a
             # ``/compact`` prompt as a request to write a summary, and the
@@ -179,6 +205,16 @@ async def prompt(
             # text after ``/compact`` is not sent.
             self._kas_compact_turn = True
             return METHOD_KAS_SESSION_COMPACT, {"sessionId": self._session_id}
+        if message.lstrip().startswith("/") and command_drops_pictures(
+            parse_slash_command(message)[0],
+            compacts_inline=self._compacts_inline(),
+        ):
+            # This backend compacts inside the turn, often with no
+            # status frame to say so, and drops the pictures: forget them
+            # before the turn.
+            self._forget_sent_images()
+        if sent_images is not None:
+            staged = sent_images.staging()
         # Offloaded: the builder stats and reads image files (up to
         # MAX_IMAGE_BYTES each) and base64-encodes them. Inline, that
         # blocking I/O runs on the gateway loop and pauses every other
@@ -188,6 +224,7 @@ async def prompt(
             message,
             allow_image=allow_image,
             agent_accepts_image=self._runtime.supports_image_prompt,
+            sent_images=staged,
         )
         # Content-free outbound STRUCTURE diagnostics: one
         # line per turn build recording block counts, per-type counts, and
@@ -245,6 +282,12 @@ async def prompt(
     turn = self._run_turn(_build, timeout, sign_in_ask=sign_in_ask, prompt_gate=prompt_gate)
     try:
         async for event in turn:
+            if staged is not None and event.kind == EVENT_COMPLETE and self._last_stop_reason:
+                # Only the backend's own answer to this prompt sets the stop
+                # reason; a synthesized terminal (timeout, unacked cancel,
+                # stall) leaves it empty, and a prompt the conversation may
+                # not hold inlines its pictures again on the next try.
+                staged.commit()
             yield event
     finally:
         await turn.aclose()
@@ -489,6 +532,7 @@ async def _run_turn(
     # back into the queue being drained would loop forever (the same reason
     # _wait_for_response re-injects from its finally).
     _stale_dropped = 0
+    _stale_owned_dropped = False
     _stale_terminals = 0
     _stale_reasons: list[str] = []
     _stale_owed: list[JsonRpcMessage] = []
@@ -663,6 +707,11 @@ async def _run_turn(
             # A compaction terminal can land between turns. It still pays an
             # unresolved idle-compaction debt before this drain discards it.
             consume_stale_compaction_status(self, stale)
+            if stale is not None and not stale.fanout_no_owner:
+                # Any frame of this session's that no turn read may have been
+                # the one that dropped its pictures (a late compaction or clear),
+                # so the record cannot vouch for the conversation across it.
+                _stale_owned_dropped = True
             # Everything that is not a permission request is DISCARDED, which
             # is correct (it belongs to a turn nobody is reading any more) but
             # was silent. Count it — and CLASSIFY it: a response (``method``
@@ -731,6 +780,9 @@ async def _run_turn(
             _stale_terminals,
             _stale_reason_note,
         )
+
+    if _stale_owned_dropped:
+        self._forget_sent_images()
 
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
     self._engine_fallback.begin_prompt(self)

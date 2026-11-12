@@ -998,6 +998,9 @@ async def _wait_for_response(
         # Notification (has method, no id) — buffer for drain.
         if msg.method and msg.id is None:
             self._mcp_notifications.append(msg)
+            # No turn reads this buffer, and the frame may be the one that
+            # dropped the conversation's pictures (a late compaction or clear).
+            self._forget_sent_images()
             logger.debug("Buffered notification: %s (req=%d)", msg.method, req_id)
             continue
         # Server→client request (method AND id) or a foreign-id response

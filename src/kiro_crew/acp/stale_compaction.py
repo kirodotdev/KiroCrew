@@ -335,6 +335,11 @@ def consume_stale_compaction_status(target: Any, frame: Any) -> bool:
             )
             if callable(reset):
                 reset()
+            # The summarized conversation dropped its pictures too, so a later
+            # prompt naming one must send it again.
+            forget = getattr(target, "_forget_sent_images", None)
+            if callable(forget):
+                forget()
         generation = int(getattr(target, _DELIVERY_GENERATION_ATTR, 0) or 0)
         setattr(target, _DELIVERY_GENERATION_ATTR, generation + 1)
     return True
