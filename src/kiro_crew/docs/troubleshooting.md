@@ -262,7 +262,11 @@ and answering, and it is where a server is added or turned on. Kiro Crew
 rebuilds `~/.kiro/agents/kirocrew.json` from your MCP sources on every gateway
 start, so do not add a server by editing that file. A server whose program is
 not found on this computer is dropped at the rebuild; the gateway log names it
-(`Dropping MCP server ...: command not found`).
+(`Dropping MCP server ...: command not found`). Once the program is installed
+where the gateway already searches, start a new chat: the next default-agent
+session start rebuilds the spec with the server. A program found only through the
+server's own `env.PATH`, or under a Node version installed after the gateway
+started, needs a gateway restart.
 
 `kirocrew doctor` auto-appends missing `tools` entries for managed servers and
 rewrites the file. It may also repair `allowedTools` for always-on servers, but

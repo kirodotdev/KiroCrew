@@ -1065,7 +1065,12 @@ clears the record. The MCP tab renders the note as a plain line naming the progr
 and the fix: install it, or put the full path in
 the server's command, then restart the gateway from Settings. The record only
 reports the rebuild; it never changes what is mounted, and the next rebuild that
-finds the program removes it.
+finds the program removes it. That rebuild also comes from a default-agent
+session start: `ensure_agent_materialized` reruns `rebuild_agent_config` when a
+recorded command now resolves on the resolver's search path without the server's
+`env.PATH`, so a program that appears on that path after the gateway started is
+mounted without a restart. The Node version directories on that path are listed
+once per process, so a program under a Node version installed later still needs one.
 
 No scope metadata is persisted. Apply does one-shot edits and forgets; state is
 re-read from disk on the next page load, so external edits (`kiro-cli mcp

@@ -203,7 +203,10 @@ opens that page with `find_ui` or a guide, or offers an MCP card through
 If a server's tools are missing from sessions, check that tab first. A server
 whose program is not found on this computer is dropped from the spec at the
 rebuild, and the gateway log names it (`Dropping MCP server ...: command not
-found`).
+found`). Once the program is installed where the gateway already searches, the
+next default-agent session start rebuilds the spec and the server is back. A
+program found only through the server's own `env.PATH`, or under a Node version
+installed after the gateway started, still needs a gateway restart.
 
 ## Reinstalling Agent Config
 
