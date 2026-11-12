@@ -242,6 +242,17 @@ describe('ChatInput: Tab indents list lines', () => {
     expect([ta.selectionStart, ta.selectionEnd, ta.selectionDirection]).toEqual([4, '  - one\n  - two'.length, 'backward'])
   })
 
+  it('Tab on a numbered item restarts it at 1 and renumbers the items below; Shift+Tab takes both back', async () => {
+    renderWithProviders(<Host />)
+    const ta = typeWithCaret('1. one\n2. two|\n3. three')
+    expect(tab(ta)).toBe(false)
+    expect(ta.value).toBe('1. one\n   1. two\n2. three')
+    await flushFrame()
+    expect(ta.selectionStart).toBe('1. one\n   1. two'.length)
+    expect(tab(ta, { shiftKey: true })).toBe(false)
+    expect(ta.value).toBe('1. one\n2. two\n3. three')
+  })
+
   it('Tab during IME composition is left alone', () => {
     renderWithProviders(<Host />)
     const ta = typeWithCaret('- ite|m')
