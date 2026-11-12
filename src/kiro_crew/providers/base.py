@@ -130,6 +130,12 @@ class LLMProvider(ABC):
     #: just before it starts the provider (rule: ``kiro_crew.start_priority``); a
     #: provider started anywhere else starts BACKGROUND.
     start_priority: StartPriority = StartPriority.BACKGROUND
+    #: The session layer sets this beside ``start_priority`` when the start is the
+    #: dashboard owner's return to a saved chat (the focus resume prefetch): the
+    #: start stays ``BACKGROUND`` in the queues, and a person is about to wait on
+    #: it all the same (rule: ``acp.mcp_start_wait.person_waits``). A provider
+    #: that resumes nothing never reads it.
+    focus_resume: bool = False
 
     #: True only on a provider whose ``supports_effort()`` reports the live
     #: model. The base ``supports_effort()`` returns a placeholder False, so a

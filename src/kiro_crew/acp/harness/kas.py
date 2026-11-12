@@ -89,6 +89,7 @@ from kiro_crew.acp.types import (
     METHOD_KAS_SESSION_DELETE,
     METHOD_KAS_TOOLS_CHANGED,
     METHOD_SESSION_CLOSE,
+    METHOD_SESSION_LOAD,
     METHOD_SESSION_NEW,
 )
 from kiro_crew.agent import ForkGovernanceUnresolved
@@ -1435,10 +1436,15 @@ class KasHarness(MembershipHarness):
         after the batch's entries, so the ``set_mode`` that follows is what
         queues the agent's servers, behind Kiro Crew's.
 
-        ``session/load`` and a batch whose first entry has no id are sent as built,
-        as the same object; the caller's dicts are never mutated.
+        ``session/load`` names no mode, because the engine resumes in the one it
+        stored, but registers the start agent under the same refusals: that
+        stored mode is the start agent while a re-open a person waits on is under
+        way (:func:`~kiro_crew.acp.kas_start_agent.parking_load`), and a mode the
+        batch does not carry resumes in ``vibe``. Any other method, and a batch
+        whose first entry has no id, is sent as built, as the same object; the
+        caller's dicts are never mutated.
         """
-        if method != METHOD_SESSION_NEW:
+        if method not in (METHOD_SESSION_NEW, METHOD_SESSION_LOAD):
             return params, agent
         meta = params.get("_meta")
         if not isinstance(meta, dict):
@@ -1456,6 +1462,10 @@ class KasHarness(MembershipHarness):
         if held is not None:
             kiro = {**kiro, "customAgents": held}
             wire_id = START_AGENT_ID
+        if method == METHOD_SESSION_LOAD:
+            if held is None:
+                return params, agent
+            return {**params, "_meta": {**meta, "kiro": kiro}}, agent
         return {**params, "_meta": {**meta, "kiro": {**kiro, "modeId": wire_id}}}, agent
 
     def start_mode_ran_servers(self, mode_id: str) -> bool:

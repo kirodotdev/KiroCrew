@@ -154,6 +154,7 @@ class AcpRuntime:
     # ``session/load`` end to end: ``kiro_crew.acp.runtime_session_load``.
     load_session = _rt_load.load_session
     _wait_managed_mcp = _rt_load._wait_managed_mcp
+    _park_in_start_agent = _rt_load._park_in_start_agent
     # The sessions held and how each leaves: ``kiro_crew.acp.runtime_session_registry``.
     session_activity_at = _rt_registry.session_activity_at
     unregister_session = _rt_registry.unregister_session
@@ -578,6 +579,10 @@ class AcpRuntime:
         # before answering. The reader loop counts them; load_session reads the
         # count to tell a restored conversation from a freshly created record.
         self._load_replay_frames: dict[str, int] = {}
+        # Session ids the engine holds a parked copy of: loaded to make the
+        # start agent the stored mode, not yet confirmed freed
+        # (``runtime_session_load._park_in_start_agent``).
+        self._parked_copies: set[str] = set()
         self._pending_init_notifications: deque[JsonRpcMessage] = deque(
             maxlen=_INIT_NOTIFICATION_BUFFER_LIMIT
         )
