@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { api } from '../../../api/client'
 import { crewBoardQueryKey } from '../../../api/crewBoard'
 import type { ChatSlot, CrewWorker } from '../../../types'
 import ErrorNotice from '../../../components/ErrorNotice'
@@ -13,6 +12,7 @@ import { openPanelView } from '../../../hooks/usePanelTabs'
 import { ChevronLeft } from 'lucide-react'
 import { useCrewBack } from '../../../components/crew/useCrewBack'
 import { crewRouteNotServed, liveCrewWorkers, mergeCrewWorkers } from '../../../lib/crewWorkers'
+import { crewWorkersGapMs, readCrewWorkers } from '../../../lib/crewWorkersPoll'
 import { crewModeRoot, crewRootOf, runsCrewMode } from '../../../lib/crewMode'
 import UltraCrewPanel from './UltraCrewPanel'
 
@@ -92,6 +92,20 @@ export function useCrewWorkersPush(root: string, enabled: boolean): void {
   // `null` until the first enabled run: a list cached by an earlier mount may predate
   // pushes that landed while nothing was mounted (queries never go stale on their own).
   const seen = useRef<string | null>(null)
+  // A re-read never cancels one in flight (no overlap), and waits while the page is hidden.
+  const reread = useCallback(() => {
+    if (document.visibilityState === 'hidden') return
+    void queryClient.invalidateQueries({ queryKey: crewWorkersQueryKey(root) }, { cancelRefetch: false })
+    // The Status view's milestones read the board's `alive`, the same slot facts:
+    // re-read it on the same push, so Status and the List move together.
+    void queryClient.invalidateQueries({ queryKey: crewBoardQueryKey(root) })
+  }, [queryClient, root])
+  useEffect(() => {
+    if (!enabled || !root) return
+    // Showing the page again reads once, then the pushes it missed are in.
+    document.addEventListener('visibilitychange', reread)
+    return () => document.removeEventListener('visibilitychange', reread)
+  }, [enabled, root, reread])
   useEffect(() => {
     if (!enabled || !root) return
     const first = seen.current === null
@@ -101,23 +115,21 @@ export function useCrewWorkersPush(root: string, enabled: boolean): void {
     if (pendingRefresh.has(root)) return
     pendingRefresh.set(root, setTimeout(() => {
       pendingRefresh.delete(root)
-      void queryClient.invalidateQueries({ queryKey: crewWorkersQueryKey(root) })
-      // The Status view's milestones read the board's `alive`, the same slot facts:
-      // re-read it on the same push, so Status and the List move together.
-      void queryClient.invalidateQueries({ queryKey: crewBoardQueryKey(root) })
-    }, CREW_WORKERS_PUSH_COALESCE_MS))
-  }, [key, enabled, root, queryClient])
+      reread()
+    }, crewWorkersGapMs(root, CREW_WORKERS_PUSH_COALESCE_MS)))
+  }, [key, enabled, root, queryClient, reread])
 }
 
 /** One root's worker list while shown, re-read on every push for its crew. Shared by
  *  the side panel and the worker view's breadcrumb, so both name a worker the same way. */
 export function useCrewWorkers(root: string, active: boolean) {
+  const qc = useQueryClient()
   useCrewWorkersPush(root, active)
   return useQuery({
     queryKey: crewWorkersQueryKey(root),
-    queryFn: () => api.crewWorkers(root),
+    queryFn: () => readCrewWorkers(qc, crewWorkersQueryKey(root), root),
     enabled: active && !!root,
-    refetchInterval: query => (active && !routeNotServed(query.state.error) ? CREW_WORKERS_FALLBACK_POLL_MS : false),
+    refetchInterval: query => (active && !routeNotServed(query.state.error) ? crewWorkersGapMs(root, CREW_WORKERS_FALLBACK_POLL_MS) : false),
   })
 }
 
@@ -140,12 +152,13 @@ export function useCrewWorkerSummary(root: string): {
    *  with the open live rows the store carries on its own. */
   lastWorkers: CrewWorker[] | undefined
 } {
+  const qc = useQueryClient()
   useCrewWorkersPush(root, true)
   const query = useQuery({
     queryKey: crewWorkersQueryKey(root),
-    queryFn: () => api.crewWorkers(root),
+    queryFn: () => readCrewWorkers(qc, crewWorkersQueryKey(root), root),
     enabled: !!root,
-    refetchInterval: query => (routeNotServed(query.state.error) ? false : CREW_WORKERS_FALLBACK_POLL_MS),
+    refetchInterval: query => (routeNotServed(query.state.error) ? false : crewWorkersGapMs(root, CREW_WORKERS_FALLBACK_POLL_MS)),
   })
   const live = useLiveCrewWorkers(root)
   // A closed root's list is read from saved data and names the root's saved title.

@@ -14,7 +14,7 @@
  */
 import { useId, useMemo, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { api } from '../../api/client'
 import { apiErrorCode, isNotFoundError } from '../../api/apiError'
@@ -31,6 +31,7 @@ import {
   type CrewWorkerGroup,
 } from '../../lib/crewWorkers'
 import { crewWorkersQueryKey } from '../chat/command-center/CrewWorkerList'
+import { crewWorkersGapMs, readCrewWorkers } from '../../lib/crewWorkersPoll'
 import { timeAgo } from '../../utils/timeAgo'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { parseSourceLinkUrl } from '../../utils/pullRequestLinks'
@@ -91,11 +92,12 @@ export interface MateSessionsListProps {
 
 export default function MateSessionsList({ root, mateName, liveSlots, slotsLoaded, empty }: MateSessionsListProps) {
   const { t } = useTranslation()
+  const qc = useQueryClient()
   const listed = useQuery({
     queryKey: crewWorkersQueryKey(root),
-    queryFn: () => api.crewWorkers(root),
+    queryFn: () => readCrewWorkers(qc, crewWorkersQueryKey(root), root),
     enabled: !!root,
-    refetchInterval: q => (listNotServed(q.state.error) ? false : MATE_SESSIONS_POLL_MS),
+    refetchInterval: q => (listNotServed(q.state.error) ? false : crewWorkersGapMs(root, MATE_SESSIONS_POLL_MS)),
   })
   const live = useMemo(() => liveMateWorkers(liveSlots, root), [liveSlots, root])
   const workers = useMemo(() => mergeCrewWorkers(listed.data?.workers, live), [listed.data?.workers, live])
