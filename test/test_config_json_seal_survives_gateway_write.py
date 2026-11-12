@@ -482,6 +482,7 @@ def test_the_rendered_launcher_carries_the_record_descriptor(_home: Path) -> Non
     assert record["nonce"] == wp._NONCE
     assert set(record["names"]) == {str(_home / leaf) for leaf in wp.PUBLISHED_LEAVES}
     assert str(_home / "mcp.json") in record["names"]
+    assert str(_home / "refresh_chains.json") in record["names"]
 
 
 def test_a_real_spawn_plan_carries_the_record_and_the_config_identity(
