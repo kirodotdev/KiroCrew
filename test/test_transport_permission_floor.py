@@ -842,7 +842,7 @@ _IDENTITY_GATED_APPROVAL_CALLERS = Counter(
         ("dashboard/handlers/hooks.py", "_run_hook_inner"): 1,
         ("eval/runner.py", "_run_turn"): 2,
         ("llm_helpers_parts/tool_approval.py", "_resolve_permission"): 2,
-        ("messaging/driver.py", "run"): 3,
+        ("messaging/driver.py", "_drive"): 3,
         ("slack/handler_runtime/permission_ladder.py", "_answer_permission_request"): 4,
         ("slack/handler_runtime/permission_ladder.py", "handle_interaction"): 1,
         ("task_planner.py", "decompose"): 1,

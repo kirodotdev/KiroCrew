@@ -484,7 +484,7 @@ The downstream `_is_restricted_session` check can still reject the call with HTT
 | `cron_service/service/job_ownership.py` | who owns a job: `adopt_job`, `release_jobs_owned_by`, the strict owner-key and chat-folder reads |
 | `cron_service/service/run_registry.py` | the runs in flight: active session keys, the claim doors, `trigger_run`, `run_job` |
 | `cron_service/service/wake_timer.py` | when the scheduler wakes: next wake, the delay cap, `_arm_timer`, the tick scan, `_on_timer` |
-| `cron_service/service/run_execution.py` | running one job: `_run_job_isolated`, `_execute_with_timeout` (the other run-deadline sum), `_execute` |
+| `cron_service/service/run_execution.py` | running one job: `_run_job_isolated`, `_execute_with_timeout` (the other run-deadline sum, and the run's trace root: metrics.md "Surface roots"), `_execute`, `job_kind` |
 | `cron_service/service/run_merge.py` | landing a run's result: held run records, `_merge_job_result`, the terminal-state merge, `_saved_job_state` |
 | `cron_service/service/stall_breaker.py` | the loop-stall breaker |
 | `cron_service/service/store_sync.py` | the service's copy of the store: `_file_lock`, the fingerprint, `_load` / `_sync` / `_save`, the job snapshots callers read |

@@ -97,6 +97,7 @@ from kiro_crew.task_models import (
 )
 from kiro_crew.task_planner import group_parallel_tasks
 from kiro_crew.task_status_file import fail_on_declared_failure
+from kiro_crew.tracing import surfaces as trace_surfaces
 
 if TYPE_CHECKING:
     from kiro_crew.name_grant import Refusal as NameRefusal
@@ -716,6 +717,7 @@ def _step_permission_policy(
     )
 
 
+@trace_surfaces.rooted(trace_surfaces.TRIGGER_TASK)
 async def execute_task(
     run: Project,
     task: Task,
@@ -1652,6 +1654,7 @@ async def check_context(session_key: str, sessions: "SessionManager") -> None:
         logger.debug("Context check failed", exc_info=True)
 
 
+@trace_surfaces.rooted(trace_surfaces.TRIGGER_TASK)
 async def self_review(
     run: Project,
     task: Task,

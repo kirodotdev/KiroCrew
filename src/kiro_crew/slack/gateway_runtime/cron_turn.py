@@ -178,7 +178,13 @@ async def _cron_run_sequence(
     # Run-scoped: a sequence where one agent got a tool through has
     # done work, even if a later agent was blocked outright.
     _gate = _GateTally()
+    # Imported here: this module's functions run on the gateway's globals.
+    from kiro_crew.tracing import turns as trace_turns
+
     for step in steps:
+        # Each agent is its own turn of the run's trace, not an attempt of the
+        # previous one; outside the re-load loop, so a re-run stays an attempt.
+        trace_turns.next_turn()
         # One re-load per step when a live backend lost this step's
         # session: the step is re-run on a fresh runtime that
         # session/loads the same id. A second loss ends the fire.
