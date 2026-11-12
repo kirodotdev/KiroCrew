@@ -1,12 +1,9 @@
-"""The pre-turn model backfill must not overwrite a deferred model pick.
+"""The pre-turn model settle must not overwrite a deferred model pick.
 
-``_settle_session_model`` backfills an unpinned-but-crew-pinned slot with the
-model the live session serves, so the chip names a real model. A model pick the
-picker took mid-turn commits ``slot.model = ""`` (Auto) and marks
-``_deferred_model_switch_key`` for the boundary to apply. If this pre-turn
-backfill ran then, it would write the served (old) model over that ``""`` and
-the boundary would apply the old model, silently undoing the pick -- the same
-hazard the completion backfill (``turn_stats``) already guards.
+A model pick the picker took mid-turn commits ``slot.model = ""`` (Auto) and
+marks ``_deferred_model_switch_key`` for the boundary to apply. If
+``_settle_session_model`` wrote the served (old) model over that ``""``, the
+boundary would apply the old model, silently undoing the pick.
 """
 
 from __future__ import annotations
@@ -18,9 +15,9 @@ from kiro_crew.dashboard.state import _ChatSlot
 
 
 class _Client:
-    """``_backfill_canonical_model`` reads ``client.client._model``."""
+    """The provider double: ``client.client._model`` is the served model."""
 
-    class client:  # noqa: N801 - mirrors the real attribute name the backfill reads
+    class client:  # noqa: N801 - mirrors the real attribute name the provider carries
         _model = "served-model"
 
 
@@ -34,7 +31,6 @@ async def _settle(slot: _ChatSlot) -> None:
         resumed=False,
         _is_refusal_retry_turn=False,
         _synthetic_recovery_turn=False,
-        crew_model="crew-pinned-model",
     )
 
 
@@ -47,6 +43,6 @@ async def test_a_deferred_pick_is_not_overwritten_by_the_pre_turn_backfill():
     await _settle(slot)
 
     assert slot.model == "", (
-        "the pre-turn backfill must leave a pending deferred pick alone; "
+        "the pre-turn settle must leave a pending deferred pick alone; "
         f"slot.model is {slot.model!r}"
     )
