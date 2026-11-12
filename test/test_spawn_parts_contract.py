@@ -148,13 +148,32 @@ def test_the_names_owners_import_from_elsewhere_stay_visible_to_type_checkers() 
 
 
 def test_a_patch_through_the_facade_reaches_both_roster_readers() -> None:
-    """``visible_agent_names`` is read by the description roster and by ``spawn_list``,
+    """``is_internal_agent_spec`` is read by the description roster and by ``spawn_list``,
     in two owners; a patch through the facade reaches both and is undone in both."""
-    holders = [importlib.import_module(name) for name in _MIRROR.holders["visible_agent_names"]]
+    holders = [importlib.import_module(name) for name in _MIRROR.holders["is_internal_agent_spec"]]
     assert {owner.__name__.rpartition(".")[2] for owner in holders} == {"schemas", "listing"}
-    original = spawn.visible_agent_names
+    original = spawn.is_internal_agent_spec
     marker = object()
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(spawn, "visible_agent_names", marker)
-        assert all(vars(owner)["visible_agent_names"] is marker for owner in holders)
-    assert all(vars(owner)["visible_agent_names"] is original for owner in holders)
+        mp.setattr(spawn, "is_internal_agent_spec", marker)
+        assert all(vars(owner)["is_internal_agent_spec"] is marker for owner in holders)
+    assert all(vars(owner)["is_internal_agent_spec"] is original for owner in holders)
+
+
+def test_a_patch_through_the_facade_reaches_the_description_readers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The descriptors are built before the handlers load, so their owner binds no
+    sub-agent reader: it reads the facade's binding, where a patch lands."""
+    schemas = importlib.import_module(f"{_PACKAGE}.schemas")
+    assert not {"visible_agent_names", "resolve_max_subagents"} & set(vars(schemas))
+    for name in (
+        "visible_agent_names",
+        "resolve_max_subagents",
+        "parent_spawn_allowlists",
+        "agent_matches_allowlist",
+    ):
+        assert schemas._subagent_reader(name) is getattr(spawn, name), name
+        marker = object()
+        monkeypatch.setattr(spawn, name, marker)
+        assert schemas._subagent_reader(name) is marker, name

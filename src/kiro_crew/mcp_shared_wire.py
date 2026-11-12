@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import queue
+import select
 import sys
 import threading
 from typing import Any, Literal, Optional
@@ -28,10 +29,10 @@ from kiro_crew.json_line import (
     recover_line_id,
     recover_top_level_id,
 )
-from kiro_crew.validation import (
+from kiro_crew.validation_parts.field_engine import ValidationError
+from kiro_crew.validation_parts.wire_envelopes import (
     JSONRPC_INVALID_REQUEST,
     JSONRPC_PARSE_ERROR,
-    ValidationError,
     validate_jsonrpc_response,
 )
 
@@ -475,3 +476,39 @@ def _start_stdin_pump(stdin) -> "queue.Queue[Any]":
 
     threading.Thread(target=_pump, name="mcp-stdin-pump", daemon=True).start()
     return frames
+
+
+def _frame_within(
+    stdin: Any, pump: "queue.Queue[Any] | None", timeout: float | None, wake: Any = None
+) -> dict[str, Any] | _Skipped | _NoFrame | None:
+    """The next frame from *stdin*, or :data:`NO_FRAME` when *timeout* seconds
+    pass with none (``None`` waits for one).
+
+    *pump* is the queue :func:`_start_stdin_pump` fills, where the platform
+    needs one; ``None`` reads *stdin* directly, and a line already buffered is
+    read first because ``select`` cannot see it. *wake* is the dispatch loop's
+    wake pipe: the direct wait also ends, with :data:`NO_FRAME`, the moment it
+    fires (a worker or a step finished).
+    """
+    if pump is None:
+        if timeout is not None and not _stdin_holds_a_line(stdin):
+            wake_fd = wake.read_fd if wake is not None else None
+            waits: list[Any] = [stdin] if wake_fd is None else [stdin, wake_fd]
+            ready = select.select(waits, [], [], timeout)[0]
+            if wake_fd is not None and wake_fd in ready:
+                wake.drain()
+            if not any(r is stdin for r in ready):
+                return NO_FRAME
+        return _read_message(stdin)
+    while True:
+        try:
+            # A bounded get even when waiting: an untimed lock acquire on
+            # Windows cannot be interrupted.
+            item = pump.get(timeout=1.0 if timeout is None else timeout)
+        except queue.Empty:
+            if timeout is None:
+                continue
+            return NO_FRAME
+        if isinstance(item, BaseException):
+            raise item
+        return item

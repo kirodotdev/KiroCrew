@@ -51,6 +51,13 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
     redact_with_findings,
 )
+from kiro_crew.speech_providers import (  # noqa: F401
+    DEFAULT_PROVIDER,
+    PROVIDER_POLLY,
+    PROVIDER_SYSTEM,
+    REMOVED_PROVIDERS,
+    VALID_PROVIDERS,
+)
 from kiro_crew.voice_reply_registered import (  # noqa: F401 - re-exported
     _synthesize_registered,
     iter_registered_chunks,
@@ -85,22 +92,6 @@ def resolve_polly_cli() -> str | None:
     """
     aws_bin = resolve_aws_bin()
     return aws_bin if shutil.which(aws_bin) else None
-
-
-# ── Provider constants ──
-PROVIDER_POLLY = "polly"
-PROVIDER_SYSTEM = "system"
-VALID_PROVIDERS = frozenset({PROVIDER_POLLY, PROVIDER_SYSTEM})
-# Removed providers a saved config may still name. Each resolves to the
-# default with one warning per process; see docs/request-for-change/
-# rfc-remove-piper-tts.md. The ``piper_*`` keys beside it are left in
-# config.json, unread, so a downgrade still finds them.
-REMOVED_PROVIDERS = frozenset({"piper"})
-# The host's built-in speech engine is the default because it is the only
-# provider that needs nothing installed and no account: macOS and Windows both
-# ship one, so auto-speak works on a fresh machine. Polly is the paid cloud
-# option, used only when explicitly selected.
-DEFAULT_PROVIDER = PROVIDER_SYSTEM
 
 
 def valid_providers() -> frozenset[str]:

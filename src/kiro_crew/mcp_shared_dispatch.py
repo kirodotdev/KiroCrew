@@ -19,8 +19,6 @@ import contextlib
 import functools
 import logging
 import os
-import queue
-import select
 import sys
 import threading
 import time
@@ -29,10 +27,8 @@ from typing import Any, Callable, Optional
 from kiro_crew import platform_compat
 from kiro_crew.install_liveness import install_pruned, is_pooled_backend, respawned_by_pool
 from kiro_crew.mcp_caller import (
-    INFLIGHT_CAPABILITY_KEY,
     INFLIGHT_NOTIFICATION,
     CallerContext,
-    caller_identity_capability,
     set_current_caller,
     set_current_tenant_nonce,
     set_current_tool_call_id,
@@ -51,13 +47,17 @@ from kiro_crew.mcp_shared_calls import (
     _remember_cancelled_id,
     _StepPool,
 )
+from kiro_crew.mcp_shared_listing import (
+    caller_tool_policy,
+    initialize_result,
+    listable_tools,
+    take_early_frames,
+)
 from kiro_crew.mcp_shared_policy import (
     _NEGATIVE_CACHE_PROBE_INTERVAL,
     _POLICY_DETAIL_MAX_CHARS,
     _UNRESOLVED_REFUSES_CALL,
-    ToolPolicy,
     _ambient_audit_session,
-    _resolve_tool_policy,
     external_client_identity_note,
     registry_identity_note,
     serves_managed_tools,
@@ -65,11 +65,10 @@ from kiro_crew.mcp_shared_policy import (
 )
 from kiro_crew.mcp_shared_wire import (
     NO_FRAME,
+    _frame_within,
     _NoFrame,
-    _read_message,
     _Skipped,
     _start_stdin_pump,
-    _stdin_holds_a_line,
     notify,
     respond,
 )
@@ -315,59 +314,6 @@ def _run_stdio_dispatch_loop(
 
     _applies_tool_policy = serves_managed_tools(call_tool_fn)
 
-    def _caller_tool_policy(caller: "CallerContext | None") -> ToolPolicy:
-        """This request's exclusion set AND whether the policy was readable.
-
-        The enforcement seam: the ``tools/call`` branch needs the second half
-        to tell "the operator excluded nothing" apart from "we could not read
-        what the operator excluded".
-
-        The caller block's token rides along explicitly. This runs on the read
-        loop before the worker installs the caller ContextVar, so the resolver
-        cannot find the token there; a pooled backend has it nowhere else.
-
-        A server that is not Kiro Crew's own (:func:`serves_managed_tools`) has
-        no managed tools for the policy to name, so it is answered "nothing
-        excluded" without a read.
-        """
-        if not _applies_tool_policy:
-            return ToolPolicy(frozenset(), "")
-        return _resolve_tool_policy(
-            caller.session_key if caller else "",
-            caller_token=caller.session_token if caller else "",
-        )
-
-    def _listable_tools(caller: "CallerContext | None") -> list[dict]:
-        """The tool list for a ``tools/list``, minus this session's exclusions.
-
-        An unresolved policy lists EVERYTHING on purpose. kiro-cli calls
-        ``tools/list`` once per session and caches the answer, so hiding tools
-        on a transient policy failure would hide them for the session's whole
-        life. Listing is not the enforcement point; ``tools/call`` is, and it
-        refuses while the policy is unresolved. The audit event records that a
-        listing went out unfiltered so the widened window is attributable.
-        """
-        policy = _caller_tool_policy(caller)
-        tools = list_tools_fn()
-        if policy.unresolved:
-            try:
-                sel().log_api_access(
-                    caller=(caller.session_key if caller is not None else _ambient_audit_session()),
-                    operation="tool_policy.unfiltered_listing",
-                    outcome="unresolved",
-                    source="mcp",
-                    resources=f"reason={policy.unresolved}",
-                )
-            except Exception as sel_exc:
-                logger.warning("SEL audit failed for unfiltered listing: %s", sel_exc)
-            return tools
-        if policy.excluded:
-            tools = [t for t in tools if t.get("name") not in policy.excluded]
-        included = policy.include_for(server_name)
-        if included is not None:
-            tools = [t for t in tools if t.get("name") in included]
-        return tools
-
     def _tool_response(text: str) -> dict[str, Any]:
         """Frame a tool result, flagging ``Error:`` prose when opted in."""
         flagged = error_prefix_is_error and text.startswith("Error:")
@@ -604,36 +550,17 @@ def _run_stdio_dispatch_loop(
         nonlocal _current_caller_key, _current_caller_ctx, _current_tenant_nonce
         nonlocal _cancel_event, _pruned_exit, _client_wants_inflight
         if method == "initialize":
-            _caps: dict[str, Any] = {"tools": {"listChanged": False}}
-            _experimental: dict[str, Any] = {}
-            if advertise_caller_identity:
-                # Pooled-operation opt-in for IDENTITY, not for pooling:
-                # gatewayd injects the per-call ``_meta.kirocrew.caller`` block
-                # only into a backend that advertised this capability, and
-                # nothing declines to POOL one that did not (see
-                # ``rewriter.UNPOOLABLE_SERVERS``, which lists only credential vendors and documents
-                # exactly that). So NOT advertising does not buy a per-session
-                # spawn -- it buys a shared process whose dispatch-loop caller
-                # slot never receives gateway-authored metadata, which is how a
-                # session-scoped tool silently degrades to unattached behaviour.
-                _experimental.update(caller_identity_capability())
-            _sends_inflight = reports_inflight
-            if _sends_inflight:
-                # Only a server that opted in advertises: a gateway that
-                # believes a backend reports applies the short recycle ceiling
-                # to its calls.
-                _experimental[INFLIGHT_CAPABILITY_KEY] = {}
-            if _experimental:
-                _caps["experimental"] = _experimental
-            _client_wants_inflight = _sends_inflight and _declares_inflight_capability(params)
-            _init_result: dict[str, Any] = {
-                "protocolVersion": "2024-11-05",
-                "capabilities": _caps,
-                "serverInfo": {"name": server_name, "version": server_version},
-            }
-            if instructions:
-                _init_result["instructions"] = instructions
-            respond(req_id, _init_result)
+            _client_wants_inflight = reports_inflight and _declares_inflight_capability(params)
+            respond(
+                req_id,
+                initialize_result(
+                    server_name,
+                    server_version,
+                    advertise_caller_identity=advertise_caller_identity,
+                    reports_inflight=reports_inflight,
+                    instructions=instructions,
+                ),
+            )
         elif method == "notifications/initialized":
             pass
         elif method == "notifications/cancelled":
@@ -654,7 +581,17 @@ def _run_stdio_dispatch_loop(
                 )
                 _cancel_deferred(str(cancelled_rid))
         elif method == "tools/list":
-            respond(req_id, {"tools": _listable_tools(_req_caller(params))})
+            respond(
+                req_id,
+                {
+                    "tools": listable_tools(
+                        server_name,
+                        list_tools_fn,
+                        _req_caller(params),
+                        applies_policy=_applies_tool_policy,
+                    )
+                },
+            )
         elif method == "ping":
             respond(req_id, {})
         elif method == "tools/call":
@@ -731,7 +668,7 @@ def _run_stdio_dispatch_loop(
             # Defense-in-depth: reject calls to excluded tools even if
             # the LLM somehow attempts to call them (hallucination).
             # Per-call caller identity keys the policy in pooled backends.
-            _policy = _caller_tool_policy(_caller_ctx)
+            _policy = caller_tool_policy(_caller_ctx, applies_policy=_applies_tool_policy)
             _policy_session = _caller_ctx.session_key if _caller_ctx else _ambient_audit_session()
             if _policy.unresolved and _policy.unresolved not in _UNRESOLVED_REFUSES_CALL:
                 # An identity reason: no agent was named, so no operator
@@ -1394,36 +1331,27 @@ def _run_stdio_dispatch_loop(
         )
 
     # Windows: select() cannot poll stdin, so a pump thread reads it.
-    _frames = None if platform_compat.IS_POSIX else _start_stdin_pump(sys.stdin)
+    # What the server answered before this loop started (``serve_before_handlers``):
+    # the client's ``initialize`` params, the frames it read and left unanswered, and
+    # the stdin pump it started where the platform reads stdin through one.
+    _early = take_early_frames()
+    _carried: "collections.deque[dict[str, Any] | None]" = (
+        _early.pending if _early is not None else collections.deque()
+    )
+    if _early is not None and _early.init_params is not None:
+        _client_wants_inflight = reports_inflight and _declares_inflight_capability(
+            _early.init_params
+        )
+    _frames = _early.pump if _early is not None else None
+    if _frames is None and not platform_compat.IS_POSIX:
+        _frames = _start_stdin_pump(sys.stdin)
 
     def _next_frame(timeout: float | None) -> dict[str, Any] | _Skipped | _NoFrame | None:
-        """The next stdin frame, or :data:`NO_FRAME` when *timeout* seconds
-        pass with none (``None`` waits for one). A line already buffered is
-        read first: select cannot see it. On POSIX the wait also ends, with
-        :data:`NO_FRAME`, the moment the wake pipe fires (a worker or a step
-        finished)."""
-        if _frames is None:
-            if timeout is not None and not _stdin_holds_a_line(sys.stdin):
-                wake_fd = _wake.read_fd
-                waits: list[Any] = [sys.stdin] if wake_fd is None else [sys.stdin, wake_fd]
-                ready = select.select(waits, [], [], timeout)[0]
-                if wake_fd is not None and wake_fd in ready:
-                    _wake.drain()
-                if not any(r is sys.stdin for r in ready):
-                    return NO_FRAME
-            return _read_message(sys.stdin)
-        while True:
-            try:
-                # A bounded get even when waiting: an untimed lock acquire on
-                # Windows cannot be interrupted.
-                item = _frames.get(timeout=1.0 if timeout is None else timeout)
-            except queue.Empty:
-                if timeout is None:
-                    continue
-                return NO_FRAME
-            if isinstance(item, BaseException):
-                raise item
-            return item
+        """The next frame: one carried over from before the loop started, else the
+        next from stdin within *timeout* seconds (:func:`_frame_within`)."""
+        if _carried:
+            return _carried.popleft()
+        return _frame_within(sys.stdin, _frames, timeout, _wake)
 
     # Made here, right before the ``try`` that closes it, so no exit path
     # leaks the two descriptors. The worker and step hooks above read it late.

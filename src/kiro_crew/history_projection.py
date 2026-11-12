@@ -47,9 +47,14 @@ from kiro_crew.history_cache import (
     _TranscriptIndexBase,
     _TranscriptRowIndexEntry,
 )
+from kiro_crew.history_metadata_line import (  # noqa: F401 - facade surface
+    METADATA_LINE_CORRUPT,
+    METADATA_LINE_READABLE,
+    METADATA_LINE_TRANSIENT,
+    parse_metadata_line,
+)
 from kiro_crew.history_projection_contract import (
     _HISTORY_LOGGER,
-    METADATA_LINE_CORRUPT,
     TranscriptRevisionChanged,
     _history_facade,
 )
@@ -702,8 +707,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _TRANSCRIPT_PAGE_READ_ATTEMPTS,
         _TRANSCRIPT_READ_CHUNK,
         DISPLAY_ONLY_ROLES,
-        METADATA_LINE_READABLE,
-        METADATA_LINE_TRANSIENT,
         ChainRevision,
         TranscriptPage,
         _facade_flock_acquire_timeout,

@@ -3,7 +3,7 @@
 ``kiro_crew.agent`` is the import path everyone uses; the code lives under
 ``kiro_crew.agent_materialization``. Pinned: the module surface, the
 ``toolsSettings.subagent.availableAgents`` allowlist (read by
-``subagent_parts/agent_policy.py``) byte-for-byte on every path, the guest spec, and the
+``subagent_parts/spawn_allowlists.py``) byte-for-byte on every path, the guest spec, and the
 conductor prompts and grants. ``test_agent_refactor_spec_bytes.py`` freezes whole output.
 """
 

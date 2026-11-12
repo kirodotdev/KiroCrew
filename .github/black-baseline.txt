@@ -506,7 +506,6 @@ test/test_mcp_gateway_cluster_fixes.py
 test/test_mcp_gateway_control_plane.py
 test/test_mcp_gateway_exclusive_backend.py
 test/test_mcp_gateway_image_budget.py
-test/test_mcp_gateway_oversize.py
 test/test_mcp_gateway_shutdown_and_env.py
 test/test_mcp_gateway_stub_optin.py
 test/test_mcp_gateway_stub_paths.py

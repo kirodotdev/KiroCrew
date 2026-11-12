@@ -35,10 +35,12 @@ from kiro_crew.mcp_tools.spawn_parts.listing import spawn_list, spawn_status
 from kiro_crew.mcp_tools.spawn_parts.session_memory import session_memory_lines
 from kiro_crew.mcp_tools.spawn_parts.wave import _SA_ERROR_MAX_CHARS, spawn_sub_agents
 from kiro_crew.spawn_label import normalize_spawn_label
-from kiro_crew.subagent import (
+from kiro_crew.subagent import (  # noqa: F401 - the last two are read by spawn_parts.schemas
     AGENT_INTERNAL_CODE,
     AGENT_NOT_AVAILABLE_CODE,
     AGENT_NOT_FOUND_CODE,
+    agent_matches_allowlist,
+    parent_spawn_allowlists,
     resolve_max_subagents,
 )
 from kiro_crew.subagent_wait_reasons import MEMORY_PRESSURE_PHRASE
@@ -887,10 +889,13 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.mcp_tools.spawn_parts.listing import _queued_why  # noqa: F401
     from kiro_crew.mcp_tools.spawn_parts.schemas import (  # noqa: F401
+        _CORE,
         _MAX_ROSTER_NAMES,
+        _SPAWN,
         _agent_roster_hint,
         _parent_allowlist_filter,
         _parent_template_for_roster,
+        _subagent_reader,
         schemas,
     )
     from kiro_crew.mcp_tools.spawn_parts.session_memory import (  # noqa: F401
@@ -912,6 +917,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SubAgentsStep,
     )
 if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still served here
+    from kiro_crew import subagent_standalone  # noqa: F401
+    from kiro_crew.agent_discovery import list_agents  # noqa: F401
     from kiro_crew.constants import (  # noqa: F401
         DEFAULT_SUBAGENT_MAX_TURNS,
         LEAKED_TOOL_CALL_NOTE,
@@ -919,15 +926,15 @@ if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still 
     )
     from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS  # noqa: F401
     from kiro_crew.execution_context import read_session_execution  # noqa: F401
+    from kiro_crew.mcp_core_parts.identity import _resolve_session_key  # noqa: F401
     from kiro_crew.mcp_shared import DEFERRED_STEP_WORKERS  # noqa: F401
+    from kiro_crew.mcp_tools.catalog import loaded_binding  # noqa: F401
     from kiro_crew.platform import redact_via_context as redact  # noqa: F401
     from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F401
     from kiro_crew.spawn_label import SPAWN_LABEL_MAX_CHARS  # noqa: F401
     from kiro_crew.subagent import (  # noqa: F401
-        agent_matches_allowlist,
         format_subagent_usage,
         is_internal_agent_spec,
-        parent_spawn_allowlists,
         visible_agent_names,
     )
     from kiro_crew.subagent_read_collected import post_mark_collected  # noqa: F401

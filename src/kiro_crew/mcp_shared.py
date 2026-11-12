@@ -234,6 +234,7 @@ _OWNERS = (
     "kiro_crew.mcp_shared_wire",
     "kiro_crew.mcp_shared_calls",
     "kiro_crew.mcp_shared_policy",
+    "kiro_crew.mcp_shared_listing",
     "kiro_crew.mcp_shared_dispatch",
 )
 for _owner in _OWNERS:
@@ -273,6 +274,20 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _approved_tool_call_id,
         _tool_call_name,
         _WakePipe,
+    )
+    from kiro_crew.mcp_shared_listing import (  # noqa: F401
+        _EARLY,
+        EARLY_FRAME_WAIT_SECS,
+        PROTOCOL_VERSION,
+        EarlyFrames,
+        StdioServer,
+        _answer_early,
+        _EarlyState,
+        caller_tool_policy,
+        initialize_result,
+        listable_tools,
+        serve_before_handlers,
+        take_early_frames,
     )
     from kiro_crew.mcp_shared_policy import (  # noqa: F401
         _EXCLUDED_TOOLS_CACHE_MAX,
@@ -316,6 +331,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         SKIP,
         STDIN_PUMP_MAX_FRAMES,
         _answer_unparseable,
+        _frame_within,
         _framing,
         _NoFrame,
         _read_message,

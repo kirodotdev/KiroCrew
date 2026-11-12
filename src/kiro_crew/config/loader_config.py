@@ -128,7 +128,6 @@ from kiro_crew.config.sections import (
     coerce_effort,
 )
 from kiro_crew.effort import is_valid_effort, model_supports_effort
-from kiro_crew.mcp_gateway.rewriter import default_overlay_dir, default_socket_path
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
@@ -1412,6 +1411,11 @@ class KiroCrewConfig:
         # backend is ACQUIRED, and on its own routes nothing.
         _gw = self.mcp_gateway
         if _gw.stub_servers:
+            # Imported on the one branch that reads it: the rewriter loads the gateway
+            # manager and the sandbox, which a process that only reads config (every
+            # stdio MCP server, most CLI commands) never uses.
+            from kiro_crew.mcp_gateway.rewriter import default_overlay_dir, default_socket_path
+
             _gw_overlay = _gw.overlay_dir or str(default_overlay_dir())
             _gw_socket = _gw.socket_path or str(default_socket_path())
         else:

@@ -141,9 +141,10 @@ below, and every function the family defines runs on that module's globals.
 | `subagent.py` | The import block (including the agent-sdk boundary edges baselined for this file), the logger, the `ClaudeCodeProvider` sentinel, the background-task registry, the re-exports and the composition tail |
 | `subagent_parts/run_limits.py` | The timeouts, limits and wire markers a run is held to (the Constants below) |
 | `subagent_parts/run_output.py` | What a run reports: redaction and truncation, exception text, the done result, the usage line, `SubagentDelivery`, `_RunCreditAccounting` |
-| `subagent_parts/agent_policy.py` | Which agent a spawn may name: reserved names and refusal codes, the roster, app ownership, governance vetting, the `availableAgents` allowlists, parent spawn policy, `validate_cwd` |
+| `subagent_parts/agent_policy.py` | Which agent a spawn may name: the refusal codes, app ownership, governance vetting, parent spawn policy, `validate_cwd` |
+| `subagent_parts/spawn_allowlists.py` | The reserved names, `visible_agent_names` (the one filter every roster passes through), and the parent spec's `availableAgents` allowlists at each scope: reading, memo, glob match, the unreadable-spec wording. Also runs before the facade is loaded (below) |
 | `subagent_parts/model_choice.py` | Which model and reasoning effort a run uses, and the effort notes |
-| `subagent_parts/host_memory.py` | Host and cgroup memory readings, process-subtree sampling, the count ceiling and `resolve_max_subagents` |
+| `subagent_parts/host_memory.py` | Host and cgroup memory readings, process-subtree sampling, the count ceiling and `resolve_max_subagents`. Also runs before the facade is loaded (below) |
 | `subagent_parts/start_pricing.py` | What a start costs in memory, the admitted-start reserve, the one off-loop host reading |
 | `subagent_parts/run_record.py` | The run record, `SubagentInfo`, and the scope fields it carries |
 | `subagent_parts/delivery.py` | How a run's outcome reaches its parent: the callback contracts, the delivery-routing field table and `delivery_is_parked`, the teardown gate's run ids |
@@ -168,6 +169,22 @@ reads the owner's own globals, as the one-module file read them once at import; 
 names `SubagentInfo`, which `run_output` binds for type checking only). Pinned by
 `test/test_subagent_parts_composition_contract.py` (bytecode sweep, patch reach derived
 from the test trees, import graph, the moved names' BASE shapes, the class inventory).
+
+**Two owners also run before the facade is loaded.** A stdio tool server names the
+sub-agent ceiling and the agents the calling parent may spawn in a tool description it
+writes before it loads its handlers, and loading `kiro_crew.subagent` is most of what
+loading the handlers costs (mcp.md, "A server lists its tools before it loads its
+handlers"). So `host_memory` and `spawn_allowlists` import for real every name their
+functions read, from the module that defines each, and bind the facade's logger by name.
+Until the facade composes them their functions run on their own globals; afterwards on the
+facade's, like every owner's, so a patch of `kiro_crew.subagent.<name>` reaches them as
+soon as the facade exists. `kiro_crew.subagent_standalone` is the one module besides the
+facade that imports them. `compose` replaces an owner's functions when the facade loads,
+so a module that bound one earlier would hold the replaced object; `subagent_standalone`
+calls the owner's binding as it is at the time of each call, and nothing binds an owner
+function early. Pinned by `test/test_subagent_standalone.py` (every global bound in the
+owner, the answers with the facade unloaded, the patch reach after it loads) and by the
+importer check in the composition contract.
 
 **The class binds its methods.** A `*_surface` owner holds `SubagentManager` methods as
 module functions taking the manager as `self`, and `manager.py` binds each one as the class

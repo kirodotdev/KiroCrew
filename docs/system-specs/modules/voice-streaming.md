@@ -129,7 +129,7 @@ Telegram and dashboard paths. Three rules:
 
 ### Registered providers
 
-A composed edition can add TTS providers through the `speech` slot on `PlatformContext` (`SpeechProviderRegistry.tts_providers()`; see `platform-context.md`). The default registry adds none, so a standalone install has exactly `VALID_PROVIDERS`. `voice_reply.valid_providers()` is the built-ins plus the registered names.
+A composed edition can add TTS providers through the `speech` slot on `PlatformContext` (`SpeechProviderRegistry.tts_providers()`; see `platform-context.md`). The default registry adds none, so a standalone install has exactly `VALID_PROVIDERS`. The built-in sets (`VALID_PROVIDERS`, `REMOVED_PROVIDERS`, `DEFAULT_PROVIDER`) are defined in `speech_providers` and served by `voice_reply`, so boot validates a registry against them without loading the synthesis code. `voice_reply.valid_providers()` is the built-ins plus the registered names.
 
 - **Collision rule.** A registered name may not be a built-in (`polly`, `system`) or a removed provider (`piper`), may not be blank and may not repeat. `speech_providers.validate_speech_registry` refuses any of these at boot with `PlatformCompositionError`, so an edition can add a provider but never replace one.
 - **Default precedence.** A stored provider always wins. Only an absent, null or empty value takes `voice_reply.default_provider()`: the edition's `default_tts()` when it names a selectable provider, else `DEFAULT_PROVIDER`. An invalid stored value still falls back to `DEFAULT_PROVIDER`, never to the edition default, for the same reason it never falls back to Polly.
