@@ -49,6 +49,7 @@ if TYPE_CHECKING:
         carry_provenance,
         channel_slot_name,
         close_metadata_under_lock,
+        default_row_cls,
         deny_app_slot_session_access,
         durable_row_count,
         effective_session_key,
@@ -538,7 +539,7 @@ def _hydrate_slot_from_history(
         # ``is_stop_event_row``), so a resumed session dropping it reads the
         # user's deliberate Stop as an interrupted turn. Import rows carry none
         # and fall through to the role default as before.
-        cls = m.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
+        cls = m.get("cls") or default_row_cls(role)
         content = m.get("content", "")
         slot.append(
             role,

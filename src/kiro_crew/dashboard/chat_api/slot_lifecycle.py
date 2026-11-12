@@ -897,7 +897,7 @@ async def _close_slot(
             # A turn that outlived the cancel wait has not run its own teardown flush,
             # and this frame is the last one that can commit the hold before the pop.
             # The key may already name a replacement, so nothing is delivered live.
-            slot.flush_deferred_notes(broadcast=False, retain=False)
+            slot.flush_deferred_notes(markers_only=False, broadcast=False, retain=False)
             archived_ok = await _timed_close_stage(
                 name,
                 "archive save",
@@ -1522,7 +1522,7 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
                     if not drained.rows_committed:
                         failed.append(name)
                     continue
-                removed.flush_deferred_notes(broadcast=False, retain=False)
+                removed.flush_deferred_notes(markers_only=False, broadcast=False, retain=False)
                 # The flush just queued the held notes' context halves here, merge
                 # cards among them.
                 await hand_merge_cards_to_open_twin(state, removed)

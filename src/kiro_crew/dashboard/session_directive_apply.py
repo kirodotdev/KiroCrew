@@ -79,6 +79,7 @@ from kiro_crew.dashboard.session_directive_apply_slot import (
     _suggest_followup,
 )
 from kiro_crew.directive_origin import user_origin_gate_admits
+from kiro_crew.session_directive import SECTION_MARKER_ROLE  # noqa: F401
 from kiro_crew.session_surface import has_dashboard_surface
 
 logger = logging.getLogger("kiro_crew.dashboard.session_directive_apply")

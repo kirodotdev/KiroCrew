@@ -145,7 +145,7 @@ def _flush_held_notes_if_idle(state: DashboardState, slot: _ChatSlot) -> None:
     if slot.running or (slot._queue and slot._queue[0].get("kind")):
         return
     try:
-        slot.flush_deferred_notes()
+        slot.flush_deferred_notes(markers_only=False)
     except Exception:
         # The flush puts the unwritten notes back, so the next flush delivers them.
         logger.warning("Slot %s: held notes wait for the next flush", slot.key, exc_info=True)

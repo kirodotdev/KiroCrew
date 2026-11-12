@@ -43,6 +43,7 @@ if TYPE_CHECKING:
         _seed_session_tree,
         _takeover_ordering,
         carry_provenance,
+        default_row_cls,
         durable_row_count,
         effective_session_key,
         logger,
@@ -324,7 +325,7 @@ def _load_rehydrated_window(
     slot._disk_older_durable_count = durable_row_count(islice(messages, older_cut))
     for m in messages[-500:]:
         role = m.get("role", "assistant")
-        cls = m.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
+        cls = m.get("cls") or default_row_cls(role)
         content = m.get("content", "")
         # ``meta`` is redacted where it is EMITTED (chat_utils._prepare_messages,
         # _ChatSlot.to_dict, _build_history_prefix): it holds ~79% of the load
@@ -1049,7 +1050,7 @@ def _apply_recent_session(
         slot._disk_older_durable_count = durable_row_count(islice(messages, older_cut))
         for m in messages[-500:]:
             role = m.get("role", "assistant")
-            cls = m.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
+            cls = m.get("cls") or default_row_cls(role)
             content = m.get("content", "")
             # CONTENT is redacted on load; META is deferred to the emit sites.
             # See the equivalent loop in _rehydrate_slot_from_history for the

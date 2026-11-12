@@ -5,6 +5,7 @@ landed turn's reset of every retry budget, and consolidation."""
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import TYPE_CHECKING, Literal
 
@@ -14,6 +15,7 @@ from kiro_crew.dashboard.chat_utils import (
     ResetCause,
     build_recovery_requeue,
     payload_for_replay,
+    slot_history_key,
 )
 from kiro_crew.dashboard.member_message_notes import post_turn_reply
 from kiro_crew.dashboard.state import (
@@ -33,13 +35,17 @@ if TYPE_CHECKING:
         STOP_RECOVERY_MAX_RETRIES,
         SYNTHETIC_RECOVERY_KIND,
         WAIT_REASON_INPUT,
+        DeferredHoldFull,
+        DeferredHoldRebound,
         _maybe_consolidate,
         build_stale_recovery_prompt,
         logger,
+        persist_held_markers_sync,
         runtime_death,
         save_slot_off_loop,
     )
     from kiro_crew.dashboard.chat_turn.file_changes import _flush_file_changes_off_loop
+    from kiro_crew.dashboard.chat_turn.queue_drain import _next_queued_is_recovery_continuation
     from kiro_crew.dashboard.chat_turn.recovery import (
         _COMPACTION_FAILED_RETRIES,
         _should_suppress_requeue,
@@ -404,6 +410,67 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
     return None
 
 
+async def _persist_held_markers(state, slot, when: str, until: str) -> None:
+    """Give a held marker a durable copy without releasing it; a failure only logs."""
+    log = getattr(state, "conversation_log", None)
+    if log is None:
+        return
+    try:
+        outcome = await asyncio.to_thread(
+            persist_held_markers_sync,
+            log,
+            slot,
+            getattr(slot, "_active_turn_history_key", "") or slot_history_key(slot),
+        )
+        if outcome is not None and not outcome.written:
+            # A fresh slot has no metadata line for the merge to land in. A save
+            # writes one carrying the hold; it writes no marker row, since the
+            # marker is still held rather than in the window.
+            await save_slot_off_loop(state, slot)
+    except (DeferredHoldFull, DeferredHoldRebound) as exc:
+        logger.warning(
+            "Slot %s could not persist a held marker %s (%s); the row stays held "
+            "and undurable until %s",
+            slot.key,
+            when,
+            type(exc).__name__,
+            until,
+        )
+    except Exception:
+        logger.exception(
+            "Slot %s could not persist a held marker %s; the row stays held", slot.key, when
+        )
+
+
+async def _turn_release_held_markers(turn: _ChatTurn) -> None:
+    """Release a held section marker once nothing can still continue this turn.
+
+    Runs after the Stop hook. A queued retry or continuation still owes the reply
+    the marker closes, so the marker stays held for the seam after it. Otherwise
+    the marker is released and saved, because ``append`` only marks the slot
+    dirty and an exit before the periodic flush would lose the row.
+    """
+    slot = turn.slot
+    if (
+        turn._retrying_empty
+        or turn._recovering_compaction
+        or turn._queued_own_recovery
+        or _next_queued_is_recovery_continuation(slot)
+    ):
+        return
+    try:
+        released = slot.flush_deferred_notes(markers_only=True)
+    except Exception:
+        logger.exception(
+            "Slot %s could not release a held marker after the turn; "
+            "the row stays held for the end-of-cycle flush",
+            slot.key,
+        )
+        return
+    if released:
+        await save_slot_off_loop(turn.state, slot)
+
+
 async def _turn_persist_and_settle(turn: _ChatTurn) -> None:
     """A turn's end after the post-loop chain: footer, files, marker, save, landed budgets, consolidation."""
     _is_monitor_wake = turn._is_monitor_wake
@@ -487,6 +554,10 @@ async def _turn_persist_and_settle(turn: _ChatTurn) -> None:
                 state, turn._drained_merge_contexts
             )
             slot._inflight_merge_contexts = []
+        # A held marker is only made durable here. The Stop hook runs after this
+        # save and can still queue a continuation, so the release waits for it
+        # (``_turn_release_held_markers``).
+        await _persist_held_markers(state, slot, "before the Stop hook", "the next save")
         # Save to history and trigger memory consolidation
         await save_slot_off_loop(state, slot)
         # A crewmate's answer in its DM thread is one notification per
@@ -496,6 +567,10 @@ async def _turn_persist_and_settle(turn: _ChatTurn) -> None:
             _recovering_promise or _recovering_compaction or _noticed_leak or _recovering_infra
         ):
             post_turn_reply(state, slot, _note_reply_mids)
+    else:
+        # PERSIST, never release: this turn is about to be re-queued and its reply
+        # appended, so a released row would sit before it and move the boundary.
+        await _persist_held_markers(state, slot, "before a re-queued turn", "the seam that owes it")
     # Reset ALL retry budgets once the cycle completes (success OR the
     # terminal second-empty error) so each new user turn gets fresh budgets.
     # Guarded by _retrying_empty, _recovering_promise and _noticed_leak:

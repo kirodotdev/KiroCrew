@@ -90,6 +90,7 @@ from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
 from kiro_crew.messaging.upload_gate import live_dashboard_slot
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.session_directive import default_row_cls
 from kiro_crew.shared_crew.attribution import Principal, stamp_principal_author
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -721,7 +722,7 @@ def _rebuild_window(slot: "_ChatSlot", messages: list[dict[str, Any]]) -> None:
     slot._disk_older_durable_count = durable_row_count(islice(messages, older_cut))
     for msg in messages[-_RESTORE_WINDOW:]:
         role = msg.get("role", "assistant")
-        cls = msg.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
+        cls = msg.get("cls") or default_row_cls(role)
         content = msg.get("content", "")
         if role != "user":
             content = _redact_assistant(content)
@@ -826,7 +827,7 @@ def refresh_channel_window(slot: "_ChatSlot", messages: list[dict[str, Any]], mt
         return 0
     for msg in fresh:
         role = msg.get("role", "assistant")
-        cls = msg.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
+        cls = msg.get("cls") or default_row_cls(role)
         content = msg.get("content", "")
         if role != "user":
             content = _redact_assistant(content)

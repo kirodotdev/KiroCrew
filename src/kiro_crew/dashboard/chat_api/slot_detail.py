@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         _slots_serialization_note,
         carry_provenance,
         chunk_generation,
+        default_row_cls,
         deny_app_slot_access,
         effective_session_key,
         folder_principal,
@@ -850,7 +851,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                         fresh = disk_msgs[len(current_mem) :]
                         for msg in fresh:
                             role = msg.get("role", "assistant")
-                            cls = msg.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
+                            cls = msg.get("cls") or default_row_cls(role)
                             content = msg.get("content", "")
                             if role != "user":
                                 content, _ = redact_exfiltration_urls(content)

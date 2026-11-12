@@ -309,6 +309,9 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # compare-and-clears only an identity this turn actually published, so a
     # successor's key is never wiped.
     slot._active_turn_session_key = session_key
+    # The hold guard pins a write to the TRANSCRIPT authorized at enqueue, which
+    # is not the session key: an unbound channel slot resolves a phantom one.
+    slot._active_turn_history_key = slot_history_key(slot)
 
     if slot.mode == DM_SLOT_MODE and not is_dispatchable_member_name(slot.agent):
         logger.warning(

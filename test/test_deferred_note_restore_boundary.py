@@ -10,6 +10,7 @@ event loop.
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
 from test_deferred_note_persistence import _hold_note, _meta, _persist, _seeded_slot
 
+from kiro_crew import validation
 from kiro_crew.dashboard import chat_handlers
 from kiro_crew.dashboard.chat_handlers import _persist_deferred_note_hold
 from kiro_crew.dashboard.chat_persistence import (
@@ -33,8 +35,10 @@ from kiro_crew.dashboard.slot_buffers import (
     drop_committed_restored_notes,
     sanitize_restored_deferred_notes,
     serialize_deferred_notes,
+    union_deferred_notes,
 )
 from kiro_crew.dashboard.state import DashboardState, load_window_off_loop
+from kiro_crew.session_directive import SECTION_MARKER_ROLE
 from kiro_crew.session_lifecycle import STOP_DECLINED_KEY_MAX_CHARS
 
 
@@ -104,7 +108,7 @@ class TestRestoreTrustBoundary:
         assert len(restored._deferred_notes) == ceiling
         restored._titled = True
         assert (
-            restored.flush_deferred_notes() == ceiling
+            restored.flush_deferred_notes(markers_only=False) == ceiling
         ), "the first flush must deliver every restored acknowledged note"
         # The save that commits the delivered rows retires all of them.
         restored.drain()
@@ -370,7 +374,7 @@ class TestRestoreTrustBoundary:
         slot._deferred_notes.append(note)
         slot._titled = True
         # Deliver the row and commit it with a full save...
-        assert slot.flush_deferred_notes() == 1
+        assert slot.flush_deferred_notes(markers_only=False) == 1
         slot.drain()
         _save_slot_to_history(state, slot, closed=False)
         # ...then recreate the rows-only window: the stale hold is still on
@@ -448,7 +452,7 @@ class TestRestoreTrustBoundary:
         durable = serialize_deferred_notes([committed_plain, committed_card, held_plain])
         slot._deferred_notes = [dict(committed_plain), dict(committed_card)]
         slot._titled = True
-        assert slot.flush_deferred_notes() == 2
+        assert slot.flush_deferred_notes(markers_only=False) == 2
         slot.drain()
         _save_slot_to_history(state, slot, closed=False)
         state.conversation_log.update_metadata(key, {"deferred_notes": durable})
@@ -506,7 +510,7 @@ class TestRestoreTrustBoundary:
         state = _make_state(tmp_path)
         restored = self._restore_lazy_row_whose_hold_awaits_settling(state, "lazyflush")
 
-        assert restored.flush_deferred_notes() == 1
+        assert restored.flush_deferred_notes(markers_only=False) == 1
 
         assert not restored.window_pending
         assert self._rows_carrying_note(restored, "plaindone") == 1
@@ -766,7 +770,7 @@ class TestRestoreTrustBoundary:
         slot._titled = True
         # The flush delivers the row and the save commits + retires it —
         # all BEFORE the enqueue's persist worker gets scheduled.
-        assert slot.flush_deferred_notes() == 1
+        assert slot.flush_deferred_notes(markers_only=False) == 1
         slot.drain()
         _save_slot_to_history(state, slot, closed=False)
         assert "deferred_notes" not in _meta(state, slot)
@@ -822,3 +826,228 @@ class TestRestoreTrustBoundary:
         assert sanitize_restored_deferred_notes(None) == []
         assert sanitize_restored_deferred_notes("[]") == []
         assert sanitize_restored_deferred_notes({"content": "x"}) == []
+
+    def test_a_held_marker_survives_the_round_trip_as_a_marker(self):
+        """A marker serialized mid-turn and restored after a crash comes back a
+        marker. Dropping role/meta restored it as a role-less entry, which the
+        flush defaults to ``inject`` — the label survived but the chapter rule
+        rendered as an ordinary note row."""
+        note = {
+            "content": "— End of section: item-42 —",
+            "cls": "",
+            "context": None,
+            "session": "s",
+            "role": SECTION_MARKER_ROLE,
+            "meta": {"label": "item-42"},
+        }
+        [entry] = serialize_deferred_notes([note])
+        assert entry["role"] == SECTION_MARKER_ROLE
+        assert entry["meta"] == {"label": "item-42"}
+        [restored] = sanitize_restored_deferred_notes([entry])
+        assert restored["role"] == SECTION_MARKER_ROLE
+        assert restored["meta"] == {"label": "item-42"}
+
+    def test_restore_admits_only_the_marker_role(self):
+        """On-disk role is untrusted: echoing it would let a tampered file mint any
+        transcript role. An unknown role is omitted, so the flush's own default
+        applies rather than a role the renderer would honour."""
+        forged = {
+            "content": "x",
+            "cls": "",
+            "context": None,
+            "session": "s",
+            "role": "assistant",
+            "meta": {"label": "y"},
+        }
+        [restored] = sanitize_restored_deferred_notes([forged])
+        assert "role" not in restored
+        assert "meta" not in restored
+        # Positive control: the same entry with the real role IS admitted, so the
+        # assertions above cannot pass by the sanitizer dropping every role.
+        [ok] = sanitize_restored_deferred_notes([{**forged, "role": SECTION_MARKER_ROLE}])
+        assert ok["role"] == SECTION_MARKER_ROLE
+
+    def test_restore_degrades_an_over_cap_label_without_dropping_the_rule(self):
+        """The label is re-bounded because disk is a trust boundary, but the ROW
+        still belongs at this point in the turn — so an over-cap or non-string
+        label becomes unlabelled rather than taking the break with it."""
+        cap = validation.max_section_label()
+        for bad in ("x" * (cap + 1), 42, None, {"nested": "dict"}):
+            [restored] = sanitize_restored_deferred_notes(
+                [
+                    {
+                        "content": "x",
+                        "cls": "",
+                        "context": None,
+                        "session": "s",
+                        "role": SECTION_MARKER_ROLE,
+                        "meta": {"label": bad},
+                    }
+                ]
+            )
+            assert restored["role"] == SECTION_MARKER_ROLE, bad
+            assert restored["meta"] == {"label": ""}, bad
+        # A label exactly AT the cap is accepted, so the bound is not off by one.
+        at_cap = "x" * cap
+        [kept] = sanitize_restored_deferred_notes(
+            [
+                {
+                    "content": "x",
+                    "cls": "",
+                    "context": None,
+                    "session": "s",
+                    "role": SECTION_MARKER_ROLE,
+                    "meta": {"label": at_cap},
+                }
+            ]
+        )
+        assert kept["meta"] == {"label": at_cap}
+
+    def test_a_delivered_marker_is_not_replayed_after_a_handover(self):
+        """The rows-only handover commits the delivered row and defers the metadata
+        rewrite. Without an id on the hold entry the marker row carried no
+        ``meta.noteId``, so the dedup could not match it and the marker replayed —
+        a second chapter rule at the same point after a crash in that window."""
+        marker = {
+            "id": "abc123abc123",
+            "content": "— End of section: item-42 —",
+            "cls": "",
+            "context": None,
+            "session": "s",
+            "role": SECTION_MARKER_ROLE,
+            "meta": {"label": "item-42"},
+        }
+        delivered_row = {
+            "role": SECTION_MARKER_ROLE,
+            "meta": {"label": "item-42", "noteId": "abc123abc123"},
+        }
+        assert drop_committed_restored_notes([delivered_row], [marker]) == []
+        # Positive control: an UNDELIVERED marker must survive, so the assertion
+        # above cannot pass by the helper dropping every marker it is handed.
+        other = {**marker, "id": "def456def456"}
+        assert drop_committed_restored_notes([delivered_row], [other]) == [other]
+
+    def test_a_held_markers_durable_copy_survives_the_persist_union(self):
+        """``union_deferred_notes`` retains a disk entry only when it carries an id,
+        so an id-less marker's durable copy was silently discarded at the next
+        union — the opposite failure to the replay above, from the same cause."""
+        disk = [
+            {
+                "id": "abc123abc123",
+                "content": "— End of section: item-42 —",
+                "cls": "",
+                "context": None,
+                "session": "s",
+                "role": SECTION_MARKER_ROLE,
+                "meta": {"label": "item-42"},
+            }
+        ]
+        # No live entries: the disk hold is the only copy, so it must be retained.
+        assert union_deferred_notes(disk, []) == disk
+        # And an entry already live is NOT duplicated by the union.
+        assert union_deferred_notes(disk, list(disk)) == disk
+
+    def test_the_real_flush_stamps_a_marker_rows_note_id(self, tmp_path: Path, monkeypatch):
+        """The dedup above can only match if the DELIVERED row echoes the hold id.
+        A marker row bypasses the note ``row_meta``, so it needs its own stamp —
+        and ``noteSession`` must still be withheld, since ``isNoteRow`` keys on
+        that field and would classify the marker as a note."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "mk1")
+        slot._deferred_notes.append(
+            {
+                "id": "abc123abc123",
+                "content": "— End of section: item-42 —",
+                "cls": "",
+                "context": None,
+                "session": effective_session_key(slot),
+                "role": SECTION_MARKER_ROLE,
+                "meta": {"label": "item-42"},
+            }
+        )
+        slot._titled = True
+        assert slot.flush_deferred_notes(markers_only=False) == 1
+        rows = [m for m in slot.messages if m.get("role") == SECTION_MARKER_ROLE]
+        assert len(rows) == 1
+        assert rows[0]["meta"].get("noteId") == "abc123abc123"
+        assert rows[0]["meta"].get("label") == "item-42"
+        assert "noteSession" not in rows[0]["meta"]
+
+    def test_a_tampered_marker_label_is_redacted_before_the_broadcast(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """The metadata line is a trust boundary and the flushed marker row is
+        broadcast with its meta merged verbatim, so a credential planted on disk
+        must not reach a viewer. Restore re-derives the label through the same
+        redaction pass the enqueue path applies."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "tamper1")
+        planted = "AKIAIOSFODNN7EXAMPLE1"
+        restored = sanitize_restored_deferred_notes(
+            [
+                {
+                    "id": "abc123abc123",
+                    "content": f"— End of section: {planted} —",
+                    "cls": "",
+                    "context": None,
+                    "session": effective_session_key(slot),
+                    "role": SECTION_MARKER_ROLE,
+                    "meta": {"label": planted},
+                }
+            ]
+        )
+        assert len(restored) == 1
+        slot._deferred_notes.extend(restored)
+        slot._titled = True
+        assert slot.flush_deferred_notes(markers_only=False) == 1
+        rows = [m for m in slot.messages if m.get("role") == SECTION_MARKER_ROLE]
+        assert len(rows) == 1
+        broadcast_label = rows[0]["meta"].get("label", "")
+        assert planted not in broadcast_label, "the raw credential reached the broadcast"
+        # The whole row, not just the label: a scrubbed meta beside a raw content
+        # field would still render the secret.
+        assert planted not in json.dumps(rows[0])
+
+    def test_a_benign_restored_label_survives_unchanged(self, tmp_path: Path, monkeypatch):
+        """The negative control for the redaction above: an ordinary label must come
+        back intact, so the assertion there cannot pass by blanket-suppressing every
+        restored label."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "tamper2")
+        restored = sanitize_restored_deferred_notes(
+            [
+                {
+                    "id": "def456def456",
+                    "content": "— End of section: item-42 —",
+                    "cls": "",
+                    "context": None,
+                    "session": effective_session_key(slot),
+                    "role": SECTION_MARKER_ROLE,
+                    "meta": {"label": "item-42"},
+                }
+            ]
+        )
+        assert restored[0]["meta"] == {"label": "item-42"}
+
+    def test_a_restored_note_keeps_its_own_text(self):
+        """A note's content is scrubbed by the enqueue that wrote it, so the restore
+        must hand it back unchanged: re-scrubbing here would alter a user's own words
+        on a path that has nothing to do with markers."""
+        planted = "AKIAIOSFODNN7EXAMPLE1"
+        restored = sanitize_restored_deferred_notes(
+            [
+                {
+                    "id": "aaa111aaa111",
+                    "content": planted,
+                    "cls": "reconcile-note",
+                    "context": None,
+                    "session": "chat-1",
+                }
+            ]
+        )
+        assert len(restored) == 1
+        assert restored[0]["content"] == planted, "a restored note's own text was rewritten"
+        assert "role" not in restored[0]
