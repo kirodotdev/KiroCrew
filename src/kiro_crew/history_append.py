@@ -123,6 +123,19 @@ def _store_ingested_images(path: Path, content: str, images: Sequence[str]) -> s
     return content
 
 
+def store_ingested_images(
+    self: ConversationLog, key: str, content: str, images: Sequence[str]
+) -> str:
+    """*content* naming a copy, kept with *key*'s session, of each picture in *images*.
+
+    :meth:`append`'s *ingested_images* step on its own, for a channel that also
+    shows the row in a live dashboard window: that window re-serializes its rows
+    on every flush, so it must hold the same text the transcript does.
+    """
+    with self._locked(key):
+        return _store_ingested_images(self._path(key), content, images)
+
+
 def append(
     self: ConversationLog,
     key: str,

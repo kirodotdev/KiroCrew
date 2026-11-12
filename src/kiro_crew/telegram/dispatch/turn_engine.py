@@ -182,6 +182,7 @@ async def _run_turn(
     _turn_provider: object | None = None
     failure_reason: str | None = None
     attachment_temp_paths: list[str] = []
+    attachment_images: list[str] = []
     # Post-compaction re-injection bookkeeping for the finally: whether this
     # turn consumed the one-shot flag, and whether it landed (recorded success).
     _needs_reinjection = False
@@ -396,6 +397,7 @@ async def _run_turn(
                 self.client, msg.attachments, limits=limits
             )
             attachment_temp_paths = list(attachment_result.temp_paths)
+            attachment_images = list(attachment_result.image_paths)
             text = append_attachment_context(text, attachment_result)
         # Fold the replied-to message's quoted content onto the agent-facing
         # text HERE — after activation and command parsing, once per turn (an
@@ -628,17 +630,37 @@ async def _run_turn(
             # writer were skipped.
             dashboard_restricted = await self._session_restricted(session_key)
             if not dashboard_restricted:
+                row_text = text
+                if attachment_images and self.conv_log is not None:
+                    # Stored before both writers below, so the live window and the
+                    # transcript name the same copy: the window re-serializes its
+                    # rows on every flush, so a row naming the temp file this turn
+                    # deletes would replace the copy on disk. A failed store
+                    # writes the row as it came in, rather than no row.
+                    try:
+                        row_text = await asyncio.to_thread(
+                            self.conv_log.store_ingested_images,
+                            session_key,
+                            text,
+                            attachment_images,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Telegram: keeping pictures failed session=%s",
+                            session_key,
+                            exc_info=True,
+                        )
                 mirror_mids = project_channel_turn_live(
                     self.dashboard_state,
                     session_key,
-                    text,
+                    row_text,
                     accumulated,
                     broadcast_user=True,
                 )
                 await asyncio.to_thread(
                     self._persist_turn,
                     session_key,
-                    text,
+                    row_text,
                     accumulated,
                     is_new_own_session,
                     agent=agent,
