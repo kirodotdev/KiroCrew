@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.queue_drain import (
         _arm_parked_queue_drain,
         _mark_turn_end,
+        _next_queued_is_recovery_continuation,
         _start_next_queued_turn,
         idle_slot_admits_drain,
     )
@@ -383,9 +384,14 @@ async def _finish_queue_cycle(
     # the next turn, so flushing after that turn started would let the note shape
     # a turn its visible line appears below. Synthesis is withheld from, since a
     # note is owed to the next USER turn; the cycle after synthesis flushes it.
-    if not will_synthesize:
+    # A marker is exempt from that withhold: a note is a MESSAGE owed to the next
+    # user turn, but a marker is a BOUNDARY that must not move.
+    # A queued recovery (one held behind an auth-required failure) CONTINUES this
+    # turn, so a marker waits for its end; the notes still go now, as on base.
+    recovery_next = _next_queued_is_recovery_continuation(slot)
+    if not (will_synthesize and recovery_next):
         try:
-            slot.flush_deferred_notes()
+            slot.flush_deferred_notes(markers_only=will_synthesize, hold_markers=recovery_next)
         except Exception:
             # Below this are the two ways a cycle ends: the synthesis dispatch and
             # the terminal append("done") / slot.task = None / chat_done. A raise
