@@ -273,6 +273,9 @@ def _guarded(label: str, run: "Callable[[], DriverResult]") -> DriverResult:
 class WindowsBackend(ComputerUseBackend):
     """UI Automation driver for Windows: observation implemented, input refused."""
 
+    #: Coordinate gestures are refused by ``apps_windows.hwnd_owns_point``.
+    confines_points_natively = True
+
     def __init__(self) -> None:
         # Cached because ``status()`` is called for every dashboard render, and a
         # miss would re-run the library load each time.

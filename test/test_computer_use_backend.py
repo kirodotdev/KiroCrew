@@ -319,11 +319,51 @@ class TestPlatformSelection:
         driver = select_default_backend()
         assert driver.platform_id == PLATFORM_WINDOWS
 
-    def test_linux_degradation_on_any_runner(self, monkeypatch):
+    def test_linux_native_choice_degrades_on_any_runner(self, monkeypatch):
         self._pin(monkeypatch, linux=True)
+        monkeypatch.setattr(backend_mod, "_driver_choice", lambda: "native")
         driver = select_default_backend()
         assert driver.platform_id == PLATFORM_LINUX
         assert driver.status().reason == LINUX_REASON
+
+    def test_windows_auto_follows_an_installed_upstream_driver(self, monkeypatch):
+        from kiro_crew.computer_use.driver_runtime.backend import CuaBackend
+
+        self._pin(monkeypatch, windows=True)
+        monkeypatch.setattr(backend_mod, "_driver_choice", lambda: "auto")
+        monkeypatch.setattr(backend_mod, "upstream_installed", lambda: True)
+        assert isinstance(select_default_backend(), CuaBackend)
+        monkeypatch.setattr(backend_mod, "upstream_installed", lambda: False)
+        assert not isinstance(select_default_backend(), CuaBackend)
+
+    @pytest.mark.parametrize("choice", ["auto", "upstream"])
+    def test_linux_selects_the_upstream_driver(self, monkeypatch, choice):
+        from kiro_crew.computer_use.driver_runtime.backend import CuaBackend
+
+        self._pin(monkeypatch, linux=True)
+        monkeypatch.setattr(backend_mod, "_driver_choice", lambda: choice)
+        driver = select_default_backend()
+        assert isinstance(driver, CuaBackend)
+        assert driver.platform_id == PLATFORM_LINUX
+
+    @pytest.mark.parametrize(
+        "flag, choice, upstream",
+        [
+            ("windows", "auto", False),
+            ("windows", "native", False),
+            ("windows", "upstream", True),
+            ("macos", "auto", False),
+            ("macos", "native", False),
+            ("macos", "upstream", True),
+        ],
+    )
+    def test_driver_choice_per_platform(self, monkeypatch, flag, choice, upstream):
+        from kiro_crew.computer_use.driver_runtime.backend import CuaBackend
+
+        self._pin(monkeypatch, **{flag: True})
+        monkeypatch.setattr(backend_mod, "upstream_installed", lambda: False)
+        monkeypatch.setattr(backend_mod, "_driver_choice", lambda: choice)
+        assert isinstance(select_default_backend(), CuaBackend) is upstream
 
     def test_unknown_platform_degrades(self, monkeypatch):
         self._pin(monkeypatch)

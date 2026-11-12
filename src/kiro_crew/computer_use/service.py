@@ -40,6 +40,7 @@ from dataclasses import replace
 from typing import Callable
 
 from kiro_crew import platform_compat
+from kiro_crew.computer_use import floors
 from kiro_crew.computer_use import index as snapshot_index
 from kiro_crew.computer_use import render
 from kiro_crew.computer_use.backend import ComputerUseBackend, get_shared_backend
@@ -199,7 +200,15 @@ class ComputerUseService:
         snap = result.snapshot
         if snap is None:
             raise ComputerUseError(f"the driver returned no state for '{app.label}'")
+        # The always-on floors, whatever backend produced the walk: secure values
+        # dropped, ``has_secure`` recomputed, and pixels withheld from a window
+        # holding a secure field or walked incompletely. Before the spool, so a
+        # withheld frame never reaches the disk.
+        snap = floors.harden_snapshot(snap)
         snap = self._persist_image(snap)
+        # The dashboard live view mirrors the spooled frame from here, once, for
+        # every backend; nothing captures a second time for it.
+        floors.emit_live_frame(snap)
         # Stamp the budget this walk actually used, so the drift-verification
         # re-walk can reproduce the SAME tree rather than the config default. See
         # ``Snapshot.walk_budget`` and :meth:`verify_fingerprint`.
@@ -299,18 +308,23 @@ class ComputerUseService:
         dispatch chokepoint, and the pointer-moving method has already cleared both
         of its permits there. This layer only forwards.
         """
+        if req.point is not None:
+            self._confine(app, (req.point,))
         return self._act(self.backend.click(app, rec, req))
 
     def drag(self, app: AppRef, req: DragRequest) -> str:
         """Drag between *req*'s two screen points inside *app*."""
+        self._confine(app, (req.start, req.end))
         return self._act(self.backend.drag(app, req))
 
     def type_text(self, app: AppRef, rec: "ElementRec | None", text: str) -> str:
-        """Type *text* into *rec*, or into whatever *app* has focused."""
+        """Type *text* into *rec*: keystrokes only ever go to the named element."""
+        self._require_element(rec, "computer_type_text")
         return self._act(self.backend.type_text(app, rec, text))
 
     def press_key(self, app: AppRef, rec: "ElementRec | None", key: str) -> str:
         """Send one key spec (``"cmd+shift+a"``) to *rec* in *app*."""
+        self._require_element(rec, "computer_press_key")
         return self._act(self.backend.press_key(app, rec, key))
 
     def set_value(self, app: AppRef, rec: ElementRec, value: str) -> str:
@@ -330,6 +344,21 @@ class ComputerUseService:
         self.index.end_turn(session_key=session_key)
 
     # ── internals ──
+
+    def _confine(self, app: AppRef, points: "tuple[tuple[float, float], ...]") -> None:
+        """Pointer confinement for a backend without a native hit test (fail closed)."""
+        backend = self.backend
+        if backend.confines_points_natively:
+            return
+        refusal = floors.check_point_in_window(app, backend.window_bounds(app), points)
+        if refusal:
+            raise ComputerUseError(refusal)
+
+    @staticmethod
+    def _require_element(rec: "ElementRec | None", verb: str) -> None:
+        refusal = floors.require_addressed_element(rec, verb)
+        if refusal:
+            raise ComputerUseError(refusal)
 
     @staticmethod
     def _require_ok(result: DriverResult) -> None:

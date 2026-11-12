@@ -306,6 +306,10 @@ class FakeComputerUseBackend(ComputerUseBackend):
     SEL ``failed`` outcome) is exercised.
     """
 
+    #: The fake stands in for a native driver that confines points itself; the
+    #: shared bounds floor is tested against backends that do not.
+    confines_points_natively = True
+
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.force_error: str = ""

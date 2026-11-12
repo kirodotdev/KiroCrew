@@ -208,6 +208,9 @@ def register(app: web.Application) -> None:
     # set and is registered in ``_register_mcp_routes``.
     app.router.add_get("/api/computer-use/config", handlers.api_computer_use_config_get)
     app.router.add_put("/api/computer-use/config", handlers.api_computer_use_config_save)
+    # The setup document behind the first-use dialog: same trust model, owner only.
+    app.router.add_get("/api/computer-use/setup", handlers.api_computer_use_setup_get)
+    app.router.add_post("/api/computer-use/setup", handlers.api_computer_use_setup_post)
 
     # Paid-AWS-service consent (Settings > Voice). Browser-called and
     # cookie-authed like the computer-use pair above, and for the same reason:

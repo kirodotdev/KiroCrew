@@ -622,6 +622,13 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # over an installed prefix would read as "engine absent" to any in-sandbox
     # status probe, while a seal keeps the truth visible and only the write denied.
     "browser-harness",
+    # The computer-use driver runtime (``computer_use.driver_runtime.install``): the
+    # pinned desktop driver the unsandboxed gateway EXECUTES, the record that names
+    # it, its private home and the setup progress file. Same class as
+    # ``browser-harness``: a write would choose the program that drives the user's
+    # desktop, or forge a passed setup check. The installer runs in the gateway,
+    # outside the sandbox, and can still lay down a new version.
+    "computer-use",
     # The KAS engine bundles Kiro Crew installs itself (``acp.kas_bundle``): a
     # pinned ``@kiro/agent`` tree and the Node runtime that executes it. Same
     # class as ``browser-harness``: a sandboxed KAS process must read and execute
@@ -1018,6 +1025,9 @@ _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     # a leaf no child should get. The read-only and no-follow seals still stop any
     # child replacing what the gateway execs.
     "browser-harness",
+    # The computer-use driver runtime, for the ``browser-harness`` reason: only the
+    # gateway executes anything out of it, so no harness's child needs to read it.
+    "computer-use",
     # KAS MCP launch snapshots hold MCP servers' env values, and only a KAS child
     # (not an enforced harness's) starts the launcher that reads them.
     "kas-mcp-launch",

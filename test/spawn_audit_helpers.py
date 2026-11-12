@@ -760,6 +760,16 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # computer-use.md § Known limitations) — not a new plane.
         "computer_use/launch_windows.py::spawn_detached",
         "computer_use/launch_macos.py::spawn_detached",
+        # The upstream desktop driver child: argv is the installed, hash-verified
+        # pinned binary plus the fixed ``mcp`` verb; env is the allowlist fence in
+        # ``driver_runtime/env.py``; cwd its private home. Tool calls travel on its
+        # pipes as data, never as argv, and only a closed allowlist of tool names.
+        "computer_use/driver_runtime/supervisor.py::_default_spawn",
+        # Linux app launch: the argv is the Exec line of a root-owned desktop entry
+        # in a root-owned system directory, resolved to a root-owned program, with
+        # every field code removed; the caller supplies only the NAME that selects
+        # the entry (pinned by test_computer_use_linux_apps.py).
+        "computer_use/driver_runtime/linux_apps.py::spawn_detached",
         # NOT subprocess spawns: the AST heuristic matches ``asyncio.run``
         # (attribute ``run`` on base ``asyncio``). Both sites drive an in-process
         # coroutine from the loop-less CLI entry point; the network I/O is

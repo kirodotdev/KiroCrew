@@ -339,6 +339,14 @@ GOVERNED_VALUE_PLACEHOLDER = "<redacted:policy>"
 # this reason). See ``enable_state`` for the full rationale.
 STATE_FILE_NAME = "computer_use.json"
 STATE_KEY_ENABLED = "enabled"
+#: Which desktop driver runs: ``auto`` (the per-platform default), ``native``
+#: (Kiro Crew's own macOS/Windows driver) or ``upstream`` (the pinned open-source
+#: driver). Owner-only, like the enable.
+STATE_KEY_DRIVER = "driver"
+DRIVER_AUTO = "auto"
+DRIVER_NATIVE = "native"
+DRIVER_UPSTREAM = "upstream"
+DRIVER_CHOICES: tuple[str, ...] = (DRIVER_AUTO, DRIVER_NATIVE, DRIVER_UPSTREAM)
 STATE_KEY_ALLOWED_APPS = "allowed_apps"
 STATE_KEY_EXTRA_DENIED_APPS = "extra_denied_apps"
 

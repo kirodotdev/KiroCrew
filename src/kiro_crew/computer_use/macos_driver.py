@@ -206,6 +206,9 @@ class MacOSBackend(ComputerUseBackend):
     a typed refusal instead of exploding at import time.
     """
 
+    #: Coordinate gestures are refused by an OS hit test (``_point_not_owned``).
+    confines_points_natively = True
+
     def __init__(self) -> None:
         # Cached because ``status()`` is called for every dashboard render and each
         # miss would otherwise re-run ``find_library`` five times.

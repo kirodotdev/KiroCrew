@@ -247,6 +247,10 @@ export type {
   ComputerUsePermissions,
   ComputerUseConfigData,
   ComputerUseConfigSave,
+  ComputerUseSetupAction,
+  ComputerUseSetupDoc,
+  ComputerUseSetupState,
+  ComputerUseSetupStep,
 } from './client/browserAndComputerUse'
 export type {
   DecisionsConsentData,

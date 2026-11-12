@@ -369,6 +369,11 @@ _CREW_SECRET_LEAVES: list[str] = [
     # worker, with Kiro's Chromium beside it (``browser_harness.install``).
     # READONLY in-sandbox, fenced from file tools so the interpreter cannot be swapped.
     "browser-harness",
+    # The computer-use driver runtime (``computer_use.driver_runtime.install.RUNTIME_LEAF``):
+    # the pinned desktop driver the gateway EXECUTES, its install record and private
+    # home, and the setup progress file. Same class as ``browser-harness``: READONLY
+    # in-sandbox, fenced from file tools so the driver and its record cannot be swapped.
+    "computer-use",
     # The Harness daemon's runtime directory: its IPC socket (the Windows port file
     # carries the IPC token), pid file and log (``browser_harness.supervisor``).
     # Whoever can open the socket drives the user's Chrome, so only the gateway may.

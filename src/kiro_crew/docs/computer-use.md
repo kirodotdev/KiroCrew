@@ -10,36 +10,205 @@ synthesize input, so treat the switch as a security ceiling rather than a
 preference.
 
 The enable does not live in `config.json`. It sits in its own protected file
-precisely because `config.json` is writable by the agent's own shell — an enable
-stored there could be flipped by a prompt injection rather than by you.
+precisely because `config.json` is writable by the agent's own shell, so an
+enable stored there could be flipped by a prompt injection rather than by you.
 
-## macOS and Windows
+## Turning it on
 
-Both platforms support the full tool set. They differ in one way that changes
-what you see:
+Open **Settings → Computer Use** and choose **Set up Computer Use**. A short
+setup dialog walks you through what this computer needs, one step at a time:
 
-- **macOS** delivers a click to the target application alone, so your own pointer
-  does not move. You can keep working while the agent drives another window.
-- **Windows** has no per-process input delivery. A keystroke takes your keyboard
-  focus and a coordinate click **moves your real cursor**. The agent is required
-  to tell you rather than succeed silently.
+1. **Give Kiro Crew access to your computer.** Continue turns the feature on.
+   Your open chats restart so they pick up the new tools; your messages stay.
+   Not now closes the dialog and changes nothing.
+2. **Install the driver**, when this computer uses the open-source driver (see
+   [The driver](#the-driver)).
+3. **The platform's own step**: two privacy permissions on macOS, a desktop
+   session check on Windows and Linux.
+4. **Verify.** Kiro Crew lists your windows, reads one window's controls and
+   takes one picture. The check never clicks or types.
+5. **Ready.** The dialog says Ready only after the check passed.
 
-On macOS there is also one route that deliberately warps the real cursor, for a
-click that has to be physically real. The agent has to name that route
-explicitly — it is never chosen automatically — and should warn you first,
-because your pointer will jump out from under your hand.
+The dialog keeps its place on the gateway, so you can close it at any point and
+pick up where you left off. If an agent's computer-use call was refused because
+setup is not finished, the chat shows a **Set up Computer Use** button under that
+call, which opens the same dialog.
+
+The **Setup** card on the same Settings page shows the state at a glance: whether
+Computer Use is on, the driver and its version, each permission, the desktop
+session, and anything that works differently on this computer. It offers one
+button for whatever is missing, **Restart driver** when the driver is installed,
+and a folded **Diagnostics** list to include when you report a problem.
+
+To turn Computer Use off again, use the **Enable Computer Use** switch at the top
+of the page. Nothing else turns it on or off, and an agent cannot.
+
+## The driver
+
+On Linux Kiro Crew drives apps through the open-source **cua-driver** (MIT
+licensed). On Windows it uses that driver once you install it from the setup
+dialog, and its own Windows driver until then. On macOS Kiro Crew's own driver
+stays the default and the open-source one can be chosen. The driver is not
+bundled: the install downloads one pinned release from the project's official
+GitHub releases, and Kiro Crew checks its size, checksum and signature before it
+runs anything. A file that does not match is never run, and the check repeats
+every time the driver starts. The driver's telemetry and update checks are
+turned off, and the agent never talks to the driver directly: every call still
+goes through Kiro Crew's own checks first.
+
+## macOS
+
+macOS asks for two permissions in **System Settings → Privacy & Security**:
+
+| Permission | What it is for |
+|---|---|
+| **Accessibility** | Reading the buttons and fields of an app window, and clicking or typing in them. |
+| **Screen Recording** (Screen & System Audio Recording) | Taking a picture of the one window the agent is working in, to check what happened. |
+
+With the open-source driver, the entry you turn on is called **CuaDriver**, not
+Kiro Crew. That is the driver's own signed app, and macOS grants permissions to
+the app that asks for them. The setup dialog names the exact entry to look for.
+Because the grant belongs to CuaDriver, it survives Kiro Crew updates.
+
+Each permission step has an **Open … Settings** button that opens the right pane
+once per click, and a **Check again** button. After you turn a switch on, the
+dialog notices by itself for a couple of minutes. Kiro Crew never changes these
+settings for you.
+
+macOS delivers a click to the target application alone, so your own pointer does
+not move and you can keep working while the agent drives another window. One
+route deliberately warps the real cursor, for a click that has to be physically
+real. The agent has to name that route explicitly, it is never chosen
+automatically, and it should warn you first.
+
+### The open-source driver on macOS (preview)
+
+On a Mac, Kiro Crew's own driver is the default. The open-source driver is a
+**preview** there: its download, signature checks and refusals are proven, but
+granting the permissions and real control of apps have not been proven yet. The
+Setup card marks it **Preview**.
+
+When you install it, the driver app is placed at `/Applications/CuaDriver.app`.
+That is the only place macOS lets it start from, and where Privacy & Security
+lists it. The setup dialog says so before you click **Install driver**.
+
+- If a `CuaDriver.app` is already there, Kiro Crew uses it only when it is
+  exactly the pinned version with the expected signature. Otherwise the install
+  stops with "another version of CuaDriver is installed"; remove or update that
+  copy yourself, then install again. Kiro Crew never replaces or removes a copy
+  it did not install.
+- Every time the driver starts, Kiro Crew checks the copy in `/Applications`
+  again (signature, team, bundle id, checksum, version). A copy that fails is
+  never started.
+- If your account cannot write to `/Applications`, the install says so. Kiro
+  Crew never asks for an administrator password.
+- **Reset setup** removes the driver Kiro Crew installed, including its copy in
+  `/Applications` if it is unchanged.
+- The driver app runs one shared background process per user. Another tool that
+  uses the same driver shares that process with Kiro Crew; Kiro Crew stops only
+  what it started.
+
+#### How to check it on your Mac
+
+About 15 minutes, signed in at your Mac's desktop, with no
+`/Applications/CuaDriver.app` already present. Use a throwaway data home so your
+real setup is untouched:
+
+1. From a source checkout of this version, create a virtual environment and
+   install Kiro Crew into it, then `export KIROCREW_HOME=/tmp/kc-cu-home`.
+2. Choose the open-source driver and turn the feature on in that home:
+   `python -c "from kiro_crew.computer_use import enable_state as e; s=e.load_state(); s.update(enabled=True, driver='upstream'); e.save_state(s)"`
+3. Install: `python -c "import time; from kiro_crew.computer_use import setup as s; s.run_setup_action('install'); time.sleep(30); print(s.get_setup_status()['state'])"`.
+   Expect `requesting_accessibility`, and `/Applications/CuaDriver.app` present.
+4. Ask for the permissions with `run_setup_action('request_permissions')`. Note
+   whether a prompt appears and what name Privacy & Security shows (expect
+   **CuaDriver**). Turn on Accessibility and Screen & System Audio Recording.
+5. Run `recheck`, then `restart_driver`, then `verify`, printing the state after
+   each. Expect `ready` at the end.
+6. Open TextEdit with a new document and run
+   `kirocrew computer call --calls '[{"tool":"computer_get_state","args":{"app":"TextEdit"}}]'`.
+   Take the text area's index N, then type into it with `computer_type_text`
+   (`element_index` N, `text` "hello") in the same `--calls` list. Expect "hello"
+   in the document and in the refreshed tree. A password field (a login page or
+   Users settings) must show as `<secure>`, and typing into it must be refused.
+7. Turn Accessibility off for CuaDriver, run `recheck`, and expect
+   `permission_revoked`.
+8. Clean up: `run_setup_action('reset')` (removes the app from `/Applications`),
+   `tccutil reset Accessibility com.trycua.driver`,
+   `tccutil reset ScreenCapture com.trycua.driver`, and delete `/tmp/kc-cu-home`.
+
+Report the state after each step, the name Privacy & Security showed, and
+whether typing landed.
+
+## Windows
+
+Windows has no permission screen for this. Setup installs the driver when needed,
+checks that Kiro Crew runs in your signed-in desktop session, then verifies.
+
+With the open-source driver, clicks, typing and scrolling are delivered to the
+window in the background, so your pointer does not move. Some windows (browsers,
+some toolkits) refuse background input; the agent then has to name the route that
+brings the window forward, and it should tell you first. Kiro Crew's own Windows
+driver has no per-process input delivery: a keystroke takes your keyboard focus
+and a coordinate click **moves your real cursor**, and the agent is required to
+tell you rather than succeed silently.
 
 ## Linux
 
-Linux has no computer-use driver yet. Every computer-use tool returns a "not
-supported on this platform" refusal, and **Settings → Computer Use** shows the
-reason instead of a switch, so it cannot be turned on there.
+Linux uses the open-source driver. Setup installs it, then detects your desktop:
+an X11 session, or a Wayland desktop with XWayland, plus the accessibility
+(AT-SPI) bus that apps use to describe their controls. On Wayland only apps that
+run under XWayland are visible; native Wayland windows are not listed or
+captured, and a Wayland session with no X server at all is reported as not
+supported.
+
+Clicking a control, typing into a field and setting a value happen in the
+background. Background key presses, scrolling and coordinate clicks or drags
+need a virtual input device (write access to `/dev/uinput`); without it they are
+refused by name rather than faked, and the agent can bring the window forward for
+a click or drag instead. The Setup card lists what is not available on your
+desktop.
+
+If the driver cannot be used at all, every computer-use tool returns a "not
+supported on this platform" refusal that says why.
+
+## Troubleshooting
+
+**I turned the permission on, but setup still says it is missing.** Choose
+**Check again**. macOS applies a new permission only to a freshly started
+process, so the dialog may ask you to **Restart driver**; that restarts the
+driver only, never Kiro Crew or your chats. Make sure the switch you turned on is
+the entry the dialog names (CuaDriver for the open-source driver).
+
+**Setup says a permission was turned off.** Something removed a grant you gave
+earlier (you, an administrator, or a macOS update). Use **Open … Settings** to
+turn it back on, then **Check again**.
+
+**The driver is not answering.** Choose **Restart driver** on the dialog or the
+Setup card. If it keeps happening, include the **Diagnostics** list when you
+report it.
+
+**The driver download failed.** Nothing was installed. A network that blocks
+GitHub downloads stops the install: allow `github.com` and
+`objects.githubusercontent.com`, then choose **Try the install again**.
+
+**Windows says there is no desktop to control (Session 0).** Kiro Crew is
+running as a background service, which has no desktop. Start Kiro Crew from your
+signed-in Windows desktop instead, then choose **Check again**.
+
+**Linux says no desktop session was found.** Start Kiro Crew from inside your
+graphical session, so it sees `DISPLAY` or `WAYLAND_DISPLAY` and the
+accessibility bus. A gateway started over SSH or from a system service has
+neither.
+
+**Setup keeps failing.** **Reset setup** removes the driver Kiro Crew installed
+and starts the walk over. It does not remove any permission you granted.
 
 ## What is off limits
 
 - **Password fields are redacted.** They render as `<secure>` in the outline, and
   a window containing one is not captured as an image.
-- **Kiro Crew's own dashboard is refused** — for reading as well as typing.
+- **Kiro Crew's own dashboard is refused**, for reading as well as typing.
   Driving it would let the agent change its own security settings, including this
   one. On macOS the refusal covers every window of the dashboard's process, not
   just the visible one, and the refusal names the target so it is clear why.
