@@ -285,6 +285,12 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     setApprovalNoticeKind('error')
     setApprovalNotice(message)
   }, [])
+  // A spawn decide that found its approval gone: status, like the tool
+  // path's 404 below.
+  const showApprovalStatus = useCallback((message: string) => {
+    setApprovalNoticeKind('status')
+    setApprovalNotice(message)
+  }, [])
   const showInChat = useCallback(() => {
     if (approvalToolCallId) dispatch(openActivityToTool(approvalToolCallId))
   }, [approvalToolCallId, dispatch])
@@ -429,7 +435,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
   return {
     pendingApproval, hasApproval, approvalId, approvalSubmitting, approvalPickerSignal, setApprovalPickerSignal,
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
-    approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError,
+    approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError, showApprovalStatus,
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell, approvalTakesReason, approvalMid,
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
     approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
@@ -438,11 +444,12 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
   }
 }
 
-export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showApprovalError }: {
+export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showApprovalError, showApprovalStatus }: {
   slotId: string | null
   slotApprovalChrome: boolean
   dispatch: AppDispatch
   showApprovalError: (message: string) => void
+  showApprovalStatus: (message: string) => void
 }) {
   // Pending sub-agent SPAWN approvals for this slot (blocked on user approval).
   // Surfaced as a top-level banner with inline Approve/Reject so the user can
@@ -493,10 +500,10 @@ export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showAp
     const approvalId = a.approval_id
     if (!approvalId) return
     dispatch(markSubagentApprovalGone({ id: a.id, approval_id: approvalId, target }))
-    // A rejected request, so an error surface, and the only one: the
-    // refusal is reported once, by the surface that sent it. The chip and
-    // the activity card show this id's liveness as neutral status.
-    showApprovalError(i18nT('components.approvalCard.approval_no_longer_pending'))
+    // Status, not an error (nothing the user did failed), reported once,
+    // by the surface that sent it. The chip and the activity card show
+    // this id's liveness as neutral status too.
+    showApprovalStatus(i18nT('components.approvalCard.approval_no_longer_pending'))
     // The liveness read that settles the card. A refusal leaves it
     // unresolved (the chip's poll retries) and is reported, not swallowed,
     // on its own notice so the refusal above stays on screen: until the
@@ -506,7 +513,7 @@ export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showAp
         .then(() => setLivenessFailedFor(prev => (prev === a.id ? null : prev)))
         .catch(() => setLivenessFailedFor(a.id))
     }
-  }, [dispatch, slotId, showApprovalError])
+  }, [dispatch, slotId, showApprovalStatus])
   const resolveOneSpawn = useCallback((a: SubagentActivity, action: 'approve' | 'reject') => {
     if (!a.approval_id || a.approving) return
     // Bound to the request the spawn card was raised for; one that names none

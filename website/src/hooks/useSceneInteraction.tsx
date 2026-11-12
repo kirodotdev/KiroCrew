@@ -604,17 +604,21 @@ export function useSceneInteraction(
         if (!pending) return !!alreadyResolvedDecision(approvalError)
         return failedApprovalKey === approvalGoneKey(pending.requestId, pending.target)
       })() ? (
-        // A refused decide is a failed request, the gone refusal included
-        // (errors-use-error-notice). No hand-off: the composer below may hold
-        // an unsent draft, and the hand-off navigates to the chat, which would
-        // discard it. The red is the theme's danger token, not a fixed hex.
-        <ErrorNotice
-          variant="inline"
-          testId="scene-approval-failure"
-          report={reportForError(approvalError)}
-          message={approvalFailureText(approvalError)}
-          className="px-2 pb-1.5 !text-[var(--danger)]"
-        />
+        isTerminalApprovalRefusal(approvalError) ? (
+          // A gone approval is status, not a failure: nothing the user did failed.
+          <div role="status" data-testid="scene-approval-gone" style={{ padding: '6px 8px', borderTop: '1px solid #333', color: '#aaa' }}>{approvalFailureText(approvalError)}</div>
+        ) : (
+          // No hand-off: the composer below may hold an unsent draft, and the
+          // hand-off navigates to the chat, which would discard it. The red is
+          // the theme's danger token, not a fixed hex.
+          <ErrorNotice
+            variant="inline"
+            testId="scene-approval-failure"
+            report={reportForError(approvalError)}
+            message={approvalFailureText(approvalError)}
+            className="px-2 pb-1.5 !text-[var(--danger)]"
+          />
+        )
       ) : null}
       <div style={{ display: 'flex', gap: 6, padding: '6px 8px', borderTop: '1px solid #333' }}>
         <input

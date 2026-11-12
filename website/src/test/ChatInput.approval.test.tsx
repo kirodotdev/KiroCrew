@@ -1002,9 +1002,10 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
     expect(api.decideApproval).not.toHaveBeenCalled()
     expect(store.getState().chat.subagents.a1.approvalGone).toBe('spawn:a1')
     await waitFor(() => expect(screen.queryByText(/awaiting your approval to run/)).not.toBeInTheDocument())
-    expect(screen.getByTestId('approval-decision-error')).toHaveTextContent(
-      i18nT('components.approvalCard.approval_no_longer_pending'),
-    )
+    // Gone is status, not an error (#18203): the composer's status strip.
+    const gone = i18nT('components.approvalCard.approval_no_longer_pending')
+    expect(screen.queryByTestId('approval-decision-error')).not.toBeInTheDocument()
+    expect(screen.queryAllByRole('status').filter(el => el.textContent?.includes(gone))).toHaveLength(1)
   })
 
   it('a refusal on request A does not hold back a replacement B under the same approval id', async () => {
@@ -1097,15 +1098,12 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
     await waitFor(() => {
       expect(screen.queryByText(/awaiting your approval to run/)).not.toBeInTheDocument()
     })
-    // A rejected request is an error (AUTOSDE errors-use-error-notice), so it is
-    // an ErrorNotice, not the status strip. This banner sent it, so it is the
-    // one surface that reports it; the panel shows only neutral liveness.
-    expect(screen.getByTestId('approval-decision-error')).toHaveAttribute('role', 'alert')
-    expect(screen.getByTestId('approval-decision-error')).toHaveTextContent(
-      i18nT('components.approvalCard.approval_no_longer_pending'),
-    )
+    // A gone approval is status, not an error (#18203): the status strip, as the
+    // tool path's 404. This banner sent it, so it is the one surface that
+    // reports it; the panel shows only neutral liveness.
     const gone = i18nT('components.approvalCard.approval_no_longer_pending')
-    expect(screen.queryAllByRole('status').filter(el => el.textContent?.includes(gone))).toEqual([])
+    expect(screen.queryByTestId('approval-decision-error')).not.toBeInTheDocument()
+    expect(screen.queryAllByRole('status').filter(el => el.textContent?.includes(gone))).toHaveLength(1)
     expect(api.decideApproval).toHaveBeenCalledTimes(1)
     // The empty authoritative process inventory retires the card after the
     // controls disappear; it does not survive reconnect as pending.
@@ -1130,10 +1128,10 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
     // Beside the refusal, not over it: the failed read lands a microtask after
     // the refusal is shown, and one shared notice would leave no surface
     // reporting the refusal this banner sent.
-    expect(screen.getByTestId('approval-decision-error')).toHaveTextContent(
-      i18nT('components.approvalCard.approval_no_longer_pending'),
-    )
-    expect(screen.getByTestId('approval-decision-error')).not.toHaveTextContent(
+    const gone = i18nT('components.approvalCard.approval_no_longer_pending')
+    const goneRows = screen.getAllByRole('status').filter(el => el.textContent?.includes(gone))
+    expect(goneRows).toHaveLength(1)
+    expect(goneRows[0]).not.toHaveTextContent(
       i18nT('pages.chat.subagentProgressBar.liveness_check_failed'),
     )
     expect(api.spawnList).toHaveBeenCalledTimes(1)
@@ -1158,9 +1156,8 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
     await store.dispatch(reconcileGoneSubagent({ slot: 'slot-1', id: 'a1', approval_id: 'spawn:a1' }))
     await waitFor(() => expect(screen.queryByTestId('spawn-liveness-error')).not.toBeInTheDocument())
     expect(store.getState().chat.subagents.a1.status).toBe('stopped')
-    expect(screen.getByTestId('approval-decision-error')).toHaveTextContent(
-      i18nT('components.approvalCard.approval_no_longer_pending'),
-    )
+    const gone = i18nT('components.approvalCard.approval_no_longer_pending')
+    expect(screen.getAllByRole('status').filter(el => el.textContent?.includes(gone))).toHaveLength(1)
   })
 
   it('dismisses the liveness notice on its own, leaving the refusal and the unresolved card', async () => {
@@ -1173,9 +1170,8 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
 
     fireEvent.click(within(notice).getByRole('button'))
     expect(screen.queryByTestId('spawn-liveness-error')).not.toBeInTheDocument()
-    expect(screen.getByTestId('approval-decision-error')).toHaveTextContent(
-      i18nT('components.approvalCard.approval_no_longer_pending'),
-    )
+    const gone = i18nT('components.approvalCard.approval_no_longer_pending')
+    expect(screen.getAllByRole('status').filter(el => el.textContent?.includes(gone))).toHaveLength(1)
     // Dismissing the notice settles nothing: the chip's poll still owns that.
     expect(store.getState().chat.subagents.a1.approvalGone).toBe('spawn:a1')
   })

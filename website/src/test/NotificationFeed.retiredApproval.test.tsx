@@ -171,15 +171,15 @@ describe('NotificationFeed retired approvals', () => {
     }
   })
 
-  it('a 404 on decide says "no longer pending" through the error notice, in both views', async () => {
+  it('a 404 on decide says "no longer pending" as status, in both views', async () => {
     mockResolveApproval.mockRejectedValueOnce(notFound())
     const { page, popover } = renderBoth([approval])
     fireEvent.click(page.getByRole('button', { name: /^Approve$/ }))
     await page.findByTestId('notif-approval-retired')
     for (const view of [page, popover]) {
       const notice = view.getByTestId('notif-approval-retired')
-      // The request failed, so it is an error (role=alert), not muted status.
-      expect(notice).toHaveAttribute('role', 'alert')
+      // The approval is gone, so it is status, not an error (#18203).
+      expect(notice).toHaveAttribute('role', 'status')
       // The same sentence the chat card, tool group, Subagents panel and
       // command center show for a refused press.
       expect(notice).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending'))
@@ -290,7 +290,7 @@ describe('NotificationFeed retired approvals', () => {
     await act(async () => { d.reject(notFound()) })
     await waitFor(() => { expect(store.getState().notifications.retiredApprovals).toEqual({ '1': true }) })
     expect(popover.getByTestId('notif-approval-retired')).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending'))
-    expect(page.getByTestId('notif-approval-retired')).toHaveAttribute('role', 'alert')
+    expect(page.getByTestId('notif-approval-retired')).toHaveAttribute('role', 'status')
     expect(store.getState().notifications.approvalDecisions).toEqual({})
   })
   it('an expiry frame on an idle row removes it at once', () => {
