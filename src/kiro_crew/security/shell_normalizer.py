@@ -29,6 +29,7 @@ four owners, which never import it: the tiers depend on the reader, never the re
 from __future__ import annotations
 
 import bisect
+import math
 import os
 import re
 import shlex
@@ -1622,13 +1623,21 @@ def _shell_payload_walk_uncached(text_lower: str) -> "list[tuple[str, list[str]]
     finite.
     """
     out: list[tuple[str, list[str]]] = []
-    seen: set[str] = set()
+    seen: dict[str, tuple[bool, bool, float]] = {}  # each text's most work pushed so far
+    cut_rebuilds: dict[tuple[str, str], str] = {}  # each cut pipeline's rebuild, made once
     # The third field is whether this frame may perform the ``eval`` argument join.
     # A frame PRODUCED by a join may not, which is what bounds the walk: see
-    # ``_nested_shell_payloads``.
-    pending: list[tuple[str, int, bool]] = [(text_lower, len(text_lower) + 1, True)]
+    # ``_nested_shell_payloads``. The fourth is whether it cuts out each pipeline that
+    # feeds xargs: not an xargs rebuild, whose tail is the rest of a line already cut. The
+    # fifth is how many more times it may be rebuilt: without bound for the line's own
+    # chain, and for a cut pipeline's rebuild the pipes left in that pipeline, so nesting
+    # adds no chain per enclosing cut. A join inherits both from its frame. A text another
+    # parent asks more of (the join included) is walked again, so a cut takes no walk away.
+    pending: list[tuple[str, int, bool, bool, float]] = [
+        (text_lower, len(text_lower) + 1, True, True, math.inf)
+    ]
     while pending:
-        source, parent_len, allow_join = pending.pop()
+        source, parent_len, allow_join, cuts, rebuilds = pending.pop()
         tokens = _self_tokens(source)
         if not tokens:
             continue
@@ -1651,19 +1660,40 @@ def _shell_payload_walk_uncached(text_lower: str) -> "list[tuple[str, list[str]]
         # continuation that bash keeps literal stays literal in the body too.
         joined_here: set[str] = set()
         nested = _nested_shell_payloads(tokens, allow_join=allow_join, joined_out=joined_here)
-        # A redirect before the ``-c`` operand hides the script from ``nested``.
-        from .shell_commands import redirect_hidden_payloads  # the reader imports this module
+        # A redirect before the ``-c`` operand hides the script from ``nested``, and a command
+        # chained before an ``xargs`` pipeline hides the piped words from its rebuild. The
+        # reader imports this module, so it is imported here.
+        from .shell_commands import redirect_hidden_payloads, xargs_handed_on, xargs_pipelines
 
         nested = list(nested) + redirect_hidden_payloads(source)
-        for payload in nested + _substitution_bodies(_fold_line_continuations(source)):
+        rebuilt, cut = "", []
+        if any(_program_basename(token) == "xargs" for token in tokens):
+            rebuilt = _xargs_reconstructed_command(tokens)
+            if cuts:  # rebuilt at its own first pipe, from what its first command hands on
+                for head, tail, n in xargs_pipelines(source):
+                    if (head, tail) not in cut_rebuilds:  # each enclosing $( ) cuts it again
+                        words = xargs_handed_on(head) + ["|"] + _self_tokens(tail)
+                        cut_rebuilds[head, tail] = _xargs_reconstructed_command(words)
+                    cut.append((cut_rebuilds[head, tail], n - 1))
+        bodies = nested + _substitution_bodies(_fold_line_continuations(source))
+        payloads = [
+            (p, False, rebuilds - 1) if p == rebuilt else (p, True, math.inf) for p in bodies
+        ]
+        for payload, payload_cuts, left in payloads + [(p, False, n) for p, n in cut if p]:
             # Descend through EVERY literal payload, to any depth.  Termination is
             # structural, not a cap: a payload is carried inside one token of its
             # parent, so it is strictly shorter than the parent's source text.
+            if left < 0:
+                continue  # a cut pipeline's rebuild with no pipe left
             payload = _decode_printf_escapes(payload)
-            if len(payload) >= parent_len or payload in seen:
+            joined = payload in joined_here
+            work = (payload_cuts and cuts, min(left, rebuilds)) if joined else (payload_cuts, left)
+            had = seen.get(payload, (False, False, -1.0))
+            most = (had[0] or not joined, had[1] or work[0], max(had[2], work[1]))
+            if len(payload) >= parent_len or most == had:
                 continue
-            seen.add(payload)
-            pending.append((payload, len(source), payload not in joined_here))
+            seen[payload] = most
+            pending.append((payload, len(source), *most))
     return out
 
 

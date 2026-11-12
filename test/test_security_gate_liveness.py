@@ -792,7 +792,12 @@ def _url_payload_command(n: int) -> str:
 #: ``bounded_judgment``, one shared budget of resolver wait that every off-loop
 #: request checks before it is sent and that clamps only candidate waits; and the
 #: three lines the ``paths`` facade's manifest lists for them. No check was relaxed.
-_PACKAGE_LINE_BUDGET = 35_804
+#: Raised by 126, from 35,804, for ``shell_commands.xargs_pipelines`` and
+#: ``xargs_handed_on``: each pipeline that feeds ``xargs`` is also read as a line of its
+#: own, from the words its first command hands on, so a command chained before it no
+#: longer changes what the xargs rebuild sees, and each such rebuild is made once per
+#: walk. Deny-only: no allow widened. Re-measured.
+_PACKAGE_LINE_BUDGET = 35_930
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
