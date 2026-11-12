@@ -576,7 +576,7 @@ describe("first-download installer design contract", () => {
     ]
       .map((match) => match[1])
       .sort();
-    for (const key of ["KiroCliPrerequisiteText", "KiroCliPrerequisiteLink"]) {
+    for (const key of ["KiroCliPrerequisiteText", "KiroCliPrerequisiteLink", "KiroUnmovableFile"]) {
       const prerequisiteLocales = [
         ...installer.matchAll(new RegExp(`^LangString ${key} (\\d+) `, "gm")),
       ]
@@ -1087,6 +1087,148 @@ describe("first-download installer design contract", () => {
         "!macroend",
       ].join("\n")
     );
+  });
+
+  it("clears or refuses an installed file the previous uninstaller cannot move, before it runs", () => {
+    const code = installer
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(line => line && !line.startsWith(";"))
+      .join("\n");
+    const defineOf = name => Number(code.match(new RegExp(`^!define ${name} (\\d+)$`, "m"))[1]);
+    const maxMovePath = defineOf("KIRO_MAX_MOVE_PATH");
+    const maxMoveDir = defineOf("KIRO_MAX_MOVE_DIR");
+    // MAX_PATH (260) less the NUL, and CreateDirectoryW's 248 less the NUL.
+    assert.equal(maxMovePath, 259);
+    assert.equal(maxMoveDir, 247);
+    const budget = fs.readFileSync(
+      path.join(REPO_ROOT, "packaging", "check_windows_path_budget.py"),
+      "utf8"
+    );
+    assert.match(budget, /^MAX_USABLE_PATH = 259$/m, "the build budget and the installer must agree");
+
+    // The move root measured is the shape un.atomicRMDir moves into: one
+    // CreateDirectory per directory and one Rename per file, under
+    // $PLUGINSDIR\old-install, with $R0 the directory below $INSTDIR.
+    const uninstaller = fs.readFileSync(
+      path.join(ROOT, "node_modules", "app-builder-lib", "templates", "nsis", "uninstaller.nsh"),
+      "utf8"
+    );
+    const atomic = normalizedNsisBlock(uninstaller, /Function un\.atomicRMDir[\s\S]*?FunctionEnd/);
+    assert.match(atomic, /^CreateDirectory "\$PLUGINSDIR\\old-install\$R0\\\$R2"$/m);
+    assert.match(atomic, /^Rename "\$INSTDIR\$R0\\\$R2" "\$PLUGINSDIR\\old-install\$R0\\\$R2"$/m);
+
+    // The walk deletes only a .pyc inside __pycache__, and only one over a limit.
+    const clear = code.match(/Function KiroClearUnmovableFiles\n[\s\S]*?FunctionEnd/)[0];
+    assert.match(clear, /\$\{If\} \$R3 > \$\{KIRO_MAX_MOVE_DIR\}\nStrCpy \$R5 1/);
+    assert.match(clear, /StrCpy \$R4 \$R0 "" -12\n\$\{If\} \$R4 == "\\__pycache__"/);
+    const deletes = [...clear.matchAll(/^Delete .*$/gm)];
+    assert.equal(deletes.length, 1);
+    assert.match(
+      clear,
+      /\$\{If\} \$R3 > \$\{KIRO_MAX_MOVE_PATH\}\n\$\{OrIf\} \$R5 == 1\nStrCpy \$R3 \$R2 "" -4\n\$\{If\} \$R4 == 1\n\$\{AndIf\} \$R3 == "\.pyc"\nDelete "\$KiroWalkRoot\$R0\\\$R2"\n\$\{EndIf\}/
+    );
+    // A root is walked only when it holds this app's executable.
+    const root = code.match(/Function KiroClearUnmovableRoot\n[\s\S]*?FunctionEnd/)[0];
+    assert.match(
+      root,
+      /Pop \$KiroWalkRoot\n\$\{If\} \$KiroWalkRoot != ""\n\$\{AndIf\} \$KiroAppExeName != ""\n\$\{AndIf\} \$\{FileExists\} "\$KiroWalkRoot\\\$KiroAppExeName"\nPush ""\nCall KiroClearUnmovableFiles/
+    );
+
+    // customInit measures, after $INSTDIR is final and in the instance that can
+    // delete there, every root installSection.nsh uninstalls, against the
+    // longest name GetTempFileName gives the uninstaller's $PLUGINSDIR, and
+    // stops before either uninstall starts.
+    const init = code.match(/!macro customInit\n[\s\S]*?!macroend/)[0];
+    assert.match(
+      init,
+      new RegExp(
+        [
+          "StrCpy \\$INSTDIR \\$KiroInstallDir",
+          '\\$\\{If\\} \\$installMode != "all"',
+          "\\$\\{OrIf\\} \\$\\{UAC_IsAdmin\\}",
+          'StrLen \\$KiroMoveRootLength "\\$TEMP\\\\nsa0000\\.tmp\\\\old-install"',
+          'StrCpy \\$KiroUnmovable ""',
+          "Push \\$INSTDIR",
+          "Call KiroClearUnmovableRoot",
+          '\\$\\{If\\} \\$installMode == "all"',
+          'ReadRegStr \\$KiroWalkRoot HKCU "\\$\\{UNINSTALL_REGISTRY_KEY\\}" UninstallString',
+          "!ifdef UNINSTALL_REGISTRY_KEY_2",
+          '\\$\\{If\\} \\$KiroWalkRoot == ""',
+          'ReadRegStr \\$KiroWalkRoot HKCU "\\$\\{UNINSTALL_REGISTRY_KEY_2\\}" UninstallString',
+          "\\$\\{EndIf\\}",
+          "!endif",
+          '\\$\\{If\\} \\$KiroWalkRoot != ""',
+          'ReadRegStr \\$KiroWalkRoot HKCU "\\$\\{INSTALL_REGISTRY_KEY\\}" InstallLocation',
+          "\\$\\{If\\} \\$KiroWalkRoot != \\$INSTDIR",
+          "Push \\$KiroWalkRoot",
+          "Call KiroClearUnmovableRoot",
+          "\\$\\{EndIf\\}",
+          "\\$\\{EndIf\\}",
+          "\\$\\{EndIf\\}",
+          "ClearErrors",
+          '\\$\\{If\\} \\$KiroUnmovable != ""',
+          'MessageBox MB_OK\\|MB_ICONSTOP "\\$\\(KiroUnmovableFile\\)\\$\\\\r\\$\\\\n\\$\\\\r\\$\\\\n\\$KiroUnmovable" /SD IDOK',
+          "SetErrorLevel 2",
+          "Quit",
+          "\\$\\{EndIf\\}",
+          "\\$\\{EndIf\\}",
+          "!macroend$",
+        ].join("\\n")
+      )
+    );
+    // The uninstall order this relies on: SHELL_CONTEXT, then HKCU when all-users.
+    const section = fs.readFileSync(
+      path.join(ROOT, "node_modules", "app-builder-lib", "templates", "nsis", "installSection.nsh"),
+      "utf8"
+    );
+    assert.match(
+      section,
+      /!insertmacro uninstallOldVersion SHELL_CONTEXT\n!insertmacro handleUninstallResult SHELL_CONTEXT\n\n\$\{if\} \$installMode == "all"\n {2}!insertmacro uninstallOldVersion HKEY_CURRENT_USER/
+    );
+
+    // The file from the field report, for a nine-character user name: Windows
+    // installed it, the uninstaller could not move it, and its source moves.
+    const win = path.win32;
+    const user = "u".repeat(9);
+    const installRoot = win.join("C:\\Users", user, "AppData\\Local\\Programs\\KiroCrew");
+    const moveRoot = win.join("C:\\Users", user, "AppData\\Local\\Temp", "nsiAC0D.tmp", "old-install");
+    const cacheDir =
+      "\\resources\\backend-dist\\kirocrew-backend\\Lib\\site-packages\\lark_oapi\\api\\" +
+      "security_and_compliance\\v2\\model\\__pycache__";
+    const cache = `${cacheDir}\\p2_security_and_compliance_device_apply_record_device_apply_event_v2.cpython-312.pyc`;
+    const source = win.join(win.dirname(cacheDir), "p2_security_and_compliance_device_apply_record_device_apply_event_v2.py");
+    assert.equal((installRoot + cache).length, 252);
+    assert.ok((installRoot + cache).length <= maxMovePath, "Windows can install it");
+    assert.equal((moveRoot + cache).length, 263);
+    assert.ok((moveRoot + cache).length > maxMovePath, "the uninstaller cannot move it");
+    assert.ok((moveRoot + cacheDir).length <= maxMoveDir);
+    assert.ok((moveRoot + source).length <= maxMovePath, "its source still moves");
+
+    // The Windows installer job plants both kinds of file and re-runs the installer.
+    assert.match(runtimeScript, /Invoke-SilentReinstall "Re-install over a bytecode cache too deep to move"/);
+    assert.match(runtimeScript, /\$refused\.ExitCode -ne 2/);
+    assert.match(runtimeScript, /\$filesAfter -ne \$filesBefore/);
+    // It sizes the probes from the Win32 temp path NSIS's $TEMP comes from, not
+    // .NET's, which can name the same directory by a longer form.
+    assert.match(
+      runtimeScript,
+      /\$moveRootLength = \$win32Temp\.Length \+ "\\nsa0000\.tmp\\old-install"\.Length/
+    );
+    assert.doesNotMatch(runtimeScript, /\$moveRootLength = \[IO\.Path\]::GetTempPath\(\)/);
+    // The refusal dialog is captured as evidence and uploaded with the job's artifacts.
+    assert.match(runtimeScript, /Save-InstallerWindow \$refusalHandle \(Join-Path \$evidence "update-refused-path-too-long\.png"\)/);
+    assert.match(buildWorkflow, /website\/electron\/runtime-evidence\/update-refused-path-too-long\.png/);
+
+    // The dialog tells the user the installed version still works and how to update.
+    const english = installer.match(/^LangString KiroUnmovableFile 1033 "(.*)"$/m)[1];
+    assert.match(english, /installed version still works/);
+    assert.match(english, /uninstall \$\{PRODUCT_NAME\}, then run this installer again/);
+    assert.match(english, /\$\\r\$\\n\$\\r\$\\nThis installed file's path is too long for the update to move:$/);
+    for (const match of installer.matchAll(/^LangString KiroUnmovableFile (\d+) "(.*)"$/gm)) {
+      assert.match(match[2], /\$\\r\$\\n\$\\r\$\\n/, `KiroUnmovableFile ${match[1]} must set the path off on its own line`);
+      assert.equal((match[2].match(/\$\{PRODUCT_NAME\}/g) || []).length, 2, `KiroUnmovableFile ${match[1]}`);
+    }
   });
 
   it("re-installs silently over the existing install in all three cases, under a stated ceiling", () => {
