@@ -901,6 +901,8 @@ class TestUpdateWheelDispatch:
 
     def test_layout_is_built_from_the_distribution(self, monkeypatch, capsys) -> None:
         monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+        # The suite runs from a checkout, which `_update` would update by git.
+        monkeypatch.setattr(cli_server, "_source_checkout_root", lambda: None)
         # Both bindings: the capability derives WHO owns the update from the
         # stamp, and cli_server names the layout kind from its own import.
         monkeypatch.setattr("kiro_crew.platform.update_capability.distribution", lambda: "wheel")
@@ -915,6 +917,7 @@ class TestUpdateWheelDispatch:
 
     def test_unknown_distribution_defaults_to_wheel(self, monkeypatch) -> None:
         monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+        monkeypatch.setattr(cli_server, "_source_checkout_root", lambda: None)
         monkeypatch.setattr("kiro_crew.platform.update_capability.distribution", lambda: "")
         monkeypatch.setattr("kiro_crew.cli_server.distribution", lambda: "")
         seen: list[InstallLayout] = []
