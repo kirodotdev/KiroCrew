@@ -9,34 +9,34 @@ well-behaved server without touching any server's code. A server that
 hardcodes ``/tmp`` ignores the variables and keeps today's behavior: this is
 containment, not a sandbox guarantee.
 
-Layout: ``<data home>/run/t/<digest8>-<token8>/`` -- one directory per
-spawned PROCESS, not per PoolKey. Two live processes can share a PoolKey (a
-connection-private backend spawned beside the shared one), so a sweep keyed
-on the digest alone would delete the temp dir out from under the survivor.
-The digest prefix keeps the directory attributable to its server config; the
-fresh token makes the shutdown sweep single-owner by construction.
+Layout: ``<data home>/run/t/<token8>/`` -- one directory per spawned PROCESS,
+not per PoolKey. Two live processes can share a PoolKey (a connection-private
+backend spawned beside the shared one), so a sweep keyed on the PoolKey would
+delete the temp dir out from under the survivor. The fresh token makes the
+shutdown sweep single-owner by construction; the server digest the caller
+passes goes to one debug log line, not into the name.
 
 The root name and the per-process name are kept SHORT so a server that binds a
 Unix socket under its temp dir stays within ``sun_path`` (108 bytes on Linux,
 104 on macOS, 108 for AF_UNIX on Windows). A server creates its socket a few
 levels below ``$TMPDIR`` (the MATLAB MCP server adds a 53-byte
 ``matlab-mcp-server-<n>/watchdog-<n>.sock``), so every byte the managed prefix
-spends is a byte the server cannot: ``run/t`` rather than ``run/mcp-tmp`` and an
-8-char digest rather than 12 leave the default data home with a few bytes to
-spare. The root MUST stay under ``<data home>/run`` because the sandbox seals
+spends is a byte the server cannot: a one-character root under ``run`` and a
+name that is the random token alone leave the default data home room for that
+suffix. The root MUST stay under ``<data home>/run`` because the sandbox seals
 that parent read-only and carves the per-process dir writable only there; a
 root outside it would hand a sandboxed child an unwritable ``TMPDIR``. A longer
 data home can still overflow -- the full remedy is a short writable root outside
 the data home, which needs a sandbox-seal decision; until then the documented
 workaround is a short ``TMPDIR``/``TMP``/``TEMP`` in the server's own ``env``,
-which wins over the managed one. The random token is kept whole, so collision
-safety is unchanged by the shorter digest.
+which wins over the managed one. The token is the whole name, so a collision is
+two equal 8-hex-char tokens, and ``mkdir`` without ``exist_ok`` turns that into
+a failed allocation rather than a shared dir.
 
 PoolKey invariant (same reasoning as the ``KIROCREW_SPAWNED_ENV`` marker in
 :func:`kiro_crew.mcp_gateway.backend.spawn_backend`): the injected value is
-derived from the key's own digest plus a token generated AFTER pool-identity
-resolution, and is never folded into the PoolKey hash -- so it can neither
-split nor collapse pooled-backend identity.
+a token generated AFTER pool-identity resolution and is never folded into the
+PoolKey hash -- so it can neither split nor collapse pooled-backend identity.
 
 Sweep hygiene follows the house rules established by
 :mod:`kiro_crew.agents_janitor`: ``os.lstat`` snapshots, symlinks are never
@@ -103,8 +103,7 @@ def allocate_backend_tmp(pool_digest: str) -> Path:
     # owner-only DACL with (OI)(CI) inheritance there (0o700 on POSIX), so
     # children created inside are covered as well.
     platform_compat.restrict_dir_to_owner(root)
-    name = f"{pool_digest[:8]}-{secrets.token_hex(4)}"
-    path = root / name
+    path = root / secrets.token_hex(4)
     path.mkdir(mode=0o700)
     platform_compat.restrict_dir_to_owner(path)
     try:
@@ -118,6 +117,7 @@ def allocate_backend_tmp(pool_digest: str) -> Path:
     except OSError:
         shutil.rmtree(path, ignore_errors=True)
         raise
+    logger.debug("backend-tmp: allocated %r for %r", path.name, pool_digest[:8])
     return path
 
 
