@@ -22,6 +22,7 @@ from kiro_crew import platform_compat
 from kiro_crew.dashboard.handlers.usage_spend import daily_spend, spend_key_for_slot
 from kiro_crew.dashboard.handlers.usage_store import (
     _SESSIONS_HISTORY_DAYS,
+    _SHARD_COUNTED_HARNESSES,
     _SHARD_COUNTED_PROVIDERS,
     _parse_row_day,
     _parse_row_ts,
@@ -200,6 +201,15 @@ def _count_transcript(path: Path, kas: bool) -> tuple[str | None, int, int] | No
 _BACKGROUND_CALL_SURFACE_PREFIX = "bg:"
 
 
+#: The text :func:`_shard_sessions` tests a line for before parsing it: a row a
+#: counted provider or harness wrote names it in one of these spellings. A row's
+#: ``harness`` is matched as its whole JSON member, because a bare id such as
+#: ``pi`` is a substring of most rows (``input``).
+_SHARD_COUNTED_NEEDLES = tuple(sorted(_SHARD_COUNTED_PROVIDERS)) + tuple(
+    f'"harness": "{harness}"' for harness in sorted(_SHARD_COUNTED_HARNESSES)
+)
+
+
 def _row_messages(obj: dict) -> int:
     """Messages one usage row stands for: the user's prompt, and the reply.
 
@@ -211,7 +221,8 @@ def _row_messages(obj: dict) -> int:
 
 
 def _shard_sessions(days: int) -> dict[str, tuple[str, int]]:
-    """Sessions of :data:`_SHARD_COUNTED_PROVIDERS` over the last *days*, from the usage rows.
+    """Sessions of :data:`_SHARD_COUNTED_PROVIDERS` and :data:`_SHARD_COUNTED_HARNESSES`
+    over the last *days*, from the usage rows.
 
     ``{session: (day, messages)}``. A session is the row's ``transcript`` key, else
     its ``slot``. Its day is the local day of its earliest row in the window, the
@@ -228,10 +239,10 @@ def _shard_sessions(days: int) -> dict[str, tuple[str, int]]:
         try:
             with path.open("rb") as fh:
                 for line in bounded_records(fh, path, label="usage"):
-                    # A cheap text test before the parse: most rows name a provider
-                    # this does not count, and a row whose text names none of these
-                    # providers cannot carry one as its ``provider``.
-                    if not any(provider in line for provider in _SHARD_COUNTED_PROVIDERS):
+                    # A cheap text test before the parse: most rows are kiro-cli or
+                    # KAS turns, and a row whose text holds none of these needles
+                    # cannot carry a counted ``provider`` or ``harness``.
+                    if not any(needle in line for needle in _SHARD_COUNTED_NEEDLES):
                         continue
                     try:
                         obj = json.loads(line)
@@ -239,7 +250,10 @@ def _shard_sessions(days: int) -> dict[str, tuple[str, int]]:
                         continue
                     if not isinstance(obj, dict) or obj.get("_type") != "tokens":
                         continue
-                    if obj.get("provider") not in _SHARD_COUNTED_PROVIDERS:
+                    if (
+                        obj.get("provider") not in _SHARD_COUNTED_PROVIDERS
+                        and obj.get("harness") not in _SHARD_COUNTED_HARNESSES
+                    ):
                         continue
                     surface = obj.get("surface")
                     if isinstance(surface, str) and surface.startswith(
