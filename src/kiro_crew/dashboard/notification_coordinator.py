@@ -475,6 +475,8 @@ class NotificationCoordinator:
         removed = len(state._notification_log) < before
         if removed:
             await state._rewrite_notifications_async()
+            # Every other open view drops it too, as a publisher's dismissal does.
+            state.broadcast_ws("notification_dismiss", {"ts": ts})
         return removed
 
     @staticmethod
