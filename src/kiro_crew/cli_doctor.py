@@ -525,6 +525,17 @@ def _selected_roles_run_claude(cfg: KiroCrewConfig) -> bool:
     return ACP_BACKEND_CLAUDE in (cfg.agent.acp_backend, cfg.agent.member_acp_backend)
 
 
+def _selected_roles_run_codex(cfg: KiroCrewConfig) -> bool:
+    """Whether the main or the crewmate backend selects the Codex harness.
+
+    The positive test of ``_selected_roles_run_claude``, for ``ACP_BACKEND_CODEX``,
+    and imported locally for the same reason.
+    """
+    from kiro_crew.acp_backends import ACP_BACKEND_CODEX
+
+    return ACP_BACKEND_CODEX in (cfg.agent.acp_backend, cfg.agent.member_acp_backend)
+
+
 _KIRO_VERSION_TIMEOUT_SECS = 5
 
 
@@ -686,9 +697,9 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # ── Dependencies ──
     print("Dependencies")
     # kiro-cli is the DEFAULT agent backend and the floor every deployment keeps.
-    # Claude Code is selectable too (``BASELINE_SELECTABLE_BACKENDS``), so it is
-    # reported as a real optional backend -- present or absent -- rather than only
-    # when it happens to be installed. The verdict comes from the same owner the
+    # Claude Code and Codex are selectable too (``BASELINE_SELECTABLE_BACKENDS``), so
+    # each is reported as a real optional backend -- present or absent -- rather than
+    # only when it happens to be installed. The verdict comes from the same owner the
     # dashboard asks, so doctor and the panel cannot disagree.
     # Resolved the way the gateway resolves it -- KIROCREW_KIRO_BIN, then the
     # desktop app's bundled copy, then the known install dirs, then PATH -- so
@@ -720,6 +731,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
         print("               Install kiro-cli per its docs, then: kiro-cli login")
 
     agents._doctor_claude_backend(issues, required=_selected_roles_run_claude(cfg))
+    agents._doctor_codex_backend(issues, required=_selected_roles_run_codex(cfg))
     # After the install rows, and per harness rather than per provider: sign-in is a
     # different question from install with a different remedy, and every harness's
     # answer now comes from one declaration instead of a block written per backend.
