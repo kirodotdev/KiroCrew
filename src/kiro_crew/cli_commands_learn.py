@@ -174,6 +174,11 @@ def _learn(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+    # No verb: print the usage line before the vector store below is built, since
+    # init() creates memory.db on a fresh data home.
+    if action not in ("add", "list", "remove"):
+        print("Usage: kirocrew learn {add|list|remove}")
+        return
     vs = VectorMemoryStore(embedding_dim=cfg.memory.embedding_dim, config=cfg)
     vs.init()
     try:
@@ -446,8 +451,5 @@ def _learn(args: argparse.Namespace) -> None:
             else:
                 print(f"No lessons match: {remove_query}", file=sys.stderr)
                 sys.exit(1)
-
-        else:
-            print("Usage: kirocrew learn {add|list|remove}")
     finally:
         vs.close()

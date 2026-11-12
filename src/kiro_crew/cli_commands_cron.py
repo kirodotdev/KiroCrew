@@ -617,9 +617,24 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
     """Dispatch cron subcommands: list, add, remove, pause, resume."""
     from kiro_crew.cron import job_zone_name
 
+    action = getattr(args, "cron_action", None)
+    if action not in (
+        "list",
+        "adopt",
+        "add",
+        "update",
+        "remove",
+        "pause",
+        "resume",
+        "trigger",
+        "preview",
+    ):
+        # Before the service below, which creates cron-history/ on a fresh data home.
+        print("Usage: kirocrew cron {list|add|update|remove|pause|resume|trigger|preview}")
+        return
+
     svc = CronService(base_dir=config_dir())
 
-    action = getattr(args, "cron_action", None)
     if action == "list":
         # Read-only on folders: the filter resolves an EXISTING folder and never
         # creates one, and an unknown or ambiguous reference is an error rather
@@ -985,9 +1000,6 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
 
     elif action == "preview":
         _cron_preview(args)
-
-    else:
-        print("Usage: kirocrew cron {list|add|update|remove|pause|resume|trigger|preview}")
 
 
 def _cron_preview(args: argparse.Namespace) -> None:

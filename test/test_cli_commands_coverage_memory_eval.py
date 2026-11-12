@@ -219,12 +219,12 @@ class TestLearnCli:
             h.jsonl.remove.assert_not_called()
         assert "does not name a usable scope" in capsys.readouterr().err
 
-    def test_unknown_action_prints_usage_and_closes_store(
+    def test_no_verb_prints_usage_without_opening_the_store(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         with _LearnHarness() as h:
             cc._learn(_ns(learn_action=None))
-        h.vs.close.assert_called_once()
+        h.vs.init.assert_not_called()
         assert "Usage: kirocrew learn" in capsys.readouterr().out
 
 
