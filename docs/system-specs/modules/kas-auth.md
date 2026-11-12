@@ -248,6 +248,18 @@ port (or device code via `StartDeviceAuthorization`); `CreateToken`. Endpoints:
 `codewhisperer:completions|analysis|conversations`. Start URLs: Builder ID
 `https://view.awsapps.com/start`; internal `https://amzn.awsapps.com/start`.
 
+A sign-in reuses the registration its own slot's stored token carries, as kiro-cli
+does, instead of calling `RegisterClient` again (`builder_id.stored_client`): only
+one from the same region whose `client_secret_expires_at` is more than
+`REUSE_MARGIN_SECS` (a week) away, because the new sign-in keeps that lapse and every
+refresh after it is refused. A lapsed one, one in its last week, one from another
+region, an entry stored before the expiry was kept, and an empty slot all register a
+new client. So does any `StartDeviceAuthorization` error on the stored client other
+than `StartUrlRejectedError`, so a registration AWS refuses never blocks a
+sign-in. Sign-out deletes the token and its registration with it; slots never share
+one. The registration's scopes are not recorded, so changing `OIDC_SCOPES` must also
+stop this reuse.
+
 An Identity Center start URL is canonicalized before `StartDeviceAuthorization`
 (`auth/service._canonical_start_url`, through the cloud login target's
 `normalize_start_url`, so the vault and a cloud target record the same string): a
