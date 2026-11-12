@@ -2307,6 +2307,8 @@ specified compatibility change.
     `resume_slot_from_history`, materialisation, hydration);
   - `resume_identity` — holding a resume's live-slot answer to the transcript
     identity the caller pinned (`_pinned_live_outcome`);
+  - `resume_live` — answering a resume an open slot already satisfies
+    (`_live_slot_for_resume`, its payload, and the session identity it matches on);
   - `resume_window` — catching a live slot's in-memory window up with its
     transcript on disk (`_reconcile_slot_window`);
   - `slot_lifecycle` — the shared close path (`close_slot`) and delete, and the idle
