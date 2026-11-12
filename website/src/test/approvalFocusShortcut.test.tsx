@@ -115,6 +115,20 @@ describe('queryPendingApprovalAction', () => {
     expect(queryPendingApprovalAction()?.textContent).toBe('Allow once')
   })
 
+  it('lands on the row\'s primary control, wherever the row puts it', () => {
+    // Allow once is the card's last control; a first-button probe would put a
+    // focus-approval chord on the Reject menu instead.
+    const pane = buildPane('idle', [{ text: 'Reject' }, { text: 'Trust' }, { text: 'Allow once' }])
+    pane.querySelectorAll('button')[2].setAttribute('data-approval-primary', '')
+    expect(queryPendingApprovalAction()?.textContent).toBe('Allow once')
+  })
+
+  it('answers nothing while the primary control is disabled, rather than a neighbour', () => {
+    const pane = buildPane('idle', [{ text: 'Reject' }, { text: 'Trust' }, { text: 'Allow once', disabled: true }])
+    pane.querySelectorAll('button')[2].setAttribute('data-approval-primary', '')
+    expect(queryPendingApprovalAction()).toBeNull()
+  })
+
   it('does not reach into another pane when the focused pane has nothing pending', () => {
     // The document-wide branch exists for the single-pane page, which mounts no
     // [data-chat-pane] at all. Letting it also fire when a pane IS resolved would
