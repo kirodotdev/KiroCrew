@@ -110,8 +110,10 @@ _MATE_AUTO_GRANTS = (
 #:   distribution: one caller could hold all 500, and every later create — the
 #:   person opening a chat tab included — got the 429. A bounded resource that one
 #:   caller can exhaust is not bounded from anybody else's point of view. Now
-#:   ``MAX_SLOTS_PER_CREATOR`` bounds what a single caller holds, leaving 450 slots
-#:   reachable no matter what the conductor does.
+#:   the per-creator cap (``session.max_per_creator``, default
+#:   ``MAX_SLOTS_PER_CREATOR``) bounds what a single caller holds, leaving 450 slots
+#:   reachable no matter what the conductor does, and never fewer than 50 at the
+#:   highest value the owner can set.
 #:
 #: Every verb this server exposes, against that rule:
 #:
@@ -122,7 +124,7 @@ _MATE_AUTO_GRANTS = (
 #:   keep them.
 #: * ``session_create`` — creates a NEW session in the caller's workspace, bounded
 #:   both globally (``MAX_LIVE_SLOTS``, 409 on breach) and per caller
-#:   (``MAX_SLOTS_PER_CREATOR``), and visible in the sidebar. GRANTED.
+#:   (``session.max_per_creator``), and visible in the sidebar. GRANTED.
 #:   One known side effect, recorded because it is the closest thing to an
 #:   exception here: ``create_session`` mints its slot with
 #:   ``origin=SlotOrigin.USER`` (it is a first-class user-owned session, which is

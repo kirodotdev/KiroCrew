@@ -830,7 +830,7 @@ Refusals only a revive gives:
 |---|---|
 | `member_thread_target` | The match is a Bot's thread, which is not addressable |
 | `folder_not_found` | The `folder` you named does not exist; nothing was revived |
-| `creator_slot_cap_reached` | HTTP 409: you already hold the per-caller live-session cap |
+| `creator_slot_cap_reached` | HTTP 409: you already hold the per-caller live-session cap (`session.max_per_creator`, 50 by default). The message says how many you hold and where the owner raises the limit |
 | `resume_in_progress` | HTTP 409: the session is being resumed elsewhere. Try again |
 | `resume_conflict` | HTTP 409: the session is being deleted. Try again |
 | `resume_session_deleted` | HTTP 409: the session was deleted while it was being resumed |
@@ -1201,7 +1201,11 @@ retry.
 
 Rate limits are per caller, per verb, over a 300-second window: **20** session
 creates (forks included), **10** folder creates, **10** tag creates, **10** board-column creates. Capacity ceilings sit behind
-them: 500 live sessions, 50 per creator, 500 folders.
+them: 500 live sessions, 50 per creator, 500 folders. The per-creator number is
+the default of `session.max_per_creator`: the owner raises it, up to 450, in
+Settings > Chat > Sessions > Sessions per creator, and the change applies to
+the next create with no restart. An agent can only propose the change on a
+card that you apply.
 
 ## Combining two chats
 

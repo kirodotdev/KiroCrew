@@ -1034,12 +1034,13 @@ async def broadcast_to_targets(
         # The DEFAULT audience's own bound. An explicit list was already refused
         # above, before resolution, and deduplication only ever shrinks it -- so
         # this now guards the fence-built audience, whose size the caller did not
-        # choose. It should be unreachable: ``broadcast_audience`` returns the live
-        # slots this caller created, which ``MAX_SLOTS_PER_CREATOR`` bounds at or
-        # below this cap (see ``MAX_BROADCAST_TARGETS``). Kept because "unreachable
-        # because two constants are ordered correctly" is a property a later edit
-        # can break, and truncating a fleet-wide send is the failure that must not
-        # be the fallback.
+        # choose. Unreachable at the default per-creator cap: ``broadcast_audience``
+        # returns the live slots this caller created, which
+        # ``MAX_SLOTS_PER_CREATOR`` bounds at or below this cap (see
+        # ``MAX_BROADCAST_TARGETS``). Reachable once the owner raises
+        # ``session.max_per_creator`` above it, and the refusal then tells the
+        # caller to send to a named subset: truncating a fleet-wide send is the
+        # failure that must not be the fallback.
         raise _too_many_targets(len(audience))
 
     results: list[dict[str, Any]] = []

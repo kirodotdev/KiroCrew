@@ -132,10 +132,14 @@ are SEQUENTIAL rather than gathered, one target's refusal is COLLECTED as a row
 instead of aborting the rest, and the audience is capped at
 `MAX_BROADCAST_TARGETS` (50) with an over-cap request refused rather than
 truncated — a silently-cut broadcast is one the caller believes reached everyone.
-That cap sits at `MAX_SLOTS_PER_CREATOR` and must never fall below it: the
-`all: true` audience is bounded by the per-creator slot cap and by nothing else, so
-a lower broadcast cap would make that path refuse an audience the caller never
-chose. Reaching the whole set always takes an explicit `all: true`: a `targets`
+That cap sits at `MAX_SLOTS_PER_CREATOR`, the default per-creator slot cap, and
+must never fall below it: the `all: true` audience is bounded by the per-creator
+slot cap and by nothing else, so a lower broadcast cap would make that path refuse
+an audience the caller never chose. An owner who raises `session.max_per_creator`
+above the broadcast cap accepts that refusal for a creator holding more sessions
+than it: `all: true` then answers `too_many_targets`, whose message tells the
+caller to send to a named subset, and `targets` lists of up to
+`MAX_BROADCAST_TARGETS` each still reach every session. Reaching the whole set always takes an explicit `all: true`: a `targets`
 that is absent, `null` or empty selects nobody, because Kiro CLI drops an empty
 list from a tool call and the server cannot tell it from an omission. A call with
 neither `targets` nor `all: true` is refused `target_required`, and one with both is
@@ -976,6 +980,24 @@ session posture — `_trust` and `_trust_reads`, with `_trusted_patterns` and
 A fork spends the `session_create` rate budget and is bounded by the same live
 and per-creator slot ceilings; it is a session the caller manufactured, whatever
 it starts with.
+
+**The per-creator ceiling is a setting.** `session.max_per_creator` (default 50,
+`MAX_SLOTS_PER_CREATOR`; 10-450) is how many live slots one creator may be charged.
+Create, fork, revive and handoff all decide through one function,
+`creator_slot_cap_refusal` (`dashboard/state_parts/slot_directory.py`), so they
+refuse at the same number with the same sentence: how many sessions the creator
+holds, the limit, and where the owner changes it (Settings > Chat > Sessions >
+Sessions per creator). `max_slots_per_creator` reads the value on every call, from
+the config watcher's snapshot when one is armed and through the loader otherwise,
+so a saved change applies to the next create with no restart; a config that cannot
+be read answers the default, never a refusal. The highest setting is
+`MAX_LIVE_SLOTS` minus `CREATOR_CAP_RESERVE` (50), so one creator can never hold
+every live slot, and the global ceiling is still tested first. The setting is the
+owner's: the Settings write goes through the owner-only
+`PATCH /api/config/kirocrew`, `config.json` is a read-only leaf inside the sandbox,
+an agent's `setting.change` card that raises the value is labelled `widen` and
+waits for the owner's Apply, and a hand-edited value above the range is clamped at
+load (`_SECURITY_BOUNDED_FIELDS`) with a SEL `config_bounds_clamped` event.
 
 **Deliberately not offered.** No `agent`, `model` or `mode` override: a
 transcript belongs to the memory boundary it was written in, and `chat_fork`

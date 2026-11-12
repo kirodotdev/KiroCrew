@@ -67,9 +67,9 @@ from kiro_crew.dashboard.session_control_parts.target_authorization import (
 )
 from kiro_crew.dashboard.state import (
     MAX_LIVE_SLOTS,
-    MAX_SLOTS_PER_CREATOR,
     SlotOrigin,
     _safe_folder_tree,
+    creator_slot_cap_refusal,
 )
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.execution_context import (
@@ -1129,13 +1129,10 @@ async def create_session(
     # person's own next chat tab gets the 409 -- the resource is bounded, but not
     # from anyone else's point of view. This is the bound that makes the verb safe
     # to auto-approve: the worst case of an automated creator looping on it is its
-    # own 50 slots, not everyone's 500.
-    if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
-        raise SessionControlError(
-            f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
-            code="creator_slot_cap_reached",
-            status=409,
-        )
+    # own share (``session.max_per_creator``, 50 unless the owner raised it), not
+    # everyone's 500.
+    if (cap_reason := creator_slot_cap_refusal(state, caller_key)) is not None:
+        raise SessionControlError(cap_reason, code="creator_slot_cap_reached", status=409)
     # The dry run ends HERE, after the last refusal and before the first write.
     # Any new refusal gate belongs above this line, or the preview would pass a
     # create the real call then refuses, and the MCP path walk would leave the

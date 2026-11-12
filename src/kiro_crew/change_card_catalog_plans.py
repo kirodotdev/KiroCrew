@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import re
 import shlex
 import urllib.parse
@@ -162,6 +163,10 @@ def _setting_risk(path: str, before: Any, after: Any) -> str:
     if path in _CODE_EXEC_SETTINGS:
         return RISK_CODE_EXEC
     order = _SETTING_ORDER.get(path)
+    if path == "session.max_per_creator" and isinstance(after, float) and math.isfinite(after):
+        # The route saves ``int(value)``, so a card for 449.5 writes 449: rank the
+        # number the gateway will save, as for the pin scope below.
+        after = int(after)
     if path == "dashboard.tailscale.pin_scope":
         # The route takes any short string and the loader applies its
         # normalised form, so rank the values the gateway will apply.

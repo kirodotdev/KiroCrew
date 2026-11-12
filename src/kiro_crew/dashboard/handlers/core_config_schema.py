@@ -57,6 +57,8 @@ from kiro_crew.config.sections import (
     JUDGE_PROVIDERS,
     LIVE_MAX_FPS_CHOICES,
     LIVE_QUALITIES,
+    MAX_PER_CREATOR_MAX,
+    MAX_PER_CREATOR_MIN,
     REMOTE_EDITOR_HOST_PATTERN,
     REMOTE_EDITOR_IDS,
     SESSION_SORT_MODES,
@@ -259,6 +261,14 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "clamp_fn": lambda v: _clamp_compact_wait_secs(v, 0.0),
     },
     "session.pool_size": {"type": "int", "min": 0, "max": 10},
+    # How many live sessions one creator may hold (Settings → Chat → Sessions).
+    # Same bounds as the load-time clamp. Read at each session create, so a save
+    # applies to the next create with no restart.
+    "session.max_per_creator": {
+        "type": "int",
+        "min": MAX_PER_CREATOR_MIN,
+        "max": MAX_PER_CREATOR_MAX,
+    },
     "session.pool_agent": {"type": "str", "values_fn": _agent_values},
     "session.pool_ttl_secs": {"type": "int", "min": POOL_TTL_SECS_MIN, "max": POOL_TTL_SECS_MAX},
     # Intent-level session summaries in the chat right panel. Only the boolean

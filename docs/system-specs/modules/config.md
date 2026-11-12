@@ -3548,6 +3548,7 @@ class SessionConfig:
     watchdog_rss_max_mb: int = 4096   # DEFAULT_WATCHDOG_RSS_MAX_MB: recycle a session when its process tree RSS exceeds this many MiB; 4096 sits above a healthy tree with many MCP servers (1.4-2.6 GB measured) and still bounds a runaway one; 0 disables; the internal background runtime recycles at BACKGROUND_RSS_FALLBACK_MB (1536), or at this value when it is lower. Busy sessions (turn in flight) are never recycled, and neither is a parent whose sub-agents are still running, queued, or delivering their results on its runtime. A session whose fresh process keeps going straight back over it is held after three recycles in a row and its chat names this setting (session.md "RSS-threshold recycle").
     watchdog_end_leftovers_mid_turn: bool = False  # a session over watchdog_rss_max_mb DURING a turn whose memory is held by processes in its runtime's session but outside its process tree (a timed-out shell command's job, reparented to init): False logs them and posts one notice per turn; True also ends them then (Linux, pinned pidfd signals). Off by default because such a process can be deliberate background work. Read at the point of use, every cleanup tick (session_cleanup_leftovers.end_mid_turn_enabled), so no applier and no restart.
     harness_background_hold_secs: int = 3600  # DEFAULT_HARNESS_BACKGROUND_HOLD_SECS: how long after a harness (Claude Code) launches background work (a Workflow or backgrounded Bash) the idle sweep and the RSS recycle still keep its session (session_background_hold.background_hold_secs, read every sweep). Load-time clamped to [HARNESS_BACKGROUND_HOLD_SECS_MIN, HARNESS_BACKGROUND_HOLD_SECS_MAX] = [300, 86400] with a warning; non-int loads as the default. Config-file-only (no dashboard write path). An idle-sweep reset past the hold posts the recycle notice naming the launched work. See session.md "Harness background work".
+    max_per_creator: int = 50  # DEFAULT_MAX_PER_CREATOR: how many live sessions one creator (a Bot's own chat, a conductor) may hold; the default of `dashboard.state.MAX_SLOTS_PER_CREATOR`. Load-time clamped to [MAX_PER_CREATOR_MIN, MAX_PER_CREATOR_MAX] = [10, 450], one pair shared with the Settings write gate (`_EDITABLE_CONFIG`) and the `_SECURITY_BOUNDED_FIELDS` sweep; a value that is not a whole number loads as 50. The ceiling is `MAX_LIVE_SLOTS` (500) minus a reserve of 50, so one creator can never hold every live session. Read at each create, fork, revive and handoff through `dashboard.state.max_slots_per_creator` (the watcher's snapshot when armed, else a load), so a change needs no restart. Settings > Chat > Sessions > Sessions per creator
 
 @dataclass
 class TaskRunnerConfig:
@@ -4129,8 +4130,8 @@ and re-exported by `sections.py` and `loader.py`; the load-time clamp lives in
 The table names the ceilings; `_SECURITY_BOUNDED_FIELDS` is the authoritative list
 of every clamped `(section, key, min, max)` and also covers
 `agent.session_start_timeout_secs`, `dashboard.loop_stall_exit_after_secs`,
-`dashboard.chat_entry_cache_max_entries`, `dashboard.chat_entry_cache_max_bytes` and
-`session.reconcile_max_kills`. Each min matches that field's runtime floor, so they
+`dashboard.chat_entry_cache_max_entries`, `dashboard.chat_entry_cache_max_bytes`,
+`session.reconcile_max_kills` and `session.max_per_creator`. Each min matches that field's runtime floor, so they
 are not uniform (`agent.subagent_auto_max` floors at 3), and a legitimate in-range
 value is never altered. `_clamp_security_bounds(data)` runs **once on the disk-read (cache-miss)
 path, before the validated dict is cached** — so subsequent cache hits already
