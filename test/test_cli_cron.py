@@ -315,6 +315,13 @@ class TestCronCli:
             assert out == ""
             mock_svc.update_job.assert_not_called()
 
+    def test_bare_cron_prints_usage_without_building_the_service(self, capsys):
+        # CronService creates cron-history/ on a fresh data home.
+        with patch("kiro_crew.cli_commands.CronService") as mock_svc_cls:
+            _cron(argparse.Namespace(cron_action=None))
+        mock_svc_cls.assert_not_called()
+        assert capsys.readouterr().out.startswith("Usage: kirocrew cron {")
+
     def test_cron_update_bad_channel_exits_1_on_stderr(self, tmp_path, capsys):
         """A refused channel writes nothing and must not read as a success to a script."""
         with patch("kiro_crew.cli_commands.CronService") as mock_svc_cls:
