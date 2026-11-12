@@ -16,6 +16,7 @@ import { useScrollEdges } from '../hooks/useScrollEdges'
 import { useArmedDelete } from '../hooks/useArmedDelete'
 import SortableHeader from '../components/SortableHeader'
 import { EVENTS, KAS_ONLY_EVENTS, AGENT_REQUESTED_EVENTS } from './hookEventWireValues'
+import HookLaneMatcherHelp, { laneSelector } from './HookLaneMatcherHelp'
 
 import { i18nT } from '../i18n/t'
 interface Hook {
@@ -172,6 +173,9 @@ function HookForm({ hook, onSave, onCancel }: {
   const [skills, setSkills] = useState<string[]>(hook?.skills || [])
   const [timeout, setTimeout_] = useState(hook?.timeout || 30)
   const isToolHook = event === 'PreToolUse' || event === 'PostToolUse'
+  // A lane matcher keys on a tag id inside `added:<id>;`, so a glob copied from the
+  // generic `*deploy*` hint matches nothing, or matches leaving the lane as well.
+  const isLaneGlob = event === 'SessionLaneChanged' && matcherMode === 'glob'
   // Skills fire only for a standalone skills hook (no command) on
   // UserPromptSubmit/AgentSpawn — a command makes them inert, and other events
   // have no consumer for the injected directive.
@@ -191,7 +195,9 @@ function HookForm({ hook, onSave, onCancel }: {
       ? i18nT('pages.hooksPage.matcher_placeholder_regex')
       : matcherMode === 'contains'
         ? i18nT('pages.hooksPage.matcher_placeholder_contains')
-        : i18nT('pages.hooksPage.matcher_optional_e_g_deploy')
+        : isLaneGlob
+          ? i18nT('pages.hooksPage.matcher_placeholder_lane', { example: laneSelector('added', '<id>') })
+          : i18nT('pages.hooksPage.matcher_optional_e_g_deploy')
 
   return (
     <Card>
@@ -302,6 +308,7 @@ function HookForm({ hook, onSave, onCancel }: {
             <span>{i18nT('pages.hooksPage.s')}</span>
           </div>
         </div>
+        {isLaneGlob && <HookLaneMatcherHelp onInsert={setMatcher} />}
         {isSkillsCapable && (
           <div>
             <SkillsMultiSelect selected={skills} onChange={setSkills} />

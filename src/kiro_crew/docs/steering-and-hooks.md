@@ -398,6 +398,11 @@ lane, `*removed:<id>;*` to catch it leaving, and `*:<id>;*` for either. Keep bot
 the leading `:` and the trailing `;` — without them a selector also matches a lane
 whose id merely contains yours, and runs your hook on somebody else's session.
 
+The form helps with both halves. With `SessionLaneChanged` in `glob` mode it states
+the grammar under the matcher, and its **Insert a lane** menu lists the status tags
+(the lanes) by tag name and fills in `*added:<id>;*` with that tag's id, which no other
+screen shows.
+
 ### Creating, testing, enabling and deleting one
 
 On the Hooks tab:
