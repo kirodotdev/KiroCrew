@@ -556,11 +556,25 @@ def _update(force: bool = False) -> None:
     tracked_changes = [
         line for line in status.stdout.strip().splitlines() if not line.startswith("??")
     ]
-    if tracked_changes:
-        print("  ⚠️  Local tracked-file changes will be discarded:")
+    # A failed status prints nothing, which is not "no changes": ask the same
+    # question the listed-changes branch asks instead of skipping it.
+    status_failed = status.returncode != 0
+    if status_failed:
+        detail = (status.stderr or "").strip().splitlines()
+        print("  ⚠️  Could not check for local changes (git status failed).")
+        if detail:
+            print(f"      {detail[0]}")
+        print("      Any local tracked-file changes will be discarded.")
+    if tracked_changes or status_failed:
+        if tracked_changes:
+            print("  ⚠️  Local tracked-file changes will be discarded:")
         for line in tracked_changes[:10]:
             print(f"      {line}")
-        resp = input("  Continue? [y/N] ").strip().lower()
+        try:
+            resp = input("  Continue? [y/N] ").strip().lower()
+        except EOFError:
+            # No terminal to answer: take the prompt's default, "N".
+            resp = ""
         if resp != "y":
             print("  Aborted.")
             sys.exit(0)

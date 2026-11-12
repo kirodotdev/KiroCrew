@@ -42,6 +42,7 @@ class _GitStub:
         self.rc = rc
         self.calls: list[list[str]] = []
         self.status_out = ""
+        self.status_err = ""
         # Behind-only by default: these tests model a fast-forwardable
         # checkout, which the divergence guard waves through.
         self.rev_list_out = "0\t5\n"
@@ -82,7 +83,9 @@ class _GitStub:
                 argv, self.rc.get("rev_list", 0), self.rev_list_out, ""
             )
         if argv[:2] == ["git", "status"]:
-            return subprocess.CompletedProcess(argv, 0, self.status_out, "")
+            return subprocess.CompletedProcess(
+                argv, self.rc.get("status", 0), self.status_out, self.status_err
+            )
         if argv[:2] == ["git", "show"]:
             # The pre-reset interpreter-floor gate reads pyproject/setup.cfg out
             # of the fetched commit. BYTES, like the real call. Absent by
@@ -878,6 +881,49 @@ class TestUpdateSubprocessHardening:
             cli_server._update()
         assert exc.value.code == 1
         assert "git status timed out" in capsys.readouterr().out
+        assert not any(c[:2] == ["git", "reset"] for c in stub.calls)
+
+    def test_status_failure_asks_before_the_reset(self, monkeypatch, git_checkout, capsys) -> None:
+        """A failed status prints nothing, which is not "no changes": the
+        discard prompt still runs, and "no" keeps the tree untouched."""
+        stub = _GitStub(status=128)
+        stub.status_err = "fatal: not a git repository: sub/../.git/modules/sub\n"
+        monkeypatch.setattr(subprocess, "run", stub)
+        monkeypatch.setattr("builtins.input", lambda _p: "n")
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update()
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        assert "git status failed" in out
+        assert "fatal: not a git repository" in out
+        assert "Aborted." in out
+        assert not any(c[:2] == ["git", "reset"] for c in stub.calls)
+
+    def test_status_failure_still_updates_when_confirmed(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        stub = _GitStub(status=128)
+        monkeypatch.setattr(subprocess, "run", stub)
+        monkeypatch.setattr("builtins.input", lambda _p: "y")
+        cli_server._update()
+        assert "Kiro Crew updated!" in capsys.readouterr().out
+        assert any(c[:2] == ["git", "reset"] for c in stub.calls)
+
+    def test_status_failure_with_no_terminal_aborts_cleanly(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        """Closed stdin takes the prompt's default "N", never a traceback."""
+        stub = _GitStub(status=128)
+        monkeypatch.setattr(subprocess, "run", stub)
+
+        def _eof(_prompt: str) -> str:
+            raise EOFError
+
+        monkeypatch.setattr("builtins.input", _eof)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update()
+        assert exc.value.code == 0
+        assert "Aborted." in capsys.readouterr().out
         assert not any(c[:2] == ["git", "reset"] for c in stub.calls)
 
     def test_kiro_cli_update_timeout_degrades_best_effort(
