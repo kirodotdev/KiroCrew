@@ -108,6 +108,7 @@ function createManagedLane({
   let stagedVersion = null; // version the user took Download for (the ready dialog's version)
   let managedQuitArmed = false; // is a before-quit auto-apply handler installed?
   let managedInstalling = false; // an apply is in progress — pause the poll
+  let relaunchScheduled = false; // a Restart now already asked the app to come back
   let sessionEndWindow = null; // window holding the session-end notice listener
 
   // Mirror the feed lane's emitError renderer contract: a failure WITH ITS
@@ -151,6 +152,10 @@ function createManagedLane({
   // user's next start is the new version. An apply that was interrupted or that
   // failed leaves the arm in place, and the next app start finishes it before
   // the gateway spawns (startup-apply.js).
+  // What the app does once the quit-time apply ends: a Restart now scheduled a
+  // relaunch before the quit, any other quit just exits.
+  const exitOutcome = () => (relaunchScheduled ? "relaunching" : "exiting without relaunch");
+
   const managedInstallOnQuit = (event) => {
     // A further quit request while the apply is in progress (main.js is already
     // stopping the gateway, and a second Cmd+Q, tray Quit or window close lands
@@ -213,11 +218,11 @@ function createManagedLane({
       const result = await runArmedApply({ exec, version, log });
       if (result.ok) {
         updateArm.clear();
-        log.info("[update] managed apply on quit finished - exiting without relaunch");
+        log.info(`[update] managed apply on quit finished - ${exitOutcome()}`);
       } else {
         // The arm stays: the next app start runs the apply again before the
         // gateway spawns, and shows the error if that fails too.
-        log.error(`[update] managed apply on quit did not finish (${result.message}) - the arm stays, exiting without relaunch`);
+        log.error(`[update] managed apply on quit did not finish (${result.message}) - the arm stays, ${exitOutcome()}`);
       }
       app.exit(0);
     })();
@@ -515,6 +520,7 @@ function createManagedLane({
   // update is applied by the quit it triggers, exactly as for any other quit,
   // and the relaunch below brings the app back (see relaunchAfterApply).
   function managedRelaunch() {
+    relaunchScheduled = true;
     relaunchAfterApply();
     app.quit();
   }
