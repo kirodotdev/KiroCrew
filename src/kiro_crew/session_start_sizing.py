@@ -22,8 +22,18 @@ sized from it widens and never narrows. A gateway that boots while memory is
 short is therefore not held at that moment's width for its whole life, and no
 width follows memory back down: the adaptive loops on this resource are the
 gatewayd spawn gate and the execution-cap controller, and a second loop moving
-both ways would oscillate against them. Memory per start stays bounded by
-``agent.spawn_min_memory_gb``, which reads the host at each start.
+both ways would oscillate against them.
+
+``agent.spawn_min_memory_gb`` gates sub-agent starts only. For any other start
+(a chat, a channel turn, a cron job, the warm pool) the memory term in this
+width is the only memory bound at the start gates, and once widened it does not
+come back. That is the width a gateway that booted with the memory free already
+keeps for its whole life: a widened width never passes the one this formula
+gives such a gateway. The memory checks that stand apart from the gates are not
+touched: while host memory is critical ``resource_status.admission_check``
+defers background work (an ``every`` or ``at`` cron firing, a task-runner step,
+a background helper turn), and ``resource_status.prewarm_allowance`` lowers the
+number of sessions the dashboard pre-warms as memory tightens.
 
 An explicit integer in config always wins; ``auto`` is the default.
 """
