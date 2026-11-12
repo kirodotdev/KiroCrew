@@ -277,8 +277,9 @@ def _is_gitlab_host(host: str) -> bool:
         listed = KiroCrewConfig.load().dashboard.gitlab_hosts
     except Exception:  # standalone, or config unreadable: wording only
         return False
-    # An entry may carry a port (``host:8443``); a parsed hostname never does.
-    return host in {str(entry).lower().split(":", 1)[0] for entry in listed}
+    # An entry may carry a port (``host:8443``) and a relative URL root
+    # (``host/gitlab``); a parsed hostname carries neither.
+    return host in {str(entry).lower().partition("/")[0].split(":", 1)[0] for entry in listed}
 
 
 def parse_repo_ref(link: str, *, config: dict | None = None) -> tuple[str, str, str]:

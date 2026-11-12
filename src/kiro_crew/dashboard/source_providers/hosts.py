@@ -244,18 +244,31 @@ def _gitlab_url_root(host: str) -> str:
     return _gitlab_url_roots_of(_gitlab_hosts_snapshot).get(host, "")
 
 
-def gitlab_hosts_blocking() -> frozenset[str]:
+@functools.lru_cache(maxsize=4)
+def _gitlab_root_served_authorities_of(entries: frozenset[str]) -> frozenset[str]:
+    return frozenset(host for host, root in _gitlab_url_roots_of(entries).items() if not root)
+
+
+def gitlab_hosts_blocking(*, served_at_root: bool = False) -> frozenset[str]:
     """The self-managed GitLab allowlist for sync code that runs OFF the event loop.
 
     The cached snapshot while it is fresh, including a fresh EMPTY one (an operator
     with no self-managed hosts pays no config read). Otherwise one blocking config
     read, which does not touch the shared snapshot. Never call this on the loop: use
     :func:`ensure_gitlab_hosts_loaded` there.
+
+    Returns the ``host[:port]`` of each entry, like :func:`_allowed_gitlab_hosts`,
+    so a caller comparing a URL's host never sees an entry's relative URL root.
+    ``served_at_root=True`` leaves out every entry that carries a URL root, for a
+    caller that builds project paths without knowing about one.
     """
     if _gitlab_hosts_fresh():
-        return _gitlab_hosts_snapshot
-    gitlab, _jira, _chips, _github, _bitbucket_server, _gerrit = _load_source_link_settings()
-    return gitlab
+        entries = _gitlab_hosts_snapshot
+    else:
+        entries, _jira, _chips, _github, _bitbucket_server, _gerrit = _load_source_link_settings()
+    if served_at_root:
+        return _gitlab_root_served_authorities_of(entries)
+    return _gitlab_authorities_of(entries)
 
 
 def _allowed_jira_hosts() -> frozenset[str]:
