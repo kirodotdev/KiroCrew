@@ -19,6 +19,7 @@ from typing import Any, Optional
 from kiro_crew import platform_compat
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
+    ACP_BACKENDS_SESSION_EVICTION,
     POLICY_ID_BY_BACKEND,
     Routing,
     backend_from_stored,
@@ -485,6 +486,10 @@ class Worker(ABC):
         """
         return 0.0
 
+    def resets_in_place(self) -> bool:
+        """True when a reset keeps the process, so the pool can reset after every call."""
+        return False
+
     @abstractmethod
     async def reset_conversation(self) -> None:
         """Drop the accumulated transcript, leaving the worker ready to serve.
@@ -513,6 +518,8 @@ class AcpWorker(Worker):
         self._effective_effort: Optional[str] = None
         # PID currently shielded from the gateway orphan sweep (see module note).
         self._protected_pid: Optional[int] = None
+        # Set when a reset in place fails, so this worker goes back to restarts.
+        self._in_place_failed = False
 
     async def start(self) -> None:
         if AcpClient is None:
@@ -840,14 +847,46 @@ class AcpWorker(Worker):
         except (AttributeError, TypeError, ValueError):
             return 0.0
 
-    async def reset_conversation(self) -> None:
-        """Spawn a fresh ACP session, discarding the accumulated transcript.
+    def resets_in_place(self) -> bool:
+        client = self._client
+        return (
+            client is not None
+            and not self._in_place_failed
+            and getattr(client, "backend", None) in ACP_BACKENDS_SESSION_EVICTION
+        )
 
-        ``start()`` already tears the previous client down (and moves the sweep
-        shield to the new PID), so re-running it is the whole reset. It costs one
-        cold start per WORKER_RECYCLE_CALLS prompts, far less than the billed
-        auto-compaction the growing transcript would otherwise trigger.
+    async def reset_conversation(self) -> None:
+        """Start an empty ACP session, discarding the accumulated transcript.
+
+        Where the backend can end a session on its running process, the client
+        opens the new session in place, and the zero-tool spec is confirmed again
+        as ``start()`` confirms it. Otherwise, or when that fails, ``start()``
+        replaces the process, which also tears the previous client down and moves
+        the sweep shield to the new PID.
         """
+        client = self._client
+        if client is not None and self.resets_in_place():
+            try:
+                agent_spec = routing_for(client.backend) is Routing.AGENT_SPEC
+                before = agent_spec and await asyncio.to_thread(
+                    client.authored_spec_declares_zero_tools
+                )
+                await client.start_new_session()
+                if agent_spec:
+                    confirmed = await asyncio.to_thread(
+                        client.effective_spec_declares_zero_tools, authored_before_spawn=before
+                    )
+                else:
+                    confirmed = client.spec_zero_tools
+                if confirmed:
+                    self._effective_effort = None
+                    await self._apply_effort()
+                    self.calls_since_reset = 0
+                    return
+                logger.warning("AcpWorker: zero-tool spec unconfirmed after reset; restarting")
+            except Exception:
+                logger.warning("AcpWorker: reset in place failed; restarting", exc_info=True)
+            self._in_place_failed = True
         await self.start()
         self.calls_since_reset = 0
 
@@ -1506,6 +1545,9 @@ class LLMPool:
     async def _maybe_recycle(self, idx: int, worker: Worker) -> None:
         """Reset *worker*'s conversation once its transcript has grown enough.
 
+        A worker that resets in place keeps its process, so it is reset after every
+        call and each prompt is sent alone.
+
         Runs while the worker is still checked out, so no other caller can send
         into a half-reset session. Every knowledge prompt is self-contained, so a
         reset loses nothing — and it must land BEFORE the backend's own
@@ -1521,10 +1563,14 @@ class LLMPool:
         except Exception:
             pct = 0.0
         by_pct = pct >= WORKER_RECYCLE_PCT
-        if not by_pct and worker.calls_since_reset < WORKER_RECYCLE_CALLS:
+        in_place = worker.resets_in_place()
+        if not (by_pct or in_place) and worker.calls_since_reset < WORKER_RECYCLE_CALLS:
             return
-        reason = f"context at {pct:.0f}%" if by_pct else f"{worker.calls_since_reset} calls"
-        logger.info("LLMPool: recycling worker %d conversation — %s", idx, reason)
+        if in_place:
+            logger.debug("LLMPool: resetting worker %d conversation in place", idx)
+        else:
+            reason = f"context at {pct:.0f}%" if by_pct else f"{worker.calls_since_reset} calls"
+            logger.info("LLMPool: recycling worker %d conversation — %s", idx, reason)
         try:
             await worker.reset_conversation()
         except Exception:

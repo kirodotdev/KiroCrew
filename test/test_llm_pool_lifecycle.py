@@ -9,6 +9,7 @@ live in ``test_llm_pool.py``, reasoning effort in ``test_llm_pool_effort.py``, a
 
 from __future__ import annotations
 
+import json
 import time
 from unittest.mock import AsyncMock, patch
 
@@ -20,6 +21,7 @@ from llm_pool_helpers import (  # noqa: F401 -- the autouse fixture registers by
     _zero_tool_client,
 )
 
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
 from kiro_crew.knowledge.llm_pool import (
     DEFAULT_IDLE_TTL_SECS,
     WORKER_RECYCLE_CALLS,
@@ -234,8 +236,9 @@ class TestIdleReaper:
 class _PctWorker(Worker):
     """Worker whose reported context percentage the test drives directly."""
 
-    def __init__(self, pct: float = 0.0) -> None:
+    def __init__(self, pct: float = 0.0, in_place: bool = False) -> None:
         self.pct = pct
+        self.in_place = in_place
         self.resets = 0
         self.sends = 0
 
@@ -254,6 +257,9 @@ class _PctWorker(Worker):
 
     def context_pct(self) -> float:
         return self.pct
+
+    def resets_in_place(self) -> bool:
+        return self.in_place
 
     async def reset_conversation(self) -> None:
         self.resets += 1
@@ -312,6 +318,16 @@ class TestWorkerConversationRecycle:
         await pool.send("prompt")
         assert worker.resets == 1
         assert worker.calls_since_reset == 0
+
+    @pytest.mark.asyncio
+    async def test_worker_that_resets_in_place_is_reset_after_every_call(self):
+        worker = _PctWorker(pct=0.0, in_place=True)
+        pool = _pool_with(worker)
+
+        await pool.send("a")
+        await pool.send("b")
+
+        assert worker.resets == 2
 
     @pytest.mark.asyncio
     async def test_recycle_happens_between_calls_not_mid_call(self):
@@ -407,3 +423,108 @@ class TestWorkerConversationRecycle:
         client.last_prompt_stats.context_pct = 63.5
         worker._client = client
         assert worker.context_pct() == 63.5
+
+    @pytest.mark.asyncio
+    async def test_acp_worker_resets_in_place_on_an_evicting_backend(self):
+        worker = AcpWorker(sandbox_mode="off")
+        client = _zero_tool_client()
+        client.backend = ACP_BACKEND_KIRO
+        worker._client = client
+        worker.calls_since_reset = 3
+
+        with patch.object(worker, "start", AsyncMock()) as start:
+            await worker.reset_conversation()
+
+        client.start_new_session.assert_awaited_once()
+        start.assert_not_awaited()
+        assert worker.calls_since_reset == 0
+        assert worker.resets_in_place()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", ["new session refused", "spec unconfirmed"])
+    async def test_acp_worker_restarts_when_reset_in_place_fails(self, failure):
+        """A failed reset in place restarts the process, and the worker stops trying
+        in place, so the pool goes back to its thresholds instead of restarting the
+        process after every call."""
+        worker = AcpWorker(sandbox_mode="off")
+        client = _zero_tool_client(spec_declares_zero_tools=failure != "spec unconfirmed")
+        client.backend = ACP_BACKEND_KIRO
+        if failure == "new session refused":
+            client.start_new_session.side_effect = RuntimeError(failure)
+        worker._client = client
+
+        with patch.object(worker, "start", AsyncMock()) as start:
+            await worker.reset_conversation()
+
+        start.assert_awaited_once()
+        assert not worker.resets_in_place()
+
+
+def _real_kiro_worker(tmp_path, monkeypatch) -> tuple[AcpWorker, object]:
+    """An ``AcpWorker`` on the packaged fake backend, run as a child process with its
+    native store on, which records the whole conversation each prompt would send and
+    the pid that served it. Returns the worker and the store directory."""
+    from kiro_crew import agent as agent_mod
+    from kiro_crew.agent_materialization.service_agents import _install_knowledge_agent
+    from kiro_crew.testing import fake_acp_backend
+    from kiro_crew.testing.harness import fake_acp_backend_launcher
+
+    store = tmp_path / "native-store"
+    store.mkdir()
+    monkeypatch.setenv("KIROCREW_KIRO_BIN", str(fake_acp_backend_launcher(tmp_path)))
+    monkeypatch.setenv(fake_acp_backend.NATIVE_STORE_ENV, str(store))
+    agent_mod.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
+    _install_knowledge_agent()
+    return AcpWorker(sandbox_mode="off", acp_backend=ACP_BACKEND_KIRO), store
+
+
+@pytest.mark.asyncio
+async def test_acp_worker_sends_each_prompt_alone_on_one_process(tmp_path, monkeypatch):
+    from kiro_crew.config.paths import kiro_sessions_dir
+    from kiro_crew.testing import fake_acp_backend
+
+    worker, store = _real_kiro_worker(tmp_path, monkeypatch)
+    pool = _pool_with(worker)
+    try:
+        await worker.start()
+        await pool.send("FIRST chunk about apples")
+        # The pool has already reset, so this is the session the next prompt uses.
+        next_sid = worker._client._session_id
+        transcript = kiro_sessions_dir() / f"{next_sid}.json"
+        transcript.parent.mkdir(parents=True, exist_ok=True)
+        transcript.write_text("{}")
+        await pool.send("SECOND chunk about pears")
+    finally:
+        await worker.shutdown()
+
+    log = store / fake_acp_backend.NATIVE_REQUEST_LOG
+    first, second = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert [first["turn"], second["turn"]] == [1, 1]
+    assert "FIRST" not in second["request"]
+    assert first["pid"] == second["pid"]
+    assert second["sid"] == next_sid != first["sid"]
+    # The reset after the second prompt ended its session and deleted the transcript.
+    assert not transcript.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_new_session_ends_the_process(tmp_path, monkeypatch):
+    """A failure after the old session id is dropped ends the process, as a failed
+    start does, so the client is never left alive with no session."""
+    from kiro_crew.acp.transport_errors import AcpError
+
+    worker, _store = _real_kiro_worker(tmp_path, monkeypatch)
+    try:
+        await worker.start()
+        client = worker._client
+        process = client._process
+        client._initialize_session = AsyncMock(side_effect=AcpError("session/new refused"))
+
+        with pytest.raises(AcpError):
+            await client.start_new_session()
+
+        assert not client.is_ready
+        assert client._process is None
+        assert process.returncode is not None
+    finally:
+        await worker.shutdown()

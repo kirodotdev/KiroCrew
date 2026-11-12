@@ -1256,9 +1256,9 @@ class TestAcpWorkerZeroToolConfirmation:
 
     @pytest.mark.asyncio
     async def test_fallback_is_sticky_across_reset_conversation(self, tmp_path):
-        """Once a worker has fallen back to Kiro, ``reset_conversation`` (which
-        just re-runs ``start()``) must stay on Kiro rather than re-resolving
-        the originally configured backend and falling back again."""
+        """Once a worker has fallen back to Kiro, a ``reset_conversation`` that
+        restarts (here because the reset in place is refused) must stay on Kiro
+        rather than re-resolving the configured backend and falling back again."""
         first = _zero_tool_client()
         first.is_ready = True
         first.backend = ACP_BACKEND_OPENCODE
@@ -1267,6 +1267,7 @@ class TestAcpWorkerZeroToolConfirmation:
         second.is_ready = True
         second.backend = ACP_BACKEND_KIRO
         second.spec_zero_tools = False
+        second.start_new_session.side_effect = NotImplementedError
         third = _zero_tool_client()
         third.is_ready = True
         third.backend = ACP_BACKEND_KIRO
