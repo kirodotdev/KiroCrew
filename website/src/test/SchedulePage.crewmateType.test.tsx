@@ -170,6 +170,32 @@ describe('Schedule list mate schedules', () => {
     await waitFor(() => expect(screen.queryByTestId('schedule-crewmate-roster-error')).toBeNull())
   })
 
+  it('keeps the mate roster notice, its message and a focused, inert Retry up while the retry runs', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).members.mockRejectedValue(new Error('Members request failed (HTTP 500)'))
+    await renderList()
+    await screen.findByTestId('schedule-crewmate-roster-error')
+
+    let settle!: (v: { members: typeof ROSTER }) => void
+    vi.mocked(api).members.mockReturnValue(new Promise(resolve => { settle = resolve }))
+    const callsBefore = vi.mocked(api).members.mock.calls.length
+    const retry = screen.getByRole('button', { name: 'Retry' })
+    retry.focus()
+    fireEvent.click(retry)
+
+    await waitFor(() => expect(retry).toHaveAttribute('aria-disabled', 'true'))
+    expect(retry).toBeInTheDocument()
+    expect(retry).toHaveFocus()
+    expect(retry).toHaveAttribute('aria-busy', 'true')
+    expect(screen.getByTestId('schedule-crewmate-roster-error')).toHaveTextContent('Members request failed (HTTP 500)')
+    fireEvent.click(retry)
+    expect(vi.mocked(api).members.mock.calls.length).toBe(callsBefore + 1)
+
+    await act(async () => { settle({ members: ROSTER }) })
+    await waitFor(() => expect(screen.queryByTestId('schedule-crewmate-roster-error')).toBeNull())
+    expect(await within(typeCell('Radar triage')).findByRole('link', { name: /radar/ })).toBeInTheDocument()
+  })
+
   it('the mate filter narrows the list to one mate', async () => {
     await renderList()
     fireEvent.click(await screen.findByLabelText('Filter by bot'))
