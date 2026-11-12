@@ -9,10 +9,10 @@
  * way `appShell.tsx` does.
  */
 import React from 'react'
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react'
 import { BrowserRouter, Routes, Route, useLocation, useNavigate } from 'react-router-dom'
-import { NavHistoryArrows, RouteHistoryTracker } from '../components/NavHistoryArrows'
+import { MOUSE_HOLD_MS, NavHistoryArrows, RouteHistoryTracker } from '../components/NavHistoryArrows'
 import {
   NavigationLeaveGuardProvider,
   NavigationBackGuard,
@@ -192,6 +192,41 @@ describe('NavHistoryArrows history menu', () => {
     vi.useRealTimers()
     expect(page()).toBe('/b')
     expect(screen.getByRole('menu')).toBeInTheDocument()
+  })
+
+  it('a mouse held on Back opens the menu, and its release does not also step', async () => {
+    render(<Shell />)
+    await go('/a')
+    await go('/b')
+    const back = backBtn()
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    fireEvent.pointerDown(back, { pointerType: 'mouse', button: 0 })
+    act(() => { vi.advanceTimersByTime(MOUSE_HOLD_MS) })
+    expect(items()).toEqual(['Alpha', 'Home'])
+    fireEvent.pointerUp(back, { pointerType: 'mouse', button: 0 })
+    fireEvent.click(back)
+    expect(page()).toBe('/b')
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+  })
+
+  it('a quick mouse click, or a press dragged off the arrow, opens no menu', async () => {
+    render(<Shell />)
+    await go('/a')
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    fireEvent.pointerDown(backBtn(), { pointerType: 'mouse', button: 0 })
+    fireEvent.pointerLeave(backBtn(), { pointerType: 'mouse' })
+    act(() => { vi.advanceTimersByTime(MOUSE_HOLD_MS * 2) })
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    fireEvent.pointerDown(backBtn(), { pointerType: 'mouse', button: 0 })
+    act(() => { vi.advanceTimersByTime(100) })
+    fireEvent.pointerUp(backBtn(), { pointerType: 'mouse', button: 0 })
+    act(() => { vi.advanceTimersByTime(MOUSE_HOLD_MS * 2) })
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    vi.useRealTimers()
+    fireEvent.click(backBtn())
+    await waitFor(() => expect(page()).toBe('/'))
   })
 
   it('a short touch is a plain step', async () => {
