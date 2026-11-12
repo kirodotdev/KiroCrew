@@ -12448,7 +12448,7 @@
         "approve": "स्वीकृत करें",
         "approved": "स्वीकृत",
         "artifact_save_permanently": "हमेशा के लिए सहेजें",
-        "artifact_save_permanently_aria": "इस आर्टिफ़ैक्ट को हमेशा के लिए सहेजें ताकि यह हटाया न जाए",
+        "artifact_save_permanently_aria": "{{name}} को हमेशा के लिए सहेजो ताकि यह हटाया न जाए",
         "artifacts": "आर्टिफ़ैक्ट",
         "artifacts_browse_all": "सभी देखो ({{count}})",
         "artifacts_browse_folder": "यह फ़ोल्डर देखो",

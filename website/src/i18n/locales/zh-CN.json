@@ -12180,7 +12180,7 @@
         "approve": "批准",
         "approved": "已批准",
         "artifact_save_permanently": "永久保存",
-        "artifact_save_permanently_aria": "永久保存此产物，避免被清理",
+        "artifact_save_permanently_aria": "永久保存 {{name}}，避免被清理",
         "artifacts": "产物",
         "artifacts_browse_all": "浏览全部（{{count}}）",
         "artifacts_browse_folder": "浏览此文件夹",

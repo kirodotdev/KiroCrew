@@ -5635,7 +5635,7 @@
       "activityViewer": {
         "approval_needed": "Approval Needed",
         "artifact_save_permanently": "Save permanently",
-        "artifact_save_permanently_aria": "Save this artifact permanently so it is not cleaned up",
+        "artifact_save_permanently_aria": "Save {{name}} permanently so it is not cleaned up",
         "artifacts": "Artifacts",
         "artifacts_browse_all": "Browse all ({{count}})",
         "artifacts_browse_folder": "Browse this folder",

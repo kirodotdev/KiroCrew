@@ -12094,7 +12094,7 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "[ẁàìţìñğ ţø şţàŕţ — ǫùèùèð ƀèĥìñð ţĥè çøñçùŕŕèñçý ĺìɱìţ ···················]",
         "approval_needed": "[Àþþŕøṽàĺ Ñèèðèð ··············]",
         "artifact_save_permanently": "[Şàṽè þèŕɱàñèñţĺý ··············]",
-        "artifact_save_permanently_aria": "[Şàṽè ţĥìş àŕţìƒàçţ þèŕɱàñèñţĺý şø ìţ ìş ñøţ çĺèàñèð ùþ ···················]",
+        "artifact_save_permanently_aria": "[Şàṽè {{name}} þèŕɱàñèñţĺý şø ìţ ìş ñøţ çĺèàñèð ùþ ·····················]",
         "artifacts": "[Àŕţìƒàçţş ··············]",
         "artifacts_browse_all": "[Ɓŕøẁşè àĺĺ ({{count}}) ············]",
         "artifacts_browse_folder": "[Ɓŕøẁşè ţĥìş ƒøĺðèŕ ················]",

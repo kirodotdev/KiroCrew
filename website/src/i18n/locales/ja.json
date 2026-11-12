@@ -12180,7 +12180,7 @@
         "approve": "承認",
         "approved": "承認済み",
         "artifact_save_permanently": "永続保存",
-        "artifact_save_permanently_aria": "このアーティファクトを永続保存してクリーンアップの対象にならないようにする",
+        "artifact_save_permanently_aria": "{{name}} を永続保存してクリーンアップの対象にならないようにする",
         "artifacts": "アーティファクト",
         "artifacts_browse_all": "すべて参照({{count}})",
         "artifacts_browse_folder": "このフォルダーを参照",

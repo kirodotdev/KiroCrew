@@ -12716,7 +12716,7 @@
         "approve": "Approuver",
         "approved": "Approuvé",
         "artifact_save_permanently": "Enregistrer définitivement",
-        "artifact_save_permanently_aria": "Enregistrer définitivement cet artefact pour qu'il ne soit pas supprimé",
+        "artifact_save_permanently_aria": "Enregistrer définitivement {{name}} pour qu'il ne soit pas supprimé",
         "artifacts": "Artefacts",
         "artifacts_browse_all": "Tout parcourir ({{count}})",
         "artifacts_browse_folder": "Parcourir ce dossier",

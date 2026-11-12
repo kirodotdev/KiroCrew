@@ -12448,7 +12448,7 @@
         "approve": "অনুমোদন করুন",
         "approved": "অনুমোদিত",
         "artifact_save_permanently": "স্থায়ীভাবে সংরক্ষণ করুন",
-        "artifact_save_permanently_aria": "এই আর্টিফ্যাক্টটি স্থায়ীভাবে সংরক্ষণ করুন যাতে এটি মুছে না যায়",
+        "artifact_save_permanently_aria": "{{name}} স্থায়ীভাবে সংরক্ষণ করো যাতে এটি মুছে না যায়",
         "artifacts": "আর্টিফ্যাক্ট",
         "artifacts_browse_all": "সব দেখুন ({{count}})",
         "artifacts_browse_folder": "এই ফোল্ডার দেখো",

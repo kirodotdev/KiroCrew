@@ -12180,7 +12180,7 @@
         "approve": "승인",
         "approved": "승인됨",
         "artifact_save_permanently": "영구 저장",
-        "artifact_save_permanently_aria": "이 아티팩트를 영구 저장하여 정리 대상에서 제외합니다",
+        "artifact_save_permanently_aria": "{{name}}을(를) 영구 저장하여 정리 대상에서 제외합니다",
         "artifacts": "아티팩트",
         "artifacts_browse_all": "전체 보기({{count}})",
         "artifacts_browse_folder": "이 폴더 보기",
