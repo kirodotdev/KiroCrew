@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject, type RefObject } from 'react'
 import { attachUserScrollIntent } from '../../utils/searchScroll'
-import { computeAtBottom, isSelfScroll } from './FollowController'
+import { computeAtEdge, isSelfScroll } from './FollowController'
 import { noteUserScrollActivity } from '../../lib/scrollQuiet'
 import { devWatchScroller } from '../../dev/scrollInspector'
 import type { FollowState, Pinning } from './followPolicy'
@@ -35,6 +35,12 @@ export interface ScrollerElement {
    *  ResizeObserver so its growth is followed like tail growth; nothing else
    *  sees it (it is not a row, and it leaves the scroller's box alone). */
   trailingRef: RefObject<HTMLDivElement>
+  /** The wrapper around the chrome TranscriptScrollShell renders BEFORE the
+   *  rows in the top-down layout: the working footer, the preparing caption,
+   *  the survey. Mounted only there. Observed by the ResizeObserver so a change
+   *  in its height above a released reader reaches the measured residual
+   *  (measurement.ts); it is not a row and never enters the height cache. */
+  leadingRef: RefObject<HTMLDivElement>
   leadingOffset: (el: HTMLElement) => number
   /** The scroller node as state, so the element-keyed observers re-attach. */
   scrollerEl: HTMLDivElement | null
@@ -64,6 +70,7 @@ export function useScrollerElement(
   const topSentinelRef = useRef<HTMLDivElement>(null)
   const bottomSentinelRef = useRef<HTMLDivElement>(null)
   const trailingRef = useRef<HTMLDivElement>(null)
+  const leadingRef = useRef<HTMLDivElement>(null)
 
   // ---- Leading offset: px from the scroller's scroll origin to the start of
   // list content. In the chat transcript the list IS the scroller's content,
@@ -125,6 +132,7 @@ export function useScrollerElement(
     topSentinelRef,
     bottomSentinelRef,
     trailingRef,
+    leadingRef,
     leadingOffset,
     scrollerEl,
     syncScrollerEl,
@@ -139,16 +147,16 @@ export function useScrollListener<T>(ctx: {
   setIsAtBottom: (update: (prev: boolean) => boolean) => void
   itemsRef: Ref<T[]>
   getKeyRef: Ref<(item: T, index: number) => string>
-  follow: Pick<FollowState, 'smoothPinActiveRef' | 'lastWriteTopRef' | 'lastObservedTopRef' | 'noteHardInput'>
+  follow: Pick<FollowState, 'followEdge' | 'smoothPinActiveRef' | 'lastWriteTopRef' | 'lastObservedTopRef' | 'noteHardInput'>
   pinning: Pick<Pinning, 'onFollowScroll' | 'cancelHeldPinRetry'>
-  reading: Pick<ReadingPositionEntry<T>, 'lastScrollCtxRef' | 'sessionIdRef' | 'scheduleAnchorSave'>
+  reading: Pick<ReadingPositionEntry<T>, 'anchorSaveTimerRef' | 'lastScrollCtxRef' | 'sessionIdRef' | 'scheduleAnchorSave'>
   measurement: Pick<RowMeasurement, 'noteRowTops'>
   ops: Pick<WindowOperations, 'recomputeWindow'>
 }): void {
   const { scrollerEl, bottomThreshold, setIsAtBottom, itemsRef, getKeyRef } = ctx
-  const { smoothPinActiveRef, lastWriteTopRef, lastObservedTopRef, noteHardInput } = ctx.follow
+  const { followEdge, smoothPinActiveRef, lastWriteTopRef, lastObservedTopRef, noteHardInput } = ctx.follow
   const { onFollowScroll, cancelHeldPinRetry } = ctx.pinning
-  const { lastScrollCtxRef, sessionIdRef, scheduleAnchorSave } = ctx.reading
+  const { anchorSaveTimerRef, lastScrollCtxRef, sessionIdRef, scheduleAnchorSave } = ctx.reading
   const { noteRowTops } = ctx.measurement
   const { recomputeWindow } = ctx.ops
 
@@ -166,7 +174,8 @@ export function useScrollListener<T>(ctx: {
       if (!smoothPinActiveRef.current && !isSelfScroll(geom.scrollTop, lastWriteTopRef.current)) {
         noteUserScrollActivity()
       }
-      const atBottom = computeAtBottom(geom, bottomThreshold)
+      // "At the live edge": the bottom by default, scrollTop 0 for the top edge.
+      const atBottom = computeAtEdge(geom, bottomThreshold, followEdge)
       setIsAtBottom((prev) => {
         if (prev === atBottom) return prev
         return atBottom
@@ -184,6 +193,7 @@ export function useScrollListener<T>(ctx: {
         session: sessionIdRef.current,
         items: itemsRef.current,
         getKey: getKeyRef.current,
+        followEdge,
       }
       scheduleAnchorSave()
       // Every scroll -- the reader's, the engine's anchoring adjustment, our
@@ -224,6 +234,14 @@ export function useScrollListener<T>(ctx: {
       // not fire against a scroller this hook no longer listens to (or one
       // that has unmounted).
       cancelHeldPinRetry()
+      // A scroll can reach this outgoing listener after a session-switch render
+      // updates sessionIdRef but before passive effects replace the listener.
+      // Drop that mixed-session save so the new listener's initial onScroll
+      // can schedule one with its own session and follow edge.
+      if (anchorSaveTimerRef.current !== null) {
+        clearTimeout(anchorSaveTimerRef.current)
+        anchorSaveTimerRef.current = null
+      }
       // Cancel any frame queued by the last scroll so it can't fire a
       // setWindowRange after unmount/re-run. Reset the ref too, or a re-run
       // would see it stuck true and never schedule again.
@@ -231,8 +249,8 @@ export function useScrollListener<T>(ctx: {
       scrollRafScheduledRef.current = false
     }
   }, [
-    scrollerEl, bottomThreshold, onFollowScroll, cancelHeldPinRetry, noteHardInput, recomputeWindow, scheduleAnchorSave, noteRowTops,
-    smoothPinActiveRef, lastWriteTopRef, lastObservedTopRef, lastScrollCtxRef, sessionIdRef, itemsRef, getKeyRef,
+    scrollerEl, bottomThreshold, followEdge, onFollowScroll, cancelHeldPinRetry, noteHardInput, recomputeWindow, scheduleAnchorSave, noteRowTops,
+    smoothPinActiveRef, lastWriteTopRef, lastObservedTopRef, anchorSaveTimerRef, lastScrollCtxRef, sessionIdRef, itemsRef, getKeyRef,
     setIsAtBottom,
   ])
 }
@@ -242,6 +260,7 @@ export function useResizeObserver(ctx: {
   scrollerEl: HTMLDivElement | null
   elIndexRef: Ref<Map<Element, number>>
   trailingRef: RefObject<HTMLDivElement>
+  leadingRef: RefObject<HTMLDivElement>
   resizeObserverRef: Ref<ResizeObserver | null>
   measurement: Pick<RowMeasurement, 'measureResizeEntries' | 'shiftRowTops'>
   compensation: Pick<ShiftCompensation, 'compensateAboveFold'>
@@ -249,7 +268,7 @@ export function useResizeObserver(ctx: {
   pinning: Pick<Pinning, 'followResizeBatch'>
   ops: Pick<WindowOperations, 'recomputeWindow'>
 }): void {
-  const { scrollerRef, scrollerEl, elIndexRef, trailingRef, resizeObserverRef } = ctx
+  const { scrollerRef, scrollerEl, elIndexRef, trailingRef, leadingRef, resizeObserverRef } = ctx
   const { measureResizeEntries, shiftRowTops } = ctx.measurement
   const { compensateAboveFold } = ctx.compensation
   const { deferForRailSettle, scheduleResizeSync, cancelRailSettle } = ctx.sync
@@ -317,6 +336,14 @@ export function useResizeObserver(ctx: {
     // until the next chunk resized the row). Its own state changes are what
     // mount it, so no layout effect of this hook runs for that commit either.
     if (trailingRef.current) ro.observe(trailingRef.current)
+    // And the leading-chrome wrapper (the leading branch of
+    // measureResizeEntries), which the shell mounts only in the top-down
+    // layout. There the footer, caption and survey sit above the rows, so a
+    // change in their height moves a released reader's text with no row
+    // resize to announce it. The layout and `followEdge` change together, and
+    // `followResizeBatch` depends on `followEdge`, so a layout change re-runs
+    // this effect after the wrapper mounts or unmounts.
+    if (leadingRef.current) ro.observe(leadingRef.current)
     return () => {
       ro.disconnect()
       // Cancel a frame queued by the last resize so it can't fire a
@@ -327,7 +354,7 @@ export function useResizeObserver(ctx: {
     }
   }, [
     scrollerRef, measureResizeEntries, shiftRowTops, compensateAboveFold, deferForRailSettle, followResizeBatch,
-    scheduleResizeSync, cancelRailSettle, recomputeWindow, elIndexRef, trailingRef, resizeObserverRef,
+    scheduleResizeSync, cancelRailSettle, recomputeWindow, elIndexRef, trailingRef, leadingRef, resizeObserverRef,
   ])
 
   // Late-mounting scroller: the RO effect above observes `scrollerRef.current`
@@ -339,10 +366,16 @@ export function useResizeObserver(ctx: {
     const el = scrollerEl
     if (!el) return
     resizeObserverRef.current?.observe(el)
-    // The trailing wrapper mounts with the scroller's shell, so a scroller that
-    // arrives late brings it along; observe both here.
+    // The trailing and leading wrappers mount with the scroller's shell, so a
+    // scroller that arrives late brings them along; observe them here too.
     const trailing = trailingRef.current
     if (trailing) resizeObserverRef.current?.observe(trailing)
-    return () => { resizeObserverRef.current?.unobserve(el); if (trailing) resizeObserverRef.current?.unobserve(trailing) }
-  }, [scrollerEl, trailingRef, resizeObserverRef])
+    const leading = leadingRef.current
+    if (leading) resizeObserverRef.current?.observe(leading)
+    return () => {
+      resizeObserverRef.current?.unobserve(el)
+      if (trailing) resizeObserverRef.current?.unobserve(trailing)
+      if (leading) resizeObserverRef.current?.unobserve(leading)
+    }
+  }, [scrollerEl, trailingRef, leadingRef, resizeObserverRef])
 }

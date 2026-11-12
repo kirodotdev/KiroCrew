@@ -24,10 +24,11 @@ import { createTranscriptVersioner } from '../chat-core/transcript/transcriptVer
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import CollapsibleToolGroup from '../pages/chat/CollapsibleToolGroup'
 import TurnBlock from '../pages/chat/TurnBlock'
-import { createDisplayItemReconciler, hasToolStep, isSynthesisInjection, REASONING_ROLES } from '../pages/chat/groupDisplayItems'
+import { createDisplayItemReconciler, hasToolStep, isSynthesisInjection, opensDisplayTurn, REASONING_ROLES } from '../pages/chat/groupDisplayItems'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import { injectOpensTurn } from '../pages/chat/RecoveryCard'
 import { isHiddenSupersededSteer } from '../pages/chat/groupDisplayItems'
+import { orderTurnsNewestFirst } from '../pages/chat/orderTurnsNewestFirst'
 import {
   type MessageRenderer,
   type MessageRenderContext,
@@ -178,6 +179,11 @@ export interface TranscriptMount {
   followOutput?: boolean
   /** Where the list opens with no saved anchor. Default 'bottom'. */
   initialPlacement?: 'top' | 'bottom'
+  /** 'newest-first': the top-down chat layout. Rows are reordered by turn
+   *  block, newest first (prompt then reply inside each block), the list
+   *  follows its TOP edge, and the earlier bar renders after the rows.
+   *  Default 'chronological', the bottom-follow chat every other host uses. */
+  order?: 'chronological' | 'newest-first'
 }
 
 export type { TranscriptEarlierPaging, VirtualTranscriptHandle }
@@ -237,6 +243,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
   // hiddenRow); one that supplies neither gets the unwrapped DOM. A virtualized
   // mount always indexes: its measured wrapper is the indexed block.
   const indexRows = onDisplayItems != null || hiddenRow != null
+  const newestFirst = transcript?.order === 'newest-first'
 
   // Every streaming flush hands this list a new `messages` array, so the
   // grouping below re-runs and mints fresh objects for every row. The reconcile
@@ -296,7 +303,9 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       if (item.kind === 'single' && isSynthesisInjection(item.msg)) {
         flushTurn(true)
         turnItems.push(item)
-      } else if (item.kind === 'single' && (item.msg.role === 'user' || item.msg.role === 'subagent' || injectOpensTurn(item.msg))) {
+      } else if (item.kind === 'single' && (newestFirst
+        ? opensDisplayTurn(item.msg)
+        : item.msg.role === 'user' || item.msg.role === 'subagent' || injectOpensTurn(item.msg))) {
         flushTurn(true)
         turns.push(item)
       } else {
@@ -306,7 +315,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
     flushTurn(!running)
 
     return reconcileRows(turns)
-  }, [messages, running, reconcileRows])
+  }, [messages, running, reconcileRows, newestFirst])
 
   // THE ROWS' VIEW OF `messages`: a new object exactly when the transcript
   // version moves (chat-core/transcript/transcriptVersion), which is on every
@@ -499,6 +508,16 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
   // Layout effect, not passive: see `onDisplayItems`.
   useLayoutEffect(() => { onDisplayItems?.(displayItems) }, [displayItems, onDisplayItems])
 
+  // Newest-first (virtualized mounts only): same row objects, turn blocks
+  // reversed. Identity per row survives, so height caches stay warm.
+  const ordered = useMemo(
+    () => (newestFirst
+      ? orderTurnsNewestFirst(displayItems)
+      : { rows: displayItems, headBlockEnd: displayItems.length - 1, chrono: undefined }),
+    [displayItems, newestFirst],
+  )
+  const orderedItems = ordered.rows
+
   // The row's content alone: the virtualized mount supplies the measured,
   // indexed wrapper, so the fragment path's wrapper must not stack under it.
   // `renderItem` keeps its identity across a flush that only grew the
@@ -513,24 +532,26 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       : hiddenRow.index === i)
   ), [hiddenRow])
 
-  // The row whose tail message is streaming (only ever the last one): its
-  // growth applies to the offset math immediately instead of through the
-  // debounced sync. Gated on the streaming ROLE, not the run flag — a tool
-  // phase or an auto-height widget in the last row must keep the debounce.
+  // The row whose tail message is streaming: its growth applies to the offset
+  // math immediately instead of through the debounced sync. Gated on the
+  // streaming ROLE, not the run flag — a tool phase or an auto-height widget
+  // in that row must keep the debounce. Chronologically it is the last row;
+  // newest-first it is the last row of the newest block.
   const streamingIndex = useMemo(() => {
-    const last = displayItems[displayItems.length - 1]
+    const at = newestFirst ? ordered.headBlockEnd : displayItems.length - 1
+    const last = orderedItems[at]
     if (!last) return undefined
     const tailOf = (t: TurnItem): ChatMessage | undefined =>
       t.kind === 'single' ? t.msg : t.msgs[t.msgs.length - 1]
     const tail = last.kind === 'turn' ? (last.items.length ? tailOf(last.items[last.items.length - 1]) : undefined) : tailOf(last)
-    return tail?.role === 'streaming' ? displayItems.length - 1 : undefined
-  }, [displayItems])
+    return tail?.role === 'streaming' ? at : undefined
+  }, [displayItems, orderedItems, ordered.headBlockEnd, newestFirst])
 
   if (transcript) {
     return (
       <VirtualTranscript
         ref={ref}
-        items={displayItems}
+        items={orderedItems}
         renderRow={renderRowContent}
         sessionId={transcript.sessionId}
         running={running}
@@ -548,6 +569,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
         prefetchStartIndex={transcript.prefetchStartIndex}
         isRowHidden={hiddenRow != null ? isRowHidden : undefined}
         hiddenRowStripUncovered={hiddenRow?.stripUncovered === true}
+        {...(newestFirst ? { followEdge: 'top' as const, rowChrono: ordered.chrono } : null)}
       />
     )
   }

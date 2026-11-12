@@ -263,7 +263,7 @@ function CacheHitRate({ slot }: { slot: string }) {
 
 /** The context-window readout and its popover (usage, model, the per-session
  *  auto-compact threshold). */
-export function ContextUsageControl({ contextPct, contextUnknown = false, contextUsedTokens, contextWindowTokens, derivePctFromUsed, showContextPct, showContextTokens, shelfCompact, modelName, cacheSlot, ctxPopoverOpen, setCtxPopoverOpen, autoCompactThreshold }: {
+export function ContextUsageControl({ contextPct, contextUnknown = false, contextUsedTokens, contextWindowTokens, derivePctFromUsed, showContextPct, showContextTokens, shelfCompact, modelName, cacheSlot, ctxPopoverOpen, setCtxPopoverOpen, autoCompactThreshold, openBelow = false }: {
   contextPct: number
   /** No reading for this slot yet: rendered as unknown, never as a measured 0%. */
   contextUnknown?: boolean
@@ -279,6 +279,9 @@ export function ContextUsageControl({ contextPct, contextUnknown = false, contex
   ctxPopoverOpen: boolean
   setCtxPopoverOpen: (update: (open: boolean) => boolean) => void
   autoCompactThreshold: ReturnType<typeof useAutoCompactThreshold>
+  /** Open below the readout instead of above it, capped to the room below
+   *  (`ChatInputProps.openBelow`). */
+  openBelow?: boolean
 }) {
   const { autoCompactQuery, autoCompact, autoCompactError, setAutoCompactError, pushAutoCompact } = autoCompactThreshold
   const harnessManagedNote = harnessManagedNoteBackend(autoCompact)
@@ -345,10 +348,12 @@ export function ContextUsageControl({ contextPct, contextUnknown = false, contex
     </PopoverTrigger>
   </div>
       <PopoverContent
-        side="top"
+        side={openBelow ? 'bottom' : 'top'}
         align="end"
         sideOffset={4}
-        className="w-52"
+        // Opened below the top-docked composer, Radix caps the card to the room
+        // under the readout and it scrolls.
+        className={openBelow ? 'w-52 max-h-[var(--radix-popover-content-available-height)] overflow-y-auto' : 'w-52'}
         data-testid="context-usage-popover"
       >
                 <div className="flex items-center justify-between mb-2">

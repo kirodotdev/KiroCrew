@@ -33,6 +33,11 @@ export interface UseVirtualChatOptions<T> {
    * messages away". Fired on the downward CROSSING of this index, so a
    * landing (which shifts every index) re-arms it without looping. Defaults
    * to a small display-row lead.
+   *
+   * With `followEdge: 'top'` history is at the END, so this is the index the
+   * window's END must travel DOWN past (row `prefetchStartIndex` becoming
+   * mounted); the caller passes the second user message counted from the END.
+   * The default lead is then counted from the end too.
    */
   prefetchStartIndex?: number
   /** Height to use when no measurement is cached. Default: 80. */
@@ -72,6 +77,25 @@ export interface UseVirtualChatOptions<T> {
    * measurement only grows the bottom spacer, which is invisible.
    */
   initialPlacement?: 'top' | 'bottom'
+  /**
+   * Which end of the list is the LIVE edge: where new output appears, where
+   * follow keeps the reader, and opposite the end history pages load at.
+   *
+   * `'bottom'` (default) is the chat contract. `'top'` is the newest-first
+   * transcript, whose newest rows are at index 0:
+   *   - implies `initialPlacement: 'top'` (the head window, scrollTop 0);
+   *   - `followOutput` keeps its meaning, with the live edge at scrollTop 0. A
+   *     reader there follows: rows inserted at the head stay in view. A reader
+   *     who scrolled down into history is held still while rows arrive above.
+   *   - `isAtBottom` reads "at the live edge" (scrollTop within
+   *     `bottomThreshold` of 0) and `scrollToBottom` jumps to the live edge
+   *     (head window, scrollTop 0). The names are kept so callers need no
+   *     branch.
+   *   - history is at the END: `onTopReached` fires from the BOTTOM sentinel,
+   *     and `prefetchStartIndex` is crossed as the window's end travels DOWN
+   *     past it.
+   */
+  followEdge?: 'bottom' | 'top'
   /**
    * Sync a row's FIRST measurement into the offset math immediately instead
    * of through the debounced height-sync. Default: false (the chat contract —
@@ -154,9 +178,11 @@ export interface UseVirtualChatOptions<T> {
    */
   runActive?: boolean
   /**
-   * Called when the top sentinel comes into view, alongside the upward window
-   * expansion. Lets the caller fetch history that lies behind the loaded slice;
-   * the virtualizer itself only ever widens the window over `items`.
+   * Called when the HISTORY-edge sentinel comes into view, alongside that
+   * edge's window expansion: the top sentinel by default, the BOTTOM sentinel
+   * with `followEdge: 'top'`. Lets the caller fetch history that lies behind
+   * the loaded slice; the virtualizer itself only ever widens the window over
+   * `items`.
    */
   onTopReached?: () => void
 }
@@ -211,6 +237,18 @@ export interface UseVirtualChatReturn<T> {
    *  observer watches it so growth there is followed like tail growth; it is
    *  not a row and never enters the height cache. */
   trailingRef: React.RefObject<HTMLDivElement>
+  /** Leading chrome — attach to the wrapper around content rendered ABOVE the
+   *  rows in the top-down layout (the working footer, the preparing caption, a
+   *  survey card). The resize observer watches it so a change there above a
+   *  released reader is held by the measured residual; it is not a row and
+   *  never enters the height cache. Leave it unattached in the bottom layout. */
+  leadingRef: React.RefObject<HTMLDivElement>
+  /** Move the scroller to `top` (clamped at 0) on the host's behalf, through
+   *  the follow write chokepoint: the write is instant and recorded as the
+   *  virtualizer's own, so its scroll event neither arms nor releases follow.
+   *  For a host write that holds the reader's content still (the top-down
+   *  dock padding shift, the side-panel slide hold), never for navigation. */
+  holdScrollTop: (el: HTMLDivElement, top: number) => void
   /** Items to render — both mounted React components and placeholder rows. */
   virtualItems: VirtualItem<T>[]
   /** Pixel offset of the first virtual item (top spacer height). */
@@ -219,7 +257,8 @@ export interface UseVirtualChatReturn<T> {
   offsetAfter: number
   /** Total content height (top spacer + window + bottom spacer). */
   totalHeight: number
-  /** Whether the scroller is at (within bottomThreshold of) the bottom. */
+  /** Whether the scroller is within bottomThreshold of the live edge: the
+   *  bottom by default, scrollTop 0 with `followEdge: 'top'`. */
   isAtBottom: boolean
   /** Live follow ("stick to bottom") state: true while the transcript is
    * auto-following output. Stable identity; reads the live value at call
@@ -229,7 +268,8 @@ export interface UseVirtualChatReturn<T> {
   getFollow: () => boolean
   /** Scroll the scroller so item `index` is visible. */
   scrollToIndex: (index: number, opts?: ScrollToIndexOptions) => void
-  /** Scroll to the bottom (latest message). */
+  /** Scroll to the live edge (latest message): the bottom by default, the
+   *  head window at scrollTop 0 with `followEdge: 'top'`. */
   scrollToBottom: (behavior?: ScrollBehavior) => void
   /** Ensure `index` is mounted (in the window) without scrolling — lets a
    * caller's DOM-based scroll target an off-window item. Returns `true` when

@@ -21,8 +21,8 @@ import {
   type ScrollAnchor,
 } from './ScrollAnchorCache'
 import { captureTopAnchorFrom } from './anchorGeometry'
-import { anchorSettleConverged, computeAtBottom, isSelfScroll, SCROLL_SETTLE_MS, scrollerCollapsed } from './FollowController'
-import { computeJumpWindow, getOffset as getOffsetFn, initialWindow, tailWindow, type HeightGetter, type WindowRange } from './WindowCalculator'
+import { anchorSettleConverged, computeAtEdge, isSelfScroll, SCROLL_SETTLE_MS, scrollerCollapsed } from './FollowController'
+import { computeJumpWindow, getOffset as getOffsetFn, initialWindow, liveWindow, type HeightGetter, type WindowRange } from './WindowCalculator'
 import type { HeightIndex } from './HeightIndex'
 import type { FollowState, Pinning } from './followPolicy'
 import type { ShiftCapture } from './shiftCompensation'
@@ -113,7 +113,12 @@ export interface ReadingPositionEntry<T = unknown> {
   setRestoreEval: (update: (n: number) => number) => void
   anchorSaveTimerRef: Ref<ReturnType<typeof setTimeout> | null>
   /** Identity context of the last scroll burst (see the session transition). */
-  lastScrollCtxRef: Ref<{ session: string; items: readonly T[]; getKey: (it: T, i: number) => string } | null>
+  lastScrollCtxRef: Ref<{
+    session: string
+    items: readonly T[]
+    getKey: (it: T, i: number) => string
+    followEdge: 'top' | 'bottom'
+  } | null>
   sessionIdRef: Ref<string>
   captureTopAnchor: () => ScrollAnchor | null
   scheduleAnchorSave: (flushPending?: boolean) => void
@@ -139,14 +144,14 @@ export function useReadingPositionEntry<T>(ctx: {
   altIdAtIndex: (idx: number) => string | null
   setWindowRange: SetWindowRange
   setIsAtBottom: (next: boolean) => void
-  follow: Pick<FollowState, 'stickRef' | 'lastWriteTopRef' | 'lastWriteClientHRef' | 'lastHardInputAtRef' | 'lastProgrammaticTopRef' | 'lastDirectionalInputAtRef'>
+  follow: Pick<FollowState, 'followEdge' | 'stickRef' | 'lastWriteTopRef' | 'lastWriteClientHRef' | 'lastHardInputAtRef' | 'lastProgrammaticTopRef' | 'lastDirectionalInputAtRef'>
 }): ReadingPositionEntry<T> {
   const {
     sessionId, itemCount, overscan, initialPlacement, followOutput, bottomThreshold,
     scrollerRef, elIndexRef, itemsRef, getKeyRef, getStableIdRef, getAltIdRef, altIdAtIndex,
     setWindowRange, setIsAtBottom,
   } = ctx
-  const { stickRef, lastWriteTopRef, lastWriteClientHRef, lastHardInputAtRef, lastProgrammaticTopRef, lastDirectionalInputAtRef } = ctx.follow
+  const { followEdge, stickRef, lastWriteTopRef, lastWriteClientHRef, lastHardInputAtRef, lastProgrammaticTopRef, lastDirectionalInputAtRef } = ctx.follow
 
   // ---- Reading-position anchor (persisted; see ScrollAnchorCache) ----
   //
@@ -254,17 +259,19 @@ export function useReadingPositionEntry<T>(ctx: {
    *  leaving BOTH identities unresolvable, which is exactly what carrying two of them
    *  is supposed to prevent. */
   const anchorSavedStateRef = useRef<{ session: string; anchor: ScrollAnchor | null } | null>(null)
-  // Identity context of the last scroll burst: which session it belonged to
-  // and how to resolve row keys for it. Reference-only (no rect reads), set on
-  // every scroll event. The slot-switch flush below needs it because during
-  // the switch RENDER, itemsRef/getKeyRef may already hold the INCOMING
-  // session's data while the DOM (elIndexRef nodes, scroller geometry) still
-  // shows the outgoing one — resolving keys through the live refs there would
-  // save the wrong keys under the old session id.
+  // Identity context of the last scroll burst: which session it belonged to,
+  // how to resolve row keys for it and which edge was live. Reference-only
+  // (no rect reads), set on every scroll event. The slot-switch flush below
+  // needs it because during the switch RENDER, itemsRef/getKeyRef and
+  // followEdge may already hold the INCOMING session's data while the DOM
+  // (elIndexRef nodes, scroller geometry) still shows the outgoing one.
+  // Resolving keys or classifying that geometry through the incoming context
+  // can clear or save the wrong anchor under the old session id.
   const lastScrollCtxRef = useRef<{
     session: string
     items: readonly T[]
     getKey: (it: T, i: number) => string
+    followEdge: 'top' | 'bottom'
   } | null>(null)
   if (pendingRestoreRef.current === undefined) {
     // First render: latch any saved anchor for the initial session. Reading
@@ -321,8 +328,9 @@ export function useReadingPositionEntry<T>(ctx: {
         // switch tends to interrupt. Trusting instantaneous geometry alone
         // persisted that transient as a reading anchor; switching back then
         // restored it, yanking the reader off a bottom they never left.
-        devLog('LEAVE.flush', `stick=${stickRef.current ? 1 : 0} bot=${computeAtBottom(geom, bottomThreshold) ? 1 : 0} dist=${Math.round(geom.scrollHeight - geom.clientHeight - geom.scrollTop)}`)
-        if (stickRef.current || computeAtBottom(geom, bottomThreshold)) {
+        const atOutgoingEdge = computeAtEdge(geom, bottomThreshold, ctx.followEdge)
+        devLog('LEAVE.flush', `stick=${stickRef.current ? 1 : 0} edge=${ctx.followEdge} at=${atOutgoingEdge ? 1 : 0} dist=${Math.round(geom.scrollHeight - geom.clientHeight - geom.scrollTop)}`)
+        if (stickRef.current || atOutgoingEdge) {
           clearScrollAnchor(prevSession)
         } else {
           const a = captureTopAnchorFrom(el, elIndexRef.current.entries(), (idx) => {
@@ -443,7 +451,7 @@ export function useReadingPositionEntry<T>(ctx: {
       if (!el) return
       const geom = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }
       const saved = anchorSavedStateRef.current
-      if (computeAtBottom(geom, bottomThreshold)) {
+      if (computeAtEdge(geom, bottomThreshold, followEdge)) {
         devLog('DEB.atBottom', `${shortId(scheduledSession)} -> clear`)
         if (saved?.session !== scheduledSession || saved.anchor !== null) {
           clearScrollAnchor(scheduledSession)
@@ -478,7 +486,7 @@ export function useReadingPositionEntry<T>(ctx: {
       anchorSaveTimerRef.current = null
       run()
     }, ANCHOR_SAVE_DEBOUNCE_MS)
-  }, [lastHardInputAtRef, lastProgrammaticTopRef, lastDirectionalInputAtRef, bottomThreshold, scrollerRef, captureTopAnchor, restoreOwnsPosition])
+  }, [lastHardInputAtRef, lastProgrammaticTopRef, lastDirectionalInputAtRef, bottomThreshold, followEdge, scrollerRef, captureTopAnchor, restoreOwnsPosition])
 
   const restoreGateNow = useCallback(
     (): boolean => !returnRestoreRef.current && (pendingRestoreRef.current != null || settleGateRef.current),
@@ -529,7 +537,7 @@ export function useVisibilityReplacement<T>(ctx: {
   itemsRef: Ref<T[]>
   setWindowRange: SetWindowRange
   reading: ReadingPositionEntry<T>
-  follow: Pick<FollowState, 'stickRef' | 'lastWriteTopRef' | 'lastWriteClientHRef'>
+  follow: Pick<FollowState, 'followEdge' | 'stickRef' | 'lastWriteTopRef' | 'lastWriteClientHRef'>
   pinning: Pick<Pinning, 'forcePin'>
 }): void {
   const { sessionId, followOutput, bottomThreshold, overscan, scrollerRef, itemsRef, setWindowRange } = ctx
@@ -537,7 +545,7 @@ export function useVisibilityReplacement<T>(ctx: {
     pendingRestoreRef, returnRestoreRef, restoreDeadlineRef, restoreLastCountRef, restoreTimerRef, slotPinDoneRef,
     restoreOwnsPosition, setRestoreEval, sessionIdRef, captureTopAnchor, scheduleAnchorSave, entryAtRef,
   } = ctx.reading
-  const { stickRef, lastWriteTopRef, lastWriteClientHRef } = ctx.follow
+  const { followEdge, stickRef, lastWriteTopRef, lastWriteClientHRef } = ctx.follow
   const { forcePin } = ctx.pinning
 
   // ---- Visibility: snapshot on hide, re-place on a DISTURBED return ----
@@ -633,7 +641,7 @@ export function useVisibilityReplacement<T>(ctx: {
       if (restoreOwnsPosition()) return
       const geom = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }
       const followReleased = snap.stick && !stickRef.current
-      const followerOffBottom = snap.stick && stickRef.current && !computeAtBottom(geom, bottomThreshold)
+      const followerOffBottom = snap.stick && stickRef.current && !computeAtEdge(geom, bottomThreshold, followEdge)
       const positionMoved = geom.scrollTop !== snap.scrollTop
       const boxChanged = geom.clientHeight !== snap.clientHeight
       if (!(followReleased || followerOffBottom || positionMoved || boxChanged)) return
@@ -662,7 +670,7 @@ export function useVisibilityReplacement<T>(ctx: {
         restoreDeadlineRef.current = 0
         stickRef.current = followOutput
         const count = itemsRef.current.length
-        setWindowRange(tailWindow(count, overscan))
+        setWindowRange(liveWindow(count, overscan, followEdge))
         if (!scrollerCollapsed(el)) forcePin()
       } else {
         // Released at hide: the hide-time row is the position. The persisted
@@ -690,7 +698,7 @@ export function useVisibilityReplacement<T>(ctx: {
     document.addEventListener('visibilitychange', onVisibility)
     return () => document.removeEventListener('visibilitychange', onVisibility)
   }, [
-    sessionId, followOutput, bottomThreshold, overscan, scrollerRef, captureTopAnchor, restoreOwnsPosition, scheduleAnchorSave, forcePin,
+    sessionId, followOutput, followEdge, bottomThreshold, overscan, scrollerRef, captureTopAnchor, restoreOwnsPosition, scheduleAnchorSave, forcePin,
     pendingRestoreRef, returnRestoreRef, restoreDeadlineRef, restoreLastCountRef, restoreTimerRef, slotPinDoneRef,
     setRestoreEval, sessionIdRef, stickRef, lastWriteTopRef, lastWriteClientHRef, itemsRef, setWindowRange, entryAtRef,
   ])
@@ -716,7 +724,7 @@ export function useReadingPositionRestore<T>(ctx: {
   setIsAtBottom: (next: boolean) => void
   reading: ReadingPositionEntry<T>
   shift: Pick<ShiftCapture, 'dropShiftCapture'>
-  follow: Pick<FollowState, 'stickRef' | 'lastWriteTopRef' | 'lastWriteClientHRef' | 'lastHardInputAtRef' | 'writeScrollTop'>
+  follow: Pick<FollowState, 'followEdge' | 'stickRef' | 'lastWriteTopRef' | 'lastWriteClientHRef' | 'lastHardInputAtRef' | 'writeScrollTop'>
   pinning: Pick<Pinning, 'forcePin'>
 }): void {
   const {
@@ -730,7 +738,7 @@ export function useReadingPositionRestore<T>(ctx: {
     readerMovedSinceEntry, scheduleAnchorSave,
   } = ctx.reading
   const { dropShiftCapture } = ctx.shift
-  const { stickRef, lastWriteTopRef, lastWriteClientHRef, lastHardInputAtRef, writeScrollTop } = ctx.follow
+  const { followEdge, stickRef, lastWriteTopRef, lastWriteClientHRef, lastHardInputAtRef, writeScrollTop } = ctx.follow
   const { forcePin } = ctx.pinning
 
   // ---- Reading-position restore (see ScrollAnchorCache) ----
@@ -1077,6 +1085,18 @@ export function useReadingPositionRestore<T>(ctx: {
       slotPinDoneRef.current = sessionId
       const el = scrollerRef.current
       if (el && el.scrollTop !== 0) writeScrollTop(el, 0, 'auto', 'pin', 'top')
+      // TOP EDGE: the head IS the live edge, so this placement also arms
+      // follow (the gallery contract leaves it at `followOutput: false`), and a
+      // scroller already at 0 still records 0 as our write, which is the
+      // reference the automatic pin's race guard measures a reader's departure
+      // from.
+      if (followEdge === 'top') {
+        stickRef.current = followOutput
+        if (el && el.scrollTop <= 0) {
+          lastWriteTopRef.current = 0
+          lastWriteClientHRef.current = el.clientHeight
+        }
+      }
       return
     }
     forcePin()

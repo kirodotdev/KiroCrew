@@ -1353,8 +1353,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
-    "id": "chat.jump-to-the-bottom-when-you-send",
-    "label": "Jump to the bottom when you send",
+    "id": "chat.jump-to-your-new-message-when-you-send",
+    "label": "Jump to your new message when you send",
     "labelKey": "pages.settings.chatPanel.scroll_on_send",
     "hint": "When off, sending a message leaves the transcript where it is.",
     "tab": "chat",
@@ -1979,6 +1979,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Tool calls start expanded",
     "labelKey": "pages.settings.chatPanel.tool_calls_start_expanded",
     "hint": "Open tool call rows with their input and output showing, instead of collapsed. Rows you open or close by hand keep your choice.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "transcript"
+    }
+  },
+  {
+    "id": "chat.top-down-chat-newest-first",
+    "label": "Top-down chat (newest first)",
+    "labelKey": "pages.settings.chatPanel.top_down_layout",
+    "hint": "Put the message box at the top and show the newest turn directly under it, so you read near the top of the screen. Each turn still reads prompt first, then reply. Turns off Pin the latest turn.",
     "tab": "chat",
     "type": "toggle",
     "occurrence": 1,

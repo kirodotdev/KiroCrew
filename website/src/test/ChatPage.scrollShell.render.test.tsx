@@ -97,6 +97,56 @@ describe('TranscriptScrollShell DOM contract', () => {
     expect(Math.abs(height - 19479.75)).toBeLessThanOrEqual(0.5)
   })
 
+  it('top-down: hands the leading chrome to the virtualizer through virt.leadingRef, in the slot before the top sentinel', () => {
+    for (const props of [{ historyAtBottom: true }, { liveEdgeAtTop: true }]) {
+      const scrollerRef = ref()
+      const leadingRef = ref()
+      const topSentinelRef = ref()
+      const view = render(
+        <TranscriptScrollShell
+          scrollerRef={scrollerRef}
+          onScroll={() => {}}
+          virt={{ topSentinelRef, bottomSentinelRef: ref(), leadingRef, offsetBefore: 0, offsetAfter: 0 }}
+          loadingOlder={false}
+          {...props}
+          aboveRows={<div data-testid="slot-above" />}
+          belowRows={<div data-testid="slot-below" />}
+        >
+          <div />
+        </TranscriptScrollShell>,
+      )
+      const leading = scrollerRef.current!.querySelector('[data-vc-leading]')
+      expect(leadingRef.current).toBe(leading)
+      // The page swaps the slots (its live chrome comes in belowRows); a host
+      // that places its own paging bar passes the live chrome above.
+      const live = screen.getByTestId(props.historyAtBottom ? 'slot-below' : 'slot-above')
+      expect(leading!.contains(live)).toBe(true)
+      const kids = Array.from(scrollerRef.current!.children)
+      expect(kids.indexOf(leading!)).toBeGreaterThanOrEqual(0)
+      expect(kids.indexOf(leading!)).toBeLessThan(kids.indexOf(topSentinelRef.current!))
+      view.unmount()
+    }
+  })
+
+  it('bottom layout: renders no leading wrapper, so the DOM matches the layout without top-down', () => {
+    const scrollerRef = ref()
+    const leadingRef = ref()
+    render(
+      <TranscriptScrollShell
+        scrollerRef={scrollerRef}
+        onScroll={() => {}}
+        virt={{ topSentinelRef: ref(), bottomSentinelRef: ref(), leadingRef, offsetBefore: 0, offsetAfter: 0 }}
+        loadingOlder={false}
+        aboveRows={<div data-testid="slot-above" />}
+      >
+        <div />
+      </TranscriptScrollShell>,
+    )
+    expect(scrollerRef.current!.querySelector('[data-vc-leading]')).toBeNull()
+    expect(leadingRef.current).toBeNull()
+    expect(screen.getByTestId('slot-above').parentElement).toBe(scrollerRef.current)
+  })
+
   it('hands the trailing wrapper to the virtualizer through virt.trailingRef', () => {
     const scrollerRef = ref()
     const trailingRef = ref()
@@ -201,11 +251,15 @@ describe('ChatPage invocation: slot membership and prop threading', () => {
       'onScroll={onScrollPin}',
       'virt={virt}',
       'loadingOlder={loadingOlder}',
-      // A PREFIX, not the whole literal: the style object also carries the
+      // PREFIXES, not the whole literal: the style object also carries the
       // restore-gate visibility flip, so pinning the closing braces would pin the
       // gate's presence into a test about prop THREADING. This still fails on a
-      // duplicated prop and still requires the padding the shell contract needs.
-      'scrollerStyle={{ paddingBottom: dockH + DOCK_CLEARANCE_PX',
+      // duplicated prop and still requires the padding the shell contract needs:
+      // the dock's strip at the bottom by default, at the top in the opt-in
+      // top-down layout.
+      'scrollerStyle={topDown',
+      '? { paddingTop: dockTop + dockH + DOCK_CLEARANCE_PX',
+      ': { paddingBottom: dockH + DOCK_CLEARANCE_PX',
     ]) {
       expect(inv.split(pin).length - 1, pin).toBe(1)
     }

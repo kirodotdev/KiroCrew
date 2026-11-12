@@ -191,7 +191,9 @@ export function useComposerSend({ slotId, busyMode, isRunning, stopState, canSte
 
 /** The send slot while a turn runs or a stop is in progress. Stop escalates
  *  from a soft stop to a force kill; a draft offers steer or queue. */
-export function BusySendControls({ stopState, killingEscaped, stopWithTap, isQueued, composerHasDraft, canSteer, onSteer, steerOnly, fireComposer, disabled, holdSend, holdSendReason, connected, effectiveBusyMode, setBusySendMode, onBusyModePicked, sendOnEnter, jevAutoAvailable, onStop, stopDeclinedArmed = false, terminalActive = false }: {
+export function BusySendControls({ stopState, killingEscaped, stopWithTap, isQueued, composerHasDraft, canSteer, onSteer, steerOnly, fireComposer, disabled, holdSend, holdSendReason, connected, effectiveBusyMode, setBusySendMode, onBusyModePicked, sendOnEnter, jevAutoAvailable, onStop, stopDeclinedArmed = false, terminalActive = false, openBelow = false }: {
+  /** Forwarded to `BusySendButton.openBelow` (`ChatInputProps.openBelow`). */
+  openBelow?: boolean
   stopState?: 'idle' | 'soft_pending' | 'killing'
   /** The press before this one was declined (compaction); the backend treats
    *  the next press as the force stop, and the armed Stop's hint says so. */
@@ -266,6 +268,7 @@ export function BusySendControls({ stopState, killingEscaped, stopWithTap, isQue
           disabledReason={holdSend ? `${heldBusyAction} — ${holdSendReason}` : undefined}
           altChordAvailable={sendOnEnter === 'enter'}
           autoAvailable={jevAutoAvailable}
+          openBelow={openBelow}
         />
         )
       ) : (
@@ -309,6 +312,7 @@ export function BusySendControls({ stopState, killingEscaped, stopWithTap, isQue
         disabled
         altChordAvailable={sendOnEnter === 'enter'}
         autoAvailable={jevAutoAvailable}
+        openBelow={openBelow}
       />
     )
   )

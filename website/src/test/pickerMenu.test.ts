@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { menuGeometry, MENU_MAX_HEIGHT, bottomUpOrder } from '../lib/pickerMenu'
+import { menuGeometry, MENU_MAX_HEIGHT, bottomUpOrder, anchoredPopupBox } from '../lib/pickerMenu'
 
 /** Anchor stub at a fixed viewport position — geometry only reads the rect. */
 function anchorAt(top: number, left = 40, width = 600, height = 44): HTMLElement {
@@ -149,6 +149,20 @@ describe('menuGeometry', () => {
       const g = menuGeometry(anchorAt(40, 40, 600, 44), 3, 48)
       expect(g.above).toBe(true)
       expect(g.maxHeight).toBe(48 + 8)
+    })
+  })
+})
+
+describe('anchoredPopupBox', () => {
+  it('opens on the side the caller names: below with a cap to the room below, above pinned by bottom', () => {
+    withViewportHeight(700, () => {
+      const rect = { top: 100, bottom: 132 }
+      // Below: `gap` under the anchor, capped to the room left under it less 8px.
+      expect(anchoredPopupBox(rect, true, 6)).toEqual({ top: 138, maxHeight: 700 - 132 - 6 - 8 })
+      // Above (main): the bottom edge `gap` over the anchor, with no cap and no room check.
+      expect(anchoredPopupBox(rect, false, 6)).toEqual({ bottom: 700 - 100 + 6 })
+      // An anchor at the viewport's bottom edge still opens below, at a zero cap, never a negative one.
+      expect(anchoredPopupBox({ top: 680, bottom: 698 }, true, 4)).toEqual({ top: 702, maxHeight: 0 })
     })
   })
 })

@@ -247,7 +247,7 @@ describe('scroll shell: extraction wiring (the seams the split created)', () => 
   // Each of these lines compiles away silently if deleted — the type system
   // accepts a shell that ignores a prop — but the transcript then breaks at
   // runtime (no rows, no follow, no paging). The pins make every seam a test.
-  it('shell renders all three slots in skeleton order and spreads host geometry', () => {
+  it('shell renders all three slots in skeleton order and preserves host geometry', () => {
     const shellOrder = ['{aboveRows}', 'height: Math.round(virt.offsetBefore)', '{children}', 'height: virt.offsetAfter', '{belowRows}']
     let cursor = -1
     for (const a of shellOrder) {
@@ -255,7 +255,7 @@ describe('scroll shell: extraction wiring (the seams the split created)', () => 
       expect(idx, `out of order or missing: ${a}`).toBeGreaterThan(cursor)
       cursor = idx
     }
-    expect(SHELL).toContain('...scrollerStyle,')
+    expect(SHELL).toContain('...(liveEdgeAtTop ? scrollerStyleWithoutTopPadding : scrollerStyle),')
     // onScroll must be ON THE SCROLLER ELEMENT, not merely present somewhere:
     // relocated onto any other element, follow/pin/paging all die at runtime
     // while a whole-source contain() stays green. Slice the scroller's own

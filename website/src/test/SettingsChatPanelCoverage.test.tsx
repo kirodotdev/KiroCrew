@@ -75,6 +75,15 @@ const {
   tipsFeedbackMock: vi.fn(() => Promise.resolve({ ok: true })),
 }))
 
+// The pin switch follows the chat's top-down rule, which ignores top-down on a
+// phone-width viewport. Default false is what jsdom's matchMedia polyfill
+// reports; the real module's other exports stay for the rest of the tree.
+const viewport = vi.hoisted(() => ({ mobile: false }))
+vi.mock('../hooks/useIsMobile', async importOriginal => ({
+  ...(await importOriginal<typeof import('../hooks/useIsMobile')>()),
+  useIsMobile: () => viewport.mobile,
+}))
+
 vi.mock('../api/client', () => ({
   api: {
     dashboardConfig: dashboardConfigMock,
@@ -194,6 +203,7 @@ const rejectOnce = (mock: { mockImplementationOnce: (fn: () => unknown) => unkno
 
 beforeEach(() => {
   localStorage.clear()
+  viewport.mobile = false
   dashboardConfigMock.mockReset()
   updateDashboardConfigMock.mockReset()
   kirocrewConfigMock.mockReset()
@@ -426,6 +436,54 @@ describe('ChatPanel — Composer', () => {
 })
 
 describe('ChatPanel — Messages', () => {
+  it('stores Top-down chat locally when flipped on', async () => {
+    wrap()
+    fireEvent.click(await screen.findByRole('switch', { name: 'Top-down chat (newest first)' }))
+    await waitFor(() => expect(storedChat().topDownLayout).toBe(true))
+  })
+
+  it('greys out Pin the latest turn only while Top-down chat is on', async () => {
+    wrap()
+    const pin = await screen.findByRole('switch', { name: 'Pin the latest turn' })
+    expect(pin).not.toHaveAttribute('aria-disabled', 'true')
+    fireEvent.click(screen.getByRole('switch', { name: 'Top-down chat (newest first)' }))
+    await waitFor(() =>
+      expect(screen.getByRole('switch', { name: 'Pin the latest turn' })).toHaveAttribute('aria-disabled', 'true'))
+  })
+
+  it('shows Pin the latest turn off while Top-down chat is on, and keeps the stored choice', async () => {
+    localStorage.setItem(LS_KEY, JSON.stringify({ pinLastPrompt: true, topDownLayout: true }))
+    wrap()
+    const pin = await screen.findByRole('switch', { name: 'Pin the latest turn' })
+    // The chat does not pin in top-down, so the switch must not read ON.
+    expect(pin).toHaveAttribute('aria-checked', 'false')
+    expect(pin).toHaveAttribute('aria-disabled', 'true')
+    expect(storedChat().pinLastPrompt).toBe(true)
+    fireEvent.click(screen.getByRole('switch', { name: 'Top-down chat (newest first)' }))
+    await waitFor(() => expect(storedChat().topDownLayout).toBe(false))
+    const after = screen.getByRole('switch', { name: 'Pin the latest turn' })
+    expect(after).toHaveAttribute('aria-checked', 'true')
+    expect(after).not.toHaveAttribute('aria-disabled')
+    expect(storedChat().pinLastPrompt).toBe(true)
+  })
+
+  it.each([
+    // Phone width: the chat ignores top-down and still pins, so the switch reads ON.
+    ['a phone-width viewport', true, 'true', false],
+    // Desktop: top-down is in effect and the chat does not pin.
+    ['a desktop viewport', false, 'false', true],
+  ])('with Top-down chat and Pin both stored on, on %s the pin switch follows the chat', async (_label, mobile, checked, disabled) => {
+    viewport.mobile = mobile
+    localStorage.setItem(LS_KEY, JSON.stringify({ pinLastPrompt: true, topDownLayout: true }))
+    wrap()
+    const pin = await screen.findByRole('switch', { name: 'Pin the latest turn' })
+    expect(pin).toHaveAttribute('aria-checked', checked)
+    if (disabled) expect(pin).toHaveAttribute('aria-disabled', 'true')
+    else expect(pin).not.toHaveAttribute('aria-disabled')
+    expect(screen.getByRole('switch', { name: 'Top-down chat (newest first)' })).toHaveAttribute('aria-checked', 'true')
+    expect(storedChat().pinLastPrompt).toBe(true)
+  })
+
   it('stores the text streaming style from the button group', async () => {
     wrap()
     const group = await screen.findByRole('radiogroup', { name: 'Text Streaming Style' })

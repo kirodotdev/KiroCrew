@@ -193,6 +193,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const mainComposerAppend = useAppSelector(s => s.chat.mainComposerAppend)
 
   const [chatConfig, setChatConfig] = useState<ChatConfig>(loadChatConfig)
+  // Top-down layout (opt-in, browser-local): composer above the transcript and
+  // turn blocks newest first. Read live from chatConfig, but the virtualizer
+  // sees a flip as a session switch (its sessionId carries the layout), so the
+  // reorder never reaches an already-entered transcript in place.
+  // Phones keep the bottom composer: the thumb reach and the on-screen
+  // keyboard both sit at the bottom, so the opt-in applies at the desktop
+  // breakpoint only.
+  const topDown = chatConfig.topDownLayout && !isMobile
   useEffect(() => {
     const reload = () => { const next = loadChatConfig(); setChatConfig(prev => JSON.stringify(prev) === JSON.stringify(next) ? prev : next) }
     window.addEventListener('focus', reload)
@@ -520,6 +528,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     slotRunningRef,
     vGetFollowRef,
     vScrollToBottomRef,
+    topDown,
   })
   const {
     scrollBottom,
@@ -867,6 +876,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   } = usePageSelectionActions({
     dispatch, activeSlot, setInput, messageQuote, scrollerRef,
   })
+  // Top-down layout: the dock still floats over the full-height scroller
+  // (docs/decisions/2026-10-02-chat-transcript-scrolls-under-the-composer-glass.md),
+  // anchored to its TOP edge instead of the bottom. It sits under the overlay
+  // title row, at the 64px band the scroller's header spacer clears in the
+  // bottom layout (0 when the title row is in the shell's bar). The scroller
+  // then pays `dockTop + dockH` plus the clearance as top padding.
+  const dockTop = topDown && !(titleInTopbar && !workerBreadcrumb) ? 64 : 0
   const {
     openSideChatForPane,
   } = useOpenSideChatForPane({
@@ -881,17 +897,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   })
 
   // The rows the virtualizer draws (see transcriptRows).
-  const { renderedTranscript, renderedDisplayItems } = useTranscriptRows({
-    messages, slotRunning, activeSlot, appToolCallIds, displayItemsRef, scrollerRef,
+  const { renderedTranscript, renderedDisplayItems, headBlockEnd, rowChrono } = useTranscriptRows({
+    messages, slotRunning, activeSlot, appToolCallIds, displayItemsRef, scrollerRef, topDown,
   })
 
   // Pinned prompt: keep the enablement ref in sync (updatePinnedPrompt is declared
   // above chatConfig and reads it through a ref), and recompute after the list
   // changes — a new turn shifts geometry with no scroll event of its own.
+  // Off in the top-down layout: the banner rides the top fold, which that
+  // layout gives to the composer.
+  const pinEnabled = chatConfig.pinLastPrompt && !topDown
   useEffect(() => {
-    pinEnabledRef.current = chatConfig.pinLastPrompt
-    if (!chatConfig.pinLastPrompt) setPinned(null)
-  }, [chatConfig.pinLastPrompt, pinEnabledRef, setPinned])
+    pinEnabledRef.current = pinEnabled
+    if (!pinEnabled) setPinned(null)
+  }, [pinEnabled, pinEnabledRef, setPinned])
   useEffect(() => { updatePinnedPrompt() }, [renderedDisplayItems, updatePinnedPrompt])
   // Expanded state PERSISTS as the pinned prompt is replaced by the next one
   // while scrolling — the user asked for a sticky "keep it open" behaviour, so we
@@ -906,14 +925,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // calls below are no-ops in this configuration but are kept invoked
   // for hook-call stability.
   const { stableMsgKey, stableAnchorId, anchorAltId, prefetchStartIndex, virtualKey } = useStableRowKeys({
-    renderedDisplayItems, appToolCallIds, activeSlot,
+    renderedDisplayItems, appToolCallIds, activeSlot, topDown, rowChrono,
   })
   const {
     handleLoadEarlier, virt, isAtBottom, visibleDisplayItems, spinnerNearTop, reportSlashRefusal,
   } = useTranscriptPaging({
     dispatch, activeSlot, slotRunning, slotHasMore, scrollerRef, canMeasure, scrollerWidthBucket, vGetFollowRef, vScrollerElRef, lastRealInputAtRef, sentinelPagesSinceInputRef, walkPagesSinceInputRef,
     walkLastInputAtRef, vScrollToBottomRef, vFarmIsMeasuredRef, earlierBarInViewRef, mountIndexRef, estimateRowTopRef, displayItemsRef, setPinExpanded, setPinned, updatePinnedPrompt, isStreaming,
-    setRefusedPress, renderedDisplayItems, anchorAltId, prefetchStartIndex, stableAnchorId, virtualKey,
+    setRefusedPress, renderedDisplayItems, anchorAltId, prefetchStartIndex, stableAnchorId, virtualKey, topDown, headBlockEnd,
   })
   // A busy turn: steer into it, answer its question card, stop it, and the queued-message cards.
   const {
@@ -964,12 +983,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     else void send()
   }
   const {
-    messageToDisplayIdx, navigateToTurn, chatNav, turnStepAnnouncement, chatPins, chatPinsLoading, isPinned, setPendingPinnedJump, handleEditLastRequest, handleJumpToPinnedMessage, handleJumpToQuote,
+    messageToDisplayIdx, navigateToTurn, chatNav, screenNavSections, turnStepAnnouncement, chatPins, chatPinsLoading, isPinned, setPendingPinnedJump, handleEditLastRequest, handleJumpToPinnedMessage, handleJumpToQuote,
     handleJumpToPin, handleTogglePinForMessage, handleUnpinById, pinError, pinStatus, dismissPinStatus, messageToDisplayIdxRef,
   } = useTranscriptPins({
     embedded, dispatch, isMobile, activeSlot, messages, messagesRef, slotRunning, splitMode, crewWindow, slotHasMore, slotOldestIndex, cursorIsForActiveSlot, loadingOlder, activeViewIsBoundedPage,
     isWelcomeState, activeSlotRemoteBound, scrollerRef, search, navToDisplayIndex, pinnedJumpChrome, scrollToPinnedPrompt, setHighlightTs, splitFeatureEnabled, regenerating, setEditLast, editSeqRef,
-    renderedDisplayItems, renderedTranscript,
+    renderedDisplayItems, renderedTranscript, topDown,
   })
   // Search steps and clicks, the approval bar's "Show in chat", and ?msg= deep links.
   const { jumpToSearchResult } = useTranscriptJumps({
@@ -1189,6 +1208,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               toggleAct={toggleAct} renderedDisplayItems={renderedDisplayItems} stableMsgKey={stableMsgKey} virtualKey={virtualKey} handleLoadEarlier={handleLoadEarlier}
               spinnerNearTop={spinnerNearTop} virt={virt} visibleDisplayItems={visibleDisplayItems} chatNav={chatNav} navigateToTurn={navigateToTurn} turnStepAnnouncement={turnStepAnnouncement}
               renderFarmItem={renderFarmItem} renderMessage={renderMessage} renderTurnItem={renderTurnItem}
+              topDown={topDown} dockTop={dockTop} minimapSections={screenNavSections} headBlockEnd={headBlockEnd}
             />
             <UltraModeEffect />
             <ComposerDockView
@@ -1245,6 +1265,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               turnOffCrewMode={turnOffCrewMode} crewModeSwitching={crewModeSwitching}
               steerWorker={currentCrewRoot && currentSlot ? (currentSlot.title || i18nT('commandCenter.worker_untitled')) : undefined}
               steerWorkerRoot={currentCrewRoot}
+              topDown={topDown} dockTop={dockTop}
             />
           </div>
           </SearchHighlightContext.Provider>

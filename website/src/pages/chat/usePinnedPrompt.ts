@@ -62,6 +62,9 @@ export interface UsePinnedPromptOptions {
   scrollerRef: RefObject<HTMLElement | null>
   /** A gap at the hand-off line is unmounted spacer, not transcript content. */
   requiresMountedHandoff?: boolean
+  /** The top-down layout: the composer dock floats over the scroller's top
+   *  edge, the scroller pays for it with padding-top, and no banner pins. */
+  liveEdgeAtTop?: boolean
 }
 
 /**
@@ -83,7 +86,9 @@ export interface UsePinnedPromptOptions {
  * which takes the host's `mountIndex` / `estimateRowTop` steer and drives one
  * converging glide from them.
  */
-export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }: UsePinnedPromptOptions) {
+export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false, liveEdgeAtTop = false }: UsePinnedPromptOptions) {
+  const liveEdgeAtTopRef = useRef(liveEdgeAtTop)
+  liveEdgeAtTopRef.current = liveEdgeAtTop
   const displayItemsRef = useRef<DisplayItem[]>([])
   // Pinned-prompt banner. `pinFoldRef` is a zero-height sentinel sitting
   // directly under the title row: its top edge is the fold line the banner
@@ -499,6 +504,8 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
   const PINNED_JUMP_SLACK_PX = 24
   const pinnedJumpChrome = useCallback(() => {
     const el = scrollerRef.current
+    // Top-down: a landed turn clears the dock glass the padding pays for.
+    if (liveEdgeAtTopRef.current && el) return (parseFloat(getComputedStyle(el).paddingTop) || 0) + PINNED_JUMP_SLACK_PX
     const foldTop = pinFoldRef.current?.getBoundingClientRect().top
     const srTop = el?.getBoundingClientRect().top
     const fold = (foldTop != null && srTop != null) ? (foldTop - srTop) : 48
@@ -536,11 +543,12 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     jumpCancelRef.current?.()
     const sc0 = scrollerRef.current
     if (!sc0) return
-    // Land at the head of the target's consecutive prompt run (a steer sent
-    // before any output, a double-send) so the row on the hand-off line is a
-    // non-prompt and the previous turn's banner survives the landing — see
-    // jumpAnchorIdx.
-    const anchor = jumpAnchorIdx(displayItemsRef.current, target)
+    // Bottom-up jumps land at the head of a consecutive prompt run so the
+    // previous turn's banner survives. Top-down has no pinned banner, so it
+    // lands on the prompt that the turn stepper selected.
+    const anchor = liveEdgeAtTopRef.current
+      ? target
+      : jumpAnchorIdx(displayItemsRef.current, target)
     steer.mountIndex(anchor, { unionOnly: true })
     const rowEl = (): HTMLElement | null => {
       const sc = scrollerRef.current

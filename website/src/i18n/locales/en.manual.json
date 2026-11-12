@@ -6593,6 +6593,7 @@
       }
     },
     "chatPage": {
+      "scroll_to_latest": "Scroll to latest",
       "turn_minimap": "Navigate conversation turns",
       "turn_minimap_active": "{{position}}: {{prompt}}",
       "turn_minimap_landmark": "Conversation turns",
@@ -9121,7 +9122,7 @@
         "double_click_to_edit_desc": "When off, a double-click on your message selects a word as in any text.",
         "double_escape_to_stop": "Require a second Escape to stop the turn",
         "double_escape_to_stop_desc": "When on, the first Escape in the message input only shows a hint. A second Escape while the hint shows stops the running turn.",
-        "scroll_on_send": "Jump to the bottom when you send",
+        "scroll_on_send": "Jump to your new message when you send",
         "scroll_on_send_desc": "When off, sending a message leaves the transcript where it is.",
         "followup_start_sends": "Send follow-ups with one click",
         "followup_start_sends_hint": "For follow-up suggestion cards only. When this is on, Start becomes Run and sends the card's prompt to the new session at once. When it is off, Start opens the new session with the prompt in its message box, and nothing is sent until you press send.",
@@ -9136,6 +9137,8 @@
         "opt_in_split_the_chat_into_resizable_session_pan": "Opt-in: split the chat into resizable session panes ({{mod}}+D). Experimental.",
         "dim_inactive_panes": "Dim Inactive Panes",
         "dim_inactive_panes_desc": "In split view, fade every pane that does not have keyboard focus. When off, all panes stay at full brightness and the accent border marks the focused one.",
+        "top_down_layout": "Top-down chat (newest first)",
+        "top_down_layout_desc": "Put the message box at the top and show the newest turn directly under it, so you read near the top of the screen. Each turn still reads prompt first, then reply. Turns off Pin the latest turn.",
         "search_models": "Search models…",
         "selectable_models": "Selectable Models",
         "selectable_models_description": "Choose which advertised models appear in Chat model pickers. Auto and an active session model always remain visible.",

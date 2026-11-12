@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObjec
 import { OverlayPortal } from '../overlayRoot'
 import { Crop, FileText, Loader2, PenLine, Plus, X } from 'lucide-react'
 import { useAnchorRemeasure } from '../../hooks/useAnchorRemeasure'
+import { anchoredPopupBox } from '../../lib/pickerMenu'
 import { usePressActivation } from '../../hooks/usePressActivation'
 import { isScreenSnipSupported } from '../../hooks/useScreenSnip'
 import { i18nT } from '../../i18n/t'
@@ -169,7 +170,10 @@ function UploadProgressNote({ slot }: { slot: string }) {
   )
 }
 
-export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, uploadCount, uploadSlot, directFilePicker, fileInputId, openPicker, isMac, touchInput, onScreenshot, collapseMenuRow, typedCommandMenus, onFileSelect, optimizeRow = null, appActionRows = null }: {
+export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, uploadCount, uploadSlot, directFilePicker, fileInputId, openPicker, isMac, touchInput, onScreenshot, collapseMenuRow, typedCommandMenus, onFileSelect, optimizeRow = null, appActionRows = null, openBelow = false }: {
+  /** Open below the "+" button instead of above it, capped to the room below
+   *  (`ChatInputProps.openBelow`). */
+  openBelow?: boolean
   /** App composer actions (`composerActions.tsx`), a group of their own after
    *  the host's shortcuts so an app's row never sits among the host's. */
   appActionRows?: ReactNode
@@ -280,8 +284,10 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, upl
           {!directFilePicker && plusOpen && plusRect && <OverlayPortal>
             <div
               ref={plusMenuRef}
-              className="fixed w-[260px] rounded-xl bg-bg-elevated border border-border shadow-xl p-2 animate-slide-up z-[60]"
-              style={{ left: Math.max(8, Math.min(plusRect.left, window.innerWidth - 260 - 8)), bottom: window.innerHeight - plusRect.top + 8 }}
+              className={`fixed w-[260px] rounded-xl bg-bg-elevated border border-border shadow-xl p-2 animate-slide-up z-[60]${openBelow ? ' overflow-y-auto' : ''}`}
+              // Below: 8px under the button, and never taller than the room
+              // left under it (less an 8px margin), so no row ends off screen.
+              style={{ left: Math.max(8, Math.min(plusRect.left, window.innerWidth - 260 - 8)), ...anchoredPopupBox(plusRect, openBelow, 8) }}
             >
               <div className="flex gap-2">
                 <button

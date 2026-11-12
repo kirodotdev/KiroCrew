@@ -1,7 +1,8 @@
 /**
- * Settings -> Chat "Jump to the bottom when you send" (#25754).
+ * Settings -> Chat "Jump to your new message when you send" (#25754).
  *
- * On by default, so a send still pins the transcript to the bottom. Off, a send
+ * On by default, so a send still pins the transcript to the new turn, which is
+ * the bottom edge in the default layout these tests render. Off, a send
  * leaves the view alone. Following a turn that starts while the reader is at
  * the bottom is a different path and stays ungated.
  */

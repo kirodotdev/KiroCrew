@@ -100,6 +100,19 @@ interface ChatTranscriptViewProps {
   renderFarmItem: (i: number) => React.ReactNode
   renderMessage: (i: number, m: ChatMessage) => ReactNode
   renderTurnItem: (it: TurnItem, _j: number) => JSX.Element | null
+  /** The top-down layout: rows are newest block first, the composer dock
+   *  floats over the TOP of the scroller, and history loads at the bottom. */
+  topDown?: boolean
+  /** Top-down layout only: the dock's top edge in this column (the overlay
+   *  title band it sits under, 0 or 64). The scroller pays it once, as part of
+   *  its top padding. */
+  dockTop?: number
+  /** The turns in screen order (`useTranscriptPins`), for the minimap: newest
+   *  first when `topDown`. Defaults to `chatNav.sections`. */
+  minimapSections?: ChatNavigationData['sections']
+  /** Index of the last row of the newest turn block: where the live reply
+   *  streams. `renderedDisplayItems.length - 1` in the chronological order. */
+  headBlockEnd?: number
 }
 
 /**
@@ -110,6 +123,7 @@ export default function ChatTranscriptView({
   slotLoading, slotRunning, slotState, environmentStart, slotStopping, slotSwitchTarget, turnDisclosure, turnRowMayBeLive, setInput, isWelcomeState, crewModeOn, openTaskBoard, chatConfig, scrollerRef, bindScroller, handleSurveyLayoutChange,
   onScrollPin, pinned, decideRow, currentSlot, projectDir = null, regenerating, sendUnconfirmed, dockH, lastRole, streamTick, footerActivityKey, footerSentHere = false, toggleAct, renderedDisplayItems, stableMsgKey, virtualKey, handleLoadEarlier,
   spinnerNearTop, virt, visibleDisplayItems, chatNav, navigateToTurn, turnStepAnnouncement, renderFarmItem, renderMessage, renderTurnItem,
+  topDown = false, dockTop = 0, minimapSections, headBlockEnd = renderedDisplayItems.length - 1,
 }: ChatTranscriptViewProps) {
   // This pane shows the chat's transcript once it has loaded rows; a bell note
   // for a cron run is read against that (#23564). Not while the restore gate
@@ -145,8 +159,10 @@ export default function ChatTranscriptView({
           // and a tap there is ambiguous (maintainer ruling on #15820). A
           // column taller than the box scrolls inside it, never under the
           // dock; the memory-mode chip is part of the dock and so sits
-          // below the box too.
-          style={{ marginBottom: dockH }}
+          // below the box too. Top-down: the dock floats over the top of the
+          // column at `dockTop`, so the box STARTS below it by the same
+          // measurement instead.
+          style={topDown ? { marginTop: dockTop + dockH } : { marginBottom: dockH }}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -162,7 +178,10 @@ export default function ChatTranscriptView({
       {/* Speaks the turn an Alt+↑ / Alt+↓ step landed on. */}
       <span className="sr-only" aria-live="polite" aria-atomic="true">{turnStepAnnouncement}</span>
       <TurnNavigationMinimap
-        items={chatNav.sections}
+        // Rail top = transcript top: newest first in the top-down layout,
+        // which the rail is told so it still numbers turns from the oldest.
+        items={minimapSections ?? chatNav.sections}
+        newestFirst={topDown && minimapSections !== undefined}
         scrollerRef={scrollerRef}
         onNavigate={navigateToTurn}
         // The rail maps loaded turns only; while the server holds older
@@ -175,7 +194,12 @@ export default function ChatTranscriptView({
         // the shell's bar (phone) the transcript starts at the top of the
         // column and the spacer would be a blank band under the bar. A worker
         // breadcrumb still overlays the column there, so it keeps the spacer.
-        headerSpacer={!titleInTopbar || workerBreadcrumb}
+        // In the top-down layout the scroller's top padding pays that band
+        // (`dockTop`, below), and the shell swaps the two slots: the footer
+        // and survey sit between the composer and the newest turn (where the
+        // reply lands), the earlier bar after the oldest row.
+        headerSpacer={(!titleInTopbar || workerBreadcrumb) && !topDown}
+        historyAtBottom={topDown}
         scrollerRef={scrollerRef}
         onScrollerElement={bindScroller}
         onScroll={onScrollPin}
@@ -192,7 +216,12 @@ export default function ChatTranscriptView({
         // than unmounting keeps the scroller's geometry and the height
         // cache intact -- the restore needs to WRITE scrollTop while this
         // is up, which a display:none element cannot do.
-        scrollerStyle={{ paddingBottom: dockH + DOCK_CLEARANCE_PX, ...(virt.restoreGate ? { visibility: 'hidden' as const } : null) }}
+        // Top-down: the dock floats over the scroller's TOP edge, so the
+        // same strip (plus the title band it sits under) is top padding,
+        // and the bottom keeps only the clearance.
+        scrollerStyle={topDown
+          ? { paddingTop: dockTop + dockH + DOCK_CLEARANCE_PX, paddingBottom: DOCK_CLEARANCE_PX, ...(virt.restoreGate ? { visibility: 'hidden' as const } : null) }
+          : { paddingBottom: dockH + DOCK_CLEARANCE_PX, ...(virt.restoreGate ? { visibility: 'hidden' as const } : null) }}
         aboveRows={<>
         {/* Mid-switch `slotHasMore` still describes the outgoing chat, so the cursor
             key gates the bar to match the paging thunk's own precondition. */}
@@ -218,7 +247,9 @@ export default function ChatTranscriptView({
           // row identity at write time and drops stale writes.
           paused={loadingOlder}
           count={renderedDisplayItems.length}
-          originIndex={visibleDisplayItems[0]?.index ?? Math.max(0, renderedDisplayItems.length - 1)}
+          // No visible row yet: start from the live end, the last row
+          // chronologically and row 0 in the top-down layout.
+          originIndex={visibleDisplayItems[0]?.index ?? (topDown ? 0 : Math.max(0, renderedDisplayItems.length - 1))}
           isMeasured={virt.farmIsMeasured}
           isMounted={virt.farmRowMounted}
           keyAt={(i) => { const it = renderedDisplayItems[i]; return it ? virtualKey(it, i) : null }}
@@ -339,7 +370,7 @@ export default function ChatTranscriptView({
             count={item.msgs.filter(m => m.role !== 'permission').length}
             disclosureKey={`ctg-${vi.key}`}
             hasPermission={false}
-            isRunning={slotRunning && displayIdx === renderedDisplayItems.length - 1}
+            isRunning={slotRunning && displayIdx === headBlockEnd}
             permissionMeta={unresolvedGroupPerms.at(-1)?.meta as Record<string, unknown> | undefined}
             pendingPermCount={unresolvedGroupPerms.length}
             onApprove={(() => {

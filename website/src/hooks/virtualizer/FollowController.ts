@@ -157,6 +157,37 @@ export function computeAtBottom(geom: ScrollGeom, threshold: number): boolean {
 }
 
 /**
+ * Which end of the list is the LIVE edge -- where new output appears and where
+ * follow keeps the reader. `'bottom'` is the chat contract. `'top'` is the
+ * newest-first transcript: the newest turn is row 0, so the live edge is
+ * scrollTop 0 and older history lies below.
+ *
+ * Top-follow needs much less machinery than bottom-follow because its target
+ * is the constant 0, independent of scrollHeight and of the scroller's own box:
+ * content growth below the reader, a viewport shrink or growth, and a content
+ * clamp cannot move it. Every bottom-only rule (the resting carry, the
+ * viewport-shrink allowance, the clamp absorption, the iOS toolbar split)
+ * exists to chase a moving bottom and has nothing to chase here.
+ */
+export type FollowEdge = 'bottom' | 'top'
+
+/** scrollTop that places the viewport exactly at the live edge. */
+export function followTarget(geom: ScrollGeom, edge: FollowEdge): number {
+  return edge === 'top' ? 0 : bottomTarget(geom)
+}
+
+/** Pixels between the current scroll position and the live edge. */
+export function distanceFromEdge(geom: ScrollGeom, edge: FollowEdge): number {
+  return edge === 'top' ? geom.scrollTop : distanceFromBottom(geom)
+}
+
+/** Whether the scroller is within `threshold` px of the live edge (the
+ *  `isAtBottom` the hook returns, in either orientation). */
+export function computeAtEdge(geom: ScrollGeom, threshold: number, edge: FollowEdge): boolean {
+  return distanceFromEdge(geom, edge) <= threshold
+}
+
+/**
  * Is the scroller laid out at ZERO height -- a backgrounded mobile tab, a
  * `display:none` pane, a not-yet-sized column?
  *
@@ -634,9 +665,14 @@ export function resolveUserScrollStick(args: {
    *  intent disables the clamp guard. A genuine clamp carries no upward
    *  input, so it still keeps `stick`. */
   upwardInputWithinSettle?: boolean
+  /** Which end is the live edge (default `'bottom'`). See `resolveTopEdgeStick`
+   *  for the `'top'` rules; every other argument is bottom-only and ignored
+   *  there. */
+  edge?: FollowEdge
 }): boolean {
   const { stick, followOutput, scrollTop, prevScrollTop, geom } = args
   if (!followOutput) return false
+  if (args.edge === 'top') return resolveTopEdgeStick({ stick, scrollTop, prevScrollTop })
   const dist = distanceFromBottom(geom)
   // The split of the reader's approach between their own hand and the box's
   // growth (see `readerTravel` for the derivation). Read by BOTH arrival
@@ -760,6 +796,32 @@ export function resolveUserScrollStick(args: {
   return arrivalIsTheirs ? true : stick
 }
 
+/**
+ * The user-scroll `stick` decision when the live edge is the TOP (scrollTop 0).
+ *
+ *   1. Any DOWNWARD move releases: the reader is travelling into history.
+ *   2. An UPWARD move that arrives within FOLLOW_REENGAGE_PX of 0 re-engages.
+ *   3. Anything else (a neutral event, an upward move still away from 0) keeps
+ *      the previous state.
+ *   4. No prior observation: position only, follow only inside the band.
+ *
+ * None of the bottom edge's special cases apply. A content shrink or a
+ * viewport growth lowers the MAXIMUM scrollTop, which can clamp a reader
+ * toward the top only when the content no longer overflows -- and then they
+ * are at the live edge anyway. Nothing the box does can carry a reader to
+ * scrollTop 0. A host write can: the shell's top-down dock padding shift and
+ * slide hold move a reader by the dock's or the rewrap's size. They write
+ * through `holdScrollTop`, so their scroll events are self-scroll and never
+ * reach this function. An upward arrival here is then the reader's own move.
+ */
+function resolveTopEdgeStick(args: { stick: boolean; scrollTop: number; prevScrollTop: number }): boolean {
+  const { stick, scrollTop, prevScrollTop } = args
+  if (prevScrollTop < 0) return scrollTop <= FOLLOW_REENGAGE_PX
+  if (scrollTop > prevScrollTop + 0.5) return false
+  if (scrollTop < prevScrollTop - 0.5 && scrollTop <= FOLLOW_REENGAGE_PX) return true
+  return stick
+}
+
 /** Result of an automatic (RO / append) pin evaluation. */
 export interface AutoPinResult {
   /** Whether to write `el.scrollTop = target` now. */
@@ -837,11 +899,30 @@ export function evaluateAutoPin(args: {
    *  gives: skipping leaves follow armed, so the next growth yanks the reader
    *  from wherever the restore just put them. */
   restoreGate?: boolean
+  /** Which end is the live edge (default `'bottom'`); see the top branch. */
+  edge?: FollowEdge
 }): AutoPinResult {
   const { stick, geom, lastWriteTop } = args
   const epsilon = args.epsilon ?? SELF_SCROLL_EPSILON
   const viewportShrink = Math.max(0, args.viewportShrink ?? 0)
   const runActive = args.runActive ?? true
+  if (args.edge === 'top') {
+    // TOP EDGE. The target is the constant 0, so the bottom's resting carry and
+    // viewport-shrink allowance have nothing to chase: a follower is pinned
+    // whenever they sit above 0 (the re-engage band, where native anchoring
+    // can hide a new head row). The one guard kept is the synchronous race:
+    // a reader who scrolled DOWN past our last write before their scroll event
+    // dispatched has left the edge, so release rather than yank them to 0.
+    // Distance alone cannot say that (the band is above 0 too), which is why
+    // it is measured from our own write.
+    const target = 0
+    if (args.restoreGate) return { pin: false, stick: false, target }
+    if (!stick) return { pin: false, stick: false, target }
+    if (lastWriteTop >= 0 && geom.scrollTop > lastWriteTop + epsilon && geom.scrollTop > FOLLOW_REENGAGE_PX) {
+      return { pin: false, stick: false, target }
+    }
+    return { pin: geom.scrollTop > atBottomEpsilon(), stick: true, target }
+  }
   const target = bottomTarget(geom)
   if (args.restoreGate) return { pin: false, stick: false, target }
   if (!stick) return { pin: false, stick: false, target }

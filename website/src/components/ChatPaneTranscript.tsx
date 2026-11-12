@@ -17,7 +17,9 @@ import { speakReply } from '../pages/chat/speakReply'
  * single-chat surface uses, the tool rows' expanded state held above the rows,
  * and the fresh-start "Earlier conversation" fold. `ChatPaneAboveRows` is what
  * the transcript draws above its first row: the history-load failure with its
- * retry, the empty or crewmate-quiet hint, and the link to the full session.
+ * retry and the empty or crewmate-quiet hint. `ChatPaneOpenFullLink` is the
+ * link to the full session; it points at older history, so ChatPane places it
+ * at the history end of whichever layout it draws.
  */
 
 type Messages = Parameters<typeof foldEarlierConversation>[0]
@@ -113,9 +115,7 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOp
   return { listMessages, renderers }
 }
 
-export function ChatPaneAboveRows({ slotKey, activeSlot, messages, paneMessages, crewmate, crewmateLive, running, slotDetailFailed, refetchSlotDetail, hideEmptyHint, crewmateQuietUnproven, onOpenCrewWorkLog, warmHasMore, pagesPane, onOpenFull }: {
-  slotKey: string
-  activeSlot: string | null
+export function ChatPaneAboveRows({ messages, paneMessages, crewmate, crewmateLive, running, slotDetailFailed, refetchSlotDetail, hideEmptyHint, crewmateQuietUnproven, onOpenCrewWorkLog }: {
   messages: Messages
   paneMessages: Messages
   crewmate?: CrewmateIdentity
@@ -126,9 +126,6 @@ export function ChatPaneAboveRows({ slotKey, activeSlot, messages, paneMessages,
   hideEmptyHint?: boolean
   crewmateQuietUnproven: boolean
   onOpenCrewWorkLog?: () => void
-  warmHasMore?: boolean
-  pagesPane: boolean
-  onOpenFull?: ChatPaneProps['onOpenFull']
 }) {
   return (
     <>
@@ -177,18 +174,32 @@ export function ChatPaneAboveRows({ slotKey, activeSlot, messages, paneMessages,
             </>
         </div>
       )}
-      {/* Suppressed on the active slot: that pane renders the store's full
-          history, so the bound does not apply and the row would be false.
-          Also suppressed while the pane can page itself: the bar above
-          already loads the older rows in place. */}
-      {warmHasMore && slotKey !== activeSlot && !pagesPane && onOpenFull && (
-        <button
-          onClick={() => onOpenFull(slotKey, messages[0]?.ts, messages[0]?.meta?.mid as string | undefined)}
-          className="block w-full text-center text-accent text-[12px] underline py-2 bg-transparent border-none cursor-pointer hover:text-accent-hover transition-colors"
-        >
-          {i18nT('components.chatPane.earlier_messages_open_session')}
-        </button>
-      )}
     </>
+  )
+}
+
+/** The link from a bounded pane page to the full session, which holds the
+ *  older rows. `messages[0]` is the pane's oldest row in either layout, so the
+ *  full session lands at the cut. */
+export function ChatPaneOpenFullLink({ slotKey, activeSlot, messages, warmHasMore, pagesPane, onOpenFull }: {
+  slotKey: string
+  activeSlot: string | null
+  messages: Messages
+  warmHasMore?: boolean
+  pagesPane: boolean
+  onOpenFull?: ChatPaneProps['onOpenFull']
+}) {
+  // Suppressed on the active slot: that pane renders the store's full
+  // history, so the bound does not apply and the row would be false.
+  // Also suppressed while the pane can page itself: the earlier-messages
+  // bar already loads the older rows in place.
+  if (!(warmHasMore && slotKey !== activeSlot && !pagesPane && onOpenFull)) return null
+  return (
+    <button
+      onClick={() => onOpenFull(slotKey, messages[0]?.ts, messages[0]?.meta?.mid as string | undefined)}
+      className="block w-full text-center text-accent text-[12px] underline py-2 bg-transparent border-none cursor-pointer hover:text-accent-hover transition-colors"
+    >
+      {i18nT('components.chatPane.earlier_messages_open_session')}
+    </button>
   )
 }

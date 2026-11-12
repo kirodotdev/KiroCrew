@@ -35,6 +35,7 @@ import { SessionsPerCreatorSetting } from './SessionsPerCreatorSetting'
 import { FeatureTipsList } from './FeatureTipsList'
 import { usePlainDiff } from '../../hooks/usePlainDiff'
 import { useDiffSplit } from '../../hooks/useDiffSplit'
+import { useIsMobile } from '../../hooks/useIsMobile'
 import { EFFORT_LEVELS } from '../../lib/effort'
 import { isMac } from '../../utils/platform'
 import { readBusySendDefault, setBusySendDefault, type BusySendMode } from '../../components/BusySendButton'
@@ -59,6 +60,11 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   const qc = useQueryClient()
   const provider = useProvider()
   const [chatCfg, setChatCfg] = useState<ChatConfig>(loadChatConfig)
+  // The chat ignores top-down on a phone-width viewport and keeps the pinned
+  // banner there (ChatPage's `topDown` is `topDownLayout && !isMobile`), so the
+  // pin switch follows the same rule.
+  const isMobile = useIsMobile()
+  const topDownInEffect = chatCfg.topDownLayout && !isMobile
   const [saveError, rawSetSaveError] = useState('')
   // The failure banner is one shared slot written by every save on this panel,
   // so a pick may only auto-clear a failure that came from the SAME picker —
@@ -991,7 +997,14 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           />
           <SettingsButtonGroup label={i18nT('pages.settings.chatPanel.minimap_location')} hint={i18nT('pages.settings.chatPanel.minimap_location_desc')} value={chatCfg.minimapSide} options={[{ value: "left", label: i18nT('pages.settings.chatPanel.minimap_side_left') }, { value: "right", label: i18nT('pages.settings.chatPanel.minimap_side_right') }]} onChange={v => setChat('minimapSide', v as ChatConfig['minimapSide'])} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_thinking_inline')} hint={i18nT('pages.settings.chatPanel.show_intermediate_reasoning_text_between_tool_ca')} checked={!chatCfg.collapseAllSteps} onChange={v => setChat('collapseAllSteps', !v)} />
-          <SettingsToggle label={i18nT('pages.settings.chatPanel.pin_last_prompt')} hint={i18nT('pages.settings.chatPanel.pin_last_prompt_desc')} checked={chatCfg.pinLastPrompt} onChange={v => setChat('pinLastPrompt', v)} />
+          {/* Browser-local like the toggles around it. The pinned-turn banner
+              rides the top fold, which the top-down layout gives to the
+              composer, so that toggle is disabled while top-down is in effect
+              (on, and not a phone-width viewport, where the chat ignores it).
+              It also reads off then, which is what the chat does; the stored
+              pin choice is kept and returns when top-down is not in effect. */}
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.top_down_layout')} hint={i18nT('pages.settings.chatPanel.top_down_layout_desc')} checked={chatCfg.topDownLayout} onChange={v => setChat('topDownLayout', v)} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.pin_last_prompt')} hint={i18nT('pages.settings.chatPanel.pin_last_prompt_desc')} checked={chatCfg.pinLastPrompt && !topDownInEffect} onChange={v => setChat('pinLastPrompt', v)} disabled={topDownInEffect} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.simplified_tool_call_names')} hint={i18nT('pages.settings.chatPanel.when_enabled_inline_tool_pills_show_simplified_t')} checked={chatCfg.simplifiedToolNames} onChange={v => setChat('simplifiedToolNames', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.tool_calls_start_expanded')} hint={i18nT('pages.settings.chatPanel.tool_calls_start_expanded_desc')} checked={chatCfg.toolCallsStartExpanded} onChange={v => setChat('toolCallsStartExpanded', v)} />
           <SettingsSelect label={i18nT('pages.settings.chatPanel.file_change_chips')} hint={i18nT('pages.settings.chatPanel.how_file_diff_chips_appear_below_assistant_messa')} value={chatCfg.fileChipStyle} options={['expanded', 'minimal']} optionLabels={[i18nT('pages.settings.chatPanel.expanded_icon_name_stats'), i18nT('pages.settings.chatPanel.minimal_stats_only_name_on_hover')]} onChange={v => setChat('fileChipStyle', v as ChatConfig['fileChipStyle'])} />

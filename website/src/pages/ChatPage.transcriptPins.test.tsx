@@ -4,7 +4,7 @@
  * paging older history until the target lands — the notice each entry point owes
  * the reader when it cannot, and pin / unpin.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
@@ -39,6 +39,7 @@ import { isSupersededPagingRejection, openActivityPanel } from '../store/chatSli
 import type { ChatMessage } from '../types'
 import type { DisplayItem } from './chat/types'
 import { useTranscriptPins } from './chat/page/transcriptPins'
+import { stepTurn } from './chat/turnStep'
 
 type Props = Parameters<typeof useTranscriptPins>[0]
 
@@ -248,5 +249,42 @@ describe('turn navigation', () => {
     result.current.navigateToTurn(0)
     expect(p.navToDisplayIndex).toHaveBeenLastCalledWith(0, { behavior: 'smooth', align: 'start', offset: -24 })
     expect(result.current.messageToDisplayIdx.get(1)).toBe(1)
+  })
+
+  it('top-down layout: a landed turn clears the composer dock over the top edge', () => {
+    const p = props({ topDown: true, pinnedJumpChrome: () => 236 })
+    const { result } = renderHook(() => useTranscriptPins(p), { wrapper: withQueryClient() })
+    result.current.navigateToTurn(1)
+    expect(p.navToDisplayIndex).toHaveBeenLastCalledWith(1, { behavior: 'smooth', align: 'start', offset: -236 })
+  })
+
+  it('top-down layout: Alt+arrow steps the turns in screen order and numbers them from the oldest', () => {
+    // Twelve prompts drawn newest first: display row 0 is the newest message.
+    const messages = Array.from({ length: 12 }, (_, i) => msg('user', `t${i + 1}`, `m${i + 1}`))
+    const screenRows = rows(messages).reverse()
+    const scroller = document.createElement('div')
+    scroller.getBoundingClientRect = () => ({ top: 0, bottom: 600, left: 0, right: 0, width: 0, height: 600, x: 0, y: 0, toJSON: () => ({}) })
+    screenRows.forEach((_, displayIdx) => {
+      const row = document.createElement('div')
+      row.setAttribute('data-display-index', String(displayIdx))
+      // Row 1 sits on the reading line (the scroller's top edge).
+      const top = (displayIdx - 1) * 100
+      row.getBoundingClientRect = () => ({ top, bottom: top + 100, left: 0, right: 0, width: 0, height: 100, x: 0, y: top, toJSON: () => ({}) })
+      scroller.append(row)
+    })
+    document.body.append(scroller)
+    onTestFinished(() => { scroller.remove() })
+    const p = props({
+      topDown: true, messages, messagesRef: { current: messages }, scrollerRef: { current: scroller },
+      renderedDisplayItems: screenRows, renderedTranscript: { messages, displayItems: screenRows },
+    })
+    const { result } = renderHook(() => useTranscriptPins(p), { wrapper: withQueryClient() })
+    expect(result.current.screenNavSections.map(s => s.displayIdx)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+    act(() => { stepTurn(-1) })
+    expect(p.scrollToPinnedPrompt).toHaveBeenLastCalledWith(0)
+    expect(result.current.turnStepAnnouncement).toBe('Turn 12 of 12: user t12')
+    act(() => { stepTurn(1) })
+    expect(p.scrollToPinnedPrompt).toHaveBeenLastCalledWith(1)
+    expect(result.current.turnStepAnnouncement).toBe('Turn 11 of 12: user t11')
   })
 })

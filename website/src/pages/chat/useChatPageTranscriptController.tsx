@@ -18,6 +18,8 @@ export interface UseChatPageTranscriptEarlyControllerOptions {
   slotRunningRef: MutableRefObject<boolean>
   vGetFollowRef: MutableRefObject<() => boolean>
   vScrollToBottomRef: MutableRefObject<(behavior?: ScrollBehavior) => void>
+  /** Top-down layout: the live edge is scrollTop 0, not the bottom. */
+  topDown?: boolean
 }
 
 /** The transcript state that must exist before the virtualizer is created:
@@ -33,6 +35,7 @@ export function useChatPageTranscriptEarlyController({
   slotRunningRef,
   vGetFollowRef,
   vScrollToBottomRef,
+  topDown = false,
 }: UseChatPageTranscriptEarlyControllerOptions) {
   // Scroll to bottom helper — delegates to the virtualizer (single controller).
   // Distance-aware: a smooth glide is for SHORT hops. Sending from deep in
@@ -41,11 +44,14 @@ export function useChatPageTranscriptEarlyController({
   // trip itself took seconds and arrived at a still-mounting tail. Beyond a few
   // viewports, teleport (the industry norm: message send lands at the bottom
   // instantly; smooth motion is reserved for distances the eye can follow).
+  // The virtualizer's scrollToBottom goes to the LIVE edge, which is scrollTop 0
+  // in the top-down layout, so the distance is measured to that edge.
   const scrollBottom = useCallback((instant: boolean = false) => {
     const el = scrollerRef.current
-    const far = el ? el.scrollHeight - el.scrollTop - el.clientHeight > el.clientHeight * 3 : false
+    const fromLive = el ? (topDown ? el.scrollTop : el.scrollHeight - el.scrollTop - el.clientHeight) : 0
+    const far = el ? fromLive > el.clientHeight * 3 : false
     vScrollToBottomRef.current(instant || far ? 'auto' : 'smooth')
-  }, [scrollerRef, vScrollToBottomRef])
+  }, [scrollerRef, vScrollToBottomRef, topDown])
 
   /**
    * Whether an AUTOMATIC bottom pin is allowed: the follow flag AND live
@@ -71,6 +77,9 @@ export function useChatPageTranscriptEarlyController({
     if (!slotRunningRef.current) return false
     const el = scrollerRef.current
     if (!el) return true
+    // Top-down: the live edge is scrollTop 0, which neither a band resize nor a
+    // shrinking viewport moves, so the only question is distance from the top.
+    if (topDown) return el.scrollTop <= el.clientHeight
     // A SHRINKING viewport is the composer growing under the reader's own
     // typing. Chasing it walks the transcript up a line every few characters,
     // which is the "picture keeps moving while I type" report -- so follow is
@@ -81,7 +90,7 @@ export function useChatPageTranscriptEarlyController({
     autoFollowLastChRef.current = el.clientHeight
     if (prevCh > 0 && el.clientHeight < prevCh) return false
     return el.scrollHeight - el.scrollTop - el.clientHeight <= el.clientHeight
-  }, [scrollerRef, slotRunningRef, vGetFollowRef])
+  }, [scrollerRef, slotRunningRef, vGetFollowRef, topDown])
 
   // Scroll compensation for two in-flow bands that render outside the
   // virtualizer's measured rows: the tip card and the session-pulse survey
@@ -99,6 +108,10 @@ export function useChatPageTranscriptEarlyController({
   const [surveyLayoutTick, setSurveyLayoutTick] = useState(0)
   const handleSurveyLayoutChange = useCallback(() => setSurveyLayoutTick((t) => t + 1), [])
   useEffect(() => {
+    // Top-down: these bands sit above the newest turn, and the live edge
+    // (scrollTop 0) does not move when they resize, so there is nothing to
+    // re-anchor.
+    if (topDown) return
     // Gate on FOLLOW, not the 100px at-bottom band: a reader parked a little
     // above the bottom has released follow, and re-anchoring for a tip/survey
     // band would yank them (and replace the mounted window under them).
@@ -109,7 +122,7 @@ export function useChatPageTranscriptEarlyController({
       })
     })
     return () => cancelAnimationFrame(raf)
-  }, [activeTip, surveyLayoutTick, scrollBottom, autoFollowAllowed, vGetFollowRef])
+  }, [activeTip, surveyLayoutTick, scrollBottom, autoFollowAllowed, vGetFollowRef, topDown])
 
   // Same compensation for the composer status stack (progress bars, sub-agent
   // delivery line, queue stack). The virtualizer's own viewport branch DOES
@@ -140,13 +153,23 @@ export function useChatPageTranscriptEarlyController({
     composerBandObserverRef.current?.disconnect()
     composerBandObserverRef.current = null
     if (!el || typeof ResizeObserver === 'undefined') return
+    if (topDown) {
+      // Top-down layout: the band sits above the transcript and does not move
+      // the live edge (scrollTop 0), so only the overflow mark applies.
+      const markOnly = new ResizeObserver(() => {
+        el.dataset.overflowing = el.scrollHeight > el.clientHeight ? 'true' : 'false'
+      })
+      markOnly.observe(el)
+      composerBandObserverRef.current = markOnly
+      return
+    }
     const ro = new ResizeObserver(() => {
       el.dataset.overflowing = el.scrollHeight > el.clientHeight ? 'true' : 'false'
       if (autoFollowAllowed()) scrollBottom(true)
     })
     ro.observe(el)
     composerBandObserverRef.current = ro
-  }, [scrollBottom, autoFollowAllowed])
+  }, [scrollBottom, autoFollowAllowed, topDown])
 
   // Navigate to a (possibly off-window) display index: mount it first via the
   // virtualizer so the DOM-based scroll can find it, then scroll next frame.
@@ -255,7 +278,7 @@ export function useChatPageTranscriptEarlyController({
     updatePinnedPrompt,
     onScrollPin,
     pinnedJumpChrome,
-  } = usePinnedPrompt({ scrollerRef, requiresMountedHandoff: true })
+  } = usePinnedPrompt({ scrollerRef, requiresMountedHandoff: true, liveEdgeAtTop: topDown })
   /** Jump the transcript back to the pinned prompt, landing it just below the
    *  banner so the prompt is read in context — which also un-pins the banner,
    *  since its prompt is no longer above the fold.
@@ -269,12 +292,12 @@ export function useChatPageTranscriptEarlyController({
     navPollCancelRef.current?.()
     const sc0 = scrollerRef.current
     if (!sc0) return
-    // The jump lands at the head of the target's consecutive prompt run — a
-    // steer sent before any output, a double-send — so the row on the hand-off
-    // line is a non-prompt and the previous turn's banner survives the landing.
+    // Bottom-up jumps land at the head of a consecutive prompt run so the
+    // previous turn's banner survives. Top-down has no pinned banner, so it
+    // lands on the prompt that the turn stepper selected.
     // Rationale and near/far interaction: see jumpAnchorIdx's docblock
     // (utils/pinnedPrompt.ts).
-    const anchor = jumpAnchorIdx(displayItemsRef.current, target)
+    const anchor = topDown ? target : jumpAnchorIdx(displayItemsRef.current, target)
     // NEAR: the window is unioned up to the target, so every row on the path
     // mounts and measures before the glide starts and the destination is exact
     // from the first frame. FAR: nothing is mounted — replacing the window at
@@ -356,7 +379,7 @@ export function useChatPageTranscriptEarlyController({
       navScrollRafRef.current = requestAnimationFrame(tick)
     }
     navScrollRafRef.current = requestAnimationFrame(tick)
-  }, [pinnedJumpChrome, scrollerRef, mountIndexRef, estimateRowTopRef, displayItemsRef])
+  }, [pinnedJumpChrome, scrollerRef, mountIndexRef, estimateRowTopRef, displayItemsRef, topDown])
 
   return {
     scrollBottom,

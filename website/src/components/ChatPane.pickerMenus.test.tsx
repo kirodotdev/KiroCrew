@@ -30,7 +30,7 @@ function dropdown(items: { name: string }[]) {
   }
 }
 
-function setup(overrides: Partial<Record<string, unknown>> = {}) {
+function setup(overrides: Partial<Record<string, unknown>> = {}, openBelow = false) {
   const agentDD = dropdown([{ name: 'alpha', source: 'builtin' }, { name: 'beta', source: 'user' }] as never)
   const modelDD = dropdown([{ name: 'model-one' }, { name: 'model-two' }])
   const models = {
@@ -66,7 +66,7 @@ function setup(overrides: Partial<Record<string, unknown>> = {}) {
   const navigate = vi.fn()
   render(
     <>
-      <ChatPaneAgentMenu paneSlot={undefined} models={models} actions={actions} navigate={navigate} />
+      <ChatPaneAgentMenu paneSlot={undefined} models={models} actions={actions} navigate={navigate} openBelow={openBelow} />
       <ChatPaneModelMenu slotKey="slot-1" paneSlot={undefined} models={models} actions={actions} navigate={navigate} />
     </>,
   )
@@ -101,6 +101,32 @@ describe('ChatPaneAgentMenu', () => {
     const { actions, agentMenu } = setup()
     fireEvent.keyDown(agentMenu, { key: 'ArrowDown' })
     expect(actions.onAgentListKeyDown).toHaveBeenCalledTimes(1)
+  })
+
+  it('scrolls the complete downward menu when its cap is smaller than the footer rows', () => {
+    const bottom = window.innerHeight - 20
+    const { agentMenu } = setup({
+      agentBtnRect: { left: 12, top: bottom - 24, bottom } as DOMRect,
+    }, true)
+    const list = within(agentMenu).getByRole('listbox')
+
+    expect(agentMenu.style.top).toBe(`${bottom + 4}px`)
+    expect(agentMenu.style.bottom).toBe('')
+    expect(agentMenu.style.maxHeight).toBe('8px')
+    expect(agentMenu.className.split(/\s+/)).toContain('overflow-y-auto')
+    expect(list.className.split(/\s+/)).toContain('overflow-y-auto')
+    expect(list.style.minHeight).toBe('96px')
+    expect(agentMenu.contains(within(agentMenu).getByText(i18nT('components.agentDropdownList.manage_agents')))).toBe(true)
+  })
+
+  it('keeps the main upward placement and list styles by default', () => {
+    const { agentMenu } = setup()
+    const list = within(agentMenu).getByRole('listbox')
+
+    expect(agentMenu.style.bottom).toBe(`${window.innerHeight - 400 + 4}px`)
+    expect(agentMenu.style.top).toBe('')
+    expect(agentMenu.style.maxHeight).toBe('')
+    expect(list.className).toBe('overflow-y-auto max-h-[280px]')
   })
 })
 

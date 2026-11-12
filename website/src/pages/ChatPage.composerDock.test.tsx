@@ -14,10 +14,10 @@ const seen = vi.hoisted(() => ({} as Record<string, Captured | null>))
 
 vi.mock('../components/AgentDropdownList', () => ({
   default: () => null,
-  isCrewmateChat: () => true,
-  DefaultAgentRow: () => null,
+  isCrewmateChat: () => false,
+  DefaultAgentRow: () => <button type="button" data-testid="default-agent-footer">default agent</button>,
   defaultWriteKind: () => 'agent',
-  ManageAgentsFooter: (p: Captured) => { seen.manageAgents = p; return null },
+  ManageAgentsFooter: (p: Captured) => { seen.manageAgents = p; return <button type="button" data-testid="manage-agents-footer">manage agents</button> },
 }))
 vi.mock('../components/ProjectPicker', () => ({ default: (p: Captured & { footer?: ReactNode }) => { seen.projectPicker = p; return <>{p.footer}</> } }))
 vi.mock('../components/ProjectAwsProfile', () => ({ ProjectAwsProfileSection: (p: Captured) => { seen.awsProfile = p; return null } }))
@@ -29,7 +29,7 @@ vi.mock('../components/FollowUpCard', () => ({ default: (p: Captured) => { seen.
 vi.mock('../components/PendingQuestionCard', () => ({ default: () => null }))
 vi.mock('../components/FlyingQuote', () => ({ default: () => null }))
 vi.mock('../components/QueueStack', () => ({ default: () => null, SubagentDeliveryProgress: () => null }))
-vi.mock('../components/MemoryModeChip', () => ({ MemoryModeChip: () => null }))
+vi.mock('../components/MemoryModeChip', () => ({ MemoryModeChip: (p: Captured) => { seen.memoryChip = p; return null } }))
 // The dock is driven by props here; the Crew Mode root read is a store/query hook.
 vi.mock('../components/crew/useCrewRoot', () => ({ useCrewRoot: () => ({ rootClosed: false, rootTitle: '', workers: undefined, failed: false }) }))
 vi.mock('../chat-core/composer/Composer', () => ({ useComposerDraftText: () => null, Composer: forwardRef(({ children }: { children: ReactNode }, _ref) => <>{children}</>) }))
@@ -47,7 +47,10 @@ vi.mock('../components/sessionEnvironmentHooks', async (orig) => ({
 }))
 
 import ComposerDockView from './chat/page/ComposerDockView'
+import { CLEARANCE_GAP_PX, TOP_OVERLAY_ATTR, TOP_OVERLAY_GROWS, growingTopOverlays, overlayInset, topOverlays } from './chat/browserLiveClearance'
 import { dismissFollowupItem } from '../store/chatSlice'
+
+const rect = (top: number, bottom: number) => ({ top, bottom, left: 0, right: 800, width: 800, height: bottom - top, x: 0, y: top, toJSON: () => ({}) }) as DOMRect
 
 type DockProps = Parameters<typeof ComposerDockView>[0]
 
@@ -110,6 +113,87 @@ describe('ComposerDockView', () => {
     act(() => { (seen.manageAgents!.onManage as () => void)() })
     expect(setAgentDropdown).toHaveBeenCalledWith(false)
     expect(p.navigate).toHaveBeenCalledWith('/capabilities?tab=crews')
+  })
+
+  it('scrolls the complete top-down agent menu when its cap is smaller than both footer controls', () => {
+    const bottom = window.innerHeight - 20
+    render(<ComposerDockView {...dockProps({
+      topDown: true,
+      agentDropdown: true,
+      agentBtnRect: { top: bottom - 24, bottom, left: 24, width: 96, height: 24 } as never,
+      filteredAgents: [] as never,
+      activeAgentName: 'kirocrew',
+      defaultAgent: 'kirocrew',
+      installedAgents: [] as never,
+    })} />)
+    const menu = screen.getByRole('dialog')
+    const list = screen.getByRole('listbox')
+
+    expect(menu.style.top).toBe(`${bottom + 4}px`)
+    expect(menu.style.bottom).toBe('')
+    expect(menu.style.maxHeight).toBe('8px')
+    expect(menu.className.split(/\s+/)).toContain('overflow-y-auto')
+    expect(list.className.split(/\s+/)).toContain('overflow-y-auto')
+    expect(list.style.minHeight).toBe('96px')
+    expect(menu.contains(screen.getByTestId('default-agent-footer'))).toBe(true)
+    expect(menu.contains(screen.getByTestId('manage-agents-footer'))).toBe(true)
+  })
+
+  it('keeps the main agent menu placement and list styles outside top-down layout', () => {
+    render(<ComposerDockView {...dockProps({
+      agentDropdown: true,
+      agentBtnRect: { top: 400, bottom: 424, left: 24, width: 96, height: 24 } as never,
+      filteredAgents: [] as never,
+      activeAgentName: 'kirocrew',
+      defaultAgent: 'kirocrew',
+      installedAgents: [] as never,
+    })} />)
+    const menu = screen.getByRole('dialog')
+    const list = screen.getByRole('listbox')
+
+    expect(menu.style.bottom).toBe(`${window.innerHeight - 400 + 4}px`)
+    expect(menu.style.top).toBe('')
+    expect(menu.style.maxHeight).toBe('')
+    expect(list.className).toBe('overflow-y-auto max-h-[280px]')
+  })
+
+  // Top-down floats the dock over the transcript's TOP edge, under the title
+  // band. The browser card's header clearance and frame fit
+  // (browserLiveClearance) measure only marked top overlays, so the dock must
+  // carry the marker there, or a taken-over card's header stays under it.
+  it('marks the top-down dock root as a transcript top overlay, so the browser card clears its bottom edge', () => {
+    render(<ComposerDockView {...dockProps({ topDown: true, dockTop: 40 })} />)
+    const dock = screen.getByTestId('composer-dock-root')
+    expect(dock).toHaveAttribute(TOP_OVERLAY_ATTR, TOP_OVERLAY_GROWS)
+    expect(growingTopOverlays()).toContain(dock)
+    expect(topOverlays()).toContain(dock)
+    const scroller = document.createElement('div')
+    document.body.appendChild(scroller)
+    vi.spyOn(scroller, 'getBoundingClientRect').mockReturnValue(rect(0, 800))
+    vi.spyOn(dock, 'getBoundingClientRect').mockReturnValue(rect(40, 220))
+    // The dock's bottom edge (220) plus the gap is what the card may not use.
+    expect(overlayInset(scroller)).toBe(220 + CLEARANCE_GAP_PX)
+    scroller.remove()
+  })
+
+  // The bottom dock covers the transcript's bottom edge. As a top overlay its
+  // bottom (the pane's bottom) would push every card out of view.
+  it.each([[false], [undefined]] as const)('leaves the bottom dock root unmarked (topDown %s)', (topDown) => {
+    render(<ComposerDockView {...dockProps(topDown === undefined ? {} : { topDown })} />)
+    const dock = screen.getByTestId('composer-dock-root')
+    expect(dock).not.toHaveAttribute(TOP_OVERLAY_ATTR)
+    expect(topOverlays()).not.toContain(dock)
+    const scroller = document.createElement('div')
+    document.body.appendChild(scroller)
+    vi.spyOn(scroller, 'getBoundingClientRect').mockReturnValue(rect(0, 800))
+    vi.spyOn(dock, 'getBoundingClientRect').mockReturnValue(rect(620, 800))
+    expect(overlayInset(scroller)).toBe(0)
+    scroller.remove()
+  })
+
+  it.each([[true, true], [false, false], [undefined, false]] as const)('opens the memory-mode popover below the chip only in top-down layout (topDown %s)', (topDown, openBelow) => {
+    render(<ComposerDockView {...dockProps({ showComposerMemoryChip: true, ...(topDown === undefined ? {} : { topDown }) })} />)
+    expect(seen.memoryChip!.openBelow).toBe(openBelow)
   })
 
   it('closes the model pop-up, retries the visibility read, and pins the slot model to its agent', () => {

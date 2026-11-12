@@ -18,6 +18,33 @@ describe('MemoryModeChip', () => {
     expect(pop.style.visibility).toBe('')
   })
 
+  describe('openBelow (the top-down chat layout puts the chip near the top of the window)', () => {
+    const openChip = (openBelow: boolean) => {
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: 700 })
+      renderWithProviders(<MemoryModeChip onSwitchMode={vi.fn()} openBelow={openBelow} />)
+      const btn = screen.getByText('Choose memory mode').closest('button')!
+      vi.spyOn(btn, 'getBoundingClientRect').mockReturnValue({ top: 70, bottom: 94, left: 340, right: 460, width: 120, height: 24, x: 340, y: 70, toJSON: () => ({}) } as DOMRect)
+      fireEvent.click(btn)
+      return screen.getByTestId('memory-mode-popover')
+    }
+
+    it('opens the popover 6px below the chip, capped to the room below it, and scrolls inside the cap', () => {
+      const pop = openChip(true)
+      expect(pop.style.bottom).toBe('')
+      expect(pop.style.top).toBe(`${94 + 6}px`)
+      expect(pop.style.maxHeight).toBe(`${700 - 94 - 6 - 8}px`)
+      expect(pop.className.split(/\s+/)).toContain('overflow-y-auto')
+    })
+
+    it('keeps the upward placement of main with the prop off', () => {
+      const pop = openChip(false)
+      expect(pop.style.top).toBe('')
+      expect(pop.style.maxHeight).toBe('')
+      expect(pop.style.bottom).toBe(`${700 - 70 + 6}px`)
+      expect(pop.className.split(/\s+/)).not.toContain('overflow-y-auto')
+    })
+  })
+
   describe('horizontal clamp', () => {
     const openAt = (left: number, width: number) => {
       vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(500)

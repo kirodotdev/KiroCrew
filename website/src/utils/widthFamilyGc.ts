@@ -67,7 +67,7 @@ export const MAX_WIDTH_FAMILIES = 8
 /**
  * Split a height-cache scope into its width-family BASE and the width bucket.
  *
- * A scope is `<base>:w<digits>` where `<base>` is `<slot>:tables1[:host]`.
+ * A scope is `<base>:w<digits>` where `<base>` is `<slot>:tables1[:host][:topdown]`.
  * Returns `null` for any key that is not a width-family member (no `:w<digits>`
  * suffix), so a non-width `vc_heights_` key -- none exist in production today,
  * but a hand-written or future one might -- is left strictly alone.

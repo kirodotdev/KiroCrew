@@ -5,6 +5,7 @@ import { useMenuKeyboard } from '../hooks/useMenuKeyboard'
 import { useAnchorRemeasure } from '../hooks/useAnchorRemeasure'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { platformShortcut } from '../utils/platform'
+import { anchoredPopupBox } from '../lib/pickerMenu'
 
 import { i18nT } from '../i18n/t'
 
@@ -172,6 +173,7 @@ export default function BusySendButton({
   altChordAvailable = false,
   autoAvailable = false,
   onPicked,
+  openBelow = false,
 }: {
   mode: BusySendMode
   onModeChange: (m: BusySendMode) => void
@@ -201,6 +203,10 @@ export default function BusySendButton({
    *  host owns the composer and returns `true` when it took focus; `false`
    *  (touch: focusing the box pops the keyboard) falls back to the caret. */
   onPicked?: () => boolean
+  /** Open the mode menu below the split button, capped to the room below
+   *  (`ChatInputProps.openBelow`): the top-down chat layout puts the composer
+   *  at the top of the window, where there is no room above. */
+  openBelow?: boolean
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [menuRect, setMenuRect] = useState<DOMRect | null>(null)
@@ -292,8 +298,8 @@ export default function BusySendButton({
             event.stopPropagation()
             closeToTrigger()
           }}
-          className="fixed w-[250px] rounded-xl bg-bg-elevated border border-border shadow-xl p-1.5 animate-slide-up z-[60]"
-          style={{ left: Math.max(8, Math.min(menuRect.right - 250, window.innerWidth - 250 - 8)), bottom: window.innerHeight - menuRect.top + 8 }}
+          className={`fixed w-[250px] rounded-xl bg-bg-elevated border border-border shadow-xl p-1.5 animate-slide-up z-[60]${openBelow ? ' overflow-y-auto' : ''}`}
+          style={{ left: Math.max(8, Math.min(menuRect.right - 250, window.innerWidth - 250 - 8)), ...anchoredPopupBox(menuRect, openBelow, 8) }}
         >
           {BUSY_SEND_MODES.filter(({ mode: m }) => m !== 'auto' || autoAvailable).map(({ mode: m, icon }) => (
             <button

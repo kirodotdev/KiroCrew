@@ -579,6 +579,12 @@ export interface ChatInputProps {
    * pane the intent resolved to. Left as a follow-up, deliberately.
    */
   collapsible?: boolean
+  /** Open the composer's own popups (the "+" menu, an app action's popover,
+   *  the context-usage popover, the busy send-mode menu) below their control
+   *  instead of above it, each capped to the room below: the top-down chat
+   *  layout puts the composer at the top of the window, where there is no
+   *  room above. Defaults to false. */
+  openBelow?: boolean
   /** Gateway WebSocket connection state. When false, send is blocked and a
    *  warning banner appears above the input. Defaults to true so callers that
    *  don't track connectivity (e.g. tests, embedded previews) keep working. */
