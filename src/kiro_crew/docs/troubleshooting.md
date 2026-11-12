@@ -601,7 +601,9 @@ and macOS, where scratch stays at the default `~/.kiro/crew/scratch`. Note
 for child processes, and setting it yourself does nothing.
 
 Setting `KIROCREW_HOME` to a data drive relocates the whole data home,
-scratch included, if you want everything off `C:` rather than scratch alone.
+scratch included, if you want it off `C:` rather than scratch alone. Some
+folders stay under `~/.kiro` on `C:` whatever it is set to (see
+[Folders beside the data home](../../../docs/guides/install.md#folders-beside-the-data-home)).
 
 ### Subagent completion event seems cut off
 

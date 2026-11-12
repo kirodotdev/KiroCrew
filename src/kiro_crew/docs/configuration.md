@@ -960,7 +960,7 @@ Only whisper.cpp ggml weights work. This picks a different model for the bundled
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `KIROCREW_HOME` | Override the config/data directory | `~/.kiro/crew` |
+| `KIROCREW_HOME` | Override the config/data directory. Some folders stay under `~/.kiro` whatever it is set to (see [Folders beside the data home](../../../docs/guides/install.md#folders-beside-the-data-home)) | `~/.kiro/crew` |
 | `KIROCREW_PORT` | Override the dashboard port | `5476` |
 | `KIROCREW_PROJECT_DIR` | Override the agent-config/skills project directory | Auto-detected |
 | `KIROCREW_WORKSPACE` | Override the workspace root. No subdirectory is appended; one surrounding quote pair is dropped and `~` is expanded. A value that is not absolute is logged and replaced by the platform default | Saved `workspace_dir`, else a platform default |
