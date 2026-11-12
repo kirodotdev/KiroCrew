@@ -5,7 +5,7 @@
 import type { PayloadAction } from '@reduxjs/toolkit'
 import type { ApprovalTarget, ChatMessage, ToolActivity } from '../../types'
 import { permissionRowTarget, sameApprovalTarget } from '../../types/approvalTarget'
-import { SPAWN_LAUNCH_MARKER } from '../../pages/chat/types'
+import { SPAWN_LAUNCH_MARKER, TOOL_LOG_CAP } from '../../pages/chat/types'
 import { isAskAnsweredOutput } from '../../utils/askQuestionAnswers'
 import { ASK_QUESTION_SERVER, isAskQuestionToolName, MAX_TOOL_RESULT_CHARS } from '../../utils/askQuestionTool'
 import { entryActivityOpen, persistActivityOpen, restoreSavedActivityOpen, type ChatState } from './state'
@@ -116,8 +116,8 @@ function noteToolReturn(state: ChatState, slot: string, tid: string | undefined,
   // Restricted to launch results on purpose. `state.messages` has no entry
   // cap and a single output can reach the server's 1 MB cap, so copying
   // EVERY tool result here would let one long autonomous turn grow the
-  // heap without bound. The tool log below is bounded on both axes: 100
-  // entries, each clamped by `clampToolOutput`.
+  // heap without bound. The tool log below is bounded on both axes:
+  // `TOOL_LOG_CAP` entries, each clamped by `clampToolOutput`.
   //
   // Runs BEFORE the tool-log lookup below, which returns early for a slot
   // that has no toolLog yet — a background slot's scrollback still needs
@@ -244,7 +244,7 @@ export const activityReducers = {
     const entry: ToolActivity = { type: 'tool', text: action.payload.tool, purpose: action.payload.purpose, kind: action.payload.kind, ts: Date.now(), auto: action.payload.auto, tool_call_id: action.payload.tool_call_id, is_shell: action.payload.is_shell, tool_name: action.payload.tool_name, mcp_server: action.payload.mcp_server }
     setClampedField(entry, 'input', action.payload.input_preview)
     log.push(entry)
-    if (log.length > 100) log.splice(0, log.length - 100)
+    if (log.length > TOOL_LOG_CAP) log.splice(0, log.length - TOOL_LOG_CAP)
   },
   sseActivityEvent(state: ChatState, action: PayloadAction<{ slot: string; kind: string; text: string; approval_id?: string; approval_type?: string; approval_target?: ApprovalTarget }>) {
     if (isUnsafeKey(action.payload.slot)) return
