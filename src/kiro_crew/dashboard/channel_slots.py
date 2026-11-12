@@ -83,6 +83,7 @@ from kiro_crew.dashboard.transcript_binding import (
     bind_transcript,
     seed_autocompact_from_disk,
     seed_project_from_disk,
+    seed_turn_timeout_from_disk,
 )
 from kiro_crew.history import HUMAN_TURN_META_KEY, carry_provenance, is_incognito_transcript
 from kiro_crew.history_projection import METADATA_LINE_CORRUPT
@@ -605,10 +606,13 @@ def surface_channel_session(
         if slot.autocompact_pct is not None and state.sessions:
             state.sessions.set_autocompact_pct(effective_session_key(slot), slot.autocompact_pct)
     # The session's own turn time limit, for the same reason: without it a
-    # surfaced slot follows the global limit and its next save drops the key.
+    # surfaced slot follows the global limit and its next save drops the key. A
+    # live alias's limit stays, as its threshold does.
     from kiro_crew.dashboard.chat_persistence import _validate_turn_timeout_secs
 
-    slot.turn_timeout_secs = _validate_turn_timeout_secs(meta.get("turn_timeout_secs"))
+    seed_turn_timeout_from_disk(
+        state, slot, _validate_turn_timeout_secs(meta.get("turn_timeout_secs"))
+    )
     # Restore the dismissed source-link tombstones, mirroring the persistence
     # loaders: this surfacing path applies metadata by hand rather than going
     # through _rehydrate_slot_from_history, so without it an unlinked chip

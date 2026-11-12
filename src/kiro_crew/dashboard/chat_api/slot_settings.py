@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         save_slot_off_loop,
         slot_history_key,
         slot_not_found,
+        turn_timeout_commits,
     )
     from kiro_crew.dashboard.slot_color import write_slot_color
 
@@ -427,27 +428,24 @@ async def api_chat_slot_turn_timeout(request: web.Request) -> web.Response:
         authorized_history_key = slot_history_key(slot)
         if authorized_history_key != locked_history_key:
             return _gone()
-        committed = False
         if state.conversation_log:
             # Persist before publishing. The new value reaches disk as a STAGED
-            # value while the live field keeps the committed one, so a turn
-            # dispatched during the save still runs under the committed limit
-            # and a failed save leaves nothing to undo. The live field (and the
-            # live field of every alias slot on this transcript) flips in the
-            # save's commit hook, which runs under the transcript lock right
-            # after the write lands: an alias flush needs that lock to
-            # serialize, so none can write the old value back over this one.
-            # The aliases are listed inside the hook, so a slot bound to this
-            # transcript while the save ran is published to as well.
+            # value while the field, which every live alias on this transcript
+            # shares (``transcript_binding.py``), keeps the committed one, so a
+            # turn dispatched during the save still runs under the committed
+            # limit and a failed save leaves nothing to undo. The commit hook
+            # runs in the save's worker under the transcript lock, and only
+            # records the value for the transcript: every save of it writes that
+            # value until the publish below, so no alias flush can write the old
+            # one back in between. It is the transcript's hook, so it runs even
+            # when this slot is rebound while the save runs, and for a tab with
+            # no metadata line yet, whose slot then holds the only copy.
+            committed = False
 
-            def _publish_committed() -> None:
+            def _record_commit() -> None:
                 nonlocal committed
                 committed = True
-                others = [other for other in list(state._slots.values()) if other is not slot]
-                for other in (slot, *others):
-                    if slot_history_key(other) == authorized_history_key:  # type: ignore[arg-type]
-                        other.turn_timeout_secs = secs  # type: ignore[union-attr]
-                        other._turn_timeout_hydrated = True  # type: ignore[union-attr]
+                turn_timeout_commits[authorized_history_key] = (secs,)
 
             try:
                 saved = await save_slot_off_loop(
@@ -457,40 +455,41 @@ async def api_chat_slot_turn_timeout(request: web.Request) -> web.Response:
                     best_effort=False,
                     expected_history_key=authorized_history_key,
                     turn_timeout_override=(secs,),
-                    after_commit_under_lock=_publish_committed,
+                    after_commit_on_transcript=_record_commit,
                 )
             except Exception:
-                # Nothing committed and nothing was published. Dirty only so an
-                # unrelated flush re-converges the unchanged durable record.
-                slot._dirty = True
                 logger.exception("Slot %s turn_timeout_secs persist failed", name)
-                return web.json_response(
-                    {"error": "could not persist turn time limit", "code": "persist_failed"},
-                    status=500,
-                )
+                if not committed:
+                    # Nothing was published. Dirty only so an unrelated flush
+                    # re-converges the unchanged durable record.
+                    slot._dirty = True
+                    return web.json_response(
+                        {"error": "could not persist turn time limit", "code": "persist_failed"},
+                        status=500,
+                    )
+                saved = True  # it failed after the write landed
             if not saved:
                 # Refused without writing: the session was deleted, or the slot
                 # was rebound to another transcript mid-request.
                 return _gone()
+            # Published on the event loop, where every rebind runs, so none can
+            # land between finding a live slot on the committed transcript and
+            # writing the binding they all share. The requester may have left it.
+            for other in (slot, *state._slots.values()):
+                if slot_history_key(other) == authorized_history_key:
+                    other.turn_timeout_secs = secs
+                    break
+            turn_timeout_commits.pop(authorized_history_key, None)
             # The persist await is a rebind window. A slot that now routes to
-            # another transcript holds THAT transcript's limit, set by whatever
-            # rebound it, so a rejection here leaves the slot's field alone.
+            # another transcript holds THAT transcript's limit, and the commit
+            # stays with the transcript it landed on.
             stale = _reauthorize_after_await(state, slot, name, request_app, "slot_turn_timeout")
             if stale is not None:
                 return stale
             if slot_history_key(slot) != authorized_history_key:
                 return _gone()
-            if not committed:
-                # A tab with no metadata line yet: the empty-window merge does
-                # not materialize one, so there is no durable record to be the
-                # authority. The slot is the only copy until the tab's first
-                # full save, which writes this field, the same way a model
-                # picked on a fresh tab persists.
-                slot.turn_timeout_secs = secs
         else:
             slot.turn_timeout_secs = secs
-        # The picked value is now the slot's own, read or not before.
-        slot._turn_timeout_hydrated = True
         committed_secs = slot.turn_timeout_secs
         logger.info("Slot %s turn_timeout_secs set to %r", name, committed_secs)
         return web.json_response({"ok": True, **await _turn_timeout_payload(committed_secs)})

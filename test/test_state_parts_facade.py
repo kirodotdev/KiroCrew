@@ -155,6 +155,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "_has_reader": ("property", False, False, "(self) -> 'bool'"),
     "_trust": ("property", False, False, "(self) -> 'bool'"),
     "_trust_reads": ("property", False, False, "(self) -> 'bool'"),
+    "_turn_timeout_hydrated": ("property", False, False, "(self) -> 'bool'"),
     "_note_enqueue": ("function", False, False, "(self) -> 'None'"),
     "_pr_source_links": ("function", False, False, "(self) -> 'list[dict]'"),
     "_retry_deferred_release": ("function", False, False, "(self) -> 'int'"),
@@ -397,6 +398,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "todo_task_text": ("function", False, False, "(self, task_id: 'str') -> 'str | None'"),
     "turn_running": ("property", False, False, "(self) -> 'bool'"),
     "_turn_lineage_generation": ("function", False, False, "(self) -> 'int'"),
+    "turn_timeout_secs": ("property", False, False, "(self) -> 'int | None'"),
     "unattended": ("property", False, False, "(self) -> 'bool'"),
     "unregister_approval": (
         "function",
@@ -694,7 +696,6 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_turn_agent_started": ("value", "False"),
     "_turn_reply_mids": ("value", "[]"),
     "_turn_retries": ("value", "{}"),
-    "_turn_timeout_hydrated": ("value", "True"),
     "_turn_user_sent": ("value", "False"),
     "_turn_wrote_text": ("value", "False"),
     "_turns_started": ("value", "0"),
@@ -751,7 +752,6 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "theme_consent_sha": ("value", "None"),
     "title": ("value", "'k'"),
     "total_messages": ("value", "0"),
-    "turn_timeout_secs": ("value", "None"),
     "workspace": ("value", "'default'"),
 }
 
