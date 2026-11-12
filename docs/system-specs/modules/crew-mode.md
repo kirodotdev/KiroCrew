@@ -243,6 +243,33 @@ record, once written, stays authoritative. The kind is part of every binding
 tuple the race guards compare (`_slot_binding`, `_current_binding`, the
 agent-conflict compare), so a kind change is a binding change.
 
+An app's session never runs as a Bot. The owner approves the paths an app may
+call (`permissions.api`), never a Bot, so owning a session gives an app no claim
+on what is a Bot's own: its memory store, and its chat with the Permissions
+that chat takes. `apps.cron_sdk` and `apps.spawn_sdk` hold the same rule for a
+job and a background run. What counts is one test
+(`slot_ownership.selects_bot_identity`) on the resolved bindings: a
+`config.agents` record bound to a store other than the shared one, or one whose
+chat runs on the conductor (a Bot with its own file), and any execution record
+that carries a Bot's id, whatever template runs on that store. A record on the
+shared store with a plain template -- the reserved `default` row, a row the
+agent sync wrote -- has nothing of its own to give: it names a template with a
+workspace and a model pin on the memory a template session already has, so an
+app that sends `default` as its agent, or as `model` on
+`/v1/chat/completions`, runs as before. Turn admission is the floor
+(`chat_turn/app_agent_binding.app_session_selects_bot`, called from
+`_turn_admit` before the store is attached or a record is written): on a slot
+with an app (`slot._app`) the turn ends on one error row, with the
+`app_agent_refused` kind so the dashboard offers no Resume. That covers a name
+stamped by any route and a record written earlier, by anyone; it starts no
+provider, and the eager start stands down on the same test. A `template` stamp
+on a name a Bot shares still runs the template. The four routes that take an
+agent name from an app answer the request itself with the 404 an app gets for
+anything it may not reach (`slot_ownership.app_names_bot`; request contract in
+[learn-cron-dashboard](learn-cron-dashboard.md) → Chat). A person's own
+session, and a Bot's thread an app reaches through `sessionApproval` with the
+`memberThreads` scope, are not the app's sessions and are not judged here.
+
 ## Template names the harness cannot activate
 
 A Bot's private copy is named after the Bot, and a published or

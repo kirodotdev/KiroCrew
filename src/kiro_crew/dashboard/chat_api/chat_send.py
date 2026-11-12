@@ -29,6 +29,7 @@ if TYPE_CHECKING:
         KiroCrewConfig,
         _app_acquisition_conflict,
         _app_claim_refused,
+        _app_send_names_bot,
         _app_slot_acquisition_denial,
         _app_slot_acquisition_recheck,
         _arm_pending_reset_retry,
@@ -598,6 +599,8 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     ):
         _emit_agent_assignment(str(slot_name or ""), str(agent), outcome="denied_invalid")
         return web.json_response({"error": "invalid agent name"}, status=400)
+    if await _app_send_names_bot(request_app, agent, existing, _requested_key):
+        return slot_not_found()
 
     # Honor memory_mode from the body when auto-creating a slot (e.g. AgentRock
     # skill dispatch defaults to "temporary"). Only validated values are passed

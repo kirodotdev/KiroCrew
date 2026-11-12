@@ -21,6 +21,7 @@ if TYPE_CHECKING:
         _history_key_for,
         _normalize_slot_key,
         app_may_control_session,
+        app_names_bot,
         app_new_key_refusal,
         app_owns_slot_session,
         app_owns_transcript_meta,
@@ -291,6 +292,23 @@ async def _app_claim_refused(
     for key in claimed:
         _audit_app_allow(request_app, operation, f"session={key}")
     return False
+
+
+async def _app_send_names_bot(request_app: str, agent: object, existing: Any, key: str) -> bool:
+    """True, audited, when an app's ``POST /api/chat`` names a Bot for a session of its own.
+
+    Its own session is a slot this send would create, or a live app-owned one.
+    Owning a session is not being given a Bot, so the caller answers with the
+    uniform ``slot_not_found`` 404 (:func:`slot_ownership.app_names_bot`). A
+    user's session the ``sessionApproval`` grant reaches is not the app's own: a
+    Bot thread the ``memberThreads`` scope reaches keeps its pinned name, and
+    the send path's own checks decide it.
+    """
+    if existing is not None and not getattr(existing, "_app", ""):
+        return False
+    return await app_names_bot(
+        request_app, agent, getattr(existing, "agent_kind", ""), "chat_send", key
+    )
 
 
 def _app_cancel_denied(

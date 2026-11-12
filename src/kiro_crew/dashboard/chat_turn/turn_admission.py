@@ -64,6 +64,7 @@ if TYPE_CHECKING:
         _app_agent_turn_backend,
         _provider_backend,
         _recover_app_agent_binding,
+        _refuse_app_bot_turn,
         _retire_app_agent_session,
         _runs_app_agent_launch,
         app_agent_binding_applies,
@@ -596,6 +597,11 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             "msg msg-err",
             meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_CREW_NAME_UNDISPATCHABLE),
         )
+        return _Flow.END
+    # An app's session never runs as a Bot, whichever route stamped the name and
+    # whether or not a record already names it. Refused here, before the store is
+    # attached or a record is written.
+    if _refuse_app_bot_turn(slot, bindings):
         return _Flow.END
     # A session a palette command opened to run as its app's OWN agent runs the
     # app's registered spec and nothing else. Refuse the turn -- before any
