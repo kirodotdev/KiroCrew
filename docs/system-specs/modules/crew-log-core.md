@@ -50,7 +50,7 @@ The `crew-log` root is established EAGERLY, and that is what makes the mask non-
 | `crew_log/store_results.py` | what a read returns: `Page`, `Resolution` and its `STATUS_*` outcomes, `ReadCursor`, `ResumePoint`, and the page limits |
 | `crew_log/store_units.py` | proving a unit's header, the unit listings (`unit_ids`, `unit_dirs`, `unit_dir_for`), the header reads, and the slot index (`session_units_by_slot`, `session_units_for_slot`) |
 | `crew_log/store_removal.py` | `remove_unit` and its `REMOVE_*` outcomes, trash holds, and staging a unit out of and back into the live tree |
-| `crew_log/store_retention.py` | `sweep_expired`, and the session tree's reads of a unit's log: `read_last_tree_edge` (the tail window the sweep reads), `find_last_tree_edge` (every segment), `tree_edge_scan_identity` (when an earlier complete answer still holds) and `find_spawned_entries` (the whole log) |
+| `crew_log/store_retention.py` | `sweep_expired`, and the session tree's reads of a unit's log: `read_last_tree_edge` (the tail window the sweep reads), `find_last_tree_edge` (every segment) and `find_spawned_entries` (the whole log) |
 | `crew_log/store_handle.py` | `CrewLog`, the handle on one unit's log |
 
 `test/test_store_crew_log_facade.py` pins the owner set and its layer order, the names the facade binds and serves, the patch reach of every name the test trees patch through the facade, and the names served from outside the family.

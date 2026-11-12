@@ -57,9 +57,8 @@ def _payload(**overrides: Any) -> dict[str, Any]:
         "root": stp._current_root(),
         "records": [{"sid": "s-1", "slot": "slot-a", "at": 7}],
         "edges": [{"slot": "slot-b", "at": 3, "sid": "s-2", "seq": 1, "parent": "slot-a"}],
-        "scans": {"s-1": [1, 2, 3, 4]},
         "spawned": [{"slot": "slot-c", "at": 4, "sid": "s-1", "seq": 2, "parent": "slot-a"}],
-        "spawn_scans": {"s-1": [5, 6, 7, 8]},
+        "marks": {"s-1": [1, 2, 3, 4, 6, 7, 0, 8, 9, 1]},
     }
     payload.update(overrides)
     return payload
@@ -145,9 +144,9 @@ def test_a_flush_round_trips_through_the_load(submitted: list[tuple[Any, ...]]) 
     assert proj.flush_checkpoint() is True
     loaded = stp._load_checkpoint()
     assert loaded is not None
-    records, edges, scans, spawned, spawn_scans = loaded
+    records, edges, spawned, marks = loaded
     assert records == {"s-1": _record("s-1", parent="slot-root")}
-    assert (edges, scans, spawned, spawn_scans) == ({}, {}, {}, {})
+    assert (edges, spawned, marks) == ({}, {}, {})
 
 
 def test_an_empty_clean_projection_has_nothing_to_flush(submitted: list[tuple[Any, ...]]) -> None:
@@ -163,12 +162,11 @@ def test_a_well_formed_checkpoint_loads_every_half(submitted: list[tuple[Any, ..
     _write(_payload())
     loaded = stp._load_checkpoint()
     assert loaded is not None
-    records, edges, scans, spawned, spawn_scans = loaded
+    records, edges, spawned, marks = loaded
     assert set(records) == {"s-1"}
     assert set(edges) == {("slot-b", "s-2")}
-    assert scans == {"s-1": (1, 2, 3, 4)}
     assert set(spawned) == {("slot-c", "s-1")}
-    assert spawn_scans == {"s-1": (5, 6, 7, 8)}
+    assert marks == {"s-1": (1, 2, 3, 4, 6, 7, 0, 8, 9, 1)}
 
 
 @pytest.mark.parametrize(
@@ -191,9 +189,8 @@ def test_a_checkpoint_that_is_not_a_json_object_loads_as_none(
         {"root": None},
         {"records": {}},
         {"edges": None},
-        {"scans": []},
         {"spawned": None},
-        {"spawn_scans": []},
+        {"marks": []},
     ],
     ids=[
         "older-version",
@@ -201,9 +198,8 @@ def test_a_checkpoint_that_is_not_a_json_object_loads_as_none(
         "no-root",
         "records-not-a-list",
         "edges-missing",
-        "scans-not-a-map",
         "spawned-missing",
-        "spawn-scans-not-a-map",
+        "marks-not-a-map",
     ],
 )
 def test_a_checkpoint_it_cannot_prove_loads_as_none(
@@ -304,16 +300,22 @@ def test_a_decision_row_round_trips_and_a_release_omits_its_parent() -> None:
     assert stp._edge_from_json(stp._edge_to_json(release)) == release
 
 
-def test_a_scan_row_that_does_not_parse_costs_only_its_unit() -> None:
+def test_a_mark_row_that_does_not_parse_costs_only_its_unit() -> None:
     rows = {
-        "kept": [1, 2, 3, 4],
-        "": [1, 2, 3, 4],
-        "short": [1, 2, 3],
+        "kept": [1, 2, 3, 4, 6, 7, 0, 8, 9, 1],
+        "no-cuts": [1, 2, 3, 4, -1, 7, 0, 8, 9, 1],
+        "": [1, 2, 3, 4, 6, 7, 0, 8, 9, 1],
+        "short": [1, 2, 3, 4, 6, 7],
         "not-a-list": "1,2,3,4",
-        "a-bool": [1, 2, 3, True],
-        "a-str": [1, 2, "3", 4],
+        "a-bool": [1, 2, 3, 4, True, 7, 0, 8, 9, 1],
+        "a-str": [1, 2, "3", 4, 6, 7, 0, 8, 9, 1],
+        "negative": [1, 2, 3, 4, -6, 7, 0, 8, 9, 1],
+        "negative-offset": [1, 2, 3, -4, 6, 7, 0, 8, 9, 1],
     }
-    assert stp._scans_from_json(rows) == {"kept": (1, 2, 3, 4)}
+    assert stp._marks_from_json(rows) == {
+        "kept": (1, 2, 3, 4, 6, 7, 0, 8, 9, 1),
+        "no-cuts": (1, 2, 3, 4, -1, 7, 0, 8, 9, 1),
+    }
 
 
 def test_every_door_refuses_an_over_long_string() -> None:

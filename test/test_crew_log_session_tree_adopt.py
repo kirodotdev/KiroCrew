@@ -1068,10 +1068,10 @@ def test_byte_damage_in_a_segment_reads_as_a_failed_read_not_as_no_decision(monk
 
 
 def test_a_steady_state_seed_does_not_re_read_a_unit_whose_log_has_not_changed():
-    """A unit with no decision costs a whole-log read, so its verdict is cached by identity.
+    """A unit is read in full once, then from its mark: only the bytes after it.
 
-    Most sessions are never adopted. The verdict is a function of the bytes, so later boots
-    skip the read while the file identity holds; the cold first boot still reads.
+    Most sessions are never adopted, and proving that takes the whole log. The boot after
+    the cold one reads it and records where it stopped; later boots read from there.
     """
     handle_a = _log("s-a", "A")
     _opened(handle_a, "A")
@@ -1080,31 +1080,34 @@ def test_a_steady_state_seed_does_not_re_read_a_unit_whose_log_has_not_changed()
     first.ensure_seeded()
     assert first.flush_checkpoint() is True
 
-    reads: list[str] = []
-    real = crew_store.find_last_tree_edge
+    reads: list[bool] = []
+    from kiro_crew.crew_log import session_tree_projection_seed as seed
 
-    def _counted(directory):
-        reads.append(directory.name)
-        return real(directory)
+    real = seed._read_unit
 
-    # The boot after the cold one reaches the verdict and records the identity with it.
+    def _counted(*args):
+        found = real(*args)
+        reads.append(found is not None and found.full)
+        return found
+
+    # The boot after the cold one has no mark, so it reads the whole log and sets one.
     second = SessionTreeProjection()
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(crew_store, "find_last_tree_edge", _counted)
+        patch.setattr(seed, "_read_unit", _counted)
         second.ensure_seeded()
-    assert len(reads) == 1, "the boot that has no cached verdict must read for it"
+    assert reads == [True], "the boot that has no mark must read the whole log"
     assert second.flush_checkpoint() is True
 
-    # And every boot after that skips it, which is the steady state on a real store.
+    # And every boot after that reads only past the mark, which is the steady state.
     reads.clear()
     third = SessionTreeProjection()
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(crew_store, "find_last_tree_edge", _counted)
+        patch.setattr(seed, "_read_unit", _counted)
         third.ensure_seeded()
-    assert reads == [], "an unchanged unit was read again to reach a verdict already held"
+    assert reads == [False], "an unchanged unit was read in full again"
     assert third.nodes()["A"].parent_slot is None
 
-    # An append moves the identity, so the skip cannot hide a decision written since.
+    # A decision appended after the mark is in the bytes the next boot reads.
     handle_a.append("session/adopted", {"parent": {"slot": "D"}}, src=GATEWAY)
     del handle_a
     handle_d = _log("s-d", "D")
