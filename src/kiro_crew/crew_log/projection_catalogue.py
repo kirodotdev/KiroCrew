@@ -17,6 +17,7 @@ from kiro_crew.crew_log.entry_types import (
     GOAL_FOLD_NAME,
     MISTAKES_FOLD_NAME,
     SESSION_ENTRY_TYPES,
+    SLOT_CARRY_ENTRY_TYPE,
     WAITING_FOLD_NAME,
 )
 from kiro_crew.crew_log.schema import Entry
@@ -167,6 +168,37 @@ WORKTREE_FOLD_NAME: Final[str] = "worktree"
 #: a tree fold without one.
 TREE_PROJECTION_NAMES: Final[tuple[str, ...]] = (WORKTREE_FOLD_NAME,)
 
+#: The session folds a slot's newest unit carries for the reads that fold them over the
+#: slot. A session fold answers for one unit, and three are also read over a slot's
+#: units: ``status`` by the gone rows of ``session_status``, ``usage`` by the context
+#: panel and ``tools`` by the root card. Only ``status`` is carried, because a gone row
+#: DECIDES on it: an older unit's open or unclean last turn makes a later tab close read
+#: ``lost``, and without the carry collecting that unit would turn the row ``closed``,
+#: the answer that tells a conductor to stop looking for the worker. ``usage`` and
+#: ``tools`` show past turns, and lose the turns of collected units (crew-log-core.md, "A
+#: slot's units are carried"). ``tools`` could not be carried as a slot fold anyway: the
+#: card folds the slot's succession chain, a reset starts a new one, and a carry written
+#: for the slot would bring an earlier conversation's calls into the next.
+CARRIED_SESSION_FOLD_NAMES: Final[tuple[str, ...]] = ("status",)
+
+#: The folds a slot's newest unit CARRIES: every slot-keyed fold, advertised or part of
+#: one, every tree fold, and the session folds above. A ``session/carried`` entry holds
+#: one of them's state over every unit the slot ran under before it, and the drivers that
+#: fold a slot's units replace the state with it
+#: (:func:`~kiro_crew.crew_log.projection_kernel.carried_state`), so a unit the slot
+#: moved past stops changing the answer and retention may collect it. A tree fold is
+#: here because it reads the ROOT board's own units
+#: (:func:`~kiro_crew.crew_log.projection_readers.tree_fold_units`), the very units the
+#: root's carry replaces, so it is carried under the root's slot like a slot fold. A
+#: carried session fold is replaced only where a driver folds a slot: a read of one unit
+#: names no slot, so it still answers for that unit alone.
+CARRIED_FOLD_NAMES: Final[frozenset[str]] = frozenset(
+    SLOT_PROJECTION_NAMES
+    + INTERNAL_SLOT_PROJECTION_NAMES
+    + TREE_PROJECTION_NAMES
+    + CARRIED_SESSION_FOLD_NAMES
+)
+
 #: Every fold the registry (``_FOLDS``) holds, in registry order.
 FOLD_NAMES: Final[tuple[str, ...]] = (
     PROJECTION_NAMES
@@ -194,6 +226,12 @@ FOLD_NAMES: Final[tuple[str, ...]] = (
 #: ``test_changing_what_a_fold_stores_forces_the_savepoint_version_to_move`` pins each
 #: fold's stored state against its own version, so forgetting the move fails CI rather
 #: than shipping.
+#:
+#: A CARRIED state (``session/carried``, :data:`CARRIED_FOLD_NAMES`) is not retired by a
+#: move. It records the version it was written under, but it is the only record left of
+#: the units it came from once retention collects them, so a carried fold that changes
+#: what it stores reads its older carried states too
+#: (:func:`~kiro_crew.crew_log.projection_kernel.carried_state`).
 #:
 #: THE NUMBER IS PER FOLD (:attr:`_Fold.state_version`), and this is the value a fold
 #: that has never moved still stands at. A savepoint file records the version of the
@@ -330,7 +368,7 @@ class _Fold:
 
     def touched_by(self, entry: Entry) -> bool:
         """Whether *entry* can move this fold, so a copy is worth making."""
-        return self.affects is None or entry.type in self.affects
+        return self.touched_by_type(entry.type)
 
     def touched_by_type(self, entry_type: str) -> bool:
         """:meth:`touched_by` for a caller holding only the TYPE, not the entry.
@@ -339,8 +377,13 @@ class _Fold:
         the entry back, so it has the type and nothing else. Same answer as
         :meth:`touched_by`, from the same set, rather than a second membership test that
         could drift from it.
+
+        A carried fold is also moved by ``session/carried``, which the driver folding
+        its slot applies rather than its ``step`` (:data:`CARRIED_FOLD_NAMES`).
         """
-        return self.affects is None or entry_type in self.affects
+        if self.affects is None or entry_type in self.affects:
+            return True
+        return entry_type == SLOT_CARRY_ENTRY_TYPE and self.name in CARRIED_FOLD_NAMES
 
     def copied(self, state: dict[str, Any]) -> dict[str, Any]:
         """*state* copied deeply enough that :attr:`step` cannot reach the original."""

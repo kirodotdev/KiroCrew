@@ -108,10 +108,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _entry_data,
         _hides,
         _prepare_write,
+        _publish_unit_order,
         _record_entry,
         _require_crew_log,
         _skip_precedence,
         _standing_skip,
+        _unit_after_carry,
         _units_for_write,
         commit_work_progress,
         is_skipped,
@@ -143,6 +145,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _projection,
         _undrained,
         _unit_last_seq,
+        carry_units,
         crew_log_units,
     )
     from kiro_crew.apps.builtins.issue_radar.backend.crew_store_records import (  # noqa: F401
@@ -173,6 +176,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _coerce_crew,
         _crew_id_in_use,
         _crew_lock_path,
+        _crew_record_paths,
         _crews_path,
         _finite_int,
         _hold_releases,
@@ -187,6 +191,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _validated_ttl_hours,
         coerce_skip_scope,
         create_crew,
+        crew_id_of_slot,
         crew_path,
         crews_dir,
         events_path,
@@ -244,6 +249,9 @@ if TYPE_CHECKING:  # names it serves from outside the owner family, from their h
     )
     from kiro_crew.constants import (  # noqa: F401
         env_file_display,
+    )
+    from kiro_crew.crew_log import (  # noqa: F401
+        late_writes,
     )
     from kiro_crew.crew_log.entry_types import (  # noqa: F401
         RADAR_CLEARABLE_FIELDS,

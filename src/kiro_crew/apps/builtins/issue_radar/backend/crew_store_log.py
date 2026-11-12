@@ -10,16 +10,24 @@ from. Callers reach every name here through
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from pathlib import Path
 from typing import Any
 
 from kiro_crew.config.paths import data_home
+from kiro_crew.crew_log import late_writes
 from kiro_crew.crew_log.entry_types import RADAR_ENTRY_TYPE
 from kiro_crew.crew_log.store import log_exception_text
 
-from .crew_store_records import CrewStoreError, logger, slot_key_for
-from .crew_store_unit_order import _recorded_unit_order
+from .crew_store_records import (
+    CrewStoreError,
+    _crew_record_paths,
+    crew_id_of_slot,
+    logger,
+    slot_key_for,
+)
+from .crew_store_unit_order import _recorded_unit_order, _unit_order_path
 
 # ── the ledger: work items, progress lines and passes ───────────────────────
 #
@@ -60,14 +68,16 @@ _crew_write_locks: dict[tuple[str, str], threading.Lock] = {}
 _crew_write_locks_guard = threading.Lock()
 
 #: Crews whose last append had not drained to the log when the write answered, each
-#: mapped to the RECEIPT for that append: the unit whose log it belongs in, the seq it
-#: followed, and the entry itself. The crew's next write drains again BEFORE it folds,
-#: so it does not validate against a record missing that entry -- two requests could
-#: otherwise both pass the one-editor rule. The receipt is what makes the clearing
-#: honest: a drained writer is not a landed entry (a dropped write empties the buffer
-#: too), so the mark is released only once the entry is found in that unit's log BY
-#: CONTENT. Touched only under the crew's write lock.
-_undrained: dict[tuple[str, str], tuple[str, int, dict[str, Any]]] = {}
+#: mapped to the RECEIPT for that append. The crew's next write drains again BEFORE it
+#: folds, so it does not validate against a record missing that entry -- two requests
+#: could otherwise both pass the one-editor rule. The receipt is what makes the
+#: clearing honest: a drained writer is not a landed entry (a dropped write empties the
+#: buffer too), so the mark is released only once the receipt shows the entry landed.
+#: A write's own append leaves the writer job's
+#: :class:`~kiro_crew.crew_log.late_writes.Receipt`, settled with the unit and seq it
+#: landed at; the legacy carry leaves the unit, the seq it followed and its last row,
+#: found in that unit's log BY CONTENT. Touched only under the crew's write lock.
+_undrained: "dict[tuple[str, str], tuple[str, int, dict[str, Any]] | late_writes.Receipt]" = {}
 
 
 def _landed_since(
@@ -186,14 +196,18 @@ def crew_log_units(
     """Every crew log holding *crew_id*'s ledger entries, oldest unit first.
 
     Units are listed by the wall clock their headers carry, then re-ordered by the
-    order this crew RECORDED into them (:data:`_UNIT_ORDER_SUFFIX`): a unit nothing
-    recorded into contributes no entries, so its place among them is immaterial and
-    header order is kept for it, and every unit absent from the order log is older
-    than everything in it -- the log keeps the newest ids -- so those apply FIRST,
-    except the crew's newest unit by succession, which applies last
-    (``session_ledger_control._causal_units``). The LIVE unit applies LAST whatever
-    either says: a writer knows which unit it is in, and the fold cannot be wrong
-    about it.
+    order this crew RECORDED into them (:data:`_UNIT_ORDER_SUFFIX`). A unit absent from
+    the order log is placed by the slot's ``previous_sid`` succession, after the
+    recorded units before it there (``session_ledger_control._causal_units``): one
+    older than every recorded unit, evicted from the log that keeps the newest ids,
+    applies FIRST, and the crew's newer units after them, its newest last. A unit nothing
+    recorded into holds no radar entry of its own, but the crew's newest unit is where
+    the slot carry writes the crew's whole record (``session/carried``), and it keeps its
+    place after the units that record holds once the crew moves on to a later unit:
+    folded first, they would be laid over it again, and that later unit's own carry,
+    folded over this same list (:func:`carry_units`), is read in the order it was folded in.
+    The LIVE unit applies LAST whatever either says:
+    a writer knows which unit it is in, and the fold cannot be wrong about it.
 
     ``()`` when the crew has none -- a crew that never recorded, or a gateway whose
     crew log is off -- and, unless *strict*, on every failure to LIST them, because
@@ -209,9 +223,10 @@ def crew_log_units(
 
         slot = slot_key_for(crew_id)
         units = session_units_for_slot(slot, strict=strict)
-        # Recorded order, except the crew's newest unit by succession folds last: it
-        # holds no radar entry until it records, so its place does not change the
-        # record, and listed first its own appends would retire the warm cell.
+        # Recorded order, with each unit the crew has not recorded into placed by
+        # succession: a unit holding the slot carry of the crew's record folds after the
+        # units that record already holds, and the newest folds last, so its own
+        # appends continue the warm cell instead of retiring it.
         units = _causal_units(slot, units, _recorded_unit_order(owner, repo, crew_id, root))
         if live_session_id and live_session_id in units:
             units = tuple(u for u in units if u != live_session_id) + (live_session_id,)
@@ -222,6 +237,44 @@ def crew_log_units(
         )
         if strict:
             raise
+        return ()
+
+
+def carry_units(slot: str) -> "tuple[str, ...] | None":
+    """The units the slot carry of crew slot *slot* is folded over: the reader's own list.
+
+    What :func:`crew_log_units` answers for the crew, found from the SLOT alone, because
+    the carry knows no repository and no data root. The carry replaces what a reader
+    folds, so it must fold in the order that reader does: the order this crew RECORDED
+    in, not the order the slot's units succeeded each other in, which differ once a
+    request that captured an old unit commits after a newer unit's update.
+
+    ``None`` when *slot* is not a crew's, which has no recorded order and no radar entry.
+    ``()`` when the order cannot be obtained -- no single crew record under the data home
+    names the crew, an order file exists but did not read, or the units cannot be listed
+    -- and the caller then carries nothing and keeps the older units, never falling back
+    to succession: a carry folded in another order than the reader's would replace the
+    reader's state with a different one.
+    """
+    crew_id = crew_id_of_slot(slot)
+    if not crew_id:
+        return None
+    try:
+        homes = _crew_record_paths(crew_id, None)
+        if len(homes) != 1:
+            return ()
+        record = homes[0]
+        repo_dir = record.parent.parent
+        owner, repo, root = repo_dir.parent.name, repo_dir.name, repo_dir.parent.parent.parent
+        if not _recorded_unit_order(owner, repo, crew_id, root) and os.path.lexists(
+            _unit_order_path(owner, repo, crew_id, root)
+        ):
+            return ()
+        return crew_log_units(owner, repo, crew_id, root, strict=True)
+    except Exception:
+        log_exception_text(
+            logger, logging.WARNING, "crew ledger: no recorded unit order for crew %s", crew_id
+        )
         return ()
 
 

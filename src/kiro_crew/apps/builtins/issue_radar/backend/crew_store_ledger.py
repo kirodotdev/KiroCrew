@@ -8,6 +8,7 @@ here through :mod:`kiro_crew.apps.builtins.issue_radar.backend.crew_store`.
 
 from __future__ import annotations
 
+import functools
 import time
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -16,6 +17,7 @@ from typing import Any
 
 from kiro_crew.config.paths import data_home
 from kiro_crew.constants import env_file_display
+from kiro_crew.crew_log import late_writes
 from kiro_crew.crew_log.entry_types import RADAR_CLEARABLE_FIELDS, RADAR_NUMBER_BOUNDS
 
 from .crew_store_carry import _carry_legacy_forward, _carry_pending, _legacy_preview
@@ -33,6 +35,7 @@ from .crew_store_log import (
     _projection,
     _undrained,
     crew_log_units,
+    slot_key_for,
 )
 from .crew_store_records import (
     ANSWERABLE_SKIP_SCOPES,
@@ -397,6 +400,24 @@ def _entry_data(
     return data
 
 
+def _unit_after_carry(crew_id: str, session_id: str) -> str:
+    """The unit a write resolved to *session_id* belongs in, once the crew's slot moved on.
+
+    A request resolved to a unit before the slot reset can arrive after the new unit
+    carried the crew's record. Appended there it is replaced by the carry, or published
+    as recording last it replays that unit's history over it; it belongs to the slot's
+    newest unit (:func:`kiro_crew.crew_log.late_writes.carrier_after`). Asked here for
+    the record the write validates against; the writer job asks again on the crew
+    slot's lane, and that answer is the one the append follows (:func:`_append`).
+    """
+    return late_writes.carrier_after(slot_key_for(crew_id), session_id, FOLD_NAME) or session_id
+
+
+def _publish_unit_order(owner: str, repo: str, crew_id: str, root: Path | None, unit: str) -> None:
+    """Publish *unit* as the one this crew records into now. On the crew slot's lane."""
+    _record_unit_order(owner, repo, crew_id, unit, root)
+
+
 def _append(
     crew_id: str,
     session_id: str,
@@ -414,6 +435,13 @@ def _append(
     A crew-level line landing on a crew-level line is COALESCED here, before the
     append, by the same rule the fold applies to the bytes: the existing sweep is
     answered and nothing is written, so an idle crew appends once per stretch.
+
+    The append is ONE writer job on the crew slot's lane: it files the entry under the
+    slot's newest unit when a later unit already carries the crew's record, appends,
+    and publishes the unit order for the unit it landed in, then settles a receipt with
+    that unit and seq (``emit_surfaces.on_radar_recorded``). The successor's carry runs
+    on the same lane, so it cannot land between the decision and the append, nor
+    between the append and the order.
 
     The answer is the fold advanced over the entry AS THE FILE HOLDS IT once the
     writer has drained -- the line's id and ``ts`` come off the log's own clock, so
@@ -442,10 +470,22 @@ def _append(
         raise CrewLedgerEntryTooLarge(
             "this update does not fit one crew log entry; record fewer or shorter fields"
         )
-    refused_before = crew_log_emit.dropped_writes()
+    owner, repo = str(data.get("owner", "")), str(data.get("repo", ""))
     overflow_before = crew_log_emit.overflow_writes(session_id)
     recorded_ms = int(time.time() * 1000)
-    crew_log_emit.on_radar_recorded(session_id, data)
+    # PUBLISH A UNIT'S PRECEDENCE ONLY ONCE ITS ENTRY IS IN THE FILE, which the job does
+    # right after its append and only then. The order file's whole claim is "among the
+    # units that recorded, this one holds the newest entry", so it is earned by an
+    # append that LANDED, and noting it any earlier would let a refused or still-queued
+    # append claim precedence it never earned -- pinning a unit ahead of its successor,
+    # whose next fold would then read the pinned unit's phase and next step as current.
+    receipt = crew_log_emit.on_radar_recorded(
+        session_id,
+        data,
+        slot=slot_key_for(crew_id),
+        fold=FOLD_NAME,
+        publish=functools.partial(_publish_unit_order, owner, repo, crew_id, root),
+    )
     drained = crew_log_emit.flush(timeout=_APPEND_FLUSH_SECONDS)
     # Remembered for the crew's NEXT write, which drains again before it folds: a
     # write that validated against a fold missing this entry could pass the
@@ -454,68 +494,60 @@ def _append(
     if drained:
         _undrained.pop(undrained_key, None)
     else:
-        _undrained[undrained_key] = (session_id, base.last_seq, data)
+        _undrained[undrained_key] = receipt
+    # The receipt is THIS entry's own outcome: the unit and seq its append landed at,
+    # or unlanded when the store refused it, the writer dropped it, or it is queued.
     grown = None
-    landed = False
-    if drained:
-        since, landed = _landed_since(projection, session_id, base.last_seq, data)
-        if landed and since is not None:
-            grown = projection.advance(base, since)
-    if landed:
-        # PUBLISH THIS UNIT'S PRECEDENCE ONLY ONCE ITS ENTRY IS IN THE FILE. The order
-        # file's whole claim is "among the units that recorded, this one holds the
-        # newest entry", so it is earned by an append that LANDED, and noting it any
-        # earlier would let a refused or still-queued append claim precedence it never
-        # earned -- pinning a unit ahead of its successor, whose next fold would then
-        # read the pinned unit's phase and next step as current and act on them.
-        # ``_undrained`` (in ``crew_store_log``) is that queued case, so the window is real.
-        #
-        # Gated on ``landed`` rather than on ``drained`` or the refusal counters:
-        # ``landed`` is read back from this unit's OWN log by content, while
-        # ``dropped_writes`` is process-wide, so another session's refusal must not
-        # suppress a precedence note this unit has genuinely earned.
-        _record_unit_order(
-            str(data.get("owner", "")), str(data.get("repo", "")), crew_id, session_id, root
+    if receipt.landed and receipt.unit == session_id:
+        # Read back AS THE FILE HOLDS IT, through the seq the job's own append landed at:
+        # the crew's own turn appends to the same log while it records.
+        since, _found = _landed_since(projection, receipt.unit, base.last_seq, data)
+        through = tuple(entry for entry in since or () if entry.seq <= receipt.seq)
+        if through and through[-1].seq == receipt.seq:
+            grown = projection.advance(base, through)
+    elif receipt.landed:
+        # Filed under the slot's newest unit by the lane: answered from the fold that
+        # unit's writer makes, which now holds the entry on disk.
+        grown = _fold_checkpoint(
+            crew_id, _units_for_write(owner, repo, crew_id, receipt.unit, root)
         )
-    refused = crew_log_emit.dropped_writes() != refused_before
+    # Landed AND shown in the file: an entry that cannot be read back is answered as
+    # one that did not land once the writer is done with it.
+    landed = receipt.landed and grown is not None
     overflowed = crew_log_emit.overflow_writes(session_id) != overflow_before
     if overflowed and not landed:
         # The buffer rejected one of THIS session's appends at SUBMISSION for
         # crossing its memory ceiling while this one was in flight, and this entry is
         # not in the file: it was never queued and will never land, whatever the
-        # drain says. Counted per session and apart from a storage refusal
-        # (``overflow_writes`` against ``dropped_writes``), so it is checked apart --
-        # a rejected entry answered as queued state would be published without ever
-        # being persisted, and another session's rejection cannot flip this one.
+        # drain says. Counted per session and apart from a storage refusal, so it is
+        # checked apart -- a rejected entry answered as queued state would be
+        # published without ever being persisted, and another session's rejection
+        # cannot flip this one.
         logger.warning("crew ledger: the crew log writer rejected this update at its ceiling")
         _undrained.pop(undrained_key, None)  # nothing of this write is queued to drain
         raise CrewLedgerNotRecorded(
             "this update was not recorded: the crew log writer is at its ceiling and "
             "rejected the append; nothing changed, send it again once it has drained"
         )
-    if drained and not landed:
-        # The writer is done and the entry is not in the file -- refused (the log
-        # deleted under the write, the writer gave up on it) or unreadable twice. A
+    if (drained or receipt.settled) and not landed:
+        # The writer is done with the entry and it is not in the file -- refused (the
+        # log deleted under the write, the writer gave up on it) or unreadable twice. A
         # refusal is not a commit, and an entry that cannot be shown to exist is
-        # answered the same way: the caller is told, never handed a record that may
-        # be nowhere. The synthetic answer is made ONLY while the writer still holds
-        # the entry.
+        # answered the same way: the caller is told, never handed a record that may be
+        # nowhere. The synthetic answer is made ONLY while the writer still holds the
+        # entry.
         logger.warning("crew ledger: the crew log writer drained without landing this update")
+        _undrained.pop(undrained_key, None)
         raise CrewLedgerNotRecorded(
             "this update was not recorded: the crew log did not take the append; "
             "nothing changed, the same update may be sent again"
         )
-    durable = drained and landed and not refused
+    durable = drained and landed
     if not drained:
         logger.warning(
             "crew ledger: the crew log writer did not drain within %.1fs; this update is "
             "queued and counted, not yet durable",
             _APPEND_FLUSH_SECONDS,
-        )
-    elif not durable:
-        logger.warning(
-            "crew ledger: the crew log refused an append while this update was in flight; "
-            "this update landed, but a neighbouring one may not have"
         )
     if grown is None:
         # Reached only while the writer still holds the entry (not drained): the fold
@@ -588,6 +620,7 @@ def record_crew_checkpoint(
     """
     _require_crew_log(session_id)
     with _crew_write_lock(crew_id):
+        session_id = _unit_after_carry(crew_id, session_id)
         base = _prepare_write(owner, repo, crew_id, session_id, root)
         data = _entry_data(owner, repo, crew_id, None, {}, CREW_LEVEL_EVENT_KIND, event_text)
         return _append(crew_id, session_id, data, base, root)
@@ -676,39 +709,40 @@ def _prepare_write(owner: str, repo: str, crew_id: str, session_id: str, root: P
                 "the crew's previous update is still queued in the crew log writer; "
                 "send this update again shortly"
             )
-        # A QUIET WRITER IS NOT A LANDED ENTRY. A drop empties the buffer exactly as a
-        # successful write does, so ``flush`` answers True either way; releasing the
-        # mark on that alone would fold a record short one entry and hand the
-        # one-editor rule a record that permits a second editor -- silently, because
-        # the earlier call already answered. So the receipt is checked against the
-        # unit's own log by content, and the mark is released only when the entry is
-        # there. It is not, this write is refused like any other undrained one: the
-        # caller resends, and that resend is what puts the missing update back.
-        if not _landed_since(_projection(), receipt[0], receipt[1], receipt[2])[1]:
-            raise CrewLedgerNotRecorded(
-                "the crew's previous update never reached its crew log; send that "
-                "update again before this one"
+        if isinstance(receipt, late_writes.Receipt):
+            # The crew's own append (:func:`_append`): its writer job settled the receipt
+            # with the unit and seq it landed at and published that unit's order on the
+            # slot's lane, so nothing is matched or published here. Unlanded, it was
+            # refused or dropped, and this write is refused like any other undrained one.
+            if not receipt.landed:
+                raise CrewLedgerNotRecorded(
+                    "the crew's previous update never reached its crew log; send that "
+                    "update again before this one"
+                )
+            _undrained.pop(undrained_key, None)
+        else:
+            # The legacy carry's rows (``crew_store_carry``), whose receipt names the unit,
+            # the seq it followed and the last row. A QUIET WRITER IS NOT A LANDED ENTRY:
+            # a drop empties the buffer exactly as a successful write does, so ``flush``
+            # answers True either way, and the row is looked for in that unit's own log
+            # by content. It is not there, this write is refused like any other
+            # undrained one: the caller resends, and that resend puts the update back.
+            if not _landed_since(_projection(), receipt[0], receipt[1], receipt[2])[1]:
+                raise CrewLedgerNotRecorded(
+                    "the crew's previous update never reached its crew log; send that "
+                    "update again before this one"
+                )
+            # AND PUBLISH THAT UNIT'S PRECEDENCE NOW: the carry notes precedence only
+            # for rows it saw land inside the flush budget, and this is the crew's next
+            # write, before its own append moves the live unit after it.
+            _record_unit_order(
+                str(receipt[2].get("owner", "")),
+                str(receipt[2].get("repo", "")),
+                crew_id,
+                receipt[0],
+                root,
             )
-        # AND PUBLISH THAT UNIT'S PRECEDENCE NOW, which is the only moment anything
-        # can. The append path notes precedence only for an entry it saw land inside
-        # the flush budget; an append the writer still held when that budget expired
-        # lands later, and its own call has already returned. Its unit may by then be
-        # RETIRED, so it has no next write of its own to make the claim -- but the
-        # CREW does, and this is it. Left unpublished, a successor unit stamped by a
-        # clock that went backwards sorts ahead of it in header order, and every read
-        # then folds the retired unit's phase and next step as the current ones.
-        #
-        # Correctly ordered by WHERE this sits: the receipt's entry is the newest one
-        # this crew has landed at this instant, and this runs before this write's own
-        # append, whose landing moves the live unit after it.
-        _record_unit_order(
-            str(receipt[2].get("owner", "")),
-            str(receipt[2].get("repo", "")),
-            crew_id,
-            receipt[0],
-            root,
-        )
-        _undrained.pop(undrained_key, None)
+            _undrained.pop(undrained_key, None)
     units = _units_for_write(owner, repo, crew_id, session_id, root)
     base = _fold_checkpoint(crew_id, units)
     # The carry runs when NO radar entry has ever folded into this crew's record --
@@ -783,6 +817,7 @@ def commit_work_progress(
         raise CrewStoreError(f"event kind {event_kind!r} is crew-level and takes no issue number")
     _require_crew_log(session_id)
     with _crew_write_lock(crew_id):
+        session_id = _unit_after_carry(crew_id, session_id)
         base = _prepare_write(owner, repo, crew_id, session_id, root)
         current = base.state["items"].get(str(number))
         if "phase" in patch:

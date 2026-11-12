@@ -179,6 +179,121 @@ def test_a_handoff_moves_the_target_under_the_new_manager_in_the_tree(tmp_path, 
     ]
 
 
+def test_a_target_that_resets_while_the_handoff_waits_is_moved_in_its_new_log(
+    tmp_path, monkeypatch
+):
+    """The target's id is read again after the waits, the way ``session_adopt`` reads it.
+
+    The recipient's id is resolved with an await, and the idle target can reset inside
+    it: its slot then writes a new crew log, whose carry copies the old adoption. An
+    adoption appended to the log the target had before the wait loses to that copy, so
+    the tree keeps the old parent while the handoff reports the tree moved.
+    """
+    from kiro_crew.crew_log import emit
+
+    state = _make_state(tmp_path)
+    lead, conductor, worker = _team(state)
+    live = {worker.key: "sid-before-reset"}
+    edges: list[dict] = []
+
+    def _adopted(sid, *, on_settled, **kwargs):
+        edges.append({"sid": sid, **kwargs})
+        on_settled(True)
+
+    async def _sid(_state, key):
+        # The target resets while the recipient's id is read.
+        live[worker.key] = "sid-after-reset"
+        return f"sid-{key}"
+
+    monkeypatch.setattr(emit, "enabled", lambda: True)
+    monkeypatch.setattr(emit, "on_session_adopted", _adopted)
+    monkeypatch.setattr(sc, "_live_sid_of", lambda _state, key: live.get(key, f"sid-{key}"))
+    monkeypatch.setattr(sc, "_slot_tree_parent", lambda key: (True, lead.key, {}))
+    monkeypatch.setattr(sc, "_recorded_sid_of", _sid)
+
+    result = _hand(state, lead, worker, conductor)
+
+    assert [edge["sid"] for edge in edges] == ["sid-after-reset"]
+    assert result["tree_moved"] is True
+
+
+def test_a_target_replaced_while_the_handoff_waits_gets_no_tree_edge(tmp_path, monkeypatch):
+    """A close and a same-key reopen inside the waits: the edge would name another session.
+
+    The key still resolves, to the new session's own log, so only the slot object captured
+    before the waits can tell. The handoff stands; the tree is not moved.
+    """
+    from kiro_crew.crew_log import emit
+
+    state = _make_state(tmp_path)
+    lead, conductor, worker = _team(state)
+    edges: list[dict] = []
+
+    def _adopted(sid, *, on_settled, **kwargs):
+        edges.append({"sid": sid, **kwargs})
+        on_settled(True)
+
+    async def _sid(_state, key):
+        if state._slots.get(worker.key) is worker:
+            state._slots.pop(worker.key, None)
+            _slot(state, worker.key)
+        return f"sid-{key}"
+
+    monkeypatch.setattr(emit, "enabled", lambda: True)
+    monkeypatch.setattr(emit, "on_session_adopted", _adopted)
+    monkeypatch.setattr(sc, "_live_sid_of", lambda _state, key: f"sid-{key}")
+    monkeypatch.setattr(sc, "_slot_tree_parent", lambda key: (True, lead.key, {}))
+    monkeypatch.setattr(sc, "_recorded_sid_of", _sid)
+
+    result = _hand(state, lead, worker, conductor)
+
+    assert state._slots.get(worker.key) is not worker, "the target was replaced"
+    assert edges == []
+    assert result["tree_moved"] is False
+    assert result["manager"] == conductor.key
+
+
+def test_the_handoff_reads_its_target_after_every_wait():
+    """Structural, because the gap is an ordering: capture, waits, re-read, append.
+
+    The slot object is captured before the first suspension, and the target's log id is
+    read, and the identity compared, after the last one and with nothing suspending
+    between them and the append.
+    """
+    import ast
+    import inspect
+
+    from kiro_crew.dashboard.session_control_parts import session_handoff
+
+    fn = next(
+        node
+        for node in ast.walk(ast.parse(inspect.getsource(session_handoff)))
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_move_tree_edge"
+    )
+
+    def called_at(name: str) -> list[int]:
+        return sorted(
+            node.lineno
+            for node in ast.walk(fn)
+            if isinstance(node, ast.Call)
+            and (getattr(node.func, "attr", None) or getattr(node.func, "id", None)) == name
+        )
+
+    suspensions = sorted(
+        node.lineno for node in ast.walk(fn) if isinstance(node, (ast.Await, ast.AsyncWith))
+    )
+    emit_line = min(called_at("on_session_adopted"))
+    before_emit = [line for line in suspensions if line < emit_line]
+    captures = called_at("_slot_object")
+    assert captures, "_move_tree_edge captures no slot identity"
+    assert max(captures) < min(suspensions)
+    refresh = max(called_at("_live_sid_of"))
+    compare = called_at("_target_replaced")
+    assert compare, "_move_tree_edge never compares the target's identity"
+    assert max(before_emit) < min(compare) < emit_line
+    assert max(before_emit) < refresh < emit_line
+
+
 def test_a_handoff_that_cannot_be_saved_changes_nothing(tmp_path, monkeypatch):
     state = _make_state(tmp_path)
     lead, conductor, worker = _team(state)

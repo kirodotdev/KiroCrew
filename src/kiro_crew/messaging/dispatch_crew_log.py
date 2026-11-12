@@ -184,7 +184,8 @@ def open_turn_crew_log(
     Only facts the dispatcher can establish are recorded; an absent field means
     "not observed". No ACP session id on *provider* means no log. ``slot`` is the
     channel key folded to the filename charset (``channel_slot_name``, also what
-    ``session_create`` stamps as ``_created_by``), so the session tree joins them.
+    ``session_create`` stamps as ``_created_by``), so the session tree joins them, and
+    *session_key* itself is recorded beside it for the slot carry's ledger join.
     Served model and cwd come off the provider; ``model_requested`` comes from
     :func:`requested_model_sid`; ``resumed`` is ``get_or_create``'s answer. The
     class is stated only when ``ctx_builder.live_memory_mode_for_session`` knows the
@@ -238,6 +239,9 @@ def open_turn_crew_log(
             workspace=workspace,
             previous_sid=previous_sid,
             previous_undecided=previous_undecided,
+            # The conversation's own key, which its ledger callers are keyed by while
+            # the slot is its filename fold; the slot carry joins it.
+            session_key=session_key,
         )
     except Exception:
         logger.debug("crew log: opener skipped for %s", session_key, exc_info=True)

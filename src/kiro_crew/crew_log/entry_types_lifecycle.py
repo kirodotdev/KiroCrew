@@ -25,6 +25,32 @@ from kiro_crew.crew_log.entry_types_fields import (
     _turn,
 )
 
+#: The entry a session's log carries for each slot fold whose state it took over from
+#: the units its slot ran under before it
+#: (:func:`kiro_crew.crew_log.projection_kernel.carried_state`).
+#: Named once, here beside its declaration, so the fold side and the writer side read
+#: one spelling.
+SLOT_CARRY_ENTRY_TYPE = "session/carried"
+
+#: The close reason the gateway writes on a unit its slot has moved past, once the
+#: unit's state is carried into the slot's newest unit and no session-map key still
+#: maps its id. The retention sweep collects a unit closed this way on age.
+SUPERSEDED_CLOSE_REASON = "superseded"
+
+#: Set on the copy of a session-tree entry a slot carry writes into the slot's newest unit
+#: (``crew_log/tree_carry.py``). One declaration for the three tree entry types.
+_CARRIED_TREE_FIELD = Field(
+    "carried",
+    JSON_BOOL,
+    note=(
+        "True on the copy a slot carry wrote into the slot's newest unit from the older "
+        "unit that recorded it. The session tree reads it as this unit's own, which is "
+        "what keeps it once the older unit is collected; a count of what this unit did "
+        "itself skips it, since the older unit holds the original. Absent on an entry "
+        "the session wrote itself."
+    ),
+)
+
 #: The four billed token dimensions, each required INSIDE the mapping.
 #: ``on_turn_completed`` builds the whole mapping in one literal, defaulting each
 #: dimension to zero, so a present ``tokens`` always carries all four. The parent
@@ -146,6 +172,20 @@ TYPES: tuple[EntryType, ...] = (
         (
             Field("agent", JSON_STRING, required=True, note="Agent name."),
             Field("slot", JSON_STRING, required=True, note="Slot key; may be empty."),
+            Field(
+                "session_key",
+                JSON_STRING,
+                note=(
+                    "The session key this session's turns run under: a dashboard tab's "
+                    "effective session key (its linked key when it has one), or a "
+                    "channel conversation's own key. It differs from ``slot`` for a tab "
+                    "linked to another conversation's key, and a work-ledger caller in "
+                    "this session is keyed by it, so the slot carry joins the crew logs "
+                    "headed with its ledger spelling. Absent when the opener stated none, "
+                    "and on every entry written before the field existed; a slot whose "
+                    "new crew log states none is not carried."
+                ),
+            ),
             Field(
                 "model",
                 JSON_STRING,
@@ -355,15 +395,74 @@ TYPES: tuple[EntryType, ...] = (
                 "reason",
                 JSON_STRING,
                 required=True,
-                enum=("reset", "destroyed", "destroyed_sid_retained"),
+                enum=("reset", "destroyed", "destroyed_sid_retained", "superseded"),
                 note=(
                     "The gateway's own teardown reason, verbatim. Open: reset comes "
                     "from the reset route, destroyed or destroyed_sid_retained from "
                     "destroy (the latter defined in session_lifecycle when another "
-                    "key may still map to the session id), and a new teardown path "
-                    "may pass its own word."
+                    "key may still map to the session id), superseded from the "
+                    "emitter once a later unit of the same slot carries this unit's "
+                    "slot state and no key maps its id, and a new teardown path may "
+                    "pass its own word."
                 ),
             ),
+            Field(
+                "successor",
+                JSON_STRING,
+                note=(
+                    "Written with superseded only: the session id of the slot's unit "
+                    "whose session/carried entries took over this unit's slot state."
+                ),
+            ),
+        ),
+    ),
+    EntryType(
+        SLOT_CARRY_ENTRY_TYPE,
+        "One slot fold's state, carried into this unit from the units its slot ran under.",
+        (
+            Field(
+                "fold",
+                JSON_STRING,
+                required=True,
+                note=(
+                    "The fold whose state this is: a slot-keyed fold, the status "
+                    "session fold a slot's gone rows decide on, or a tree fold read "
+                    "from this unit's slot as its root."
+                ),
+            ),
+            Field(
+                "slot",
+                JSON_STRING,
+                required=True,
+                note=(
+                    "The slot the state belongs to: this unit's own header slot. A fold "
+                    "applies the entry only when it folds that slot."
+                ),
+            ),
+            Field(
+                "version",
+                JSON_INT,
+                required=True,
+                note="The fold's state version when the state was written.",
+            ),
+            Field(
+                "state",
+                JSON_STRING,
+                required=True,
+                note=(
+                    "The fold's state as JSON text. Text rather than an object, so the "
+                    "key order the fold depends on survives the line's own encoding."
+                ),
+            ),
+        ),
+        note=(
+            "Written by the gateway into a slot's newest unit, right after the units "
+            "before it settled: the state each slot fold reached over every unit of "
+            "the slot, as on disk at that moment. A slot fold that meets the entry "
+            "REPLACES its state with this one, so the units before it stop changing "
+            "the answer and the retention sweep may collect them once they are closed "
+            "superseded. Written only for a fold whose state is not its empty start. "
+            "No other fold interprets it."
         ),
     ),
     EntryType(
@@ -431,6 +530,7 @@ TYPES: tuple[EntryType, ...] = (
                     "statement of the current edge."
                 ),
             ),
+            _CARRIED_TREE_FIELD,
         ),
         note=(
             "Recorded on the session that was taken over, which is where "
@@ -459,6 +559,7 @@ TYPES: tuple[EntryType, ...] = (
                     "able to name the one there was."
                 ),
             ),
+            _CARRIED_TREE_FIELD,
         ),
         note=(
             "The counterpart of session/adopted, and the only entry that takes a parent "
@@ -492,6 +593,7 @@ TYPES: tuple[EntryType, ...] = (
                     "header states."
                 ),
             ),
+            _CARRIED_TREE_FIELD,
         ),
         note=(
             "Recorded on the CREATOR's log at the moment of creation, because the "

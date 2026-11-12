@@ -27,9 +27,11 @@ the child-origin loss counters or `_child_liveness` belongs in `emit_runtime`, b
 |---|---|
 | `crew_log/emit_state.py` | `enabled`; the boot-path import gates `_crew_log` (storage) and `_note_eager` (the eager fold's wake); the session kind and the two sources; `session_id_of`; the process-wide maps and `_lock`, which guards them |
 | `crew_log/emit_tree.py` | a slot's lineage (`slot_previous_store`, `_durable_previous`, `_candidate_is_same_slot`, `_parent_citation`); the `_record_session_tree_*` folds that advance the in-memory session tree after a commit; the settled signal `_TreeSettle` and `awaiting_commit` |
+| `crew_log/tree_carry.py` | the session-tree entries (`session/adopted`, `session/released`, `session/spawned`) a slot's older units hold, rebuilt for the newest unit by the slot carry and marked `carried: true` (`tree_carries`), or none at all when a reader's per-unit spawn bound would drop one; a tree entry its writer files under an older unit after that carry is handed to the newest unit (`late_writes.hand_to_carrier` under `late_writes.TREE_KEY`), where the copy cannot outrank it |
 | `crew_log/emit_runtime.py` | the installed writer, turn tracker and warning budget and every function that rebinds or reads them: `reset_caches`; the handle cache that is the writer's `open_unit` adapter; `_write`, `_submit`, `_hand_over` and the settlement of a job the writer rejected at its ceiling; the supersede repair; `flush`, `drain_for_shutdown` and the loss counters; `live_turn` and `asking_turn`; the child-origin pins and `child_origin_attempt`; `on_session_closed` |
 | `crew_log/emit_text.py` | `_safe_text` and `safe_work_fields` (redaction), `_clip`, the one-line fit checks, `_append_body_entry`'s `message/chunk` slicing, `_payload_digest` |
-| `crew_log/emit_session.py` | `on_session_opened`, `on_session_adopted`, `on_session_released`, `on_session_spawned`, `on_class_observed` and `on_open_tab_unrestored` |
+| `crew_log/late_writes.py` | where a write of a carried fold (the ledgers, the work board, its relay, the crew panel, the dashboard's values, records, refusals, goal and waiting snapshots) or a session-tree entry (an adoption, a release, a spawn, under `TREE_KEY`) lands once its slot may have moved on: the carriers this process committed (`note_carried`), whether a later unit carried one of the writer's folds, the named unit is closed `superseded`, or a later unit's log holds a carry an earlier process wrote, read once per unit per process (`carrier_after`, `_read_carries`), the folds an entry type feeds (`folds_fed_by`), the hand-over of the writer job to the slot's newest unit (`hand_to_carrier`), the requeue that holds a job for a unit with no slot key to its slot's lane (`requeue_on_slot_lane`), and the ledger job's `Receipt` (the unit and seq the entry landed at); its docstring lists which entry types hand over and which stay in their own unit |
+| `crew_log/emit_session.py` | `on_session_opened`, `on_session_adopted`, `on_session_released`, `on_session_spawned`, `on_class_observed` and `on_open_tab_unrestored`; the tree job's decision of its unit on the slot's lane and its settle from inside the job (`_tree_lands_in`, `_tree_settled`); the slot carry that follows a create (`set_session_key_probe`, `_queue_slot_carry` through `_close_superseded`) |
 | `crew_log/emit_turn.py` | a turn's start and end; messages, request configuration, the composed context, steps, tool calls, approvals, the plan, model selection and compaction; `close_open_tool_calls`; `background/completed` |
 | `crew_log/emit_children.py` | `subagent/*` entries on the dispatching session's log, and `dismiss_child` |
 | `crew_log/emit_surfaces.py` | ledger, radar, object, work, panel and dashboard entries, change cards and guides, and their `*_entry_fits` checks |
@@ -223,7 +225,7 @@ unset here -- see "Reconnect is not resume" below for what it is for.
 
 | Fact | Site | Data |
 |---|---|---|
-| `session/opened` | after `get_or_create`, on create or re-attach only -- the dashboard runner on every turn, and the Discord and Telegram dispatchers for their OWN sessions (`messaging.dispatch.open_turn_crew_log`, before `TurnDriver.run`; a dashboard session resumed into a chat is left to the runner that holds its lineage) | agent, slot key, model, `model_requested` when a tier resolved one, cwd, `resumed`; `previous {sid}` on a CREATE whose slot already wrote a different crew log, resolved in three tiers -- the store the slot last handed to a `session/opened` (recorded on the slot as that edge is spent, and the only source that can name a crew log whose create is still queued to the writer thread), then the slot's own newest unit IN THE STORE (the unit no other unit of that slot cites as `previous`, read off the event loop and keyed by the slot rather than the session key, which is the DURABLE answer a restart has), then `mapped_sid` (in-memory, non-pruning) for a slot with no unit at all; the mapping cannot be higher because a replay-pending allocation holds the prior resumable id there on purpose, which would name a generation behind and leave the crew log between cited by nobody, and inside that window it is not cited -- the log records `previous_undecided` instead, and a store the read proves is the slot's first records `previous_none`, because a silence the announce carries and a silence that is merely the absence of every key demand opposite treatment from a later fold. The window is asked about where a SESSION EXISTS to answer, as the edge is taken, not where the id is read: the marker is an attribute of a live session and the read runs before this turn's session is allocated, so asking there answers "no replay owed" both when none is owed and when there is nobody to ask -- and the second is a cold start, the restart this whole read exists to survive. So the mapped id is latched PROVISIONAL and downgraded to a break at the take; the slot's own record is never provisional, and a latch whose record wins over a mapped id drops the flag with it. `previous_none` is the LOOKER's statement, written only for a caller that passed a determination, and only when the store's answer is COMPLETE -- no unit of the slot at all. A store holding units it could not rank hands the question on WITHOUT a determination, so an empty mapping there is no finding about the slot and the create writes no key, which reads as the legacy silence it is rather than declaring a slot with units to be its own first store; the channel dispatchers' opener takes the same determinations from the store behind its capture (`messaging.dispatch.predecessor_edge`); latched on the slot by whichever allocation observes it FIRST -- the eager prefetch maps its own session over the key before the first turn runs, so a turn reading the mapping for itself would answer the successor and write no edge; the latch is write-once and is spent on one entry; the channel dispatchers, which hold no slot record, consume the ALLOCATION's own capture instead (`SessionManager.allocation_predecessor`, read by `SessionAllocationService` inside the registration's critical section from `mapped_sid` -- live id or the `discarded_sid` stash a recycle leaves -- and handed over through `messaging.dispatch.predecessor_sid` after the claim), so no read of the mapping around `get_or_create` remains to be staled by a concurrent turn's allocate-and-recycle; recorded only when the named crew log's own header names this slot, read at emit time, so a stale or recycled mapping entry yields no edge; `parent {slot, sid?}` when `session_create` made the session IN THIS GATEWAY PROCESS (`_lineage_minted`) -- the creator's key from the slot's `_created_by`, and the creator's ACP session id FROZEN at mint (`_created_by_sid`) from the live caller handle, present when the caller had a session at that moment. A slot restored from transcript metadata, with no in-process mint witness, writes a `parent` only when the seeded session tree's fold names the same creator as the restored `_created_by` (`_crew_log_inherited_parent`); transcript metadata alone is never promoted to lineage |
+| `session/opened` | after `get_or_create`, on create or re-attach only -- the dashboard runner on every turn, and the Discord and Telegram dispatchers for their OWN sessions (`messaging.dispatch.open_turn_crew_log`, before `TurnDriver.run`; a dashboard session resumed into a chat is left to the runner that holds its lineage) | agent, slot key, model, `model_requested` when a tier resolved one, cwd, `resumed`; `session_key`, the key the session's turns run under (the dashboard runner's: the key its turn acquired the session under, the slot's effective session key; the channel dispatchers': the conversation's own key), which the slot carry joins for the ledger; `previous {sid}` on a CREATE whose slot already wrote a different crew log, resolved in three tiers -- the store the slot last handed to a `session/opened` (recorded on the slot as that edge is spent, and the only source that can name a crew log whose create is still queued to the writer thread), then the slot's own newest unit IN THE STORE (the unit no other unit of that slot cites as `previous`, read off the event loop and keyed by the slot rather than the session key, which is the DURABLE answer a restart has), then `mapped_sid` (in-memory, non-pruning) for a slot with no unit at all; the mapping cannot be higher because a replay-pending allocation holds the prior resumable id there on purpose, which would name a generation behind and leave the crew log between cited by nobody, and inside that window it is not cited -- the log records `previous_undecided` instead, and a store the read proves is the slot's first records `previous_none`, because a silence the announce carries and a silence that is merely the absence of every key demand opposite treatment from a later fold. The window is asked about where a SESSION EXISTS to answer, as the edge is taken, not where the id is read: the marker is an attribute of a live session and the read runs before this turn's session is allocated, so asking there answers "no replay owed" both when none is owed and when there is nobody to ask -- and the second is a cold start, the restart this whole read exists to survive. So the mapped id is latched PROVISIONAL and downgraded to a break at the take; the slot's own record is never provisional, and a latch whose record wins over a mapped id drops the flag with it. `previous_none` is the LOOKER's statement, written only for a caller that passed a determination, and only when the store's answer is COMPLETE -- no unit of the slot at all. A store holding units it could not rank hands the question on WITHOUT a determination, so an empty mapping there is no finding about the slot and the create writes no key, which reads as the legacy silence it is rather than declaring a slot with units to be its own first store; the channel dispatchers' opener takes the same determinations from the store behind its capture (`messaging.dispatch.predecessor_edge`); latched on the slot by whichever allocation observes it FIRST -- the eager prefetch maps its own session over the key before the first turn runs, so a turn reading the mapping for itself would answer the successor and write no edge; the latch is write-once and is spent on one entry; the channel dispatchers, which hold no slot record, consume the ALLOCATION's own capture instead (`SessionManager.allocation_predecessor`, read by `SessionAllocationService` inside the registration's critical section from `mapped_sid` -- live id or the `discarded_sid` stash a recycle leaves -- and handed over through `messaging.dispatch.predecessor_sid` after the claim), so no read of the mapping around `get_or_create` remains to be staled by a concurrent turn's allocate-and-recycle; recorded only when the named crew log's own header names this slot, read at emit time, so a stale or recycled mapping entry yields no edge; `parent {slot, sid?}` when `session_create` made the session IN THIS GATEWAY PROCESS (`_lineage_minted`) -- the creator's key from the slot's `_created_by`, and the creator's ACP session id FROZEN at mint (`_created_by_sid`) from the live caller handle, present when the caller had a session at that moment. A slot restored from transcript metadata, with no in-process mint witness, writes a `parent` only when the seeded session tree's fold names the same creator as the restored `_created_by` (`_crew_log_inherited_parent`); transcript metadata alone is never promoted to lineage |
 | `turn/started` | after every dispatch gate, immediately before the stream opens | turn ordinal, actor, prompt depth |
 | `turn/refused` | each gate that refuses the dispatch | turn ordinal, actor, `reason`, prompt depth |
 | `turn/completed` | the `EVENT_COMPLETE` arm, beside `_emit_turn_metric`; the turn's `finally` when no terminal event arrived | the four `TurnUsage` token counts (only when some count is above zero, then all four), credits (only when positive and finite), `duration_ms`, `stop_reason`, model, provider, and `context {used, window}` (the provider's context occupancy, only when either is above zero) -- or `stop_reason: "failed"` with `error` and no usage |
@@ -256,7 +258,7 @@ unset here -- see "Reconnect is not resume" below for what it is for.
 | `write/dropped` | writer recovery, before that session's next ordinary append | dropped count and bytes |
 | `session/adopted` | `on_session_adopted`, when a session is adopted under a new parent | the new `parent`, and `previous_parent` when there was one |
 | `session/released` | `on_session_released`, when a session is released from its parent | `previous_parent` when there was one |
-| `session/spawned` | `on_session_spawned`, from `session_control._record_spawn` when a minted create or fork commits, into the CREATOR's log; nothing when the creator has no ACP session yet | the child's slot |
+| `session/spawned` | `on_session_spawned`, from `session_control._record_spawn` when a minted create or fork commits, into the CREATOR's log (its slot's newest unit once a carry moved past the one the caller named, as an adoption or release is); nothing when the creator has no ACP session yet | the child's slot |
 | `panel/published` | `on_panel_published`, from `panel_publish`, into the member's own DM session log | the published panel |
 | `crew/dispatch` / `crew/report` | `on_crew_dispatch` / `on_crew_report`, into the crew kind's log | the dispatch and the child's report |
 | `object/observed` | `monitoring.controller.MonitorController.tick`, after the service has published a probe's observation whose fingerprint differs from the one it held; into the log of the monitor's OWNER session, named by the host's resolver | `producer` (closed: `probe`), the monitored `kind`, the subject's full `target` URL, the probe's `fingerprint`, the canonical `facts` snapshot verbatim (short by named members in `facts_omitted` only when the line would not fit), `observed_at` -- no turn |
@@ -1677,3 +1679,190 @@ There is no second stream to reconcile with. The parallel lifecycle-event packag
 module was designed alongside is retired, so `kiro_crew.crew_log` is the only structured
 record of a session's history and this module is its only writer;
 `docs/request-for-change/rfc-append-only-ledger.md` is the decision of record.
+
+## The slot carry: a new unit takes over its slot, then the old ones are closed
+
+A slot-keyed fold reads every unit its slot ran under, and the `worktree` tree fold reads the units
+of the board at its root, so a unit the slot moved past is still part of the slot's answer and
+retention cannot take it on age (crew-log-core.md, "A slot's units are carried, then closed
+`superseded`"). The emitter makes it collectable in four steps, each a job of the writer's or a
+read off it, and each refusing rather than guessing:
+
+1. **Start.** A `session/opened` that CREATES a unit for a slot queues the carry once, latched with the
+   supersede edge so a retried opening job cannot queue it twice or lose it. With a predecessor named,
+   it is queued as a follow-on in the PREDECESSOR's bucket, behind the tail repair queued just before
+   it, so that unit's last closers and its repaired tail are attempted before its state is read.
+2. **Fold, off the writer.** The fold reads every unit of the slot, which for a long-lived slot is most
+   of its history, so it runs on the maintenance pool (`_submit_carry_fold`, which a test replaces to
+   run inline), never on a writer lane where it would hold the new unit's appends behind it. Each
+   carried fold (`projection_catalogue.CARRIED_FOLD_NAMES`: every slot fold, the `worktree` tree
+   fold for the tree the slot roots, and the `status` session fold a gone row reads over the slot)
+   is read over the units its reader folds, in the reader's own order
+   (`projection_readers._carried_units`: the slot fold's owner, or `tree_fold_units` for the
+   tree fold), from a warm cell or a savepoint where one exists, and the folds left cold are folded
+   together in one pass per distinct unit list (`projection_readers.carried_fold_states`). That
+   order must END with the new unit, or nothing is carried: it is never moved there, since a reader
+   would still fold the units in its own order and read twice whatever the move put before the
+   carry. It is never the header clock's either: an owner with a recorded order places a unit the
+   record does not name by succession, and every other fold reads `units_in_succession`
+   (crew-log-projection.md, "Unit selection belongs to the fold"), so a backward clock step that
+   listed a carrying unit before the unit it carries cannot have a later carry fold that unit again
+   after it. Before anything is read, an older unit with a live turn of this process stands the
+   carry down, because that turn is still writing what the carry would replace, and the tail of
+   every unit the folds read but the new one is taken (`emit_session._unit_tail`, the segments'
+   identity, size and mtime from stat calls alone, over `projection_readers.carried_fold_units`:
+   the slot's own units, the tree's, and the ledger join's units of other spellings). The
+   ledger is read over the join its readers make: the units headed with every spelling the slot's
+   ledger is reached under, then the slot's own (`session_ledger.ledger_carry_units(slot, newest)`),
+   since a read under a caller's spelling folds those first and the carry replaces what they gave
+   it. The first spelling is the ledger spelling of the `session_key` the new unit's own
+   `session/opened` records, read back off its second line (`store.unit_opened_session_key`); a
+   spelling the gateway names the slot from is found on the unit headers, whatever build wrote
+   them, and any other in the slot's `aliases` record (crew-log-core.md, "A slot's units are
+   carried, then closed `superseded`"). A new unit whose opening states no `session_key`, or cannot
+   be read, carries nothing and closes nothing. When a unit headed with another spelling may hold
+   a carry of that spelling's own (its opening states a session key), the ledger is folded cold
+   by `projection_readers.fold_joined_checkpoint`, which applies the leading spelling's own carry
+   inside its units and stands the whole carry down when a unit of a later spelling holds one
+   (crew-log-core.md, "A joined spelling with carries of its own"). A fold whose state is its
+   empty start, and which the new unit alone leaves empty too, has nothing to carry. A slot's
+   first unit carries only the ledger, and only when its ledger readers join units headed with
+   another spelling (`projection_readers.ledger_units_of_other_spellings`); it has no older unit,
+   so nothing is closed. Nothing runs when an owner does not read the new unit last, or when the
+   new unit is no longer the slot's newest by succession (`emit_session._still_slots_newest`,
+   over `newest_unit_in_succession`): a slot that moved again before this fold ran, a reset and
+   then a model switch for one, has a later unit whose own carry folds this one, and a carry from
+   here would fold that later unit first and be published after it.
+3. **Write, in the new unit's bucket.** Nothing else appends to the unit while this job runs, so each
+   state is continued over the entries the unit gained since the fold read it and the carry lands
+   exactly where that state stands. Every fold's `session/carried` goes in ONE group commit. The same
+   commit first carries the session tree's own entries, which no fold holds (`tree_carry.tree_carries`):
+   the slot's newest `session/adopted` or `session/released` over its older units, read in the slot's `previous_sid` succession and never the header clock's order (a clock stepped backward lists a successor first, and its predecessor's decision would be carried last), unless the new unit
+   records one of its own, and every `session/spawned` they hold whose child the new unit does not name.
+   A reader of one unit keeps its newest `SPAWNED_PER_UNIT_CAP` spawns, so when an older unit holds
+   more than that, or the spawns the new unit holds plus the carried ones would pass it, the tree
+   carries nothing (`tree_carries` answers `None`) and the carry stands down: a child left out
+   would keep its creating edge only in an older unit, and that unit's close would hand it to
+   retention. Each is written with `carried: true`. They are written before the `session/carried` entries so the slot folds,
+   which resume after their carry, never read them twice, and the tree orders them by the newer log, so a
+   removed predecessor takes no adoption, release or creating edge with it. For the same ranking, a tree
+   entry a writer files under an older unit after this commit is handed to the newest unit instead
+   ("What a carry costs a reader", below). A fold of one unit applies no
+   carry, so a per-unit count passes the marked copies over: the `otel_session_tree` fold counts a unit's
+   children from its own `session/spawned` alone, or every reset would add the creator's children again
+   under its new unit. The `workers` slot fold steps over a carried `session/spawned` before its own
+   carry replaces the state in the same commit, and the eager folder gets no wake for one, so neither
+   moves a worker's start. A unit that cannot be read, or an
+   entry too large for one line, stands the carry down. A state
+   too large for one entry, an older unit with a live turn of this process, or a later unit the slot
+   opened while the fold ran (the newest-unit check of step 2, asked again here) stands the whole
+   carry down: nothing is written and nothing is closed. Every tail step 2 took is asked again too:
+   a unit whose tail moved gained an entry the fold may not have read (a turn that started and
+   ended in between, a late closer, a record), and a carry of the state read before it would
+   replace that entry and let the unit's close hand it to retention. So the carry folds again from
+   step 2, at most `emit_session._CARRY_REFOLDS` times, and then stands down. What this relies on:
+   the writer writes one slot's units on one lane at a time (`writer_groups`, keyed by each unit's
+   header slot as this process notes it), so between these checks and the append no unit of the slot
+   gains an entry and no later unit of it opens. A unit this process never noted (one an earlier
+   process left) is written alone, and here only its own bucket's jobs reach it: its tail repair,
+   which runs before the fold starts, and its close. A unit of another spelling the ledger joins
+   is written on that spelling's lane and can append in that gap; such an entry is folded before
+   the carry and replaced by it, which is what happens to one it gains after the carry too
+   (crew-log-core.md, "A slot's units are carried, then closed `superseded`"). A carry of the ledger, the work board or the panel also
+   publishes the new unit in that fold's recorded-order file, as that fold's newest record, so a unit
+   that records after it follows it there. A unit the file does not name is placed by succession,
+   after the recorded units before it (`session_ledger_control._causal_units`), so an unpublished
+   carried unit still folds after the units it carries, once the slot opens a later unit as well.
+   The work tree reads the work board's file, so a carry of either one publishes it. The Issue Radar
+   crew store keeps the `radar` fold's order file itself, out of the emitter's reach, so the
+   `radar` carry asks it through `crew_log/unit_order_seam.py`, where the app registers
+   `issue_radar/backend/crew_store_log.carry_units` when it loads (found from the slot
+   alone: the one crew record under the app's data root that names the crew) and folds the units
+   in the list its reader folds. A request that captured an old unit before a reset can commit
+   after the new unit's update, so the record's order is not the slot's succession, and a carry
+   folded in succession would replace the reader's state with a different one. When that list
+   cannot be had (no single crew record under the app's data root, an order file that did not
+   read, units that cannot be listed) the carry stands down for the whole slot and every older
+   unit is kept; it is tried again at the slot's next carry.
+4. **Close, in each older unit's bucket.** `session/closed {superseded, successor}` goes on each older
+   unit unless a live turn of this process still writes it, its tail differs from the one step 3
+   checked (a job already queued in its bucket appended first, after the carry read it), its header
+   names another slot, it is already closed for good, or the session-key probe finds a key that maps
+   its id or cannot say. The
+   unit's cached handle is then dropped the way `on_session_closed` drops a closed session's, because
+   it holds the lease the sweep's removal needs SOLE.
+
+**The probe is the gateway's, registered after readiness** (`set_session_key_probe`, from
+`gateway_runtime/admission.py`), for the reason `set_child_liveness` is: the emitter has no route to
+the session map and must not grow one. It is read only to WITHHOLD a close, the read `destroy` makes
+before it claims `destroyed`. Unset -- a CLI run, a test, an embedder -- no step runs at all, since no
+unit could be closed and a carry would buy nothing.
+
+**What a carry costs a reader is one replaced state.** The drivers that fold a slot's units, not the
+folds, apply it (`projection_kernel.carried_state`, from `_SlotFold`, `fold_slot_checkpoints` and
+`advance` given a slot; the tree reads are `_SlotFold` keyed by the root and `fold_tree_checkpoint`
+passing the root), because only the driver knows which slot it folds: a unit of another slot joined
+into a fold through `also_slots` carries THAT slot's state and must not replace this one's. An entry
+that lands in an older unit after its successor's carry -- a forced reset's late closer -- no longer
+reaches the slot's folds; the live turn and tail checks above keep the carry from being written
+while such a turn is known to this process or such an entry lands during the fold, and keep the
+unit open when one lands before its close. The writers that resolve a unit before their job runs
+do not leave such an entry to those checks: the ledgers (`emit_surfaces.on_ledger_recorded` and
+`on_radar_recorded`, through `_record_on_slot_lane`), the work board (`on_work_recorded`, whose
+unit the report route resolves through `_conductor_unit`), its relay (`work_relay._queue_run`,
+whose unit the relay's consumer resolves), the crew panel (`on_panel_published`) and the
+dashboard (`_append_dashboard`: the agentic and custom writes, their refusals and failed runs, the
+stale wake, and the crewmate feed's goal and waiting snapshots through `on_goal_recorded` and
+`on_waiting_changed`, whose units the record and write routes resolve through `_newest_unit` and
+the feed through its session), and the session tree (`on_session_adopted`, `on_session_released`
+and `on_session_spawned`, whose unit a dashboard verb reads from the session map before it queues:
+the carry copied the slot's newest decision and its spawns into the newest unit, and the tree ranks
+a newer log's decision first, so a decision filed under the older unit after the carry loses to the
+copy of the one it replaced, and a spawn filed under an older unit closed `superseded` goes to
+retention with it while the child has no log of its own). For each, the decision, the append and the unit-order publication
+(where the fold keeps an order; the dashboard folds read the succession) are ONE writer job in the
+named unit's bucket, on the slot's lane, where the carry is committed too, so the carry lands
+wholly before the job or wholly after it. A unit the writer has no slot key for (closed, which
+drops its key, or not opened by this process) is claimed alone, so its writer notes the key
+first: a header read before the job, or, for the feed and the tree writers, which call from the
+serving loop, in the job on the writer, which then queues itself again behind it
+(`late_writes.requeue_on_slot_lane`). Before it, the job finds the carry and hands itself to the slot's newest unit,
+which asks again (`late_writes.hand_to_carrier`): `late_writes.carrier_after` answers that unit
+when a later unit's carry of a fold the entry feeds landed in this process (`late_writes.note_carried`,
+which `_write_carries` calls on the lane before it publishes the carrier's order; the folds an
+entry feeds are the carried folds whose `affects` names its type, `late_writes.folds_fed_by`; a
+tree entry asks for `late_writes.TREE_KEY`, which every carry notes whatever it carried of the tree,
+since a decision filed under an older unit loses to any edge the newer unit holds, its own or
+carried), when the named unit is closed `superseded`, or when a later unit's log holds a carry an
+earlier process wrote (`late_writes._read_carries`: a `session/carried` for the slot naming one of
+those folds, or for the tree any of the slot's carries or a tree entry marked `carried`). A restart
+forgets this process's notes, and a unit a key still maps is never closed, so that read is what
+finds such a carry then. It reads each later unit once per process, oldest segment first, skipping
+a record without the carry's marker unparsed and stopping at the end of the carry's one group
+commit; what it finds is noted, so the next write opens no log, and the slot's newest unit, the
+ordinary writer, never reads one. A read that fails proves nothing: that write goes where it always
+went, and the unit is read again by the next. After it, the carry finds
+the older unit's tail moved and folds again, so it reads the entry. The job publishes the order for
+the unit the entry landed in, after the append and only then. A ledger job settles a
+`late_writes.Receipt` with that unit and the entry's seq, which is what the caller's durability
+answer reads; no clock and no sampled seq decides any of it (`session_ledger.record_update`, the
+Issue Radar ledger's `_append`). The board, panel and dashboard writers wait for their answer
+instead, and the feed is told it once through `on_settled`: it is released by the job that
+appended (or found no log to append into) or by the writer's permanent drop of the first job (a
+dashboard entry also by a refusal in the unit it was handed to), never by a job that handed the
+entry on, and a waiter that gives up marks the entry abandoned, so a handed-on or retried job that
+runs after it appends nothing. A dashboard entry lost after it was handed on tells nothing, as a
+ledger receipt stays unsettled: a waiter's timeout answers false. A tree writer's `on_settled` is
+told once the same way (`_TreeSettle.handed_on`: the first job's `after` tells nothing once it
+handed the entry on, and the job that appends, finds no log or is refused tells instead, so the
+requeued copy of a refused follow-on appends nothing). Its waiters keep their own contract, that a
+timeout is not final (`tree_write_pending`, the fence left standing): a handed-on job lands later
+like a first job still queued, and tells then; one the writer loses after the hand-over tells
+nothing, so that waiter's fence stays up until the gateway restarts. A carry
+does not keep four things, which are lost once
+the older units are collected: a worker's legacy reports for the operator's work-board rebuild, a
+board's count of units left out past its limit, the context panel's history of past turns (the
+`usage` session fold read over the slot) and the root card's tool tally (the `tools` session fold over the slot's succession chain).
+crew-log-core.md lists them, with what each reader then shows, under "A slot's units are carried, then
+closed `superseded`".
+

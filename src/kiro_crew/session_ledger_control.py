@@ -2,8 +2,9 @@
 
 The delete funnel's exclusion transaction (:func:`exclude_units`, :func:`unexclude_units`,
 :class:`LedgerExclusionError`), the legacy carry's claim and tombstone, the ledger, work and
-panel unit-order logs with their bounded read and rewrite, and the reader of a legacy
-``state.json`` document.
+panel unit-order logs with their bounded read and rewrite, the spellings a slot's ledger was
+recorded under (:func:`note_ledger_alias`), and the reader of a legacy ``state.json``
+document.
 
 An owner module of :mod:`kiro_crew.session_ledger`, the one import path: callers, tests and
 documents reach every name here as ``kiro_crew.session_ledger.<name>``, and a patch through
@@ -23,6 +24,7 @@ from typing import Any, NamedTuple
 
 from kiro_crew.atomic_write import append_line, atomic_write, fsync_dir
 from kiro_crew.session_ledger_layout import (
+    _ALIAS_FILE,
     _CARRIED_FILE,
     _CARRY_COMMITTED,
     _CARRY_PENDING,
@@ -31,6 +33,9 @@ from kiro_crew.session_ledger_layout import (
     _CLAIM_DONE,
     _CLAIM_TAKEN,
     _DELETED_UNITS_FILE,
+    _MAX_ALIAS_BYTES,
+    _MAX_ALIAS_READ_BYTES,
+    _MAX_ALIASES,
     _MAX_EXCLUDED_BYTES,
     _MAX_EXCLUDED_UNITS,
     _MAX_ORDER_BYTES,
@@ -687,6 +692,65 @@ def _note_unit_order(slot_key: str, session_id: str, *, order_file: str = _UNIT_
         logger.warning("ledger: could not record this slot's unit order", exc_info=True)
 
 
+def note_ledger_unit_recorded(slot_key: str, session_id: str) -> None:
+    """Publish that *session_id* just appended the ledger's newest record under its slot.
+
+    The ledger's own append publishes through :func:`_note_unit_order` directly; this is
+    the same note for a writer outside the ledger -- the slot carry, whose
+    ``session/carried`` entry is the ledger's newest state.
+    """
+    _note_unit_order(canonical_slot(slot_key, session_id), session_id)
+
+
+def note_ledger_alias(slot_key: str, alias: str) -> None:
+    """Record that *slot_key*'s ledger is reached under the caller spelling *alias*.
+
+    Written by the ledger's own writer, and by a read with a live session, when a
+    caller's key resolves to another slot (:func:`canonical_slot`): a ``cron:<id>``
+    session reaching the unit its slot heads. A read under *alias* joins the units headed
+    with it, before the slot's own, so the slot carry has to join the same units
+    (:func:`kiro_crew.session_ledger.ledger_carry_units`): carried over the slot's units
+    alone, the state it writes would replace what those units recorded for that reader
+    while they are still on disk. Already recorded, this is a bare read. The carry also
+    joins the session key the new unit's opening records its turns run under, and every
+    unit header the slot is named from (:func:`kiro_crew.session_ledger.ledger_aliases`),
+    so this record is what reaches a spelling a caller used that is neither.
+
+    SERIALIZED on the slot's lock, because the newest-kept trim is a read-modify-write.
+    Best-effort, like the unit order: a spelling this cannot write is written by the
+    next read or update under it, and a carry before then folds without its units unless
+    it is one of those two. A spelling past :data:`_MAX_ALIAS_BYTES`, or one that would
+    not stay one line, is never recorded.
+    """
+    if not slot_key or not alias or alias == slot_key:
+        return
+    if len(alias.encode("utf-8")) > _MAX_ALIAS_BYTES or "\n" in alias or "\r" in alias:
+        logger.warning("ledger: a caller spelling of this slot cannot be recorded")
+        return
+    try:
+        if alias in _recorded_aliases(slot_key):
+            return
+        path = _control_file(slot_key, _ALIAS_FILE, create=True)
+        with _locked(control_dir(slot_key)):
+            known = _recorded_aliases(slot_key)
+            if alias in known:
+                return
+            _rewrite_lines(path, (*known, alias)[-_MAX_ALIASES:])
+    except (ValueError, OSError):
+        logger.warning("ledger: could not record a spelling this slot is read under", exc_info=True)
+
+
+def _recorded_aliases(slot_key: str) -> "tuple[str, ...]":
+    """The spellings :func:`note_ledger_alias` recorded for *slot_key*, oldest first.
+
+    ``()`` when there is no file. RAISES when it cannot be read: the carry turns that into
+    no carry at all, which keeps every unit, where an empty answer would carry the slot
+    without the units those spellings join.
+    """
+    path = _control_file(slot_key, _ALIAS_FILE)
+    return _read_lines(path, limit=_MAX_ALIAS_READ_BYTES)[-_MAX_ALIASES:]
+
+
 def note_work_unit_recorded(slot_key: str, session_id: str, *, canonical: str = "") -> None:
     """Publish that *session_id* just appended a work record under its slot.
 
@@ -731,9 +795,10 @@ def newest_work_unit(slot_key: str) -> str:
 def work_crew_log_units(slot_key: str) -> tuple[str, ...]:
     """Work-record units for *slot_key* in causal append order, oldest first.
 
-    Units absent from the bounded order tail fold first, except the slot's newest unit
-    by succession, which folds last (:func:`_causal_units`). Listing failures fail
-    closed because this runs on a loop-cycle read path.
+    A unit absent from the bounded order tail is placed by succession, after the
+    recorded units before it, so the slot's newest unit folds last
+    (:func:`_causal_units`). Listing failures fail closed because this runs on a
+    loop-cycle read path.
     """
     if not slot_key:
         return ()
@@ -760,10 +825,11 @@ def note_panel_unit_recorded(slot_key: str, session_id: str) -> None:
 def panel_crew_log_units(slot_key: str) -> tuple[str, ...]:
     """Panel units for *slot_key* in causal append order, oldest first.
 
-    Units absent from the bounded order tail fold first, except the slot's newest unit
-    by succession, which folds last (:func:`_causal_units`). Listing failures fail
-    closed, which for the panel costs the history and not
-    the panel: the file is the durable record and the read falls back to it.
+    A unit absent from the bounded order tail is placed by succession, after the
+    recorded units before it, so the slot's newest unit folds last
+    (:func:`_causal_units`). Listing failures fail closed, which for the panel costs
+    the history and not the panel: the file is the durable record and the read falls
+    back to it.
     """
     if not slot_key:
         return ()
@@ -783,26 +849,50 @@ def _causal_units(
 ) -> "tuple[str, ...]":
     """*units* (header order) reordered by the *recorded* order tail, oldest first.
 
-    A unit missing from the tail folds BEFORE the recorded units -- it is either older
-    than all of them or evicted from the bounded tail -- except the slot's NEWEST unit
-    by durable succession (``previous_sid``, not the header clock), which folds last.
-    That unit is a reset's new session that has not recorded yet, or whose order write
-    failed. Listing it last keeps the list an append through the reset's open and
-    first record, so the warm cell and the savepoint carry over instead of refolding
-    the slot cold. Succession rather than ``createdAt`` decides it, so an evicted unit
-    whose header a backward clock step made "newest" still folds first.
+    The recorded units keep the tail's order. A unit missing from it is placed by
+    durable succession (``previous_sid``, not the header clock): right after the last
+    recorded unit that comes before it in the slot's succession, or FIRST when none
+    does. One older than every recorded unit, or evicted from the bounded tail, so folds
+    before them as it always did, and so does a unit of another spelling joined in,
+    which the slot's succession does not list (nor places anything after itself). With
+    no recorded unit at all, every unit is in that first run, in succession.
+
+    The others are newer than a recorded unit and have not recorded yet, or their order
+    write failed: a reset's new session, which then folds last, so the list stays an
+    append through the reset's open and first record and the warm cell and the savepoint
+    carry over instead of refolding the slot cold. Such a unit can hold the slot carry
+    (``session/carried``), the state of every unit before it, and it keeps its place
+    after them once the slot opens a later unit: folded first, the units its carry holds
+    would be laid over it again. Succession rather than ``createdAt`` decides it, so an
+    evicted unit whose header a backward clock step made "newest" still folds first, and
+    a carry folded over the slot's succession is read in the order it was folded in.
     """
-    if not recorded:
-        return units
     known = [unit for unit in recorded if unit in units]
     rest = [unit for unit in units if unit not in recorded]
-    if not known or not rest:
-        return tuple(rest + known)
-    from kiro_crew.crew_log.projection_readers import newest_unit_in_succession
+    if not rest:
+        return tuple(known)
+    from kiro_crew.crew_log.projection_readers import slot_succession
 
-    newest = newest_unit_in_succession(slot_key)
-    last = [newest] if newest in rest else []
-    return tuple([unit for unit in rest if unit not in last] + known + last)
+    place = {unit: index for index, unit in enumerate(slot_succession(slot_key))}
+    # The recorded units of the slot's own succession, by their index in *known*; a
+    # recorded unit of another spelling places nothing, as it is in no succession here.
+    anchors = [(place[held], index) for index, held in enumerate(known) if held in place]
+    after: dict[str, int] = {}
+    for unit in rest:
+        at = place.get(unit)
+        # The index in *known* this unit folds after; -1 folds it before all of them.
+        after[unit] = -1 if at is None else max((i for p, i in anchors if p < at), default=-1)
+    listed = {unit: index for index, unit in enumerate(rest)}
+    pending = sorted(rest, key=lambda unit: (after[unit], place.get(unit, -1), listed[unit]))
+    ordered: list[str] = []
+    taken = 0
+    for index in range(-1, len(known)):
+        if index >= 0:
+            ordered.append(known[index])
+        while taken < len(pending) and after[pending[taken]] == index:
+            ordered.append(pending[taken])
+            taken += 1
+    return tuple(ordered)
 
 
 def _rewrite_lines(path: Path, lines: "tuple[str, ...]") -> None:

@@ -66,6 +66,7 @@ path.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import importlib as _importlib
 import json
@@ -97,7 +98,9 @@ from kiro_crew.session_ledger_control import (
     _finish_carry,
     _legacy_document,
     _note_unit_order,
+    _recorded_aliases,
     _recorded_unit_order,
+    note_ledger_alias,
 )
 from kiro_crew.session_ledger_layout import (
     _APPEND_FLUSH_SECONDS,
@@ -169,42 +172,152 @@ def crew_log_units(
     ``_recorded_unit_order`` is not strict-gated: an unreadable order file only
     reorders the units, never drops one.
     """
+    return _joined_units(slot_key, live_session_id, (alias,), strict=strict)
+
+
+def ledger_carry_units(slot_key: str, newest: str) -> tuple[str, ...]:
+    """The units the slot carry into *newest* folds *slot_key*'s ledger over, oldest first.
+
+    The slot's own units joined with every spelling the ledger is read under, the join
+    :func:`crew_log_units` makes for a reader under one of them. The ``session/carried``
+    entry in *newest*, the slot's new unit, REPLACES what such a reader folded from that
+    spelling's units, so carried over the slot's units alone it would drop those records
+    the moment the slot moved to a new unit, while the units are still on disk. A read
+    under the slot's own spelling reads them too from that carry on.
+
+    The first spelling is taken from *newest* itself: :func:`ledger_key` of the session
+    key its opening entry records its turns run under
+    (:func:`~kiro_crew.crew_log.store.unit_opened_session_key`), the key a ledger caller
+    in that unit reads and writes under. *newest* is this build's own unit, so this needs
+    nothing an older build wrote and no session-map read, and it covers a tab named some
+    other way than its key (a workflow's ``workflow-<run>`` fallback tab linked to the
+    originating chat's key). :func:`ledger_aliases` adds the rest.
+
+    ``()`` when *newest*'s opening states no session key or cannot be read, or when the
+    spellings or the units cannot be listed: no carry is written and no unit is closed,
+    because the carry could not know the join a reader in that unit makes.
+    """
     if not slot_key:
         return ()
+    # Function-local, as in ``canonical_slot``: the storage package stays off this
+    # module's import path. ``ledger_key`` is served by the layout owner, not bound here.
+    from kiro_crew.crew_log import KIND_SESSION
+    from kiro_crew.crew_log.store import unit_opened_session_key
+    from kiro_crew.session_ledger_layout import ledger_key as _ledger_key
+
+    try:
+        session_key = unit_opened_session_key(KIND_SESSION, newest)
+        aliases = ledger_aliases(slot_key)
+    except Exception:
+        logger.warning(
+            "ledger: could not list the spellings this slot is read under", exc_info=True
+        )
+        return ()
+    if not session_key:
+        logger.info(
+            "ledger: crew log %s %s the session key its turns run under, so slot %s is "
+            "not carried and no older crew log of it is closed",
+            newest,
+            "states no" if session_key == "" else "cannot be read for",
+            slot_key,
+        )
+        return ()
+    return _joined_units(slot_key, "", (_ledger_key(session_key), *aliases))
+
+
+def ledger_aliases(slot_key: str) -> tuple[str, ...]:
+    """Every spelling other than *slot_key* whose units a ledger read of it joins, beside
+    the session key the new unit's opening records (:func:`ledger_carry_units`).
+
+    Two kinds, each read off a record only the gateway writes. Every unit header that is
+    a caller key the gateway names *slot_key* from (:func:`_slots_named_for`): a raw key
+    an older build headed a conversation's units with, found whatever build wrote it. And
+    the spellings a write, or a read with a live session, joined under
+    (:func:`note_ledger_alias`), which keeps a spelling this build saw a caller use that
+    is not the key the slot's newest unit runs under. RAISES when the recorded spellings
+    cannot be read.
+    """
+    from kiro_crew.crew_log.store import session_units_by_slot
+
+    spellings = dict.fromkeys(_recorded_aliases(slot_key))
+    for header in session_units_by_slot():
+        if header != slot_key and ":" in header and slot_key in _slots_named_for(header):
+            spellings.setdefault(header)
+    return tuple(spelling for spelling in spellings if spelling != slot_key)
+
+
+def _slots_named_for(key: str) -> tuple[str, ...]:
+    """The slot names the gateway gives the conversation of the caller key *key*.
+
+    Its filename fold (:func:`~kiro_crew.history_files.transcript_stem`), which the
+    channel dispatcher heads a conversation's units with and which names the tab the
+    dashboard opens for a key (``dashboard_slot_key``), and for a ``cron:<id>`` key the
+    ``cron-<id>`` tab the job runs in (:func:`~kiro_crew.session_surface.cron_tab_name`).
+    Derived from the key alone, so nothing has to be recorded for a header to be matched.
+    """
+    from kiro_crew.history_files import transcript_stem
+    from kiro_crew.session_surface import cron_tab_name
+
+    names = [transcript_stem(key)]
+    if key.startswith("cron:"):
+        names.append(cron_tab_name(key))
+    return tuple(names)
+
+
+def _joined_units(
+    slot_key: str,
+    live_session_id: str,
+    aliases: "tuple[str, ...]",
+    *,
+    strict: bool = False,
+) -> tuple[str, ...]:
+    """:func:`crew_log_units` with each of *aliases* joined beside *slot_key*."""
+    if not slot_key:
+        return ()
+    aliases = tuple(alias for alias in dict.fromkeys(aliases) if alias and alias != slot_key)
     try:
         from kiro_crew.crew_log.store import session_units_for_slot
 
         units = session_units_for_slot(slot_key, strict=strict)
-        if alias and alias != slot_key:
+        if aliases:
             # The caller's own spelling is joined BESIDE the canonical one, so a record
             # written under it keeps reading. Its units come FIRST: the canonical ones
             # are what is being written now, and a later update wins. Every control
             # file is keyed by the canonical spelling alone, so one slot has one
             # exclusion list and one order log however a caller spells its key.
+            from kiro_crew.crew_log.projection_readers import slot_succession
+
             seen = set(units)
-            units = (
-                tuple(
-                    unit
-                    for unit in session_units_for_slot(alias, strict=strict)
-                    if unit not in seen
-                )
-                + units
-            )
+            joined: list[str] = []
+            for alias in aliases:
+                headed = session_units_for_slot(alias, strict=strict)
+                # Each spelling's units in its own durable succession: the header clock
+                # lists a unit after a clock step backward before the unit it follows.
+                listed = slot_succession(alias)
+                for unit in tuple(u for u in listed if u in headed) + tuple(
+                    u for u in headed if u not in listed
+                ):
+                    if unit not in seen:
+                        seen.add(unit)
+                        joined.append(unit)
+            units = tuple(joined) + units
         excluded = _excluded_units(slot_key)
-        if alias and alias != slot_key:
+        for alias in aliases:
             # A delete records an exclusion under the slot its unit's HEADER names, so
             # an alias unit's exclusion sits under the alias, not the canonical key.
             excluded |= _excluded_units(alias)
         if excluded:
             units = tuple(unit for unit in units if unit not in excluded)
-        # The order log keeps the NEWEST ids, so a unit absent from it is older than all
-        # of them and applies BEFORE the kept tail; after it, an evicted old unit would
-        # write its stale goal and phase over the current ones. The one exception is the
-        # slot's newest unit by succession: a reset's new session that has not recorded
-        # yet holds no ledger entry, so its place does not change the record, and
-        # listing it last keeps a read's unit list the one the writer folds (live unit
-        # last). Listed first, its own appends retire the warm cell and the savepoint
-        # and every read after a restart folds the slot cold.
+        # The order log keeps the NEWEST ids, so a unit absent from it is placed by the
+        # slot's succession: one older than every recorded unit (an evicted one) applies
+        # BEFORE the kept tail, since after it its stale goal and phase would overwrite
+        # the current ones, and a newer one after the recorded units before it. That is
+        # a reset's new session that has not recorded yet, which holds no ledger entry
+        # of its own: listing it last keeps a read's unit list the one the writer folds
+        # (live unit last), where listed first its own appends retire the warm cell and
+        # the savepoint and every read after a restart folds the slot cold. And a slot
+        # carry it holds whose publish to the order log failed stays after the units
+        # whose state it carries, once the slot opens a later unit too.
         from kiro_crew.session_ledger_control import _causal_units as _ordered_units
 
         units = _ordered_units(slot_key, units, _recorded_unit_order(slot_key))
@@ -327,10 +440,15 @@ def read_state(slot_key: str, live_session_id: str = "") -> dict[str, Any]:
     (:func:`_legacy_preview`), so the first resumed turn after an upgrade has its goal.
 
     Lock-free: the crew log is append-only, so a reader sees a prefix, never a torn
-    record.
+    record. The one write is the first time a read with a live session joins a caller
+    spelling of the slot (:func:`note_ledger_alias`), which takes the slot's lock once.
     """
     key = slot_key or ""
     canonical = canonical_slot(key, live_session_id)
+    if live_session_id and canonical != key:
+        # The join this read makes, recorded for the slot carry to make too
+        # (:func:`ledger_carry_units`). A bare read once recorded.
+        note_ledger_alias(canonical, key)
     units = crew_log_units(canonical, live_session_id, alias=key)
     try:
         # Folded even with NO units: a pre-fold slot has a document and no crew log,
@@ -384,7 +502,9 @@ def record_update(
     whether the append reached disk.
 
     *session_id* is the crew log (the slot's current ACP session) the entry lands
-    in; reads join every unit the slot ran under.
+    in; reads join every unit the slot ran under. When a later unit of the slot already
+    carries its ledger, the entry is filed under the slot's newest unit instead, decided
+    on the slot's writer lane (``crew_log.late_writes``).
 
     *phase* without *event* and a recognized *event_kind* raises ``ValueError``. A
     phase and its reason ride on the SAME entry, so no reader or crash can split them.
@@ -410,6 +530,14 @@ def record_update(
     # caller keyed `cron:<id>` or `hook:<id>` could never read its own record back.
     alias = slot_key
     slot_key = canonical_slot(slot_key, session_id)
+    # A request resolved to this unit before the slot reset may arrive after the new
+    # unit carried: filed under this one it would be replaced by the carry or, published
+    # as recording last, replay this unit's history over it. It belongs to the newest.
+    # Asked here for the base this answer folds over; the writer job asks again on the
+    # slot's lane, where the answer is the one the append follows.
+    from kiro_crew.crew_log import late_writes
+
+    session_id = late_writes.carrier_after(slot_key, session_id, _FOLD_NAME) or session_id
     data = _entry_data(
         slot_key,
         goal=goal,
@@ -437,11 +565,6 @@ def record_update(
     from kiro_crew.crew_log import emit as crew_log_emit
     from kiro_crew.crew_log.schema import Entry
 
-    # Sampled BEFORE the append: when a second gateway owns this unit the append is
-    # inline and a refusal bumps the counter during the call, so a later sample
-    # would report the refused write as durable.
-    refused_before = crew_log_emit.dropped_writes()
-    seq_before = _unit_last_seq(session_id)
     # Refuse an oversized entry up front. The writer's ceiling refusal looks like
     # ``durable=False``, the same as a busy writer whose entry does land, but an
     # oversized entry never lands however often it is retried.
@@ -453,51 +576,47 @@ def record_update(
     # Sampled BEFORE the append, so it is never LATER than the stamp the store
     # writes, and the gap is queue-to-write latency rather than the whole drain.
     recorded_ms = int(time.time() * 1000)
-    crew_log_emit.on_ledger_recorded(session_id, data)
+    # Before the append, so no slot carry folds this entry without the units the
+    # caller's spelling joins (:func:`ledger_carry_units`).
+    note_ledger_alias(slot_key, alias)
+    # ONE writer job on the slot's lane decides where the entry goes, appends it, and
+    # PUBLISHES PRECEDENCE for the unit it landed in, after the append and only then.
+    # The order file claims "the unit recording now holds the newest entry"; noting a
+    # unit whose append was refused or is still queued pins a RETIRED unit ahead of its
+    # successor (fsynced at once), and the successor then folds stale goal and phase as
+    # current. On the lane, the successor's carry cannot land between the decision and
+    # the note: a note after the carry would put this unit after the unit carrying it.
+    receipt = crew_log_emit.on_ledger_recorded(
+        session_id,
+        data,
+        slot=slot_key,
+        publish=functools.partial(_note_unit_order, slot_key),
+    )
     # WAIT for the append (on a worker thread, so no event-loop cost): the caller is
     # about to act on the record, and an unclean death before the flush would lose
     # an update already reported as taken. ``flush`` is False only when the writer
-    # is still busy (entry queued, not lost); a PERMANENTLY REFUSED append drains and
-    # is counted, hence the counter sampled around it. Neither raises: a retry would
-    # append twice, and the counter is process-wide. The loss is logged and the next
-    # update re-reads the base from disk.
+    # is still busy (entry queued, not lost). It does not raise: a retry would append
+    # twice. The loss is logged and the next update re-reads the base from disk.
     drained = crew_log_emit.flush(timeout=_APPEND_FLUSH_SECONDS)
-    # THIS UNIT's own log must also have grown: the process-wide counter cannot say
-    # that. An unreadable sample proves nothing, so it is NOT landed.
-    seq_after = _unit_last_seq(session_id)
-    landed = _grew(seq_before, seq_after)
-    unread = seq_before is None or seq_after is None
-    durable = drained and landed and crew_log_emit.dropped_writes() == refused_before
-    # PUBLISH PRECEDENCE ONLY ONCE THIS UNIT'S LOG HAS ACTUALLY GROWN, so keep this
-    # AFTER ``landed``. The order file claims "the unit recording now holds the
-    # newest entry"; noting a unit whose append was refused or is still queued pins a
-    # RETIRED unit ahead of its successor (fsynced at once), and the successor then
-    # folds stale goal and phase as current. Gated on ``landed``, not ``durable``:
-    # the process-wide refusal counter would let another session's refusal suppress
-    # an earned note. An unproved move withholds the note; the next proved record
-    # corrects a missing one.
-    if landed:
-        _note_unit_order(slot_key, session_id)
-    if unread:
-        logger.warning(
-            "ledger: this unit's crew log could not be read %s the append, so the update "
-            "is not proved to have landed; it is reported not durable and this unit's "
-            "precedence is not published",
-            " and ".join(
-                side for side, seq in (("before", seq_before), ("after", seq_after)) if seq is None
-            ),
-        )
-    if not drained:
+    # The receipt is THIS entry's own outcome, settled by the job that appended it: a
+    # refused or dropped append settles it unlanded, and a queued one leaves it so.
+    durable = receipt.landed
+    if not durable and not drained:
         logger.warning(
             "ledger: the crew log writer did not drain within %.1fs; this update is "
             "queued and counted, not yet durable",
             _APPEND_FLUSH_SECONDS,
         )
-    elif not durable and not unread:
+    elif not durable:
         logger.warning(
-            "ledger: the crew log refused an append while this update was in flight; "
-            "the update may not have landed and the next one supersedes it"
+            "ledger: the crew log refused this update; it did not land and the next one "
+            "supersedes it"
         )
+    if durable and receipt.unit != session_id:
+        # The lane filed it under the slot's newest unit: answer from the fold that
+        # unit's readers make, which now holds the entry on disk.
+        units = crew_log_units(slot_key, receipt.unit, alias=alias)
+        return projection.projection_of(_fold_checkpoint(slot_key, units)).value, durable
     pending = Entry(
         type=LEDGER_ENTRY_TYPE,
         # One past what the fold consumed, which is all ``advance`` asks of it. The
@@ -1107,6 +1226,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _withdraw_tombstone_locked,
         exclude_units,
         newest_work_unit,
+        note_ledger_unit_recorded,
         note_panel_unit_recorded,
         note_work_unit_recorded,
         panel_crew_log_units,
@@ -1114,6 +1234,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         work_crew_log_units,
     )
     from kiro_crew.session_ledger_layout import (  # noqa: F401
+        _ALIAS_FILE,
         _CARRY_COMMITTED,
         _CARRY_PENDING,
         _CARRY_STALE_SECS,
@@ -1121,6 +1242,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _DELETED_UNITS_FILE,
         _LOCK_POLL_SECS,
         _LOCK_TIMEOUT_SECS,
+        _MAX_ALIAS_BYTES,
+        _MAX_ALIAS_READ_BYTES,
+        _MAX_ALIASES,
         _MAX_EVENT_TAIL,
         _MAX_EVENTS,
         _MAX_EXCLUDED_BYTES,

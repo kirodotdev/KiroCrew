@@ -356,7 +356,8 @@ def test_the_creates_are_read_from_the_crewmates_own_units_only(_floor_monkeypat
     _floor_monkeypatch.setattr(
         store, "session_units_for_slot", lambda slot, **_kw: listing.get(slot, ())
     )
-    assert pw.workers_units(MATE) == ("m1",)
+    _floor_monkeypatch.setattr(crew_log, "units_in_succession", lambda slot: listing.get(slot, ()))
+    assert crew_log._slot_units_for_fold(MATE, "workers") == ("m1",)
     # The first unit, which holds the task, and the newest two.
     assert pw.worker_units("w1", ("a", "b", "c", "d")) == ("a", "c", "d")
     assert pw.worker_units("w1", ("a", "b")) == ("a", "b")
@@ -380,6 +381,18 @@ def test_a_workers_units_follow_succession_not_the_header_clock(_floor_monkeypat
     _floor_monkeypatch.setattr(store, "session_units_for_slot", lambda _s, **_kw: ("new", "old"))
     _floor_monkeypatch.setattr(crew_log, "units_in_succession", lambda _s: ("old", "new"))
     assert crew_log._slot_units_for_fold("w1", "worker") == ("old", "new")
+
+
+def test_a_crewmates_units_follow_succession_not_the_header_clock(_floor_monkeypatch):
+    """The crewmate's own creates are read in succession too, the order its slot carry
+    folds them in: listed by the header clock, a carrying unit stamped before the one it
+    carries would have a later carry fold that one's creates again after it."""
+    from kiro_crew.crew_log import store
+
+    _floor_monkeypatch.setattr(store, "session_units_for_slot", lambda _s, **_kw: ("new", "old"))
+    _floor_monkeypatch.setattr(crew_log, "units_in_succession", lambda _s: ("old", "new"))
+    assert crew_log._slot_units_for_fold(MATE, "workers") == ("old", "new")
+    assert crew_log._carried_units(MATE, "workers", "new") == ("old", "new")
 
 
 class _Nodes:

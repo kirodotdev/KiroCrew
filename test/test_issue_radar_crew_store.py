@@ -766,10 +766,17 @@ def test_an_append_the_writer_refused_raises_instead_of_answering(tmp_path, monk
     nothing. Synthesizing an answer is reserved for a writer still holding the
     entry past the flush budget."""
     from kiro_crew.crew_log import emit as crew_log_emit
+    from kiro_crew.crew_log import late_writes
 
     crew, sid = _live_crew(tmp_path)
     cid = crew["id"]
-    monkeypatch.setattr(crew_log_emit, "on_radar_recorded", lambda *_a, **_k: None)
+
+    def refused(session_id, *_a, **_k):
+        receipt = late_writes.Receipt(session_id)
+        receipt.settle(session_id, 0, landed=False)  # what the job settles on a refusal
+        return receipt
+
+    monkeypatch.setattr(crew_log_emit, "on_radar_recorded", refused)
     with pytest.raises(cs.CrewLedgerNotRecorded):
         _record(tmp_path, cid, sid, 2251, {"phase": "claimed"}, "claim", "took it")
     assert cs.list_work_items(OWNER, REPO, cid, tmp_path) == []
@@ -802,8 +809,9 @@ def test_a_read_back_that_fails_once_does_not_turn_a_landed_entry_into_a_refusal
     failures = {"left": 0}
 
     def recorded(*a, **k):
-        real_recorded(*a, **k)
+        receipt = real_recorded(*a, **k)
         failures["left"] = 1  # armed AFTER the append: the next read is the read-back
+        return receipt
 
     class _FlakyHandle:
         def __init__(self, inner):

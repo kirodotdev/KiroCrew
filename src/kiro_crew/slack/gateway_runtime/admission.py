@@ -85,6 +85,28 @@ def _register_child_liveness(self: GatewayOrchestrator) -> None:
     crew_log_emit.set_child_liveness(_child_still_running)
 
 
+def _register_session_key_probe(self: GatewayOrchestrator) -> None:
+    """Give the crew log's slot carry a way to ask whether a session id is still mapped.
+
+    The emitter closes a crew log ``superseded`` -- the close retention collects -- only
+    once its slot's newest unit carries its state AND no session-map key still maps its
+    id, and this manager's map is the only thing that knows the second. Registered here
+    for the reasons :func:`_register_child_liveness` is: after readiness, so the emitter's
+    import is not boot work, and unconditionally, so a later flag flip has its probe.
+    A missing manager RAISES rather than answering ``None``: "no key maps it" is an answer
+    only a map can give, and the emitter reads a raise as "cannot say" and keeps the log.
+    """
+    from kiro_crew.crew_log import emit as crew_log_emit
+
+    def _key_mapping(session_id: str) -> "str | None":
+        sessions = self.sessions
+        if sessions is None:
+            raise RuntimeError("no session manager to read the session map from")
+        return sessions.find_key_by_sid(session_id)
+
+    crew_log_emit.set_session_key_probe(_key_mapping)
+
+
 def _start_adaptive_controller(
     self: GatewayOrchestrator, cfg: KiroCrewConfig | None = None
 ) -> None:

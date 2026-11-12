@@ -109,6 +109,14 @@ _repair_walked: "OrderedDict[str, None]" = OrderedDict()
 #: process, and each writer generation reports growth through the same list.
 _growth_listeners: "list[Callable[[str], None]]" = []
 
+#: The process's answer to "which session-map key maps this session id", at most one,
+#: registered by the gateway (:func:`~kiro_crew.crew_log.emit_session.set_session_key_probe`).
+#: A list filled in place rather than a rebound global, so the facade's mirror needs no
+#: rebound slot for it. Empty means no probe: no slot carry runs and no unit is closed
+#: ``superseded``. Survives ``reset_caches``, like the growth listeners: it is a property
+#: of the process.
+_session_key_probe: "list[Callable[[str], str | None]]" = []
+
 #: Guards installing the collaborators ``emit_runtime`` holds. Its own lock, so a caller already
 #: holding :data:`_lock` (the handle cache trimming through the tracker) can install
 #: the tracker without self-deadlocking.

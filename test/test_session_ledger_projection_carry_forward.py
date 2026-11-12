@@ -1326,29 +1326,47 @@ def test_a_late_first_record_from_a_retired_unit_does_not_freeze_the_order():
     assert sl.read_state(SLOT)["goal"] == "the live conversation"
 
 
-def test_an_append_that_did_not_land_does_not_publish_the_units_precedence():
+def test_an_append_that_did_not_land_does_not_publish_the_units_precedence(monkeypatch):
     """A refused or still-queued append must not pin its unit ahead of the successor.
 
     A unit whose append did not land has not recorded, and the order rewrite is fsynced
     at once. A successor with no ledger content would then fold the retired unit's
-    stale goal and phase as current.
-
-    The fault is injected on the observation, not the append: the retired entry really
-    is in its log, so the fold has it and still must not let it win.
+    stale goal and phase as current. The note is the writer job's step after the
+    append, so the store refusing the append publishes nothing.
     """
+    from kiro_crew.crew_log.errors import CODE_NO_LEDGER, CrewLogError
+
     _unit(SESSION)  # the unit the slot has since replaced
     _unit(LATER_SESSION)
     sl.record(SLOT, session_id=LATER_SESSION, goal="the live conversation")
     assert sl._recorded_unit_order(SLOT) == (LATER_SESSION,)
 
-    # The delayed request from the retired session records, but its append is not
-    # observed to land: this unit's own newest seq does not move.
-    real = sl._unit_last_seq
-    sl._unit_last_seq = lambda unit_id: 0  # type: ignore[assignment]
-    try:
-        sl.record(SLOT, session_id=SESSION, goal="from the retired session")
-    finally:
-        sl._unit_last_seq = real  # type: ignore[assignment]
+    class _Refusing:
+        """The retired unit's log, refusing the ledger append and nothing else."""
+
+        def __init__(self, inner):
+            self._inner = inner
+
+        def append(self, entry_type, data, **kwargs):
+            if entry_type == sl.LEDGER_ENTRY_TYPE:
+                raise CrewLogError("the log refused this append", code=CODE_NO_LEDGER)
+            return self._inner.append(entry_type, data, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    # The delayed request from the retired session records, and its append is refused.
+    real_handle = crew_log_emit._handle
+    with monkeypatch.context() as refused:
+        refused.setattr(
+            crew_log_emit,
+            "_handle",
+            lambda unit: _Refusing(real_handle(unit)) if unit == SESSION else real_handle(unit),
+        )
+        _state, durable = sl.record_update(
+            SLOT, session_id=SESSION, goal="from the retired session"
+        )
+    assert durable is False
 
     # Precedence was NOT published, so the successor keeps it.
     assert sl._recorded_unit_order(SLOT) == (LATER_SESSION,)

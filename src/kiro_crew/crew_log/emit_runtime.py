@@ -395,9 +395,10 @@ def reset_caches(*, limits: "WriterLimits | None" = None) -> None:
         _child_origin.clear()
         _creation_failed.clear()
         # Imported here: the writer modules stay off the gateway boot path.
-        from kiro_crew.crew_log import writer_groups
+        from kiro_crew.crew_log import late_writes, writer_groups
 
         writer_groups.clear()
+        late_writes.clear()
         _repair_walked.clear()
         _lost_child_origins = 0
         _lost_origin_reported = False
@@ -1526,6 +1527,54 @@ def forget_child_origin(agent_id: str) -> "tuple[str, int]":
         return (found[0], found[1])
 
 
+def _forget_session(session_id: str) -> None:
+    tracker = _tracker_instance
+    with _lock:
+        # Only when no turn of this session is still running. A forced reset
+        # tears a session down MID-TURN, and that turn goes on writing through
+        # this handle -- which also carries the unit's write ownership, so
+        # dropping it here releases the log to whichever process asks next
+        # while the turn is still producing entries, and a successor's repair
+        # then closes a turn that completes for real a moment later. A handle
+        # left behind is not a leak: it belongs to a live turn, and the
+        # capacity rule reclaims it once that turn is gone. With no tracker
+        # installed, no turn of this process is live.
+        if tracker is not None:
+            tracker.pop_unless_live(_open, session_id)
+        else:
+            _open.pop(session_id, None)
+        # A later session reusing this id must write its own configuration
+        # rather than inheriting a closed session's as "unchanged".
+        _last_config.pop(session_id, None)
+        # The creation-failure flag is per SESSION, so it dies with the
+        # session rather than living until the next ``reset_caches``: the
+        # flag makes every later entry for this id a counted loss, and a
+        # successor reusing the id creates its own crew log and must not
+        # inherit that verdict. Cleared here rather than on the write path
+        # because this runs as terminal cleanup, so it also runs when the
+        # closing entry itself was dropped -- which is the case for exactly
+        # the sessions the flag is set on.
+        _creation_failed.discard(session_id)
+    # The writer's overflow tally is per SESSION and is only ever read while that
+    # session is writing, so it dies with the session. Left behind, a gateway that
+    # runs for weeks keeps one entry per session that ever overflowed; and a
+    # successor reusing the id would inherit a count it did not earn.
+    writer = _writer_instance
+    if writer is not None:
+        writer.forget(session_id)
+    # Its hold key too: a closed session writes nothing more that needs one, and the
+    # map is bounded. Imported here, like the writer, to keep it off the boot path.
+    from kiro_crew.crew_log import writer_groups
+
+    writer_groups.forget(session_id)
+    # The attempt counts go with the session (a resume reseeds them from the file),
+    # and so do the open calls and settled markers of turns already gone. A live
+    # turn's are its own: dropping its open calls here would leave them open for the
+    # life of the file, and a mid-teardown turn still suppresses its own duplicates.
+    if tracker is not None:
+        tracker.forget_session(session_id)
+
+
 def on_session_closed(
     session_id: str,
     reason: str,
@@ -1572,53 +1621,6 @@ def on_session_closed(
     the fire-and-forget behaviour.
     """
 
-    def _forget() -> None:
-        tracker = _tracker_instance
-        with _lock:
-            # Only when no turn of this session is still running. A forced reset
-            # tears a session down MID-TURN, and that turn goes on writing through
-            # this handle -- which also carries the unit's write ownership, so
-            # dropping it here releases the log to whichever process asks next
-            # while the turn is still producing entries, and a successor's repair
-            # then closes a turn that completes for real a moment later. A handle
-            # left behind is not a leak: it belongs to a live turn, and the
-            # capacity rule reclaims it once that turn is gone. With no tracker
-            # installed, no turn of this process is live.
-            if tracker is not None:
-                tracker.pop_unless_live(_open, session_id)
-            else:
-                _open.pop(session_id, None)
-            # A later session reusing this id must write its own configuration
-            # rather than inheriting a closed session's as "unchanged".
-            _last_config.pop(session_id, None)
-            # The creation-failure flag is per SESSION, so it dies with the
-            # session rather than living until the next ``reset_caches``: the
-            # flag makes every later entry for this id a counted loss, and a
-            # successor reusing the id creates its own crew log and must not
-            # inherit that verdict. Cleared here rather than on the write path
-            # because this runs as terminal cleanup, so it also runs when the
-            # closing entry itself was dropped -- which is the case for exactly
-            # the sessions the flag is set on.
-            _creation_failed.discard(session_id)
-        # The writer's overflow tally is per SESSION and is only ever read while that
-        # session is writing, so it dies with the session. Left behind, a gateway that
-        # runs for weeks keeps one entry per session that ever overflowed; and a
-        # successor reusing the id would inherit a count it did not earn.
-        writer = _writer_instance
-        if writer is not None:
-            writer.forget(session_id)
-        # Its hold key too: a closed session writes nothing more that needs one, and the
-        # map is bounded. Imported here, like the writer, to keep it off the boot path.
-        from kiro_crew.crew_log import writer_groups
-
-        writer_groups.forget(session_id)
-        # The attempt counts go with the session (a resume reseeds them from the file),
-        # and so do the open calls and settled markers of turns already gone. A live
-        # turn's are its own: dropping its open calls here would leave them open for the
-        # life of the file, and a mid-teardown turn still suppresses its own duplicates.
-        if tracker is not None:
-            tracker.forget_session(session_id)
-
     # on_settled fires BEFORE after (via _after: settle.after() then after()), and
     # fires with True only when the session/closed entry LANDED (the writer's _job
     # ran and log.append returned). That is the one path where per-unit FIFO ordering
@@ -1634,12 +1636,12 @@ def on_session_closed(
     # collects it, remove_unit keeps returning REMOVE_OWNED, and the write completes.
     #
     # writer.close() discards jobs silently without calling any hook, so path C
-    # (reset_caches retiring the writer) never reaches _forget or _on_settled.
+    # (reset_caches retiring the writer) never reaches _forget_session or _on_settled.
     # The handle stays in _open until reset_caches clears it, as before.
     #
     # Because on_settled runs before after, the handle is still in _open here and
     # can be popped and released in one step under the lock. The subsequent pop in
-    # _forget finds nothing and is a no-op.
+    # _forget_session finds nothing and is a no-op.
     def _on_settled_with_release(
         landed: bool, _existing: "Callable[[bool], None] | None" = on_settled
     ) -> None:
@@ -1662,7 +1664,7 @@ def on_session_closed(
         "session/closed",
         {"reason": reason},
         src=_SRC_GATEWAY,
-        after=_forget,
+        after=functools.partial(_forget_session, session_id),
         on_settled=_on_settled_with_release,
     )
 

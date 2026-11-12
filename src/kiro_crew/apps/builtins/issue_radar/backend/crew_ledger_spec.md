@@ -65,8 +65,29 @@ the unit it records into to `crews/<crew_id>.unit-order` (fsynced, once the entr
 IN the file and not before -- the order file's claim is "among the units that
 recorded, this one holds the newest entry", which only a landed append earns; a unit
 recording again after another is moved to the end, never listed
-twice; the newest 64 kept, older ids and units nothing recorded into keep header
-order and apply first). The file is never appended in place or staged under a
+twice; the newest 64 kept). The append and that note are ONE crew log writer job
+(`crew_log_emit.on_radar_recorded(..., slot=..., fold=..., publish=...)`) on the crew
+slot's writer lane, where the slot carry is committed too: a write resolved to a unit
+before the slot reset that arrives once a later unit carried the crew's record is
+filed under the slot's newest unit by that job (`crew_log/late_writes.py`), and a
+carry that lands after the job reads the entry, so neither the decision nor the note
+can fall on the wrong side of the carry. The job settles a receipt with the unit and
+seq the entry landed at, which the write reads instead of matching the entry by
+content. A unit the file does not name is placed by the slot's
+`previous_sid` succession, right after the last recorded unit before it there
+(`session_ledger_control._causal_units`, the rule the session ledger's list uses too):
+older ids and units older than every recorded one apply first, and a newer unit
+nothing recorded into after the units before it, so the slot's newest unit applies
+LAST. The slot carry writes the crew's whole record into that unit as a
+`session/carried` entry before it records anything (the crew log emitter spec, "The
+slot carry"), so folded first, the units that record came from would be laid over it
+again, and its own appends would retire the warm cell and the savepoint; it keeps that
+place once the crew moves on to a later unit, whose own carry is folded in the order the
+file gives (`crew_store_log.carry_units`, which `routes.register_routes` registers with the core's
+`crew_log/unit_order_seam.py`, and which finds the crew from its slot alone: when
+no single crew record under the app's data root names it, or the file does not read, the
+carry stands down and the older units are kept). The file is
+never appended in place or staged under a
 predictable name: it is rewritten whole through a uniquely named temp file
 renamed over the name, under a PINNED parent directory where the platform
 supports it, and read refusing a link at its name -- the data home is where a
@@ -164,8 +185,9 @@ it holds no entries, so leaving it out loses nothing. The synthetic answer -- th
 flush budget; a drained writer either shows the entry or is answered as a refusal.
 
 **The answer is the line the log holds.** The write drains the writer (up to five
-seconds, off the event loop) and reads the landed entry back, so the `event` a crew
-is handed carries the id and `ts` every later reader sees. Only when the writer did
+seconds, off the event loop) and reads the landed entry back through the seq its
+receipt names, so the `event` a crew is handed carries the id and `ts` every later
+reader sees. Only when the writer did
 not drain in time is the answer the fold advanced over the pending entry with this
 side's clock, and the response says so with `durable: false`.
 

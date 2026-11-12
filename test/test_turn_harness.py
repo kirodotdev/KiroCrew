@@ -523,6 +523,18 @@ class TestTheCollaborators:
         assert opened.kwargs["previous_sid"] == ""
 
     @pytest.mark.asyncio
+    async def test_the_opening_states_the_session_key_the_turn_runs_under(self) -> None:
+        # A workflow's fallback tab runs its turns under the gone chat's key, and the slot
+        # carry joins the ledger units headed with that key's spelling.
+        record = await run_turn(
+            TurnScript(events=[_REPLY, _DONE]),
+            slot=SlotSpec(key="workflow-run2", linked_session_key="dashboard:chat-x"),
+        )
+        [opened] = record.crew("on_session_opened")
+        assert opened.kwargs["slot"] == "workflow-run2"
+        assert opened.kwargs["session_key"] == "dashboard:chat-x"
+
+    @pytest.mark.asyncio
     async def test_a_session_method_with_no_answer_fails_the_turn_by_name(self) -> None:
         def _ask_unanswered(ctx) -> None:
             ctx.state.sessions.note_stop(ctx.slot.key)

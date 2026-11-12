@@ -211,6 +211,18 @@ _WORK_UNIT_ORDER_FILE = "work-unit-order"
 #: older past the unit holding the newest one, and the panel fold takes the newest
 #: entry whole.
 _PANEL_UNIT_ORDER_FILE = "panel-unit-order"
+#: The caller spellings the slot's ledger was recorded under that are not the slot itself,
+#: one per line: a ``cron:<id>`` session recording into the unit its slot heads
+#: (:func:`canonical_slot`). A read under such a spelling joins the units HEADED with it,
+#: and the slot carry joins the same units, or the state it writes for the slot would
+#: replace what they recorded for that reader.
+_ALIAS_FILE = "aliases"
+#: How many spellings one slot keeps, newest kept. A slot is reached under one or two.
+_MAX_ALIASES = 16
+#: Longest spelling the file retains. A longer one is not recorded.
+_MAX_ALIAS_BYTES = 512
+#: Read bound for that file, derived from the two above so a full file is read whole.
+_MAX_ALIAS_READ_BYTES = _MAX_ALIASES * (_MAX_ALIAS_BYTES + 1)
 #: How many of a slot's units the order log keeps, newest kept. A slot gains one
 #: per reset, so this is generous. Past it the oldest recorded ids drop out and
 #: those units fold with the never-recorded ones, which the fold applies BEFORE

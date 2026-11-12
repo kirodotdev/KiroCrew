@@ -459,6 +459,13 @@ def slot_key_for(crew_id: str) -> str:
     return f"crew-{_require_crew_id(crew_id)}"
 
 
+def crew_id_of_slot(slot: str) -> str:
+    """The crew *slot* is the slot of (:func:`slot_key_for`), or ``""`` when it is no crew's."""
+    prefix = "crew-"
+    crew_id = slot[len(prefix) :] if slot.startswith(prefix) else ""
+    return crew_id if is_crew_id(crew_id) else ""
+
+
 # ── settings ────────────────────────────────────────────────────────────────
 
 
@@ -737,17 +744,30 @@ def _app_root(root: Path | None) -> Path:
     return base
 
 
-def _crew_id_in_use(crew_id: str, root: Path | None) -> bool:
-    """Whether any repository's crew record holds *crew_id*, or a crew-log slot names it."""
-    from kiro_crew.crew_log.store import session_units_for_slot
+def _crew_record_paths(crew_id: str, root: Path | None) -> list[Path]:
+    """Every crew record named *crew_id* in this data home, whichever repository holds it.
 
+    Under the legacy GitHub root and under every provider subtree. A path is
+    ``<root>/repos/<owner>/<repo>/crews/<crew_id>.json``: the directory above ``repos`` is
+    the ``root`` :func:`crew_path` takes, and the two directories above ``crews`` are the
+    repository.
+    """
     app_root = _app_root(root)
+    found: list[Path] = []
     for pattern in (
         f"repos/*/*/crews/{crew_id}.json",
         f"{store._PROVIDER_SUBTREE}/*/*/repos/*/*/crews/{crew_id}.json",
     ):
-        if any(app_root.glob(pattern)):
-            return True
+        found.extend(app_root.glob(pattern))
+    return found
+
+
+def _crew_id_in_use(crew_id: str, root: Path | None) -> bool:
+    """Whether any repository's crew record holds *crew_id*, or a crew-log slot names it."""
+    from kiro_crew.crew_log.store import session_units_for_slot
+
+    if _crew_record_paths(crew_id, root):
+        return True
     return bool(session_units_for_slot(slot_key_for(crew_id)))
 
 

@@ -13,14 +13,18 @@ opened, and a read with nothing new reads no entry.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import pytest
+from crew_log_drain import assert_drained, settle
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog, eager, emit
 from kiro_crew.crew_log import projection as crew_log
-from kiro_crew.crew_log import work_relay
+from kiro_crew.crew_log import session_tree_projection as stp
+from kiro_crew.crew_log import store, work_relay
+from kiro_crew.testing.wait import wait_until
 
 FOLD = crew_log.WORKTREE_FOLD_NAME
 
@@ -30,6 +34,8 @@ LEAF = "chat-3-leaf"
 ROOT_UNIT = "s-root"
 MID_UNIT = "s-mid"
 LEAF_UNIT = "s-leaf"
+#: The unit ROOT moves to after a reset, a rewind or a restart that cannot resume.
+NEXT_ROOT_UNIT = "s-root-next"
 
 
 @pytest.fixture(autouse=True)
@@ -295,3 +301,99 @@ def test_the_checkpoint_reports_the_newest_units_last_seq() -> None:
     reached = max(int(entry.seq) for entry in newest.iter_from(1))
     assert 0 < checkpoint.last_seq <= reached
     assert crew_log.state_is_serializable(checkpoint)
+
+
+@pytest.fixture
+def carrying(monkeypatch):
+    """The live emitter's slot carry, with a session-key probe that maps no id.
+
+    The carry's fold runs inline instead of on the maintenance pool, so a drain covers
+    the opening, the hop behind the predecessor, the carry and the close.
+    """
+    stp.reset_for_tests()
+    monkeypatch.setattr(emit, "_submit_carry_fold", lambda job: job())
+    emit.set_session_key_probe(lambda session_id: None)
+    try:
+        yield
+    finally:
+        emit.set_session_key_probe(None)
+        settle()
+        tree = stp.projection()
+        stp.reset_for_tests()
+        wait_until(
+            lambda: not tree._write_scheduled,
+            describe=lambda: "the session tree's debounced checkpoint is still sleeping",
+        )
+
+
+@pytest.mark.usefixtures("carrying")
+def test_the_tree_reads_the_same_after_the_roots_older_unit_is_collected() -> None:
+    """ROOT's next unit carries the tree, so collecting the unit it replaced loses no board.
+
+    The crewmate dashboard's work tree block reads this fold. Without the carry, the sweep
+    takes the only unit holding the fleet's records and the tree reads empty.
+    """
+    _three_board_fleet()
+    before = crew_log.read_tree_projection(ROOT, FOLD).value
+    assert {row["board"] for row in before["boards"]} == {ROOT, MID, LEAF}
+
+    emit.on_session_opened(
+        NEXT_ROOT_UNIT,
+        agent="kirocrew",
+        slot=ROOT,
+        previous_sid=ROOT_UNIT,
+        session_key=f"dashboard:{ROOT}",
+    )
+    assert_drained()
+    _settle()
+    assert crew_log.read_tree_projection(ROOT, FOLD).value == before
+
+    assert store.sweep_expired(0, now=time.time() + 60) == (1, 0)
+    assert not CrewLog.exists(lg.KIND_SESSION, ROOT_UNIT)
+    assert crew_log.tree_fold_units(ROOT, FOLD) == ((NEXT_ROOT_UNIT,), 0)
+
+    assert crew_log.read_tree_projection(ROOT, FOLD).value == before
+    crew_log.forget_slot_folds()
+    assert crew_log.read_tree_projection(ROOT, FOLD).value == before
+    checkpoint = crew_log.fold_tree_checkpoint(FOLD, ROOT)
+    assert crew_log.projection_of(checkpoint).value == before
+
+    newest = CrewLog.open(lg.KIND_SESSION, NEXT_ROOT_UNIT)
+    assert newest is not None
+    carried = [
+        entry.data
+        for entry in newest.iter_from(1)
+        if entry.type == "session/carried" and entry.data.get("fold") == FOLD
+    ]
+    assert [data["slot"] for data in carried] == [ROOT]
+
+
+@pytest.mark.usefixtures("carrying")
+def test_the_checkpoint_and_the_read_count_the_same_units_left_out_after_a_carry(
+    monkeypatch,
+) -> None:
+    """The carry replaces the state, and the count of units past the limit is not in it.
+
+    With a limit of one unit only ROOT's next unit is read, so its carry is the whole
+    tree. Both reads add the unit they left out on top of what the carry holds.
+    """
+    from kiro_crew.crew_log import projection_workstreams
+
+    _three_board_fleet()
+    emit.on_session_opened(
+        NEXT_ROOT_UNIT,
+        agent="kirocrew",
+        slot=ROOT,
+        previous_sid=ROOT_UNIT,
+        session_key=f"dashboard:{ROOT}",
+    )
+    assert_drained()
+    _settle()
+    monkeypatch.setattr(projection_workstreams, "WORKSTREAMS_UNIT_LIMIT", 1)
+    crew_log.forget_slot_folds()
+
+    assert crew_log.tree_fold_units(ROOT, FOLD) == ((NEXT_ROOT_UNIT,), 1)
+    read = crew_log.read_tree_projection(ROOT, FOLD).value
+    checkpoint = crew_log.projection_of(crew_log.fold_tree_checkpoint(FOLD, ROOT)).value
+    assert {row["board"] for row in read["boards"]} == {ROOT, MID, LEAF}
+    assert checkpoint == read

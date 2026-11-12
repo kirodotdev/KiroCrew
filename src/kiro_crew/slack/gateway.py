@@ -1060,6 +1060,7 @@ class GatewayOrchestrator:
         _admission._start_subagent_dispatch_after_memory_ready
     )
     _register_child_liveness = _admission._register_child_liveness
+    _register_session_key_probe = _admission._register_session_key_probe
     _start_adaptive_controller = _admission._start_adaptive_controller
     _wire_overload_health = _admission._wire_overload_health
     _subagent_dependency_coordinator = _admission._subagent_dependency_coordinator
