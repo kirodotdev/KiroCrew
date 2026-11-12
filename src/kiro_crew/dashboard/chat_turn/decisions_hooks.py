@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         slot_switch_session_lock,
     )
     from kiro_crew.dashboard.chat_turn.crew_log_attribution import _crew_log_model
+    from kiro_crew.dashboard.chat_turn.jev_route_effort import _apply_jev_route_effort
     from kiro_crew.dashboard.chat_turn.model_fallback import _sync_served_model
     from kiro_crew.dashboard.chat_turn.tool_approval import _auto_approve_reason, _slot_is_trusted
     from kiro_crew.dashboard.chat_turn.turn_stats import _turn_outcome
@@ -500,6 +501,8 @@ async def _route_model_for_turn(
             history_source=_route_history_source(state, session_key),
             retried=retried,
             rate_of=model_route.rate_lookup(client),
+            # A range bounds only a slot the owner put on Auto (Jev).
+            allowed=slot.jev_range["models"] if getattr(slot, "jev_route", False) else (),
         )
     except asyncio.CancelledError:
         raise
@@ -529,6 +532,7 @@ async def _route_model_for_turn(
     if not _target:
         # Nothing to switch: the tier keeps the model the turn already runs on,
         # the one exit beside a taken switch where the answer shapes the turn.
+        await _apply_jev_route_effort(slot, client, session_key, routed, model_route, _baseline)
         model_route.note_applied(session_key, routed)
         await asyncio.to_thread(model_route.record_outcome, session_key, routed)
         return
@@ -727,6 +731,7 @@ async def _route_model_for_turn(
     # Written and published only once the switch has landed, so the strip and the
     # log describe the model the turn actually ran on. Off the loop: the row is a
     # filesystem append.
+    await _apply_jev_route_effort(slot, client, session_key, routed, model_route, _baseline)
     model_route.note_applied(session_key, routed)
     await asyncio.to_thread(model_route.record_outcome, session_key, routed)
     return

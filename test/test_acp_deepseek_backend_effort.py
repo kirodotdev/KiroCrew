@@ -59,6 +59,7 @@ def test_the_levels_parser_reads_the_table(tmp_path) -> None:
 _PROVIDER_EFFORT_ID_SITES = (
     "the advertised-option CHECK in ``_set_effort_config_option``",
     "the skip-if-unadvertised check in ``change_effort``",
+    "the skip-if-unadvertised check in ``push_live_effort``",
     "the capability answer in ``supports_effort``, for a harness whose ADVERTISED "
     "option decides that a level applies at all "
     "(``ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION``)",

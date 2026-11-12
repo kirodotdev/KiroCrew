@@ -321,7 +321,7 @@ class TestTheEffortControlIsReachableOnThisHarness:
             assert "self.supports_effort()" in body, method
             assert "model_supports_effort(" not in body, method
 
-        resolve = inspect.getsource(provider_module.AcpProvider._resolve_effort)
+        resolve = inspect.getsource(provider_module.AcpProvider.owner_effort)
         assert "advertised = self._advertised_effort_levels()" in resolve
         assert "levels = advertised" in resolve
         assert "levels=levels" in resolve
@@ -499,7 +499,7 @@ class TestMaxFollowsTheModel:
         """Order is the property, so it is pinned at the seam rather than inferred."""
         from kiro_crew.providers import acp as provider_module
 
-        body = inspect.getsource(provider_module.AcpProvider._resolve_effort)
+        body = inspect.getsource(provider_module.AcpProvider.owner_effort)
 
         assert "normalize=functools.partial(" in body
         assert "effort_config_option_value, self._client.backend, advertised=advertised" in body

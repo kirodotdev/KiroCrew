@@ -6,6 +6,7 @@
 
 import { withDeadline } from '../../lib/withDeadline'
 import type { ClientTransport } from './transport'
+import type { JevRange } from '../../types'
 import type {
   RemoteDirListing,
   RemoteEnvironmentHealth,
@@ -143,6 +144,10 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
       post('/api/chat/slots/follow-default', { digest }).then(j) as Promise<{ ok: boolean; changed: number }>,
     chatSlotReasoningEffort: (slot: string, reasoning_effort: string) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/reasoning-effort', { reasoning_effort }).then(j) as Promise<{ ok?: boolean; reasoning_effort?: string; model?: string; deferred?: boolean }>,
+    /** Owner only (403 otherwise); 400 `jev_range_invalid` for an unknown level, a
+     *  min above the max, or a model the backend does not advertise. */
+    chatSlotJevRange: (slot: string, range: JevRange) =>
+      post('/api/chat/slots/' + encodeURIComponent(slot) + '/jev-range', range).then(j) as Promise<{ ok: boolean; jev_range: JevRange }>,
     /** Turn the live session's ultracode switch on or off; answers the value it reads back. */
     chatSlotUltracode: (slot: string, enabled: boolean) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/ultracode', { enabled }).then(j) as Promise<{ ok: boolean; ultracode: boolean }>,

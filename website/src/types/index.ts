@@ -76,6 +76,7 @@ export type {
   TurnIdentityFields,
   ChatDonePayload,
   ChatSlot,
+  JevRange,
   ChatFolder,
   AgentTagPolicy,
   ChatTag,

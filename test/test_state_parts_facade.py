@@ -726,6 +726,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "forked_from": ("value", "None"),
     "forked_from_created_at": ("value", "''"),
     "instance_id": ("value", "''"),
+    "jev_range": ("type", "builtins.dict"),
     "jev_route": ("value", "False"),
     "key": ("value", "'k'"),
     "linked_session_key": ("value", "''"),

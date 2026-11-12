@@ -52,12 +52,10 @@ interface Props {
   onWriteError?: (message: string) => void
 }
 
-/** Reasoning-effort picker: a stepped macOS-style slider over the model's
- *  ordered effort levels (Default → low → … → max). Each notch is a level;
- *  the value snaps to the grid and persists to the slot. Reads the slot's
- *  live levels from /api/effort-levels (keyed by slot so a model switch is
- *  reflected on remount). */
-export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEffort = '', embedded, levelsOverride, writeEffort, onWriteError }: Props) {
+/** The slot's concrete effort levels, low to max: its live
+ *  /api/effort-levels (keyed by slot so a model switch is reflected on
+ *  remount), or `levelsOverride` (see Props). */
+export function useEffortLevels(slot: string, levelsOverride?: string[]): string[] {
   const { data: liveLevels = FALLBACK_LEVELS } = useQuery({
     queryKey: ['effort-levels', slot],
     queryFn: () => api.effortLevels(slot).then(data =>
@@ -71,9 +69,16 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEf
     // spawn the query either — the answer would describe the wrong model.
     enabled: levelsOverride === undefined,
   })
-  const levels = levelsOverride === undefined
+  return levelsOverride === undefined
     ? liveLevels
     : (levelsOverride.length > 0 ? normalizeLevels(levelsOverride) : FALLBACK_LEVELS)
+}
+
+/** Reasoning-effort picker: a stepped macOS-style slider over the model's
+ *  ordered effort levels (Default → low → … → max). Each notch is a level;
+ *  the value snaps to the grid and persists to the slot. */
+export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEffort = '', embedded, levelsOverride, writeEffort, onWriteError }: Props) {
+  const levels = useEffortLevels(slot, levelsOverride)
 
   // "Default" is a mode (let the model pick its own effort), not a level — it's a
   // toggle. The slider covers only the concrete levels (low→max).
