@@ -589,6 +589,32 @@ class TestCleanupOrphanedSessions:
         assert not (tmp_path / "session_pid_99999.txt").exists()
         assert session_pid_file.read_text() == "111:222\n"
 
+    def test_one_undeletable_dead_mapping_does_not_stop_the_prune(
+        self, tmp_path: Path, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Boot and shutdown call the prune unguarded, so one entry that cannot be
+        removed (here a directory at a mapping's name) must not raise out of it."""
+        from kiro_crew.session_pid import _prune_stale_session_pid_files
+
+        monkeypatch.setattr("kiro_crew.session_pid.config_dir", lambda: tmp_path)
+        (tmp_path / "session_pid_99999.txt").mkdir()
+        (tmp_path / "session_pid_99998.txt").write_text("sess-dead")
+
+        # Pinned dead at the seam the prune calls, so no live pid on any
+        # platform (Windows never reaches os.kill) keeps a mapping.
+        escaped: OSError | None = None
+        removed = None
+        with patch("kiro_crew.platform_compat.pid_exists", return_value=False):
+            try:
+                removed = _prune_stale_session_pid_files(narrow_with_leaders=False)
+            except OSError as exc:
+                escaped = exc
+
+        assert escaped is None, f"one undeletable mapping stopped the prune: {escaped!r}"
+        assert removed == 1
+        assert not (tmp_path / "session_pid_99998.txt").exists()
+        assert (tmp_path / "session_pid_99999.txt").is_dir()
+
     def test_stale_snapshot_does_not_delete_a_live_mapping(
         self, tmp_path: Path, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
