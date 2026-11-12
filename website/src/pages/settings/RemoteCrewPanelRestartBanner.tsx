@@ -20,17 +20,23 @@ import { RestartGatewayButton } from './AboutPanel'
 import { RestartToActivateText } from './InstancesPanel'
 import { CREW_NEEDS_RESTART_BANNER_ID } from './RemoteCrewPanelCrewRow'
 import { WorkConfirmDeclined } from '../../utils/workInFlight'
+import { useRestartRefusal } from '../../hooks/useRestartRefusal'
 
 export function RemoteCrewRestartBanner() {
   const [restarting, setRestarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const restartRefusal = useRestartRefusal(detail => {
+    setRestarting(false)
+    setError(detail || i18nT('pages.settings.aboutPanel.restart_failed'))
+  })
   const restart = useMutation({
     mutationFn: () => api.restartGateway(),
-    onMutate: () => setError(null),
+    onMutate: () => { setError(null); restartRefusal.begin() },
     onSuccess: () => setRestarting(true),
     // The gateway answers before it restarts, so only its 200 is an accepted
     // restart: any rejection, a request that never arrived included, is a failure.
     onError: (e: unknown) => {
+      restartRefusal.end()
       // Declining the "work is running" confirmation is a quiet cancel.
       if (e instanceof WorkConfirmDeclined) return
       setError(e instanceof ApiError && e.message ? e.message : i18nT('pages.settings.aboutPanel.restart_failed'))
