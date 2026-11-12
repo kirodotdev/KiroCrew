@@ -74,7 +74,7 @@ import { HoldToTalkBar, MicButton, VoiceCaptureStatus } from './chat-input/Voice
 import { AgentChip, ContextUsageControl, ModelChip, SessionControlChips, useContextPopover, useShelfMeasure } from './chat-input/ContextShelf'
 import { useAutoCompactThreshold } from './chat-input/autoCompact'
 import { useOfflinePlaceholder } from './chat-input/offlinePlaceholder'
-import { AttachMenu, usePlusMenu } from './chat-input/attach'
+import { AttachMenu, isUploadFileChord, usePlusMenu } from './chat-input/attach'
 import { ComposerActionMenuItems, useComposerActionMenu } from './chat-input/composerActions'
 import { BusySendControls, CompactingIndicator, useComposerSend } from './chat-input/busySend'
 import { CollapsedComposerBar, collapseMenuRowElement, useComposerCollapse } from './chat-input/collapse'
@@ -1457,10 +1457,10 @@ function ChatInput({
           layout={inlineToolbarWhileFits && !reduceMotion && manualHeight === null ? 'position' : false}
           transition={shapeAnimating ? COMPOSER_ROW_SPRING : { duration: 0 }}
           className={`relative ${showDictation || voiceHoldMode ? 'sr-only' : ''} ${manualHeight !== null ? `flex-1 ${lexicalComposer && !lexicalLoadFailed ? 'min-h-0' : 'min-h-[44px]'} flex flex-col` : inlineToolbar ? `flex-1 min-w-0 -ml-2.5 ${ONE_ROW_TEXT_PAD}` : ''}`}
-          // Composing in either editor (textarea or rich text) re-arms a
-          // reclaimed session's resume prefetch; the sender throttles.
+          // Composing in either editor (textarea or rich text) re-arms a reclaimed session's
+          // resume prefetch (the sender throttles); ⌘⇧U / Ctrl+Shift+U in either opens Upload file.
           onFocusCapture={() => emitComposeIntent(slotId)}
-          onKeyDownCapture={e => { emitComposeIntent(slotId); followUpGhost.onKeyDownCapture(e) }}
+          onKeyDownCapture={e => { emitComposeIntent(slotId); followUpGhost.onKeyDownCapture(e); if (onUploadFiles && !uploading && !typingLocked && isUploadFileChord(e, ime)) { e.preventDefault(); openPicker(false) } }}
         >
         {/* The one-row fit probe: the textarea's type and horizontal padding,
             no vertical padding, wrapping as the textarea wraps, measured at the

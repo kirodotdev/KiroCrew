@@ -307,6 +307,8 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   // Reused: the ChatInput control this chord fires.
   'optimize-prompt': 'components.chatInput.optimize_prompt',
   'edit-last-message': 'hooks.useKeyboardShortcuts.edit_last_message',
+  // Reused: the "+" menu tile this chord opens.
+  'upload-file': 'components.chatInput.upload_file',
   'list-indent': 'hooks.useKeyboardShortcuts.indent_list_line',
   'list-outdent': 'hooks.useKeyboardShortcuts.outdent_list_line',
   'agent-monitor': 'hooks.useKeyboardShortcuts.open_agent_monitor',

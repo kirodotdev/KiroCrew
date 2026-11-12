@@ -6673,6 +6673,8 @@
       "turn_interrupted_restored_card": "上一轮被中断。“恢复”只会重新运行那一轮。排队消息不会自动发送：请用“立即发送”(⚡)发送。",
       "turn_interrupted_restored_queue_other": "上一轮被中断。“恢复”只会重新运行那一轮。{{count}} 条排队消息不会自动发送：请展开队列（{{count}} 条已排队 ^），再用“立即发送”(⚡)逐条发送。",
       "upload_file": "上传文件",
+      "upload_file_title": "上传文件 · Ctrl+Shift+U",
+      "upload_file_title_mac": "上传文件 · ⌘⇧U",
       "use_a_skill": "使用技能",
       "used": "已用",
       "voice_input": "语音输入",

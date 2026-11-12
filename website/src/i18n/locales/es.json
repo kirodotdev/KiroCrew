@@ -7041,6 +7041,8 @@
       "turn_interrupted_restored_queue_many": "El último turno se interrumpió. Reanudar solo vuelve a ejecutar ese turno. Tus {{count}} mensajes en cola no se enviarán solos: abre la cola ({{count}} en cola ^) y envía cada uno con Enviar ahora (⚡).",
       "turn_interrupted_restored_queue_other": "El último turno se interrumpió. Reanudar solo vuelve a ejecutar ese turno. Tus {{count}} mensajes en cola no se enviarán solos: abre la cola ({{count}} en cola ^) y envía cada uno con Enviar ahora (⚡).",
       "upload_file": "Subir archivo",
+      "upload_file_title": "Subir archivo · Ctrl+Mayús+U",
+      "upload_file_title_mac": "Subir archivo · ⌘⇧U",
       "use_a_skill": "Usar una skill",
       "used": "Usado",
       "voice_input": "Entrada de voz",

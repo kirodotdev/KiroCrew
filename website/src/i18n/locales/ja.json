@@ -6673,6 +6673,8 @@
       "turn_interrupted_restored_card": "前のターンが中断されました。「再開」はそのターンだけを再実行します。キュー内のメッセージは自動では送信されません。「今すぐ送信」(⚡) で送信してください。",
       "turn_interrupted_restored_queue_other": "前のターンが中断されました。「再開」はそのターンだけを再実行します。キュー内の {{count}} 件のメッセージは自動では送信されません。キュー（{{count}} 件がキュー内 ^）を開き、「今すぐ送信」(⚡) で 1 件ずつ送信してください。",
       "upload_file": "ファイルをアップロード",
+      "upload_file_title": "ファイルをアップロード · Ctrl+Shift+U",
+      "upload_file_title_mac": "ファイルをアップロード · ⌘⇧U",
       "use_a_skill": "スキルを使用",
       "used": "使用済み",
       "voice_input": "音声入力",

@@ -240,6 +240,10 @@ export const SHORTCUT_REGISTRY: readonly ShortcutEntry[] = [
   // fallback), not the global handler; listed for the reference so the
   // shortcuts modal advertises it alongside the other composer bindings.
   { id: 'edit-last-message', group: 'actions', dispatch: 'code', defaults: both({ key: 'ArrowUp', mod: true }) },
+  // ⌘⇧U / Ctrl+Shift+U opens the composer's Upload file picker. Dispatched by
+  // ChatInput (chat-input/attach.tsx), not the global handler; listed for the
+  // reference. Not ⌘U / Ctrl+U: browsers bind that to View Source.
+  { id: 'upload-file', group: 'actions', dispatch: 'code', defaults: both({ key: 'u', mod: true, shift: true }) },
   // Bare Tab / Shift+Tab on a list line, handled by the composer's own key
   // handler (chat-input/keyboard.ts); listed for the reference.
   { id: 'list-indent', group: 'actions', dispatch: 'code', defaults: both({ key: 'Tab' }) },
