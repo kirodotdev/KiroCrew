@@ -43,11 +43,12 @@ import contextlib
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
 from kiro_crew import platform_compat
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, replace_with_retry
 from kiro_crew.config.paths import data_home
 from kiro_crew.owner_only_files import owner_only_opener
 
@@ -96,11 +97,41 @@ def _read_record() -> dict[str, dict[str, Any]]:
     entries = raw.get("loops") if isinstance(raw, dict) else None
     if not isinstance(entries, dict):
         return {}
+    return _valid_entries(entries)
+
+
+def _valid_entries(entries: dict[Any, Any]) -> dict[str, dict[str, Any]]:
     return {
         str(loop_id): entry
         for loop_id, entry in entries.items()
         if isinstance(entry, dict) and isinstance(entry.get("slot_key"), str)
     }
+
+
+def _read_record_for_update() -> dict[str, dict[str, Any]]:
+    """The record's entries for a rewrite. Only a missing file reads as empty.
+
+    A record that cannot be opened (a transient EACCES or EIO) raises
+    ``OSError`` and stays as it is: written back from an empty read, it would
+    drop every other loop's entry, and each of those loops is then refused at
+    every fire. A record that opens but is cut off or has the wrong shape is
+    moved to a ``.corrupt-<utc>`` file and the rewrite starts again, so one
+    damaged file does not stop every later self-arm.
+    """
+    path = self_arm_record_path()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (UnicodeDecodeError, ValueError):
+        raw = None
+    entries = raw.get("loops") if isinstance(raw, dict) else None
+    if isinstance(entries, dict):
+        return _valid_entries(entries)
+    logger.warning("autonudge self-arm record is not readable; setting it aside")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    replace_with_retry(path, path.with_name(f"{path.name}.corrupt-{stamp}"))
+    return {}
 
 
 def _write_record(entries: dict[str, dict[str, Any]]) -> None:
@@ -148,7 +179,7 @@ def record_self_arm(loop_id: str, slot_key: str, *, default_patrol: bool = False
     if default_patrol:
         entry["default_patrol"] = True
     with _record_lock():
-        entries = _read_record()
+        entries = _read_record_for_update()
         entries[str(loop_id)] = entry
         _write_record(entries)
 

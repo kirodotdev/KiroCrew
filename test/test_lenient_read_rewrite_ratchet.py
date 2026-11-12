@@ -87,8 +87,7 @@ _KNOWN: dict[str, str] = {
     "kiro_crew/apps/builtins/spec_builder/backend/repository.py::_forget_deleted": _UNAUDITED,
     "kiro_crew/apps/dependency_ledger.py::record_uninstall": _FOUND_ONLY,
     "kiro_crew/apps/dev_mode.py::remove_dev_app": _FOUND_ONLY,
-    "kiro_crew/autonudge_selfarm.py::forget_self_arm": _UNAUDITED,
-    "kiro_crew/autonudge_selfarm.py::record_self_arm": _UNAUDITED,
+    "kiro_crew/autonudge_selfarm.py::forget_self_arm": _FOUND_ONLY,
     "kiro_crew/aws_consent.py::record_grant": _PRESERVES,
     "kiro_crew/aws_consent.py::revoke": _PRESERVES,
     "kiro_crew/aws_consent.py::revoke_if_matches": (
