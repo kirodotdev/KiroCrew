@@ -1,11 +1,11 @@
 ---
-title: Bounded-time restore for large sessions - tail window for the eager tabs, focus-first order, one walk for a slot's folds, and a CI fixture at the threshold
+title: Bounded-time restore for large sessions - tail window for fully read tabs, focus-first order, one walk for a slot's folds, and a CI fixture at the threshold
 status: draft
 author: kirocrew agent session, directed by chenmingwei23
 created: 2026-11-12
 last-audited: 2026-11-12
 audited-at: 029b6db029
-doc-pr: 0
+doc-pr: 35916
 implementation-prs: []
 tracking-issues: [35875]
 supersedes: []
@@ -20,13 +20,13 @@ Status: draft. This is part B of [#35875](https://github.com/kirodotdev/KiroCrew
 
 The issue's target: after a gateway restart, the focused session accepts a message within 5 s with a 200 MB transcript and 100+ open tabs.
 
-Measured on current main, the open-tab restore is no longer the 103 s the issue reports. Main already builds only the newest 8 tabs with their window and the rest as sidebar rows from a 100-row tail. What still costs time:
+Measured on current main, the open-tab restore is no longer the 103 s the issue reports. Main already builds most tabs as sidebar rows from a 100-row tail. It reads the whole transcript only for the newest 8 tabs (`EAGER_WINDOW_RESTORES`) plus every tab whose window cannot wait: a tab not of person origin (linked channel, app, remote, cron or workflow session), a crew member's tab, a crew worker tab bound to an open work item, a tab an armed auto-nudge loop drives, a tab with an untorn local turn or deferred notes, a tab whose tail holds no row, and every tab when the loop store cannot be read. On the measured host that set was 8 tabs of 130. What still costs time:
 
-1. The eager tabs still read their whole transcript. A 204 MB transcript costs 1.2 s warm and 3.1 s cold, in the restore, before `ready`.
+1. The fully read tabs still read their whole transcript. A 204 MB transcript costs 1.2 s warm and 3.1 s cold, in the restore, before `ready`.
 2. The restore order is by transcript mtime, not by what the user is looking at, so the focused tab can be the 9th tab and wait.
 3. Crew-log slot folds. A cold fold walks the slot's whole unit once PER FOLD: 18 folds over a 136 MB unit took 91 s and read 8.4 GB. A stale savepoint (half the unit behind) still took 47 s (42 s with #35840).
 
-This RFC proposes four changes. Three are pure performance with identical outputs. The behaviour changes are listed in their own section (section 3).
+This RFC proposes four changes. Section 1.3 is pure performance with identical outputs, and section 1.4 adds tests only. Sections 1.1 and 1.2 are behaviour changes, listed in section 3. Section 6 gives how they are delivered.
 
 ## Measurements
 
@@ -77,11 +77,13 @@ Hot path of a cold fold: `ProjectionRegistry.prime` (`src/kiro_crew/projection/r
 
 ## 1. Design
 
-### 1.1 Tail window for an eager tab above the size threshold
+### 1.1 Tail window for a fully read tab above the size threshold
 
-Today an eager tab (`EAGER_WINDOW_RESTORES = 8` in `restore_drivers.py`) reads its whole chain with `read_messages_chained`. Above the threshold it instead reads the newest window with the existing `read_messages_chained_tail` (`history_projection_reads.py`), whose cost follows the row count and not the file size. The slot keeps a marker that older rows exist on disk. Scrolling up, or any reader that needs the full row list (export, fork, rewind, compaction, search in the tab), loads older rows from disk in pages through the same tail reader, off the loop.
+Today the restore reads the whole chain with `read_messages_chained` for the newest 8 tabs (`EAGER_WINDOW_RESTORES`) plus every tab whose window cannot wait: a tab not of person origin (linked channel, app, remote, cron or workflow session), a crew member's tab, a crew worker tab bound to an open work item, a tab an armed auto-nudge loop drives, a tab with an untorn local turn or deferred notes, a tab whose tail holds no row, and every tab when the loop store cannot be read (`_may_restore_as_row`, and `_window_can_wait`, `_member_restore_identity` and `crew_bound_on_disk` in `_prefetch_open_slot_inputs`, all in `restore_drivers.py`). The tail window applies to every tab in that set, not only the newest 8. Above the threshold it instead reads the newest window with the existing `read_messages_chained_tail` (`history_projection_reads.py`), whose cost follows the row count and not the file size. The slot keeps a marker that older rows exist on disk. Scrolling up, or any reader that needs the full row list (export, fork, rewind, compaction, search in the tab), loads older rows from disk in pages through the same tail reader, off the loop.
 
-Threshold: 16 MB of transcript. Cold, the full read costs about 15 ms per MB (3.1 s for 204 MB), so 16 MB is about 0.25 s, and 8 eager tabs at the threshold cost about 2 s in the worst case, inside the 5 s target with the 3.4 s socket-up. Below 16 MB nothing changes.
+Threshold: 16 MB of transcript. Cold, the full read costs about 15 ms per MB (3.1 s for 204 MB), so a tab at the threshold costs about 0.25 s, and a tab over it costs a window read instead (a 100-row tail of the 204 MB transcript read in 0.016 s warm; the 500-row window was not measured). Below 16 MB nothing changes.
+
+The 5 s target does not follow from the threshold alone. The fully read set has no fixed size, so N tabs at the threshold cost N x 0.25 s cold: 8 tabs cost 2 s, and 3.9 s (cold restore start) + 2 s = 5.9 s, over the target. Lowering the threshold cannot fix that, because the set is unbounded; even 8 tabs would need about 9 MB (1.1 s / 8 / 15 ms per MB), and a host with more crew or channel tabs would miss again. So the target holds only together with section 1.2: the focused tab is built first, at about 3.9 s + 0.25 s = 4.2 s cold in the worst case at the threshold, or 3.9 s plus one window read over it, whatever the size of the rest of the set. The rest of the set is then bounded per tab (at most 0.25 s each), not per byte of history.
 
 Window: the last 500 rows, or more if needed to reach the start of the current turn. The 100-row sidebar tail already serves the summary; 500 covers several screens and a resumed turn.
 
@@ -138,7 +140,18 @@ Everything not listed here is pure performance with identical outputs.
 
 1. Accept the 16 MB threshold and the 500-row window, or set others.
 2. Accept the three behaviour changes in section 3.
-3. Accept section 1.3 (one walk per slot) as part of this work, or split it into its own issue.
+3. Decided: section 1.3 is delivered as its own pull request (section 6).
+
+## 6. Delivery plan
+
+Each part lands as its own pull request. This document is the plan; none of them is in this pull request.
+
+| Part | Kind | Pull request | Gate |
+|---|---|---|---|
+| 1.1 Tail window over 16 MB | behaviour change | separate, after review | review approval of this document first; no code before it |
+| 1.2 Focus-first restore order | behaviour change | separate, after review | review approval of this document first; no code before it |
+| 1.3 One walk per slot | pure performance, identical outputs | separate | fold values equal the per-fold path for every registered fold |
+| 1.4 CI fixture at the threshold | tests only | separate | counts, not wall time |
 
 ## Appendix: line citations
 
