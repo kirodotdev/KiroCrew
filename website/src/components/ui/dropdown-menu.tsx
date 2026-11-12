@@ -321,16 +321,22 @@ DropdownMenuItem.displayName = DropdownMenuPrimitive.Item.displayName
  * announce a `menuitemradio` as checked/unchecked, which a plain item cannot
  * convey — so a menu that stands in for a set of mutually exclusive
  * destinations (a switcher) must use this rather than styling alone.
+ *
+ * `segment` draws the row as one segment of a `DropdownMenuRadioSegments`
+ * track: a compact, single-line choice that fills when it is the one in
+ * effect. The look lives here so a caller states the shape and restyles
+ * nothing.
  */
 const DropdownMenuRadioItem = React.forwardRef<
   React.ComponentRef<typeof DropdownMenuPrimitive.RadioItem>,
-  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.RadioItem> & { offline?: boolean }
->(({ className, offline, ...props }, ref) => (
+  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.RadioItem> & { offline?: boolean; segment?: boolean }
+>(({ className, offline, segment, ...props }, ref) => (
   <DropdownMenuPrimitive.RadioItem
     ref={ref}
     className={cn(
       'relative flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-1.5 text-[13px] outline-hidden transition-colors',
       'focus:bg-bg-hover data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
+      segment && 'gap-1 px-2 py-1 text-[12px] whitespace-nowrap data-[state=checked]:bg-accent-subtle data-[state=checked]:font-medium data-[state=checked]:text-accent',
       className,
       offline && 'text-muted opacity-40'
     )}
@@ -338,6 +344,22 @@ const DropdownMenuRadioItem = React.forwardRef<
   />
 ))
 DropdownMenuRadioItem.displayName = DropdownMenuPrimitive.RadioItem.displayName
+
+/**
+ * A radio group laid out as one segmented track inside a menu, for a setting
+ * the rows below it depend on (how long a grant lasts). Its children are
+ * `DropdownMenuRadioItem segment` rows: still `menuitemradio`s in the menu's
+ * own arrow-key order, which a row of plain buttons would not be, since a Radix
+ * menu takes Tab for itself.
+ */
+function DropdownMenuRadioSegments({ className, ...props }: React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.RadioGroup>) {
+  return (
+    <DropdownMenuPrimitive.RadioGroup
+      className={cn('inline-flex flex-wrap gap-0.5 rounded-lg border border-border bg-bg p-0.5', className)}
+      {...props}
+    />
+  )
+}
 
 const DropdownMenuSeparator = React.forwardRef<
   React.ComponentRef<typeof DropdownMenuPrimitive.Separator>,
@@ -454,4 +476,5 @@ export {
   DropdownMenuSubContent,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
+  DropdownMenuRadioSegments,
 }
