@@ -485,7 +485,7 @@ The
 
 | Field | Type | Effect |
 |---|---|---|
-| `prompt` | str | The system prompt. A literal string, or a `file://` URI. On the markdown form the body wins over a frontmatter `prompt`. kiro-cli's `systemPrompt` spelling is read when `prompt` is absent. |
+| `prompt` | str | The system prompt. A literal string, or a `file://` URI. On the markdown form the body wins over a frontmatter `prompt`. kiro-cli's `systemPrompt` spelling is read when `prompt` is absent. On a spec Kiro Crew generates whose grants auto-approve `session_create` and not `session_send` (a conductor, the team lead), each write appends one line to a literal prompt: "`session_create`'s `message` is refused for this agent (`message_needs_send_approval`): create, then `session_send`." It follows the grants: a spec that gains `session_send` in `allowedTools`, or loses `session_create`, stops carrying it on the next write. A `file://` prompt, an empty prompt and a fork are left as written ([Session Control](session-control.md)). |
 
 `file://` resolution is Crew's, in `resolve_prompt`, and applies on the **KAS path
 only** — the kiro-cli path never inlines a prompt because kiro-cli reads the file
