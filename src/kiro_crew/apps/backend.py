@@ -41,6 +41,7 @@ from kiro_crew.apps.execution import (
     is_builtin_app,
     shipped_builtin_module_path,
 )
+from kiro_crew.apps.gateway_origin import loopback_gateway_origin as _loopback_gateway_origin
 from kiro_crew.apps.interpreter import app_deps_dir, path_command_is_abi_matched, resolve_app_python
 from kiro_crew.apps.manager import app_dir, get_app_manifest
 from kiro_crew.apps.manifest import file_entry_point_refusal, is_module_style_entry_point
@@ -837,32 +838,13 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     # gateway or at a port nothing is listening on. Absent or invalid evidence
     # => omit the origin entirely, so a backend that needs a callback base fails
     # closed (dormant) rather than trusting a guessed address. Generic name
-    # only; no app-specific env is set here.
-    bound_port = os.environ.get("KIROCREW_BOUND_PORT", "").strip()
-    bound_host_env = os.environ.get("KIROCREW_BOUND_HOST", "").strip()
-    gateway_origin = ""
-    if (
-        bound_port.isdigit()
-        and 1 <= int(bound_port) <= 65535
-        and bound_host_env in ("", "::1")
-    ):
-        # Host evidence: absent means loopback (the default bind shapes —
-        # loopback itself, or a wildcard bind loopback reaches); "::1" is the
-        # v6-loopback family marker. Only these two shapes are injected: a
-        # backend's callback arrives with no Origin header, and the gateway's
-        # CSRF barrier (origin.check_origin) trusts an Origin-less mutating
-        # request ONLY from a loopback peer. A gateway bound to a SPECIFIC
-        # interface exports that address, but injecting it would mint an
-        # origin whose every mutating callback is refused at the barrier —
-        # a half-alive backend, worse than designed dormancy — so that shape
-        # is omitted (fail closed, warned below) until such a request path is
-        # admitted. IPv6 literals are bracketed per RFC 3986.
-        bound_host = bound_host_env or "127.0.0.1"
-        if ":" in bound_host and not bound_host.startswith("["):
-            bound_host = f"[{bound_host}]"
-        gateway_origin = f"http://{bound_host}:{int(bound_port)}"
+    # only; no app-specific env is set here. The host rules are
+    # ``gateway_origin.loopback_gateway_origin``'s, shared with ``AppContext``.
+    gateway_origin = _loopback_gateway_origin()
+    if gateway_origin:
         env["KIROCREW_GATEWAY_ORIGIN"] = gateway_origin
     else:
+        bound_host_env = os.environ.get("KIROCREW_BOUND_HOST", "").strip()
         # Dormancy is the DESIGNED outcome here, so the operator must be able
         # to see it: an app that declares notification channels but gets no
         # origin will silently never push. Warn for those; stay at debug for

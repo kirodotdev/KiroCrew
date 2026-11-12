@@ -370,6 +370,16 @@ def test_the_pin_tool_checks_out_without_the_operators_git_config(tmp_path, monk
         ({}, {"backend/_host.py": "x = _bound_ctx().lifecycle\n"}, {"ctx.lifecycle": 2}),
         (
             {},
+            {"backend/hooks.py": "async def f(ctx):\n    return await ctx.app_token()\n"},
+            {"ctx.app_token": 5},
+        ),
+        (
+            {},
+            {"backend/hooks.py": "def f(ctx):\n    return ctx.gateway_origin()\n"},
+            {"ctx.gateway_origin": 5},
+        ),
+        (
+            {},
             {"backend/_host.py": "def f(self):\n    return self._ctx.untrusted\n"},
             {"ctx.untrusted": 2},
         ),
