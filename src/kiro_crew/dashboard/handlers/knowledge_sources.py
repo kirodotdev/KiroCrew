@@ -1027,6 +1027,18 @@ async def rename_source(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": f"name must be {_MAX_SOURCE_NAME_LEN} characters or fewer"}, status=400
             )
+        # JSON allows escaped lone surrogates; UTF-8, which SQLite binds the
+        # name as, does not.
+        try:
+            name.encode("utf-8")
+        except UnicodeEncodeError:
+            return web.json_response(
+                {
+                    "error": "name contains characters that cannot be encoded",
+                    "code": "text_not_encodable",
+                },
+                status=400,
+            )
     if patterns is not None:
         if row["source_type"] not in ("local_folder", "obsidian_vault"):
             return web.json_response(

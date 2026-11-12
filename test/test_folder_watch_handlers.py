@@ -323,6 +323,31 @@ class TestRenameSource:
             assert resp.status == 400
 
     @pytest.mark.asyncio
+    async def test_rename_unencodable_name_is_a_400_not_a_500(self, store):
+        sid = store.add_source("Old", "local_file", "/tmp/doc.md")
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.patch(f"/api/knowledge/sources/{sid}", json={"name": "\ud800"})
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "text_not_encodable"
+        assert store.db.execute("SELECT name FROM sources WHERE id = ?", (sid,)).fetchone()["name"] == "Old"
+
+    @pytest.mark.asyncio
+    async def test_item_update_unencodable_text_is_a_400_not_a_500(self, store):
+        from kiro_crew.dashboard.handlers.knowledge import update_item
+
+        sid = store.add_source("S", "local_file", "/tmp/doc.md")
+        iid = store.add_item(title="t", content="c", item_type="note", source_id=sid)
+        app = _make_app(store)
+        app.router.add_patch("/api/knowledge/items/{id}", update_item)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.patch(f"/api/knowledge/items/{iid}", json={"title": "\ud800"})
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "text_not_encodable"
+            ok = await client.patch(f"/api/knowledge/items/{iid}", json={"tags": ["\ud800"]})
+            assert ok.status == 200  # a list is stored as escaped JSON, as before
+        assert store.get_item(iid)["title"] == "t"
+
+    @pytest.mark.asyncio
     async def test_rename_too_long_rejected(self, store):
         sid = store.add_source("Old", "local_file", "/tmp/doc.md")
         async with TestClient(TestServer(_make_app(store))) as client:
