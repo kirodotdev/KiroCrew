@@ -435,9 +435,17 @@ or write allowlist needs (above). Once the provider-advertised model cache is wa
 writes a pinned `model`, and it writes `availableModels` only when another settings
 source (user `settings.json`, project `.claude/settings.json`, or the managed
 `managed-settings.json` and its `managed-settings.d/*.json` drop-ins) already defines
-one; on a cold cache both keys are omitted. Claude Code's rule is that an allowlist
+one; on a cold cache both keys are omitted, except for the covered names below. Claude Code's rule is that an allowlist
 entry naming a specific id disables that family's alias wildcard, so Crew's own list
 would cap `haiku` at Haiku 4.5 (issue #22995); a `model` key has no such effect. The
+adapter gives each literal `availableModels` entry one picker row, while the CLI also
+allows the newer models that a version prefix covers (`claude-opus-5` allows
+`claude-opus-5-5`). So when Crew writes its list it also names the keys of the user's
+own `modelOverrides` that an entry of the user's own `availableModels` covers
+(`claude_settings_sources.user_models_a_family_entry_covers`); the adapter's union
+then lists them. Those names come from no cache, so they are written on a cold cache
+too. Crew adds only names the user's `settings.json` holds, skips family
+aliases, and adds none when a managed file sets `availableModelsMatch` to `exact`. The
 post-capture re-seed fills them after `session/new` records the backend's actual
 list, under the same conditions. Managed policy that Claude Code reads from the OS
 rather than from a file (a macOS MDM profile, the Windows `HKLM`/`HKCU` policy keys)
