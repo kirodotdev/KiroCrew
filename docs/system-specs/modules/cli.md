@@ -1031,16 +1031,17 @@ Skipped if `kirocrew.localhost` is already present or user declines.
 `kirocrew cloud` is a human installer/control-plane surface for running
 KiroCrew on the user's own AWS EC2 instance. Provisioning and teardown are not
 LLM-facing tools. AWS credentials are resolved by the AWS CLI; KiroCrew stores
-only profile, region, and the most recent instance tag in `cloud.json`.
+only profile, region, and the most recent instance tag, in its launch record
+(`cloud_launch_state.json`).
 
 `kirocrew cloud launch` runs a six-step wizard: check AWS reachability, explain
 permissions, choose whether to keep an existing deployment or create a new one,
 choose an instance size when creating a new stack, deploy or resume the
 CloudFormation stack, sign in the remote `kiro-cli`, and open the dashboard
-through SSM port forwarding. Launch is resume-safe by default: if `cloud.json`
-contains a `last_tag` whose stack still exists in the same saved profile/region,
+through SSM port forwarding. Launch is resume-safe by default: if the launch
+record contains a `last_tag` whose stack still exists in the same saved profile/region,
 rerunning interactive `launch` offers to keep/resume that stack or create a new
-installation. If `cloud.json` is missing or stale, launch discovers existing
+installation. If the launch record is missing or stale, launch discovers existing
 `kirocrew-*` CloudFormation stacks with `cloudformation:ListStacks` and offers a
 found stack only when it can be resumed (neither failed nor in progress, with a
 live managed instance carrying its tag), names every other one, and defaults to
@@ -1048,7 +1049,8 @@ creating a new installation. `kirocrew cloud launch --new`
 is the explicit escape hatch for creating a separate new stack. `--yes` keeps
 only the saved stack; with found stacks and none saved it fails closed instead of
 choosing one. For a new launch, the generated tag is
-written to `cloud.json` before the long CloudFormation deploy starts, so an
+written to the launch record (`cloud_launch_state.json`) before the long
+CloudFormation deploy starts, so an
 interrupted provisioning run can be found on the next launch attempt.
 
 Launch and connect require the local AWS Session Manager plugin for

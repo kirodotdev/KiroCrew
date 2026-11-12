@@ -361,8 +361,8 @@ def _writer_lock(p: Path) -> "Iterator[None]":
     Strict is safe here only because every writer's caller already answers an ``OSError``, and
     the two answers are the ones that make an unlockable mount harmless:
 
-    * ``wizard._record_launch`` runs after a confirmed deploy and WARNS, so the instance is
-      still reachable and only the pointer is missing;
+    * ``wizard._record_launch`` runs before a new stack is provisioned or after a resume, and
+      WARNS, so the launch goes on and only the pointer is missing;
     * ``wizard._clear_prior_pointer`` runs before provisioning and ABORTS, with nothing
       created and nothing billing;
     * ``cli_cloud._cloud_destroy``'s clear runs after the stack is gone and WARNS, leaving a
