@@ -1067,6 +1067,12 @@ answers "not reachable" stays a warning (⚠) and leaves the exit code at 0,
 because launch still tries it. A missing plugin's line shows the install
 command for this machine, the same one the dashboard's plugin row shows
 (`ssm.session_manager_plugin_install_command()`), and says to rerun `doctor`.
+When AWS is reachable and it checks the default Region `us-east-1` with no
+`--region` passed and no crew on record (`LaunchState.last_tag` empty), it reads
+the profile's own Region (`aws.configured_region`, `aws configure get region`);
+when that names another Region it warns with it and the `--region` to pass, since
+`launch` would use the default too. A Region `--region` or the last launch chose
+gets no warning, and neither does an agent session, which may not run that read.
 
 The cloud wizard's cursor menus (instance size, existing deployments) support
 arrow keys in an interactive terminal (`↑`/`↓`, `j`/`k`, digit shortcuts, Enter
