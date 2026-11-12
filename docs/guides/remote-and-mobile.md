@@ -1219,8 +1219,10 @@ kirocrew service uninstall   # remove the unit / plist
 ```
 
 **Sudo scope on Linux:** the install shells out to `sudo install` (to place the
-unit as root-owned `0644`) and `sudo systemctl` (daemon-reload, enable,
-restart). No kirocrew, MCP, or LLM code path runs under sudo. Once started the
+unit as root-owned `0644`), `sudo systemctl` (daemon-reload, enable,
+restart) and, unless linger is already on or the host has no per-user
+manager, `sudo loginctl enable-linger` for your account. No kirocrew, MCP, or
+LLM code path runs under sudo. Once started the
 gateway runs as `User=$USER Group=$(id -gn)`, not root. The unit also caps
 crash-looping with `StartLimitBurst=3` / `StartLimitIntervalSec=300` and pins
 `LimitNOFILE=65536`, because a stock 1024 FD limit fails the frontend

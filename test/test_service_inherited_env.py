@@ -89,7 +89,7 @@ def _install(plat: Platform) -> int:
     with (
         patch.object(controller, "current_platform", return_value=plat),
         patch.object(controller.linux, "install", MagicMock(return_value=MagicMock(message=""))),
-        patch.object(controller.linux, "linger_warning_for_service_account", return_value=None),
+        patch.object(controller.linux, "enable_service_account_linger", return_value=None),
         patch.object(controller.macos, "install", MagicMock(return_value=None)),
         patch.object(controller, "headless_auth_warning", return_value=""),
     ):

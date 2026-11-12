@@ -29,7 +29,7 @@ report on, because a health command that sees only the system unit reports a
 running user-scope gateway as ``inactive (dead)``.
 
 Sudo scope: this file escalates ``systemctl``, ``install``, ``mkdir``,
-``rm``, ``rmdir`` and ``test`` directly, and lends its privileged helpers
+``rm``, ``rmdir``, ``test`` and ``loginctl`` directly, and lends its privileged helpers
 to ``service/apparmor.py``, which adds ``apparmor_parser``, ``aa-exec``,
 and — inside ``aa-exec`` — ``setpriv`` plus a trusted system ``python3``.
 
@@ -507,7 +507,8 @@ def stale_unit_notes() -> list[str]:
 #
 #   ``linux_unit`` -- The unit and overrides paths, the service account, and render_unit.
 #   ``linux_systemctl`` -- Escalation, systemctl in either scope, one scope's unit state.
-#   ``linux_install`` -- service install: privileged writes, the SELinux refusal, AppArmor.
+#   ``linux_install`` -- service install: privileged writes, the SELinux refusal, AppArmor,
+#     linger.
 #   ``linux_uninstall`` -- service uninstall: which unit is ours, and its scope teardown.
 #
 # This module keeps the verbs that read and drive an installed unit: the user-scope
@@ -539,6 +540,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _sudo_run_checked,
         _user_scope_remedy,
         _write_unit_via_sudo,
+        enable_service_account_linger,
         install,
         install_apparmor_profile,
         install_launcher_profile,
