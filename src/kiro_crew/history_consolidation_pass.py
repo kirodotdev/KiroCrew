@@ -45,9 +45,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.executors import run_in_embed_pool  # noqa: F401 - facade re-export
 from kiro_crew.history_consolidation_memory import (
-    _SEMANTIC_OMISSION_NOTICE,
     _audit_oversized_semantic,
-    _bounded_semantic_table,
     _is_plausible_memory_file,
     _refuse_oversized_semantic,
     _refused_semantic_note,
@@ -58,6 +56,7 @@ from kiro_crew.history_consolidation_memory import (
     _update_refused_semantic_note,
     _withhold_unseen_deletes,
 )
+from kiro_crew.history_consolidation_selection import _select_semantic_block
 from kiro_crew.history_consolidation_span import (
     _CONSOLIDATION_BUSY,
     _CONSOLIDATION_EMPTY,
@@ -90,7 +89,6 @@ from kiro_crew.vector_memory_constants import (
     _MAX_EPISODIC_PER_CONSOLIDATION,
     _MAX_LESSONS_PER_CONSOLIDATION,
     _MAX_SEMANTIC_PER_CONSOLIDATION,
-    _SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION,
 )
 
 if TYPE_CHECKING:
@@ -678,12 +676,19 @@ async def _consolidate(
         # operator's semantic table and let its consolidation turn delete it.
         has_vector = vector_store is not None
         refused_note: list[dict] = []
+        # The rotation cursor this pass read and the last key its block's
+        # rotating slice reached: recorded only once the answer is applied.
+        rotation_after: str | None = None
+        rotation_last: str | None = None
         if has_vector and vector_store is not None:
             private_policy = getattr(vector_store, "algorithm_version", "v1") == "v2"
             # Offload: each page of the fetch serializes on the store's _db_lock,
             # and this coroutine runs on the gateway event loop — a worker
             # holding the lock (backfill's FAISS rebuild, reconcile's bulk
-            # UPDATEs) would otherwise block the whole loop here.
+            # UPDATEs) would otherwise block the whole loop here. The vector
+            # space is read before the first page: relevance is kept only if
+            # every page was read in the space the span's query is embedded in.
+            fetched_in = vector_store.space_generation
             current_semantic = await asyncio.to_thread(_semantic_snapshot_in_pages, vector_store)
 
             def _prompt_value(e: dict) -> object:
@@ -720,23 +725,24 @@ async def _consolidate(
                 }
                 for e in current_semantic
             ]
-            # The PROMPT's copy of the table is bounded. The keys it shows
-            # travel with it: a row the model never read is not its to
-            # delete. Offloaded like the fetch: the fit is
-            # found by re-serialising a table that can run to megabytes,
-            # and this coroutine is on the gateway event loop.
-            semantic_json, semantic_omitted, semantic_visible = await asyncio.to_thread(
-                _bounded_semantic_table,
-                current_semantic,
-                semantic_entries,
-                _SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION,
-            )
-            if semantic_omitted:
-                semantic_json += "\n" + _SEMANTIC_OMISSION_NOTICE.format(
-                    count=semantic_omitted,
-                    total=len(current_semantic),
-                    limit=_SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION,
+            # The PROMPT's copy of the table is bounded. The keys the bounded
+            # copy shows travel with it: a row the model never read is not its
+            # to delete. Under ``memory.consolidation_selection: "relevance"``
+            # an over-cap block also carries the rotation cursor it was picked
+            # after and the last key its rotating slice reached.
+            (semantic_json, _, semantic_visible, rotation_last), rotation_after = (
+                await _select_semantic_block(
+                    self._logger,
+                    key,
+                    vector_store,
+                    current_semantic,
+                    semantic_entries,
+                    chunk=chunk,
+                    is_sub_slice=is_sub_slice,
+                    fetched_in=fetched_in,
+                    run_pool=_run_in_memory_background_pool,
                 )
+            )
             # Values an earlier pass of this session refused for size; dropped below
             # once this pass has written its answer.
             refused_note = await asyncio.to_thread(_refused_semantic_note, vector_store, key)
@@ -1105,6 +1111,20 @@ async def _consolidate(
                         lesson_dedup_mode=lesson_dedup_mode,
                     )
                     publication.mark_committed()
+                    # The answer is applied, so the model has read the slice: the
+                    # next pass rotates past it. Only here and after the V1 writes
+                    # below -- an empty, unsent, discarded or replayed pass shows the
+                    # same slice again. A compare-and-set, so two passes that showed
+                    # the same slice move the cursor once, over rows the slice showed
+                    # or passed as too wide and keys this pass's snapshot does not
+                    # hold, which wait for the next sweep. Inside the apply's hold,
+                    # so the lease and switch check that admitted the apply admit
+                    # the advance too. Its own commit, not a part of the apply's:
+                    # a cursor write that fails costs a repeated slice, never the
+                    # applied answer.
+                    if rotation_last is not None:
+                        with contextlib.suppress(Exception):
+                            store.advance_consolidation_rotation(rotation_after, rotation_last)
                     return applied
 
             await _run_in_memory_background_pool(_apply_member_consolidation)
@@ -1157,6 +1177,21 @@ async def _consolidate(
                 messages=unconsolidated if include_history else chunk,
                 commit_state=commit_state,
             )
+            # Same rule as the member store's apply above, in a hold of its own
+            # with the same lease and switch check: an answer with no semantic or
+            # episodic row takes none of the writer's holds, and its slice was
+            # still read. A refused hold refuses the pass as any write's does.
+            if rotation_last is not None:
+                stage = "rotation cursor"
+                rotation_store = vector_store
+                reached = rotation_last
+
+                def _advance_rotation_under_hold() -> None:
+                    with self._publication_hold_checked(key, commit_state):
+                        with contextlib.suppress(Exception):
+                            rotation_store.advance_consolidation_rotation(rotation_after, reached)
+
+                await asyncio.to_thread(_advance_rotation_under_hold)
 
         # The answer to a prompt that listed refused values is written: drop them, under
         # a hold like any write, so writes turned off before the first commit keep them.

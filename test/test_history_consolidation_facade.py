@@ -1,7 +1,7 @@
 """``history_consolidation.py`` keeps its BASE surface while the stages of a pass live in owners.
 
 Method bodies live in the owners ``history_consolidation_span``, ``_lease``, ``_memory``,
-``_skills`` and ``_pass``. The checks pin what callers and ``patch.object`` rely on: names,
+``_skills`` and ``_pass``; ``_selection`` holds functions only. The checks pin what callers and ``patch.object`` rely on: names,
 member kinds and signatures, one object per mirrored name, the owners' import order, and
 logging on ``kiro_crew.history``. Each structural check has a self-test that can fail.
 """
@@ -552,7 +552,7 @@ def test_a_moved_exception_keeps_the_facade_module_and_other_moved_classes_name_
         line = traceback.format_exception_only(exc, exc("x"))[-1]
         assert line.startswith(f"{_FACADE}.{name}: x"), line
     owned = {
-        "_BoundedTable": "memory",
+        "_BoundedTable": "selection",
         "_EmbedBudget": "memory",
         "_InheritGlobal": "memory",
         "_LessonDeleteDecision": "memory",
