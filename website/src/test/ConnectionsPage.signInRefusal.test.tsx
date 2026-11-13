@@ -3,8 +3,8 @@
 // address the status feed reports for an org admin. The api mock, the McpTab
 // stub and the beforeEach are copied from ConnectionsPage.coverage.connect.test.tsx,
 // whose header explains the seams.
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 
 const mcpServers = vi.fn()
 const mcpProbe = vi.fn()
@@ -50,6 +50,11 @@ vi.mock('../api/client', () => ({
   },
 }))
 
+const copyToClipboard = vi.fn()
+vi.mock('../utils/clipboard', () => ({
+  copyToClipboard: (...a: unknown[]) => copyToClipboard(...a),
+}))
+
 vi.mock('../pages/overview/McpTab', () => ({
   default: () => null,
 }))
@@ -57,10 +62,16 @@ vi.mock('../pages/overview/McpTab', () => ({
 import { mount, card } from './ConnectionsPage.coverageTestUtils'
 import { CONNECTION_PROVIDERS } from '../pages/connections/registry'
 
+// One test drives the hover-off grace on fake timers; every test ends on real ones.
+afterEach(() => {
+  vi.useRealTimers()
+})
+
 const ATLASSIAN_GUIDE =
   'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/connections.md#atlassian-organization-admin-checklist'
 
 beforeEach(() => {
+  copyToClipboard.mockReset().mockResolvedValue(true)
   mcpServers.mockReset().mockResolvedValue([])
   mcpProbe.mockReset().mockResolvedValue([])
   mcpApply.mockReset().mockResolvedValue({ ok: true })
@@ -90,16 +101,19 @@ async function refuse(slug: string, reason: string) {
   return waitFor(() => within(card(slug)).getByRole('alert'))
 }
 
+const GENERIC = 'Notion did not complete the sign-in. Try connecting again.'
+
 describe('a sign-in the provider refused', () => {
   it.each([
-    ['crew_oauth_callback_access_denied', 'Notion refused the sign-in. Either it was declined on the consent page, or your organization\'s admin does not allow this connection.'],
+    ['crew_oauth_callback_access_denied', 'Notion refused the sign-in. Either it was declined on Notion\'s consent page, or your organization\'s admin does not allow this connection.'],
     ['crew_oauth_callback_invalid_scope', 'Notion refused the permissions this sign-in asked for.'],
     ['crew_oauth_callback_unauthorized_client', 'Notion does not allow this app to sign in.'],
-    ['crew_oauth_callback_invalid_request', 'Notion rejected the sign-in request. Try connecting again.'],
-    ['crew_oauth_callback_unsupported_response_type', 'Notion does not support this kind of sign-in.'],
-    ['crew_oauth_callback_server_error', 'Notion hit an error during sign-in. Try connecting again.'],
-    ['crew_oauth_callback_temporarily_unavailable', 'Signing in to Notion is temporarily unavailable. Try again in a few minutes.'],
-    ['crew_oauth_callback_refused', 'Notion did not complete the sign-in. Try connecting again.'],
+    // No org admin policy causes these, so they share the one generic line.
+    ['crew_oauth_callback_invalid_request', GENERIC],
+    ['crew_oauth_callback_unsupported_response_type', GENERIC],
+    ['crew_oauth_callback_server_error', GENERIC],
+    ['crew_oauth_callback_temporarily_unavailable', GENERIC],
+    ['crew_oauth_callback_refused', GENERIC],
   ])('explains %s without claiming the user declined', async (reason, expected) => {
     const alert = await refuse('notion', reason)
     await waitFor(() => expect(alert).toHaveTextContent(`Action failed: ${expected}`))
@@ -124,69 +138,164 @@ describe('a sign-in the provider refused', () => {
   it('names both causes of access_denied on the Atlassian card', async () => {
     const alert = await refuse('atlassian', 'crew_oauth_callback_access_denied')
     await waitFor(() => expect(alert).toHaveTextContent(
-      'Atlassian refused the sign-in. Either it was declined on the consent page, or your organization\'s admin does not allow this connection.',
+      'Atlassian refused the sign-in. Either it was declined on Atlassian\'s consent page, or your organization\'s admin does not allow this connection.',
     ))
   })
 
   it('does not link the checklist for a refusal no admin policy causes', async () => {
     const alert = await refuse('atlassian', 'crew_oauth_callback_server_error')
-    await waitFor(() => expect(alert).toHaveTextContent('Atlassian hit an error during sign-in.'))
+    await waitFor(() => expect(alert).toHaveTextContent('Atlassian did not complete the sign-in.'))
     expect(card('atlassian').querySelector('a[href*="connections.md#"]')).toBeNull()
   })
 })
 
 describe('the redirect address an org admin allows', () => {
-  function openTip(slug: string, name: string) {
-    fireEvent.mouseEnter(within(card(slug)).getByRole('button', { name: `${name} prerequisites` }))
-    return screen.getByRole('tooltip')
+  const icon = () => within(card('atlassian')).getByRole('button', { name: 'Atlassian prerequisites' })
+  function openTip() {
+    fireEvent.mouseEnter(icon())
+    return screen.getByRole('dialog', { name: 'Before you connect' })
+  }
+  function status(signInRedirect: object) {
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'atlassian', status: 'not_connected', grantPresent: false, signInRedirect }],
+    })
   }
 
-  it('shows the exact redirect Crew registers, as selectable text', async () => {
-    connectionsStatus.mockResolvedValue({
-      schema_version: 1,
-      connections: [{
-        slug: 'atlassian', status: 'not_connected', grantPresent: false,
-        signInRedirect: { exact: 'https://gw.example.com/api/connections/oauth/callback' },
-      }],
-    })
+  it('shows the exact redirect Crew registers, with a control that copies all of it', async () => {
+    const exact = 'https://gw.example.com/api/connections/oauth/callback'
+    status({ exact })
     mount()
     await waitFor(() => within(card('atlassian')).getByRole('button', { name: 'Connect' }))
-    await waitFor(() => {
-      const tip = openTip('atlassian', 'Atlassian')
-      expect(tip).toHaveTextContent('Redirect address for this sign-in')
-      const value = within(tip).getByText('https://gw.example.com/api/connections/oauth/callback')
-      expect(value.tagName).toBe('CODE')
-      expect(value).toHaveClass('select-all')
+    const tip = await waitFor(() => {
+      const t = openTip()
+      expect(t).toHaveTextContent('Redirect address for this sign-in')
+      return t
     })
+    expect(within(tip).getByText(exact).tagName).toBe('CODE')
+    const copy = within(tip).getByRole('button', { name: `Copy redirect address ${exact}` })
+    await act(async () => { fireEvent.click(copy) })
+    expect(copyToClipboard).toHaveBeenCalledWith(exact)
+    // A visible text confirmation, in a polite live region, with no animation class.
+    const done = within(copy).getByText('Copied')
+    expect(done).toHaveAttribute('aria-live', 'polite')
+    expect(copy.innerHTML).not.toMatch(/animate-/)
   })
 
-  it('lists loopback origins on any port when the runtime picks the port', async () => {
-    connectionsStatus.mockResolvedValue({
-      schema_version: 1,
-      connections: [{
-        slug: 'atlassian', status: 'not_connected', grantPresent: false,
-        signInRedirect: { anyPort: ['http://127.0.0.1', 'http://localhost'] },
-      }],
-    })
+  it('gives each loopback origin its own copy control when the runtime picks the port', async () => {
+    status({ anyPort: ['http://127.0.0.1', 'http://localhost'] })
     mount()
     await waitFor(() => within(card('atlassian')).getByRole('button', { name: 'Connect' }))
-    await waitFor(() => {
-      const tip = openTip('atlassian', 'Atlassian')
-      expect(tip).toHaveTextContent('so allow these addresses on any port.')
-      expect(within(tip).getByText('http://127.0.0.1').tagName).toBe('CODE')
-      expect(within(tip).getByText('http://localhost').tagName).toBe('CODE')
+    const tip = await waitFor(() => {
+      const t = openTip()
+      expect(t).toHaveTextContent('so allow these redirect addresses on any port.')
+      return t
     })
+    await act(async () => {
+      fireEvent.click(within(tip).getByRole('button', { name: 'Copy redirect address http://localhost' }))
+    })
+    expect(copyToClipboard).toHaveBeenCalledTimes(1)
+    expect(copyToClipboard).toHaveBeenCalledWith('http://localhost')
+    expect(within(tip).getByRole('button', { name: 'Copy redirect address http://127.0.0.1' })).toBeInTheDocument()
   })
 
-  it('points the Atlassian prerequisite at the org admin checklist', async () => {
+  it('links the org admin checklist from the tip, in a new tab', async () => {
     const atlassian = CONNECTION_PROVIDERS.find(provider => provider.slug === 'atlassian')
     expect(atlassian?.org_admin_guide).toBe('connections.md#atlassian-organization-admin-checklist')
     mount()
     await waitFor(() => within(card('atlassian')).getByRole('button', { name: 'Connect' }))
-    const tip = openTip('atlassian', 'Atlassian')
-    expect(tip).toHaveTextContent('Read, Write and Search permissions')
-    expect(tip).toHaveTextContent('Atlassian organization admin checklist')
+    const tip = openTip()
+    expect(tip).toHaveTextContent("Atlassian's consent page")
+    expect(tip).toHaveTextContent("this sign-in's redirect address and the Read, Write and Search permissions")
+    const link = within(tip).getByRole('link', { name: /Organization admin checklist/ })
+    expect(link).toHaveAttribute('href', ATLASSIAN_GUIDE)
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer')
     // No status row: nothing to show, rather than a guessed address.
     expect(within(tip).queryByText(/^http/)).toBeNull()
+  })
+
+  it('says a refused copy failed instead of staying silent, with no agent hand-off', async () => {
+    copyToClipboard.mockResolvedValue(false)
+    status({ exact: 'https://gw.example.com/api/connections/oauth/callback' })
+    mount()
+    await waitFor(() => within(card('atlassian')).getByRole('button', { name: 'Connect' }))
+    const tip = await waitFor(() => {
+      const t = openTip()
+      expect(within(t).queryByRole('button', { name: /Copy redirect address/ })).not.toBeNull()
+      return t
+    })
+    await act(async () => {
+      fireEvent.click(within(tip).getByRole('button', { name: /Copy redirect address/ }))
+    })
+    expect(within(tip).getByRole('alert')).toHaveTextContent('Copy failed. Select the redirect address and copy it yourself.')
+    expect(within(tip).queryByText('Copied')).toBeNull()
+    expect(within(tip).queryByRole('button', { name: /Ask the agent/ })).toBeNull()
+  })
+
+  it('stays open while one of its controls holds focus after the pointer leaves', async () => {
+    status({ exact: 'https://gw.example.com/api/connections/oauth/callback' })
+    mount()
+    await waitFor(() => within(card('atlassian')).getByRole('button', { name: 'Connect' }))
+    const tip = await waitFor(() => {
+      const t = openTip()
+      expect(within(t).queryByRole('button', { name: /Copy redirect address/ })).not.toBeNull()
+      return t
+    })
+    const copy = within(tip).getByRole('button', { name: /Copy redirect address/ })
+    copy.focus()
+    vi.useFakeTimers()
+    fireEvent.mouseLeave(tip)
+    fireEvent.mouseLeave(icon())
+    // Past the component's hover-off grace.
+    await act(async () => { await vi.advanceTimersByTimeAsync(200) })
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(document.activeElement).toBe(copy)
+  })
+
+  it('reaches the tip controls from the keyboard and returns to the icon', async () => {
+    status({ exact: 'https://gw.example.com/api/connections/oauth/callback' })
+    mount()
+    await waitFor(() => within(card('atlassian')).getByRole('button', { name: 'Connect' }))
+    await waitFor(() => expect(within(card('atlassian')).getByRole('button', { name: 'Atlassian prerequisites' })).toBeInTheDocument())
+    await waitFor(() => {
+      fireEvent.focus(icon())
+      expect(within(screen.getByRole('dialog')).queryByRole('button', { name: /Copy redirect address/ })).not.toBeNull()
+    })
+    fireEvent.keyDown(icon(), { key: 'Tab' })
+    const tip = screen.getByRole('dialog')
+    const copy = within(tip).getByRole('button', { name: /Copy redirect address/ })
+    expect(document.activeElement).toBe(copy)
+    fireEvent.keyDown(copy, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(icon())
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('keeps a plain caveat an uncapped tooltip with nothing to operate', async () => {
+    mount()
+    const gitlab = await waitFor(() => within(card('gitlab')).getByRole('button', { name: 'GitLab prerequisites' }))
+    vi.spyOn(gitlab, 'getBoundingClientRect').mockReturnValue({
+      top: 150, bottom: 174, left: 400, right: 424, width: 24, height: 24, x: 400, y: 150, toJSON: () => ({}),
+    } as DOMRect)
+    fireEvent.mouseEnter(gitlab)
+    const tip = screen.getByRole('tooltip')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    // No focus stop inside to scroll with, so no cap that could hide its text.
+    expect(tip.style.maxHeight).toBe('')
+    expect(tip).not.toHaveClass('overflow-y-auto')
+  })
+
+  it('caps the tip to the room above its icon and scrolls inside it', async () => {
+    mount()
+    await waitFor(() => within(card('atlassian')).getByRole('button', { name: 'Connect' }))
+    vi.spyOn(icon(), 'getBoundingClientRect').mockReturnValue({
+      top: 150, bottom: 174, left: 400, right: 424, width: 24, height: 24, x: 400, y: 150, toJSON: () => ({}),
+    } as DOMRect)
+    const tip = openTip()
+    expect(tip.style.maxHeight).toBe('136px')
+    expect(tip).toHaveClass('overflow-y-auto')
+    // Scrolling inside the capped tip does not dismiss it.
+    fireEvent.scroll(tip)
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 })

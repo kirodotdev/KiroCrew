@@ -15,7 +15,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import RestartButton from '../../components/RestartButton'
 import { fmtList } from '../../i18n/format'
 import { findReport, parseErrorCode } from '../../utils/errorReport'
-import { OAUTH_ENDPOINT_ALLOWLIST_GUIDE_URL, docSectionHref } from '../../utils/docsLink'
+import { OAUTH_ENDPOINT_ALLOWLIST_GUIDE_URL, tipDocHref } from '../../utils/docsLink'
 import { safeGetSessionItem, safeSetSessionItem } from '../../utils/safeStorage'
 import {
   CONNECTION_PROVIDERS,
@@ -359,7 +359,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
           let help: Feedback['help']
           // A refused sign-in an org admin's policy can cause links the provider's
           // admin checklist, when the registry names one.
-          const adminGuide = docSectionHref(guide)
+          const adminGuide = tipDocHref(guide)
           switch (reason) {
             case 'crew_oauth_callback_access_denied':
               error = t('pages.connectionsPage.mint_failure_callback_access_denied', { provider: name })
@@ -373,18 +373,11 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
               error = t('pages.connectionsPage.mint_failure_callback_unauthorized_client', { provider: name })
               if (adminGuide) help = { href: adminGuide }
               break
+            // A refusal no org admin policy causes reads as the one generic line.
             case 'crew_oauth_callback_invalid_request':
-              error = t('pages.connectionsPage.mint_failure_callback_invalid_request', { provider: name })
-              break
             case 'crew_oauth_callback_unsupported_response_type':
-              error = t('pages.connectionsPage.mint_failure_callback_unsupported_response_type', { provider: name })
-              break
             case 'crew_oauth_callback_server_error':
-              error = t('pages.connectionsPage.mint_failure_callback_server_error', { provider: name })
-              break
             case 'crew_oauth_callback_temporarily_unavailable':
-              error = t('pages.connectionsPage.mint_failure_callback_temporarily_unavailable', { provider: name })
-              break
             case 'crew_oauth_callback_refused':
               error = t('pages.connectionsPage.mint_failure_callback_refused', { provider: name })
               break
