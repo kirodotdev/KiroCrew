@@ -1313,6 +1313,7 @@ _EXPECTED_WARM_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 # lookup is a hit -- names the surface a denial during that first parse belongs
 # to. The channel is ``unknown``: the background session serves several.
 _EXPECTED_WARM_SPECS_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
+    "kiro_crew/cli_commands_eval.py": [("eval_agent", "cli")],
     "kiro_crew/session_background.py": [("ensure_background", "unknown")],
 }
 

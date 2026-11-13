@@ -37,6 +37,7 @@ from kiro_crew.providers.base import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.skills import SkillsLoader
+from kiro_crew.terminal_safe import safe_terminal_line
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,10 @@ class ScenarioResult:
     sessions: list[SessionResult] = field(default_factory=list)
     elapsed_secs: float = 0.0
     consolidation_failures: int = 0
+    #: How many runs this result folds together (``merge_repeats``) and how many of
+    #: them passed; ``passed`` is then true only when every run did (pass^k).
+    runs: int = 1
+    runs_passed: int = 0
 
     @property
     def passed(self) -> bool:
@@ -120,14 +125,49 @@ class ScenarioResult:
         )
 
     def summary(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "name": self.name,
             "passed": self.passed,
             "assertions": f"{self.passed_assertions}/{self.total_assertions}",
-            "sessions": len(self.sessions),
+            "sessions": len(self.sessions) // self.runs,
             "elapsed_secs": round(self.elapsed_secs, 2),
             "dimensions": self.dimensions,
         }
+        if self.runs > 1:
+            data["runs"] = self.runs
+            data["runs_passed"] = self.runs_passed
+        return data
+
+
+def merge_repeats(rounds: list[list[ScenarioResult]]) -> list[ScenarioResult]:
+    """Fold several runs of the same scenarios into one result per scenario.
+
+    *rounds* holds one result list per run, in the same scenario order. A merged
+    scenario passes only when every run of it passed (pass^k), so one flaky run
+    fails the scenario. Its sessions are the runs' sessions in order, each renamed
+    ``run i: <name>``; the turn results are shared with the inputs, not copied.
+    """
+
+    merged: list[ScenarioResult] = []
+    for runs in zip(*rounds):
+        first = runs[0]
+        merged.append(
+            ScenarioResult(
+                name=first.name,
+                description=first.description,
+                dimensions=first.dimensions,
+                sessions=[
+                    SessionResult(name=f"run {i}: {sr.name}", turns=sr.turns)
+                    for i, run in enumerate(runs, start=1)
+                    for sr in run.sessions
+                ],
+                elapsed_secs=sum(r.elapsed_secs for r in runs),
+                consolidation_failures=sum(r.consolidation_failures for r in runs),
+                runs=len(runs),
+                runs_passed=sum(1 for r in runs if r.passed),
+            )
+        )
+    return merged
 
 
 # ── Per-dimension scoring ──
@@ -247,11 +287,21 @@ class EvalRunner:
         provider_factory: Callable that creates an LLMProvider for a session key.
             Signature: (session_key: str) -> LLMProvider
         workspace_dir: Optional base dir for memory. A temp dir is used if None.
+        provider_kwargs: Extra keyword arguments passed to the factory for every
+            scenario session. The memory-consolidation sessions do not get them.
     """
 
     provider_factory: ProviderFactory
     workspace_dir: Path | None = None
     judge_enabled: bool = False
+    #: Extra keyword arguments for every scenario session's provider (for example
+    #: ``agent`` and ``model_override``). Empty by default, so a factory that takes
+    #: only a session key is called exactly as before.
+    provider_kwargs: dict[str, Any] = field(default_factory=dict)
+    #: The agent the permission gate judges each scenario session's calls as. Set
+    #: to the agent ``provider_kwargs`` runs the sessions as, so that agent's own
+    #: governance profile applies; empty judges them as the default agent.
+    gate_agent: str = ""
 
     async def run_scenario(self, scenario: Scenario) -> ScenarioResult:
         """Run a single scenario with fresh state.
@@ -390,7 +440,9 @@ class EvalRunner:
                     # available.
                     await consolidator._consolidate(log_key, include_history=True)
                 except Exception:
-                    logger.warning("Consolidation failed for %s", log_key, exc_info=True)
+                    logger.warning(
+                        "Consolidation failed for %s", safe_terminal_line(log_key), exc_info=True
+                    )
                     result.consolidation_failures += 1
         finally:
             if session_mgr:
@@ -414,10 +466,12 @@ class EvalRunner:
             result = await self.run_scenario(scenario)
             results.append(result)
             status = "✅" if result.passed else "❌"
+            # A log line reaches the console with `-v`, and scenario text can come from a
+            # file someone else wrote: every value is shown through `safe_terminal_line`.
             logger.info(
                 "%s %s — %s/%s assertions",
                 status,
-                result.name,
+                safe_terminal_line(result.name),
                 result.passed_assertions,
                 result.total_assertions,
             )
@@ -434,7 +488,7 @@ class EvalRunner:
         """Run a single session — create provider, send turns, tear down."""
         factory = provider_factory or self.provider_factory
         session_key = f"eval_{session_def.name}_{time.monotonic_ns()}"
-        provider = factory(session_key)
+        provider = factory(session_key, **self.provider_kwargs)
         await provider.start()
 
         # Build memory context once for the first turn of non-first sessions
@@ -461,7 +515,11 @@ class EvalRunner:
                     # Store the original user message for reporting (not the context-injected one)
                     turn_result.user_message = turn_def.user
                 except Exception as exc:
-                    logger.warning("Turn failed in %s: %s", session_def.name, exc)
+                    logger.warning(
+                        "Turn failed in %s: %s",
+                        safe_terminal_line(session_def.name),
+                        safe_terminal_line(str(exc)),
+                    )
                     turn_result = TurnResult(
                         user_message=turn_def.user,
                         agent_response="",
@@ -527,11 +585,13 @@ class EvalRunner:
                     refusal_for,
                     event,
                     session_key=session_key,
-                    agent="",
+                    agent=self.gate_agent,
                     security_only=False,
                 )
                 if reason is not None:
-                    logger.warning("Rejected tool by permission gate: %s", event.title)
+                    logger.warning(
+                        "Rejected tool by permission gate: %s", safe_terminal_line(str(event.title))
+                    )
                     sel().log_tool_invocation(
                         session_key=session_key,
                         tool_name=event.title,
@@ -598,7 +658,10 @@ class EvalRunner:
                         )
                     else:
                         outcome = "rejected_sensitive" if target else "rejected_no_path"
-                        logger.warning("Rejected tool (path check failed): %s", event.title)
+                        logger.warning(
+                            "Rejected tool (path check failed): %s",
+                            safe_terminal_line(str(event.title)),
+                        )
                         sel().log_tool_invocation(
                             session_key=session_key,
                             tool_name=event.title,
@@ -615,7 +678,9 @@ class EvalRunner:
                         )
                         await provider.reject_tool(event.request_id)
                 else:
-                    logger.warning("Rejected unsafe tool in eval: %s", event.title)
+                    logger.warning(
+                        "Rejected unsafe tool in eval: %s", safe_terminal_line(str(event.title))
+                    )
                     sel().log_tool_invocation(
                         session_key=session_key,
                         tool_name=event.title,
@@ -684,6 +749,8 @@ def format_results(results: list[ScenarioResult]) -> str:
             f"Assertions: {r.passed_assertions}/{r.total_assertions} | "
             f"Time: {r.elapsed_secs:.1f}s"
         )
+        if r.runs > 1:
+            lines.append(f"Runs passed: {r.runs_passed}/{r.runs} (a scenario passes when all do)")
         if r.dimensions:
             lines.append(f"Dimensions: {', '.join(r.dimensions)}")
         if r.consolidation_failures > 0:

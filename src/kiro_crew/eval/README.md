@@ -25,6 +25,38 @@ kirocrew eval --all
 kirocrew eval --judge my_scenario
 ```
 
+## Your own scenarios
+
+```bash
+# Every .json/.yaml/.yml scenario file in a folder (its own files, not subfolders)
+kirocrew eval --dir ./evals
+
+# One scenario file
+kirocrew eval --file ./evals/support_bot.yaml
+
+# Choose what answers: a crew member or agent, and a model
+kirocrew eval --dir ./evals --agent reviewer --model my-model-id
+
+# Run the set 3 times; a scenario passes only if all 3 runs pass (pass^k)
+kirocrew eval --dir ./evals --repeat 3
+```
+
+`--dir` and `--file` replace the bundled scenarios, so they cannot be combined with
+scenario names or `--all`. The scenario file format is the one the bundled files use
+(`name`, `sessions`, `turns`, `assertions`). A file that does not load is named and
+nothing runs; so is a name two files share.
+
+`--agent` takes a crew member or an agent name, resolved as `kirocrew chat --agent`
+resolves it. `--model` is the explicit pick for every scenario session and outranks
+the agent's own model. Both apply to the sessions the scenario drives; the memory
+consolidation between sessions keeps its default agent and model.
+
+With `--repeat N` each scenario runs N times in a row. The report shows the runs
+passed (`Runs passed: 2/3`), the scenario counts as passed only when every run did,
+and the JSON summary adds `runs` and `runs_passed` per scenario and a top-level
+`repeat`. The JSON also records `agent` and `model` when you gave them. Without the
+new flags the command and its files are unchanged.
+
 `--no-jail` (the shared top-level CLI flag) applies here as it does to every
 `kirocrew` command.
 
