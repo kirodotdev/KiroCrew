@@ -809,7 +809,9 @@ def _url_payload_command(n: int) -> str:
 #: ``/`` and ``~`` read the full text. Re-measured.
 #: Raised by 3, from 35,997, for the ``chat_steering_off.json`` leaf on the read-gate
 #: floor in ``paths_lists`` (per-chat steering switch-offs). Re-measured.
-_PACKAGE_LINE_BUDGET = 36_000
+#: Raised by 41, from 36,000, reserved for the deny view's Windows program-suffix and
+#: in-word ``^``/backtick views and the ``aws.exe`` s3 download spelling (#33569).
+_PACKAGE_LINE_BUDGET = 36_041
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
