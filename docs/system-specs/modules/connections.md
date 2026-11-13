@@ -1267,6 +1267,17 @@ part that says Configured (#34353 UX review). A Google row still shows a
 triangle for a state-level caveat (the backend caveat, a stored sign-in) that
 applies to that row alone.
 
+A card opens in place on a click of its name, and the name is a toggle only
+when opening changes what the card shows: the OAuth app part of a
+pre-registered provider, or a connected card's Test and Disconnect. A card
+whose provider signs in on its own already shows its Connect while closed, so
+its name is plain text. One card is open at a time (an accordion): a card open
+on its OAuth app part spans two or three grid columns, so opening one closes
+the other. A card held open by its state (waiting for approval, needs
+attention, not verified), and the Google entry while one of its products is,
+stays open whatever was clicked and shows no toggle, since clicking it could
+not close it.
+
 The triangle's copy comes from two places. A provider-side prerequisite is the
 registry's `prerequisite_copy` (English fallback) rendered through the
 slug-keyed `prerequisite_<slug>` catalog entries (a slug's hyphens spelled as

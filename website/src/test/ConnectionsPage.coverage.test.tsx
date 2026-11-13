@@ -109,7 +109,7 @@ import {
   banner,
   mount,
   card,
-  openAllCards,
+  openGoogleEntry,
   deferred,
 } from './ConnectionsPage.coverageTestUtils'
 
@@ -123,7 +123,7 @@ const byId = (id: string, attrs = ''): HTMLElement => {
 }
 
 const cards = (): HTMLElement[] => {
-  openAllCards()
+  openGoogleEntry()
   // A search hides cards rather than unmounting them: count the shown ones.
   return Array.from(document.querySelectorAll<HTMLElement>('article[data-state]')).filter(el => !el.closest('[hidden]'))
 }
@@ -705,16 +705,34 @@ describe('a link in and the OAuth app part', () => {
     expect(within(entry).getByRole('heading', { name: 'Google' })).toBeInTheDocument()
   })
 
-  it('keeps Connect on a closed not-connected card, and opens the card on a click of its name', async () => {
+  it('keeps Connect on a closed not-connected card, and gives its name no toggle when opening shows nothing new', async () => {
     mount()
     const notion = await waitFor(() => byId('connection-notion', '[data-state="not-connected"]'))
-    const toggle = within(notion).getByRole('button', { name: 'Notion' })
-    expect(toggle).toHaveAttribute('aria-expanded', 'false')
     expect(within(notion).getByRole('button', { name: 'Connect' })).toBeInTheDocument()
-    fireEvent.click(toggle)
-    expect(toggle).toHaveAttribute('aria-expanded', 'true')
-    fireEvent.click(toggle)
-    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(within(notion).getByRole('heading', { name: 'Notion' })).toBeInTheDocument()
+    expect(within(notion).queryByRole('button', { name: 'Notion' })).toBeNull()
+  })
+
+  it('opens one card at a time, closing the card opened before it', async () => {
+    mount()
+    const github = await waitFor(() => byId('connection-github'))
+    const asana = byId('connection-asana')
+    const entry = byId('connection-google')
+    const githubToggle = within(github).getByRole('button', { name: 'GitHub' })
+    const asanaToggle = within(asana).getByRole('button', { name: 'Asana' })
+    const googleToggle = within(entry).getByRole('button', { name: 'Google' })
+    fireEvent.click(githubToggle)
+    expect(githubToggle).toHaveAttribute('aria-expanded', 'true')
+    expect(within(github).getByTestId('oauth-app-github')).toBeVisible()
+    fireEvent.click(asanaToggle)
+    expect(asanaToggle).toHaveAttribute('aria-expanded', 'true')
+    expect(githubToggle).toHaveAttribute('aria-expanded', 'false')
+    expect(within(github).getByTestId('oauth-app-github')).not.toBeVisible()
+    fireEvent.click(googleToggle)
+    expect(googleToggle).toHaveAttribute('aria-expanded', 'true')
+    expect(asanaToggle).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(googleToggle)
+    expect(googleToggle).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('hides a connected card\'s Test and Disconnect until the card is opened', async () => {
@@ -787,6 +805,10 @@ describe('a link in and the OAuth app part', () => {
     mount()
     await waitFor(() => expect(byId('connection-google-drive')).toBeVisible())
     expect(byId('connection-google-drive')).toHaveAttribute('data-state', 'waiting-for-approval')
+    // Held open, the entry's name is no toggle: clicking it could not close it.
+    const entry = byId('connection-google')
+    expect(within(entry).getByRole('heading', { name: 'Google' })).toBeInTheDocument()
+    expect(within(entry).queryByRole('button', { name: 'Google' })).toBeNull()
   })
 
   it('keeps a closed card\'s OAuth app part mounted, so closing it loses no typed draft', async () => {
@@ -825,12 +847,14 @@ describe('a link in and the OAuth app part', () => {
     expect(within(notion).queryByRole('button', { name: /Ask the agent/ })).toBeNull()
   })
 
-  it('opens a broken connection by itself, and says so to a screen reader', async () => {
+  it('opens a broken connection by itself, with no name toggle that could not close it', async () => {
     mcpServers.mockResolvedValue([server({ status: 'error', error: 'invalid_grant' })])
     mount()
     const notion = await waitFor(() => byId('connection-notion', '[data-state="needs-attention"]'))
     expect(within(notion).getByRole('button', { name: /Reconnect/ })).toBeVisible()
-    expect(within(notion).getByRole('button', { name: 'Notion' })).toHaveAttribute('aria-expanded', 'true')
+    // Held open by its state, the card's name is no toggle that does nothing.
+    expect(within(notion).getByRole('heading', { name: 'Notion' })).toBeInTheDocument()
+    expect(within(notion).queryByRole('button', { name: 'Notion' })).toBeNull()
   })
 
   it('keeps a hidden card\'s OAuth app part mounted through a search', async () => {
