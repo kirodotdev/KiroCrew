@@ -151,7 +151,9 @@ def mcp_entries_muted(entries: Iterable[Any]) -> bool:
     return any(mcp_entry_is_muted(entry) for entry in entries)
 
 
-def mcp_server_muted_in_any_store(name: str, agent_entry: Any = None) -> bool:
+def mcp_server_muted_in_any_store(
+    name: str, agent_entry: Any = None, *, scope_muted: frozenset[str] | None = None
+) -> bool:
     """Whether *agent_entry* or any MCP config scope mutes the server *name*.
 
     :func:`mcp_entries_muted` reads the entries a caller already holds. This is the
@@ -183,12 +185,18 @@ def mcp_server_muted_in_any_store(name: str, agent_entry: Any = None) -> bool:
     Never raises. A scope that cannot be read or parsed mutes nothing, the contract
     every reader on a launch path keeps: an unreadable config must not cost a session
     the servers the readable ones declare.
+
+    *scope_muted* is :func:`mcp_scope_muted_aliases` read once by a caller that
+    decides many servers in one pass (the KAS projection): the same files and the
+    same answer, without re-reading every scope for each server. ``None`` reads it.
     """
     if mcp_entry_is_muted(agent_entry):
         return True
     from kiro_crew.mcp_utils import mcp_server_alias
 
-    return mcp_server_alias(name) in mcp_scope_muted_aliases()
+    if scope_muted is None:
+        scope_muted = mcp_scope_muted_aliases()
+    return mcp_server_alias(name) in scope_muted
 
 
 def mcp_scope_muted_aliases() -> frozenset[str]:

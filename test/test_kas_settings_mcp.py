@@ -141,6 +141,19 @@ class TestUndeclaredFileServers:
         servers = {"own": {"command": "x"}, "scoped": {"command": "s"}}
         assert settings_mcp_mod.declared_servers({"mcpServers": servers}) == ["own"]
 
+    def test_the_config_scopes_are_read_once_for_every_declared_server(self, monkeypatch):
+        reads: list[int] = []
+
+        def scope_muted():
+            reads.append(1)
+            return frozenset({"scoped"})
+
+        monkeypatch.setattr(mcp_cleanup, "mcp_scope_muted_aliases", scope_muted)
+        servers = {f"s{i}": {"command": "x"} for i in range(5)} | {"scoped": {"command": "s"}}
+        declared = settings_mcp_mod.declared_servers({"mcpServers": servers})
+        assert declared == [f"s{i}" for i in range(5)]
+        assert len(reads) == 1
+
     def test_opted_in_agent_keeps_them_and_gets_their_glob_disabled_tools(self, home, work):
         _write(
             home / "mcp.json",
