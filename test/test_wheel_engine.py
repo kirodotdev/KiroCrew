@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -551,6 +552,17 @@ class TestFetchBytes:
         answer_with(monkeypatch, raising)
         with pytest.raises(WheelUpdateError, match="could not fetch"):
             wheel_engine._fetch_bytes("https://x.example/f", 10, 1)
+
+    def test_an_unreachable_host_is_named_with_the_cause(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def refused(req: object, timeout: float) -> object:
+            raise urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+
+        answer_with(monkeypatch, refused)
+        with pytest.raises(WheelUpdateError) as info:
+            wheel_engine._fetch_bytes("https://x.example/f", 10, 1)
+        assert str(info.value) == "could not fetch https://x.example/f: connection refused"
 
 
 class _LoopbackServer(HTTPServer):

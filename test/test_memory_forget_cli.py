@@ -441,6 +441,34 @@ class TestClient:
         with pytest.raises(client.ForgetRefused, match="dashboard Memory page"):
             client.forget_via_gateway(_KEY, expect_value_json='"vim"', superseded_by=None)
 
+    @pytest.mark.parametrize(
+        "step,error,expected",
+        [
+            (
+                "mint",
+                urllib.error.URLError(TimeoutError("timed out")),
+                "could not reach the gateway: timed out",
+            ),
+            (
+                "delete",
+                urllib.error.URLError(ConnectionRefusedError(111, "Connection refused")),
+                "the gateway stopped answering (connection refused); "
+                "check `kirocrew memory list`",
+            ),
+            (
+                "mint",
+                urllib.error.URLError(PermissionError(13, "Permission denied")),
+                "could not reach the gateway: <urlopen error [Errno 13] Permission denied>",
+            ),
+        ],
+        ids=["mint-timed-out", "delete-refused", "other-keeps-its-text"],
+    )
+    def test_a_lost_gateway_is_reported_with_the_cause(self, transport, step, error, expected):
+        transport[step] = error
+        with pytest.raises(client.ForgetRefused) as info:
+            client.forget_via_gateway(_KEY, expect_value_json='"vim"', superseded_by=None)
+        assert str(info.value) == expected
+
     def test_unconfirmed_answer_is_refused(self, transport):
         transport["delete"] = {"ok": False}
         with pytest.raises(client.ForgetRefused, match="did not confirm"):

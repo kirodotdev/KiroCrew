@@ -883,6 +883,8 @@ def _update_wheel(layout) -> None:
     if not feed_url.startswith("https://"):
         print(f"  ❌ Refusing non-HTTPS feed URL: {shown_feed_url}")
         sys.exit(1)
+    from kiro_crew.asset_downloader import network_failure_cause
+
     try:
         req = urllib.request.Request(feed_url, headers={"User-Agent": "kirocrew-update/1"})
         with urllib.request.urlopen(  # nosemgrep: dynamic-urllib-use-detected
@@ -890,7 +892,7 @@ def _update_wheel(layout) -> None:
         ) as resp:
             raw = resp.read(65536 + 1)
     except (urllib.error.URLError, OSError, ValueError) as e:
-        print(f"  ❌ Could not reach release feed: {e}")
+        print(f"  ❌ Could not reach release feed: {network_failure_cause(e) or e}")
         print("\n  To update manually, run:")
         print(f"    {wheel_update_command(channel)}")
         sys.exit(1)

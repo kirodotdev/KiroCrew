@@ -533,6 +533,43 @@ class TestUpdateWheelCli:
         assert "curl" in out  # shows manual command
         assert "cli.sh" in out
 
+    @pytest.mark.parametrize(
+        "reason,shown",
+        [
+            (ConnectionRefusedError(111, "Connection refused"), "connection refused"),
+            ("Network is down", "<urlopen error Network is down>"),
+        ],
+        ids=["refused", "other-keeps-its-text"],
+    )
+    def test_an_unreachable_feed_is_reported_with_the_cause(
+        self, monkeypatch, tmp_path, capsys, reason, shown
+    ) -> None:
+        monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+        monkeypatch.setattr("kiro_crew.platform.update_layout.distribution", lambda: "wheel")
+        monkeypatch.setattr("kiro_crew.platform.update_layout.data_home", lambda: tmp_path)
+        monkeypatch.delenv("KIROCREW_CDN_BASE", raising=False)
+        (tmp_path / "channel").write_text("stable\n")
+
+        import urllib.error
+
+        import kiro_crew.cli_server as cs
+        from kiro_crew.platform.update_layout import InstallLayout
+
+        layout = InstallLayout(
+            kind="wheel", proj="", is_git=False, is_externally_managed=False, guidance=""
+        )
+
+        def unreachable(*a, **k):
+            raise urllib.error.URLError(reason)
+
+        monkeypatch.setattr("urllib.request.urlopen", unreachable)
+
+        with pytest.raises(SystemExit):
+            cs._update_wheel(layout)
+        out = capsys.readouterr().out
+        assert f"  ❌ Could not reach release feed: {shown}\n" in out
+        assert "cli.sh" in out  # the manual command still follows
+
     def test_schema_mismatch_exits(self, monkeypatch, tmp_path, capsys) -> None:
         """Feed with wrong schema prints guidance and exits."""
         monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)

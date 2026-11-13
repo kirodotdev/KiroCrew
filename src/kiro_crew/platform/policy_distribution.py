@@ -109,6 +109,7 @@ import time
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Callable, Dict, Optional, Tuple
 
+from kiro_crew.asset_downloader import network_failure_cause
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry  # noqa: F401 - re-export
 from kiro_crew.bounded_read import bounded_read  # noqa: F401 - re-export
 from kiro_crew.config.paths import config_dir  # noqa: F401 - re-export
@@ -366,8 +367,9 @@ def refresh_now(*, force: bool = False) -> RefreshOutcome:
             incident="rejected",
         )
     except Exception as exc:
+        why = network_failure_cause(exc) or exc
         return _refresh_failure(
-            REFRESH_UNREACHABLE, dist, f"could not fetch {dist.source}: {exc}", incident="refresh"
+            REFRESH_UNREACHABLE, dist, f"could not fetch {dist.source}: {why}", incident="refresh"
         )
 
     # A 304 is answered against the CACHE's validators, and the cache is written by
