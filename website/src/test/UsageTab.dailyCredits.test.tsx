@@ -223,3 +223,21 @@ describe('UsageTab counts and dates in the app language', () => {
     expect((await rows())[0][0]).toBe('2026-02-30')
   })
 })
+
+describe('UsageTab period card activity line', () => {
+  it('uses the singular for one message and one tool call', async () => {
+    const u = usage([], null)
+    current = { ...u, sessions: { ...u.sessions, today: { sessions: 1, messages: 1, toolCalls: 1 } } }
+    mount()
+    expect(await screen.findByText('1 msg / 1 tool')).toBeInTheDocument()
+  })
+
+  it('picks the Russian plural form for each count', async () => {
+    onTestFinished(async () => { await i18next.changeLanguage('en') })
+    await i18next.changeLanguage('ru')
+    const u = usage([], null)
+    current = { ...u, sessions: { ...u.sessions, today: { sessions: 3, messages: 5, toolCalls: 2 } } }
+    mount()
+    expect(await screen.findByText('5 сообщ. / 2 инструмента')).toBeInTheDocument()
+  })
+})

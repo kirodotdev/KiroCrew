@@ -286,7 +286,10 @@ function PeriodCard({ label, p }: { label: string; p: { sessions: number; messag
       <div className="text-muted text-[13px] mb-1">{label}</div>
       <div className="text-2xl font-bold text-text">{fmtNumber(p.sessions)}</div>
       <div className="text-muted text-[12px] mt-1">
-        {fmtNumber(p.messages)} {i18nT('pages.overview.usageTab.msgs')} {fmtNumber(p.toolCalls)} {i18nT('pages.overview.usageTab.tools')}
+        {i18nT('pages.overview.usageTab.period_activity', {
+          messages: i18nT('pages.overview.usageTab.period_messages', { count: p.messages, n: fmtNumber(p.messages) }),
+          tools: i18nT('pages.overview.usageTab.period_tool_calls', { count: p.toolCalls, n: fmtNumber(p.toolCalls) }),
+        })}
       </div>
     </div>
   )
