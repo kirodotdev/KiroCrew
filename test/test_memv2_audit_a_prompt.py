@@ -574,7 +574,7 @@ def test_prompt_file_source_boundary(env, tmp_path, monkeypatch, reader, origin,
     assert body == ("" if case in {"escape", "symlink_escape"} else "INSIDE_PERSONA")
 
 
-def test_absolute_prompt_file_keeps_existing_reader_rules(env, tmp_path):
+def test_absolute_prompt_file_outside_the_project_is_refused_by_both_readers(env, tmp_path):
     from kiro_crew.member_essential_context import MemberEssentialContextError
 
     outside = tmp_path / "absolute-persona.txt"
@@ -583,10 +583,7 @@ def test_absolute_prompt_file_keeps_existing_reader_rules(env, tmp_path):
         json.dumps({"name": "absolute-template", "prompt": f"file://{outside}"}),
         encoding="utf-8",
     )
-    assert (
-        ContextBuilder._load_agent_prompt("absolute-template", str(env.project))
-        == "ABSOLUTE_PERSONA"
-    )
+    assert ContextBuilder._load_agent_prompt("absolute-template", str(env.project)) == ""
     with pytest.raises(MemberEssentialContextError, match="outside the admitted document root"):
         documents_for_member("absolute-template", str(env.project), include_project=False)
 
