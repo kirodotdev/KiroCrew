@@ -15914,6 +15914,7 @@
         "install_check_failed_can_still_switch": "No se pudo comprobar si esto está instalado en esta máquina. Aún puedes cambiar a este agente. Si no está instalado, la sesión lo indicará al iniciarse.",
         "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
+        "kiro_row_runs_on_kas": "Kiro CLI ahora se ejecuta en Kiro Agent. Las sesiones nuevas ya usan Kiro Agent, así que aquí no hay nada que cambiar.",
         "kiro_runs_on_kas": "Kiro CLI ahora se ejecuta en Kiro Agent, así que las sesiones nuevas ya lo usan. ¿Guardar Kiro Agent como tu ajuste?",
         "kiro_runs_on_kas_save": "Guardar Kiro Agent como mi ajuste",
         "kiro_runs_on_kas_saved": "Guardado: Kiro Agent.",

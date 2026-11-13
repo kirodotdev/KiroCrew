@@ -16315,6 +16315,7 @@
         "install_check_failed_can_still_switch": "Не удалось проверить, установлено ли это на данной машине. Переключиться на него всё равно можно. Если он не установлен, сеанс сообщит об этом при запуске.",
         "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
+        "kiro_row_runs_on_kas": "Kiro CLI теперь работает на Kiro Agent. Новые сеансы уже используют Kiro Agent, поэтому переключать здесь нечего.",
         "kiro_runs_on_kas": "Kiro CLI теперь работает на Kiro Agent, поэтому новые сеансы уже используют его. Сохранить Kiro Agent в настройке?",
         "kiro_runs_on_kas_save": "Сохранить Kiro Agent как мою настройку",
         "kiro_runs_on_kas_saved": "Сохранено: Kiro Agent.",

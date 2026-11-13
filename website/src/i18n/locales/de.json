@@ -15513,6 +15513,7 @@
         "install_check_failed_can_still_switch": "Es konnte nicht geprüft werden, ob dies auf diesem Rechner installiert ist. Du kannst trotzdem darauf umschalten. Fehlt es, sagt die Sitzung es beim Start.",
         "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
+        "kiro_row_runs_on_kas": "Kiro CLI läuft jetzt auf Kiro Agent. Neue Sitzungen nutzen Kiro Agent bereits, daher gibt es hier nichts umzuschalten.",
         "kiro_runs_on_kas": "Kiro CLI läuft jetzt auf Kiro Agent, daher nutzen neue Sitzungen es bereits. Kiro Agent als deine Einstellung speichern?",
         "kiro_runs_on_kas_save": "Kiro Agent als meine Einstellung speichern",
         "kiro_runs_on_kas_saved": "Gespeichert: Kiro Agent.",

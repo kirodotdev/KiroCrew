@@ -8441,6 +8441,7 @@
         "install_check_failed": "Could not check whether this is installed on this machine.",
         "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
+        "kiro_row_runs_on_kas": "Kiro CLI now runs on Kiro Agent. New sessions already use Kiro Agent, so there is nothing to switch here.",
         "kiro_runs_on_kas": "Kiro CLI now runs on Kiro Agent, so new sessions already use it. Save Kiro Agent as your setting?",
         "kiro_runs_on_kas_save": "Save Kiro Agent as my setting",
         "kiro_runs_on_kas_saved": "Saved: Kiro Agent.",
