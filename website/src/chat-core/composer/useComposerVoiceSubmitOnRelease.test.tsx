@@ -23,6 +23,7 @@ const fx = vi.hoisted(() => {
     level: 0, deviceLabel: '', deviceId: '', clearError: () => {}, partial: '',
     download: null, sampleRef: { current: {} }, switchDevice: () => {}, deviceSwitchIsLive: false,
     keptRecording: null, drainCancellable: false,
+    muted: false, setMuted: (_m: boolean): boolean => true,
   }
   const captured = { onText: null as unknown, opts: null as unknown }
   const polish = { fn: null as unknown }
@@ -48,10 +49,12 @@ vi.mock('../../api/client', () => ({
 }))
 
 import { useComposerVoice, _resetMicOwner } from './useComposerVoice'
+import { requestDictationMuteToggle } from '../../lib/dictationMute'
 
 function mount({ submit = true, streaming = false, polish = false } = {}) {
   const e = fx.engine
-  Object.assign(e, { recording: false, transcribing: false, transport: null, error: null, streamEnabled: streaming, sessionOwner: null })
+  Object.assign(e, { recording: false, transcribing: false, transport: null, error: null, streamEnabled: streaming, sessionOwner: null, muted: false })
+  e.setMuted = vi.fn((m: boolean) => { e.muted = m; return true })
   e.start = vi.fn(async () => { e.recording = true; e.transport = streaming ? 'stream' : 'batch'; e.sessionOwner = slot.current })
   // Streaming keeps draining after the stop; batch goes quiet until the
   // recorder's async onstop hands the blob to the transcriber.
@@ -422,5 +425,55 @@ describe('screen lock stops the recording as a draft', () => {
     expect(listeners).toHaveLength(1)
     t.view.unmount()
     expect(listeners).toHaveLength(0)
+  })
+
+  it('stops a muted recording as a draft too', async () => {
+    const t = mount({ submit: true })
+    await t.startRecording()
+    t.e.muted = true
+    t.render()
+    lock()
+    expect(t.e.stop).toHaveBeenCalledTimes(1)
+    t.batchAnswers('before the mute')
+    t.render(); t.render()
+    expect(t.onAutoSubmit).not.toHaveBeenCalled()
+  })
+})
+
+describe('mute shortcut', () => {
+  const press = () => act(() => { requestDictationMuteToggle() })
+
+  it('mutes, then unmutes, the recording this composer owns', async () => {
+    const t = mount()
+    await t.startRecording()
+    press()
+    t.render()
+    expect(t.e.setMuted).toHaveBeenLastCalledWith(true)
+    press()
+    t.render()
+    expect(t.e.setMuted).toHaveBeenLastCalledWith(false)
+  })
+
+  it('does nothing when nothing is recording', () => {
+    const t = mount()
+    press()
+    expect(t.e.setMuted).not.toHaveBeenCalled()
+  })
+
+  it('leaves a recording another composer owns to that composer', async () => {
+    const t = mount()
+    await t.startRecording()
+    t.e.sessionOwner = 'slot-b'
+    t.render()
+    press()
+    expect(t.e.setMuted).not.toHaveBeenCalled()
+  })
+
+  it('stops listening when the composer unmounts', async () => {
+    const t = mount()
+    await t.startRecording()
+    t.view.unmount()
+    press()
+    expect(t.e.setMuted).not.toHaveBeenCalled()
   })
 })

@@ -351,3 +351,21 @@ describe('transcript auto-scroll', () => {
     }
   })
 })
+
+describe('VoiceDictationPanel mute', () => {
+  it('says Muted and offers unmute while muted', () => {
+    const onToggleMute = vi.fn()
+    render(<VoiceDictationPanel sampleRef={sampleRef} value="" muted onToggleMute={onToggleMute} onSelectDevice={() => {}} />)
+    expect(screen.getByText('Muted')).toBeTruthy()
+    expect(screen.queryByText('Listening')).toBeNull()
+    const btn = screen.getByTestId('voice-mute-toggle')
+    expect(btn.getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(btn)
+    expect(onToggleMute).toHaveBeenCalledTimes(1)
+  })
+
+  it('drops the control once capture has ended', () => {
+    render(<VoiceDictationPanel sampleRef={sampleRef} value="" onToggleMute={() => {}} captureEnded onSelectDevice={() => {}} />)
+    expect(screen.queryByTestId('voice-mute-toggle')).toBeNull()
+  })
+})

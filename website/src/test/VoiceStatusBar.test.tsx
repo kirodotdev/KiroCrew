@@ -184,3 +184,28 @@ describe('VoiceStatusBar', () => {
     expect(onDismissError).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('VoiceStatusBar mute', () => {
+  const noop = () => {}
+  it('says Muted, keeps the timer, and offers unmute while muted', () => {
+    const onToggleMute = vi.fn()
+    render(<VoiceStatusBar recording level={0} muted onToggleMute={onToggleMute} onSelectDevice={noop} />)
+    expect(screen.getByText('Muted')).toBeTruthy()
+    expect(screen.queryByText('Recording')).toBeNull()
+    expect(screen.getByTestId('voice-recording-elapsed')).toBeTruthy()
+    const btn = screen.getByTestId('voice-mute-toggle')
+    expect(btn.getAttribute('aria-pressed')).toBe('true')
+    expect(btn.getAttribute('aria-label')).toBe('Unmute microphone')
+    fireEvent.click(btn)
+    expect(onToggleMute).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers mute while recording, and no control without a handler', () => {
+    const { unmount } = render(<VoiceStatusBar recording level={0.4} onToggleMute={noop} onSelectDevice={noop} />)
+    expect(screen.getByText('Recording')).toBeTruthy()
+    expect(screen.getByTestId('voice-mute-toggle').getAttribute('aria-label')).toBe('Mute microphone')
+    unmount()
+    render(<VoiceStatusBar recording level={0.4} onSelectDevice={noop} />)
+    expect(screen.queryByTestId('voice-mute-toggle')).toBeNull()
+  })
+})

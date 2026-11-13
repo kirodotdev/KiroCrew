@@ -228,6 +228,10 @@ export const SHORTCUT_REGISTRY: readonly ShortcutEntry[] = [
   // keydown.preventDefault() cannot cancel a composed character — this chord
   // fires from inside the composer, so it must not be able to leave one behind.
   { id: 'toggle-focus-mode', group: 'actions', dispatch: 'registry', defaults: both({ key: 'm', alt: true, shift: true }) },
+  // Mute or unmute the dictation in progress (lib/dictationMute). Fires from
+  // inside the composer, where dictation lands. Q is not a macOS dead key, so
+  // Option+Shift+Q leaves no composed character behind.
+  { id: 'toggle-dictation-mute', group: 'actions', dispatch: 'registry', defaults: both({ key: 'q', alt: true, shift: true }) },
   // ⌘O / Ctrl+O ("out") — pop the current session out to its own window, or
   // focus that window when it is already out (#28521): the keyboard twin of the
   // chat header's pop-out button. Not browser-reserved: a browser tab hands the
