@@ -901,7 +901,10 @@ def test_a_write_that_finishes_late_sheds_nothing():
     real_append = lg.CrewLog.append
 
     def _slow(self, *a, **kw):
-        release.wait(10.0)
+        # The emits below write inline on this thread, so the wait always runs out:
+        # the write returns late, which is the case under test. Nothing in the writer
+        # times an append, so how late does not change the path it takes.
+        release.wait(0.2)  # flake-ok: a deliberate late return, not a barrier
         return real_append(self, *a, **kw)
 
     with pytest.MonkeyPatch.context() as mp:

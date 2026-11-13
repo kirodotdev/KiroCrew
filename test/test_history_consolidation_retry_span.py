@@ -248,13 +248,20 @@ class TestRotationReleasesTheBudgetForNewContent:
         assert log.consolidation_retry_state(KEY)[0] == _CONSOLIDATION_MAX_ATTEMPTS
 
     @pytest.mark.asyncio
-    async def test_content_written_after_a_real_rotation_consolidates(self, tmp_path):
+    async def test_content_written_after_a_real_rotation_consolidates(self, tmp_path, monkeypatch):
         """End to end through the real rotation path, not a planted generation.
 
         The capped state is planted rather than accrued: when the abandon path's
         marker write SUCCEEDS it clears the accounting itself, so the state that
         survives a rotation is the one whose marker write was refused.
+
+        The rotation budgets are cut to a tenth (both are read from the facade at
+        rotation time), so the same rotation and the same pass loop run over a
+        tenth of the rows.
         """
+        max_bytes = _SESSION_MAX_BYTES // 10
+        monkeypatch.setattr(history_mod, "_SESSION_MAX_BYTES", max_bytes)
+        monkeypatch.setattr(history_mod, "_SESSION_KEEP_LINES", 20)
         log = _seed_log(tmp_path)
         c = _make_consolidator(log)
 
@@ -277,7 +284,7 @@ class TestRotationReleasesTheBudgetForNewContent:
             # test_history_consolidation_bounds.py); it is their NUMBER that
             # overflows the session file and triggers rotation.
             row = "r" * (_CONSOLIDATION_PROMPT_BUDGET_CHARS // 2)
-            rows_to_rotate = (_SESSION_MAX_BYTES // len(row)) + 4
+            rows_to_rotate = (max_bytes // len(row)) + 4
             for i in range(rows_to_rotate):
                 log.append(KEY, "user", f"{i}:{row}")
 
