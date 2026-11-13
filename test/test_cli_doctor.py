@@ -584,6 +584,16 @@ class TestUnresolvedMcpRefs:
         assert "codex has no mirror" in out
         assert "@kirocrew-core" in out
 
+    def test_pi_explains_which_sessions_get_spec_mcp_servers(self, monkeypatch, capsys):
+        self._arrange(monkeypatch, [("pi", ["@review"], False)])
+        cli_doctor._doctor_unresolved_mcp_refs()
+        out = " ".join(capsys.readouterr().out.split())
+        assert "pi needs a live session to check: '@review'" in out
+        assert "directly from the agent spec only in crewmate DMs" in out
+        assert "pooled broker stubs and Crew-owned Connections" in out
+        assert "A switched-off tool can withhold its entire server" in out
+        assert "Pi may load the same name from its own mcp.json" in out
+
     def test_the_no_mirror_verdict_claims_only_what_the_wire_proves(self, monkeypatch, capsys):
         """The static half hedges exactly as the runtime line does, on every backend.
 
