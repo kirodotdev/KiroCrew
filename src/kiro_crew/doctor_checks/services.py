@@ -26,7 +26,9 @@ if TYPE_CHECKING:
 def _doctor_managed_service_policy(issues: list[str]) -> None:
     """Surface installed service definitions that predate launch-class policy, and
     a loaded systemd unit that lags this build's (the lines `service status`
-    prints, :func:`kiro_crew.service.controller.stale_unit_notes`)."""
+    prints, :func:`kiro_crew.service.controller.stale_unit_notes`). A unit whose
+    ``Restart=`` is not ``always`` is warned about but is not an issue
+    (:func:`kiro_crew.service.controller.restart_policy_notes`)."""
     state = cli_doctor.service_controller.installed_service_has_managed_marker()
     if state is None:
         return
@@ -42,6 +44,8 @@ def _doctor_managed_service_policy(issues: list[str]) -> None:
         print(f"  unit:        ⚠️  {note}")
     if notes:
         issues.append("managed service unit lags this build")
+    for note in cli_doctor.service_controller.restart_policy_notes():
+        print(f"  restart:     ⚠️  {note}")
 
 
 def _doctor_pod_session_bus(issues: list[str]) -> None:
