@@ -175,8 +175,8 @@ class TestTransportAdmissionSpool:
         """The ingested *text* inlines temp paths and file contents.
 
         Both refusal points -- the admission gate and a SessionClosingError at
-        dispatch -- must record what the user sent and how many files it had,
-        never the turn's prompt.
+        dispatch -- must record what the user sent, how many files it had and
+        their names, never the turn's prompt.
         """
         from kiro_crew.session_allocation import SessionClosingError
 
@@ -200,22 +200,37 @@ class TestTransportAdmissionSpool:
             monkeypatch.setattr(transport_dispatch, "spool_refused_turn", spool)
             monkeypatch.setattr(transport_dispatch, "_is_slack_restricted", lambda _key: False)
 
-        _run_transport(monkeypatch, spool_text="look at this", spool_attachments=2)
+        _run_transport(
+            monkeypatch,
+            spool_text="look at this",
+            spool_attachments=2,
+            spool_attachment_names=("shot.png", ""),
+        )
 
         assert len(routes) == 1
         assert routes[0].text == "look at this"
         assert routes[0].attachments_dropped == 2
+        assert routes[0].attachment_names == ("shot.png", "")
 
     @pytest.mark.parametrize(
-        ("extra", "text", "dropped"),
+        ("extra", "text", "dropped", "names"),
         [
-            ({"spool_text": "look at this", "spool_attachments": 2}, "look at this", 2),
+            (
+                {
+                    "spool_text": "look at this",
+                    "spool_attachments": 2,
+                    "spool_attachment_names": ("shot.png", ""),
+                },
+                "look at this",
+                2,
+                ("shot.png", ""),
+            ),
             # No pre-ingestion capture (interaction re-dispatch): text as is.
-            ({}, "approve the plan", 0),
+            ({}, "approve the plan", 0, ()),
         ],
     )
     def test_native_admission_spools_the_pre_ingestion_message(
-        self, monkeypatch, extra, text, dropped
+        self, monkeypatch, extra, text, dropped, names
     ):
         turn_text = (
             "hello\n/tmp/kiro-attach-dead.png\n\n[File: notes.txt]\nbody"
@@ -253,6 +268,7 @@ class TestTransportAdmissionSpool:
         assert len(routes) == 1
         assert routes[0].text == text
         assert routes[0].attachments_dropped == dropped
+        assert routes[0].attachment_names == names
 
     def test_session_closing_does_not_spool_restricted_slack_turn(self, monkeypatch, caplog):
         from kiro_crew.session_allocation import SessionClosingError
