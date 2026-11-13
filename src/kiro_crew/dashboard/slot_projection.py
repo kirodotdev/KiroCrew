@@ -303,6 +303,7 @@ class SlotProjection:
         parse_cls_meta: Callable[[str], dict | None],
         is_turn_interrupted: Callable[[list[dict]], bool],
         is_interruption_stale: Callable[[list[dict], float], bool],
+        newest_error_is_sign_in: Callable[[list[dict]], bool],
         is_system_notice: Callable[[str, dict], bool],
         latest_transcript_ts: Callable[..., str | None],
         last_message_preview: Callable[[str], str],
@@ -416,6 +417,8 @@ class SlotProjection:
         # Still `interrupted` for the row and the composer; only the bulk Resume
         # leaves it out (the sidebar's count and `collect_interrupted_idle`).
         interrupted_stale = interrupted and is_interruption_stale(rows, time.time())
+        # The row then names the sign-in first, as the composer's hint does.
+        interrupted_by_sign_in = interrupted and newest_error_is_sign_in(rows)
 
         pending_approval_info: dict[str, str] | None = None
         if slot_pending:
@@ -579,6 +582,7 @@ class SlotProjection:
             "needs_input": needs_input,
             "interrupted": interrupted,
             "interrupted_stale": interrupted_stale,
+            "interrupted_by_sign_in": interrupted_by_sign_in,
             "stop_state": slot._stop_state,
             "wait_state": slot._wait_state,
             "created": slot.created_at,

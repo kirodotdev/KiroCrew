@@ -14335,6 +14335,7 @@
       "could_not_repair_images": "ছবিগুলো মেরামত করা যায়নি"
     },
     "chatSidebar": {
+      "sign_in_then_resume": "সাইন ইন করো, তারপর ‘পুনরায় শুরু করো’",
       "needsMeCard": {
         "card_label": "{{title}}: তোমাকে দরকার",
         "recap": "সারাংশ",

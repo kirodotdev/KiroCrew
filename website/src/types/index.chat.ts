@@ -427,6 +427,9 @@ export interface ChatSlot extends TurnIdentityFields {
    * button. Always false while `running`. Lets the sidebar stop rendering a
    * goal-loop session as actively working when it is actually stalled. */
   interrupted?: boolean
+  /** The interrupted turn ended on a sign-in error with nothing after it
+   * (`newest_error_is_sign_in`), so the sidebar row names the sign-in first. */
+  interrupted_by_sign_in?: boolean
   /** A loop wake is opening the running turn and its row is not in the
    * transcript yet (a structured monitor writes it only once the runner
    * accepts the turn). Only ever true while `running`; absent from an older

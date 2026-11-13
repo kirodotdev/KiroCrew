@@ -14001,6 +14001,7 @@
       "could_not_repair_images": "이미지를 복구하지 못했습니다"
     },
     "chatSidebar": {
+      "sign_in_then_resume": "로그인한 다음 ‘재개’",
       "needsMeCard": {
         "card_label": "{{title}}: 처리가 필요합니다",
         "recap": "요약",

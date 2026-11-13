@@ -14669,6 +14669,7 @@
       "could_not_repair_images": "Impossibile riparare le immagini"
     },
     "chatSidebar": {
+      "sign_in_then_resume": "Accedi, poi Riprendi",
       "needsMeCard": {
         "card_label": "{{title}}: ha bisogno di te",
         "recap": "Riepilogo",

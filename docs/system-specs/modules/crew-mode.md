@@ -2458,7 +2458,11 @@ sign-in error (`auth_required`) is not one of them: the press works once the
 sign-in lands, so the composer keeps Resume and only its placeholder changes,
 to "Last turn needs a sign-in -- follow the message above, then press Resume or
 send your message again" (`authRequiredIsNewest`, read by ChatPage, `ChatPane`
-and a crew's window). A
+and a crew's window). That chat's sidebar row reads "Turn interrupted · Sign
+in, then Resume", from the slot summary's `interrupted_by_sign_in`: the browser
+holds no transcript for a chat that is not open, so the gateway answers the same
+question (`newest_error_is_sign_in`), and
+`test/fixtures/sign_in_newest_rows.json` holds both to one table. A
 split-view pane of an ordinary chat is the same `ChatPane` and offers the same
 Resume.
 

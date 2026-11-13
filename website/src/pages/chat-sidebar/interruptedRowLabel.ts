@@ -18,11 +18,13 @@ import type { Slot } from './types'
  *
  *  While a Resume-all run this tab waits on has not reached the session yet,
  *  the line says it is waiting rather than inviting a press the run is about
- *  to make. */
+ *  to make. A turn that ended on a sign-in error names the sign-in first, as
+ *  the composer's hint does; it stays true once the sign-in lands. */
 export function useInterruptedRowLabel(s: Slot): string {
   const waiting = useResumeAllWaiting(s.key)
   const interrupted = i18nT('pages.chat.recoveryCard.turn_interrupted')
-  const next = waiting ? i18nT('pages.chatSidebar.resume_all_waiting') : i18nT('components.chatInput.resume')
+  const resume = s.interrupted_by_sign_in ? i18nT('pages.chatSidebar.sign_in_then_resume') : i18nT('components.chatInput.resume')
+  const next = waiting ? i18nT('pages.chatSidebar.resume_all_waiting') : resume
   const label = slotIsRemoteBound(s) ? interrupted : `${interrupted} · ${next}`
   return label
 }
