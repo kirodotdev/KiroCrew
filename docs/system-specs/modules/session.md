@@ -1074,6 +1074,12 @@ turn semaphore, so without this recycle one-liner traffic (titles, nav labels,
 folder icons, summaries) would grow the shared conversation unboundedly, with
 no context criterion ever evaluated. A runtime handle's session is
 ephemeral and carries no marker, so it is not followed by a recycle.
+A `background_turn(fresh_conversation=True)` on `_bg` (the skill dedupe and merge
+judges) replaces this recycle only when the provider swaps conversations in place
+(`swaps_conversation_in_place`). On a backend outside `_bg_runtime_backends()`,
+`_bg` is the entry those `_ProviderBgSession` handles wait on, and
+`_start_fresh_conversation`'s reset fallback would pop it under them, so a `_bg`
+that cannot swap in place recycles here as before.
 
 ### Multiplexed _bg runtime
 

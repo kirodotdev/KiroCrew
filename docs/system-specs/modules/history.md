@@ -2905,7 +2905,12 @@ the extraction turn carries text and no image data.
 
 The separate session removes semaphore contention between long extraction turns
 and short `_bg` metadata jobs; cheap dedupe and merge judges remain on `_bg`.
-It can idle-expire and is recreated on demand without native session-map resume.
+Their prompts are self-contained, so both pass `fresh_conversation=True` and
+each judge leaves `_bg` on an empty conversation where its provider swaps
+conversations in place; elsewhere `_bg` recycles as before (see
+[session](session.md)).
+The extraction session can idle-expire and is recreated on demand without
+native session-map resume.
 Active turns hold the existing session semaphore and survive idle cleanup.
 The session semaphore queues jobs, and every job starts on an empty conversation:
 `_call_llm` asks `background_turn` for `fresh_conversation=True`, which, before
