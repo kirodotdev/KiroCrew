@@ -190,7 +190,6 @@ class TestValidateConfigData:
         data = {"agent": {"provider": "acp"}}
         assert validation.validate_config_data(data) is data
 
-    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
     def test_unrecognized_top_level_key_warns(self, caplog: pytest.LogCaptureFixture) -> None:
         # Warnings must land on the loader's logger channel, not validation's
         # own __name__ logger (preserves the observable contract).
@@ -198,7 +197,6 @@ class TestValidateConfigData:
             validation.validate_config_data({"totally_unknown_key": 1})
         assert any("unrecognized top-level keys" in r.message for r in caplog.records)
 
-    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
     def test_save_stamped_meta_key_is_not_reported_as_unrecognized(
         self,
         caplog: pytest.LogCaptureFixture,
@@ -214,7 +212,6 @@ class TestValidateConfigData:
             validation.validate_config_data(data)
         assert not [r for r in caplog.records if "unrecognized top-level keys" in r.message]
 
-    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
     def test_genuinely_unknown_key_still_warns_alongside_meta(
         self,
         caplog: pytest.LogCaptureFixture,
@@ -231,7 +228,6 @@ class TestValidateConfigData:
         # getLogger(__name__) refactor is caught.
         assert validation.logger.name == "kiro_crew.config.loader"
 
-    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
     def test_enum_violation_warns_and_strips_value(self, caplog: pytest.LogCaptureFixture) -> None:
         # agent.provider is an enum field; an out-of-enum value must be warned
         # about and stripped in-place so the loader falls back to the default.
@@ -242,7 +238,6 @@ class TestValidateConfigData:
         # the invalid value was removed (so the dataclass default applies)
         assert "provider" not in data.get("agent", {})
 
-    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
     def test_type_mismatch_warns_and_strips_value(self, caplog: pytest.LogCaptureFixture) -> None:
         # session.timeout_secs is an integer field; a string value is a type
         # mismatch that must be warned about and stripped.
@@ -252,7 +247,6 @@ class TestValidateConfigData:
         assert any("type mismatch" in r.message for r in caplog.records)
         assert "timeout_secs" not in data.get("session", {})
 
-    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
     @pytest.mark.parametrize("spelling", ["false", "True", " off ", "1"])
     def test_a_quoted_boolean_still_reads_as_the_default_and_names_the_fix(
         self, caplog: pytest.LogCaptureFixture, spelling: str
@@ -265,7 +259,6 @@ class TestValidateConfigData:
         messages = [r.getMessage() for r in caplog.records if "agent.streaming" in r.getMessage()]
         assert any("write true or false without quotes" in m for m in messages)
 
-    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
     def test_a_non_boolean_string_on_a_boolean_field_gets_no_quoted_hint(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -276,7 +269,6 @@ class TestValidateConfigData:
         assert messages
         assert not any("without quotes" in m for m in messages)
 
-    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
     def test_sensitive_value_is_masked_in_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         # A type violation on a sensitive field must not echo the raw value into
         # logs — _mask_value renders it as "***".
@@ -286,7 +278,6 @@ class TestValidateConfigData:
         assert validation._is_sensitive_path(schema, "agent.secret") is True
         assert validation._mask_value("super-secret-token", sensitive=True) == '"***"'
 
-    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
     def test_log_level_is_uppercased_before_validation(self) -> None:
         # Case-insensitive enum normalization (step 3) upppercases log_level so a
         # lowercase value validates instead of being stripped as an enum miss.
@@ -294,7 +285,6 @@ class TestValidateConfigData:
         validation.validate_config_data(data)
         assert data["agent"]["log_level"] == "DEBUG"
 
-    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
     def test_legacy_numeric_strings_are_normalized_before_validation(self) -> None:
         data = {
             "session": {"pool_size": "5"},

@@ -37,7 +37,6 @@ _BLAS_VARS = ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS")
     ["kiro_crew.mcp_dashboard", "kiro_crew.mcp_core", "kiro_crew.mcp_cron"],
 )
 def test_importing_mcp_server_does_not_load_numpy(module: str, tmp_path: Path) -> None:
-    pytest.importorskip("numpy")
     code = (
         "import sys, importlib; "
         f"importlib.import_module({module!r}); "

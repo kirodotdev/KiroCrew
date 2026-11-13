@@ -143,7 +143,7 @@ def test_bucket_prefixes_match_ci_changes_job(gate) -> None:
     report the wrong surface. Parse the workflow's ``filters:`` block and
     assert set equality, so any divergence — either direction — fails here.
     """
-    yaml = pytest.importorskip("yaml")
+    import yaml
     workflow = yaml.safe_load(_CI_WORKFLOW.read_text(encoding="utf-8"))
     filter_step = next(
         step

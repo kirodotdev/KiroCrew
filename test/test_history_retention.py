@@ -250,9 +250,6 @@ class TestArchiveDashboardAPI:
 
     @staticmethod
     def _make_app():
-        import pytest
-
-        pytest.importorskip("aiohttp")
         from aiohttp import web
 
         from kiro_crew.dashboard.handlers import (

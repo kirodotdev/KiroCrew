@@ -22,8 +22,6 @@ from kiro_crew.knowledge.embedder import floats_to_bytes
 from kiro_crew.knowledge.retrieval import ANY_EMBEDDING_SPACE, HybridRetriever
 from kiro_crew.knowledge.store import KnowledgeStore
 
-pytest.importorskip("numpy")
-
 _DIM = 8
 
 

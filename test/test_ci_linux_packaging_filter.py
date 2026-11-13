@@ -17,8 +17,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
-
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _CI_WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
 _BUCKET = "linux_packaging"
@@ -26,7 +24,8 @@ _RELATIVE_REQUIRE = re.compile(r"""require\(\s*["'](\.{1,2}/[^"']+)["']\s*\)""")
 
 
 def _bucket_patterns() -> list[str]:
-    yaml = pytest.importorskip("yaml")
+    import yaml
+
     workflow = yaml.safe_load(_CI_WORKFLOW.read_text(encoding="utf-8"))
     filter_step = next(
         step
