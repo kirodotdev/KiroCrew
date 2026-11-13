@@ -11614,6 +11614,8 @@
       "all_apps": "すべてのアプリ",
       "app_other": "{{count}} アプリ",
       "backend_refused_notice": "{{name}} のバックエンドは起動しませんでした: {{reason}}",
+      "action_warnings_disabled": "{{name}} は無効になりましたが、完了しなかった手順があります。詳細: {{warnings}}",
+      "action_warnings_enabled": "{{name}} は有効になりましたが、完了しなかった手順があります。詳細: {{warnings}}",
       "built_in_kirocrew": "ビルトイン · kirocrew",
       "cancel": "キャンセル",
       "category": "カテゴリー",

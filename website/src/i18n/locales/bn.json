@@ -11873,6 +11873,8 @@
       "app_one": "{{count}}টি অ্যাপ",
       "app_other": "{{count}}টি অ্যাপ",
       "backend_refused_notice": "{{name}}-এর ব্যাকএন্ড শুরু হয়নি: {{reason}}",
+      "action_warnings_disabled": "{{name}} বন্ধ হয়েছে, কিন্তু সব ধাপ শেষ হয়নি। বিস্তারিত: {{warnings}}",
+      "action_warnings_enabled": "{{name}} চালু হয়েছে, কিন্তু সব ধাপ শেষ হয়নি। বিস্তারিত: {{warnings}}",
       "built_in_kirocrew": "বিল্ট-ইন · kirocrew",
       "cancel": "বাতিল",
       "category": "বিভাগ",

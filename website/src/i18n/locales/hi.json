@@ -11873,6 +11873,8 @@
       "app_one": "{{count}} ऐप",
       "app_other": "{{count}} ऐप",
       "backend_refused_notice": "{{name}} का बैकएंड शुरू नहीं हुआ: {{reason}}",
+      "action_warnings_disabled": "{{name}} बंद हो गया है, लेकिन सभी चरण पूरे नहीं हुए। विवरण: {{warnings}}",
+      "action_warnings_enabled": "{{name}} चालू हो गया है, लेकिन सभी चरण पूरे नहीं हुए। विवरण: {{warnings}}",
       "built_in_kirocrew": "अंतर्निहित · kirocrew",
       "cancel": "रद्द करें",
       "category": "श्रेणी",

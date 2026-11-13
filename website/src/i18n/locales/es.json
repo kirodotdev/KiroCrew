@@ -12132,6 +12132,8 @@
       "app_one": "{{count}} app",
       "app_other": "{{count}} apps",
       "backend_refused_notice": "El backend de {{name}} no se inició: {{reason}}",
+      "action_warnings_disabled": "{{name}} está desactivada, pero no todos los pasos se completaron. Detalles: {{warnings}}",
+      "action_warnings_enabled": "{{name}} está activada, pero no todos los pasos se completaron. Detalles: {{warnings}}",
       "built_in_kirocrew": "Integrada · kirocrew",
       "cancel": "Cancelar",
       "category": "Categoría",
