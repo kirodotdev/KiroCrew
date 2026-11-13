@@ -65,6 +65,32 @@
         "route": "/pptx-maker",
         "icon": "Presentation"
       }
+    },
+    {
+      "name": "issue-radar",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-issue-radar",
+      "commit": "8bc24aa29e7122cb5c67dbcaa7e1343d0e9200fb",
+      "version": "0.1.1",
+      "treeSha256": "3396cb31b4fb03e959f669530d9b6ac4ef43333f75d599e1cb52e99f19a17133",
+      "archiveSha256": "d6b17832674b0b740ed46ef870db1927543eab334bd4498c295da867aa8f1805",
+      "minAppSdkLevel": 2,
+      "legacyNav": {
+        "route": "/issue-radar",
+        "icon": "Radar"
+      }
+    },
+    {
+      "name": "auto-improvement",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-auto-improvement",
+      "commit": "a20e767f7a06260d1dc9eda4b3b97cd213bad812",
+      "version": "1.0.2",
+      "treeSha256": "69854e694e4dd3e641261a4b34921ed11c2bdfb327f1b53a2bfa61f30ea11720",
+      "archiveSha256": "f24cfaada4700b2578d4fbed110b98a2430fa6f3c92584898caff594fde41ef6",
+      "minAppSdkLevel": 2,
+      "legacyNav": {
+        "route": "/auto-improvement",
+        "icon": "Brain"
+      }
     }
   ]
 }
