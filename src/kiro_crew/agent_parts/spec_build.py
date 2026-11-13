@@ -32,6 +32,7 @@ if TYPE_CHECKING:
         loads_user_json,
         logger,
         managed_mcp,
+        platform_spec_hooks,
         redact_log,
         safe_context_call,
         saved_command_casing,
@@ -588,7 +589,7 @@ def build_agent_config(*, gated_off: "frozenset[str] | None" = None) -> dict:
     # Strip Kiro Crew-internal keys (auto_approve_tools etc.) that kiro-cli  # brand-ok
     # rejects. _VALID_HOOK_EVENTS already unions in every non-internal bundled
     # event key, so this never drops a new event added to bundled defaults.
-    config["hooks"] = kiro_hooks._kiro_hooks_only(bundled_hooks)
+    config["hooks"] = platform_spec_hooks(kiro_hooks._kiro_hooks_only(bundled_hooks))
 
     # Strip the retired deniedCommands/autoAllowReadonly injection so a config
     # merged from a stale project defaults.json or user override cannot carry it.

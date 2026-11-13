@@ -303,6 +303,7 @@ from kiro_crew.sel import (  # circular import: sel imports config which imports
     SecurityEvent,
     sel,
 )
+from kiro_crew.shell_audit_log import platform_spec_hooks
 from kiro_crew.user_json import loads_user_json
 from kiro_crew.validation import is_registered_agent_name
 
@@ -1347,7 +1348,7 @@ def _refresh_dynamic_fields(
     bundled_hooks = bundled.get("hooks")
     if not bundled_hooks:
         raise RuntimeError("Cannot refresh security fields: hooks missing from bundled defaults")
-    config["hooks"] = kiro_hooks._kiro_hooks_only(bundled_hooks)
+    config["hooks"] = platform_spec_hooks(kiro_hooks._kiro_hooks_only(bundled_hooks))
 
     # Upgrade cleanup: drop the retired deniedCommands/autoAllowReadonly that an
     # older build injected into this existing config, so kiro-cli stops enforcing

@@ -104,6 +104,9 @@ class _Rig:
         monkeypatch.setattr(agent, "_KIRO_MCP_JSON", self.kiro_mcp)
         monkeypatch.setattr(agent, "_DEFAULT_KIRO_HOOKS_DIR", self.hooks_dir)
         monkeypatch.setattr(agent, "sel", lambda: _SelRecorder(self.events))
+        # The goldens are the POSIX hooks; the Windows audit-hook form is pinned
+        # by test_default_audit_hook_windows.py.
+        monkeypatch.setattr(agent, "platform_spec_hooks", lambda hooks: hooks)
         monkeypatch.setattr(
             "kiro_crew.apps.bridges._mcp_json_path", lambda: self.agents / "kirocrew.json"
         )
