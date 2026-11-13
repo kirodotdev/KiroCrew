@@ -80,7 +80,9 @@ class TestForgetCache:
 
 
 class _FakeRequest:
-    """Minimal stand-in: neither handler reads anything off the request."""
+    """Minimal stand-in: the listing reads only ``app`` (no ``state``) off the request."""
+
+    app: dict[str, Any] = {}
 
 
 @pytest.fixture()

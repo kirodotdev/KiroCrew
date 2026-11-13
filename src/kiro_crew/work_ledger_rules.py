@@ -94,7 +94,11 @@ def _require_acceptance(value: Any) -> dict[str, Any]:
             "acceptance must be an object", code=CODE_INVALID_VALUE, field="acceptance"
         )
     try:
-        serialized = json.dumps(value, ensure_ascii=False)
+        # allow_nan=False: NaN/Infinity would serialise to bare `NaN`/`Infinity`
+        # tokens that no strict JSON reader (the browser's JSON.parse on the Crew
+        # board) accepts, so they are not storable, not an interpretation of the
+        # contents.
+        serialized = json.dumps(value, ensure_ascii=False, allow_nan=False)
     except (TypeError, ValueError) as exc:
         raise WorkLedgerError(
             f"acceptance must be JSON-serialisable: {exc}",

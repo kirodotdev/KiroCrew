@@ -26,6 +26,9 @@ class TestManagedServicePolicyDoctor:
     def _no_loaded_unit_lag(self, _floor_monkeypatch):
         """The loaded-unit read asks the host's systemd; each test names its answer."""
         _floor_monkeypatch.setattr(cli_doctor.service_controller, "stale_unit_notes", lambda: [])
+        _floor_monkeypatch.setattr(
+            cli_doctor.service_controller, "restart_policy_notes", lambda: []
+        )
 
     def test_no_service_is_silent(self, monkeypatch, capsys):
         monkeypatch.setattr(
@@ -75,6 +78,20 @@ class TestManagedServicePolicyDoctor:
         cli_doctor._doctor_managed_service_policy(issues)
         assert f"unit:        ⚠️  {note}" in capsys.readouterr().out
         assert issues == ["managed service unit lags this build"]
+
+    def test_a_restart_policy_other_than_always_warns_without_an_issue(self, monkeypatch, capsys):
+        note = (
+            "kirocrew.service (system scope): the loaded unit has `Restart=on-failure`, "
+            "...: re-run `sudo kirocrew service install` to re-render it"
+        )
+        monkeypatch.setattr(
+            cli_doctor.service_controller, "installed_service_has_managed_marker", lambda: True
+        )
+        monkeypatch.setattr(cli_doctor.service_controller, "restart_policy_notes", lambda: [note])
+        issues: list[str] = []
+        cli_doctor._doctor_managed_service_policy(issues)
+        assert f"restart:     ⚠️  {note}" in capsys.readouterr().out
+        assert issues == []
 
 
 class TestFixHint:

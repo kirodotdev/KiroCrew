@@ -9,10 +9,19 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from test_kas_login_service import _begin_oidc, _oidc_auth, _service
+from test_kas_login_service import _begin_oidc, _oidc_auth, _service, _viewer_config
 
 from kiro_crew.auth.login import builder_id
+from kiro_crew.auth.login.endpoints import (
+    OIDC_SCOPES,
+    OIDC_SCOPES_EXTRA_KEY,
+    oidc_scopes,
+)
 from kiro_crew.auth.store import KasToken, TokenStore
+
+# A made-up prefix: the tests never name a real non-prod one.
+_TEST_PREFIX = "test_prefix"
+_TEST_SCOPES = oidc_scopes(_TEST_PREFIX)
 
 
 def _store_oidc_sign_in(tmp_path, identity: str, *, region: str, lapses_in: int | None) -> None:
@@ -97,7 +106,7 @@ async def test_a_refused_stored_registration_is_replaced_but_a_refused_start_url
         "StartDeviceAuthorization failed: HTTP 401 invalid_client"
     )
 
-    async def _register(region, *, session):
+    async def _register(region, *, session, **_k):
         registered.append(region)
         return builder_id.RegisteredClient(client_id="cid-1", client_secret="csec-1")
 
@@ -116,3 +125,49 @@ async def test_a_refused_stored_registration_is_replaced_but_a_refused_start_url
     with pytest.raises(builder_id.StartUrlRejectedError):
         await service.begin_device("idc", start_url=acme)
     assert registered == ["us-east-1"]
+
+
+@pytest.mark.parametrize(
+    "stored_scopes, prefixed, reused",
+    [
+        (None, True, False),  # a prod registration is not reused under a prefix
+        (list(_TEST_SCOPES), False, False),  # nor a prefixed one for prod
+        (list(_TEST_SCOPES), True, True),
+        (None, False, True),  # prod reuse unchanged
+    ],
+    ids=["public-to-prefixed", "prefixed-to-public", "prefixed-kept", "public-kept"],
+)
+@pytest.mark.asyncio
+async def test_a_registration_is_reused_only_for_the_scopes_it_was_made_with(
+    tmp_path, monkeypatch, stored_scopes, prefixed, reused
+):
+    _store_oidc_sign_in(tmp_path, "identity_center", region="us-east-1", lapses_in=30 * 86400)
+    if stored_scopes is not None:
+        store = TokenStore(tmp_path)
+        entry = store.load("identity_center")
+        assert entry is not None
+        entry.extra[OIDC_SCOPES_EXTRA_KEY] = stored_scopes
+        store.save(entry)
+    _viewer_config(
+        monkeypatch,
+        enabled=True,
+        url="https://management.gamma.kiro.example",
+        prefix=_TEST_PREFIX if prefixed else "",
+    )
+    service, _ = _service(tmp_path)
+    registered: list[tuple[str, ...]] = []
+
+    async def _register(region, *, session, scopes):
+        registered.append(scopes)
+        return builder_id.RegisteredClient("cid-1", "csec-1", scopes=scopes)
+
+    async def _start(client, *, region, start_url, session):
+        return _oidc_auth()
+
+    monkeypatch.setattr(builder_id, "register_client", _register)
+    monkeypatch.setattr(builder_id, "start_device_authorization", _start)
+    begin = await service.begin_device("idc", start_url="https://acme.awsapps.com/start")
+    client = service._pending[begin["login_id"]].client
+    want = _TEST_SCOPES if prefixed else OIDC_SCOPES
+    assert client.client_id == ("cid-stored" if reused else "cid-1")
+    assert registered == ([] if reused else [want])

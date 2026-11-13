@@ -1577,6 +1577,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _read_terminal_config,
     )
     from kiro_crew.dashboard.handlers.terminal_transport import (  # noqa: F401
+        _CSI_QUERIES,
         _OWNER_CONTROL_SEND_TIMEOUT_S,
         _SCROLLBACK_MAX,
         _STALE_OWNER_ERROR_CODE,
@@ -1586,6 +1587,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _TAKEOVER_REPLAY_SEND_TIMEOUT_S,
         _TERMINAL_WS_CLEANUP_TIMEOUT_S,
         _consume_ready_marker,
+        _csi_query_end,
+        _is_colour_query,
+        _string_end,
+        _strip_terminal_queries,
         _write_all,
     )
 

@@ -389,14 +389,6 @@ _CREW_SECRET_LEAVES: list[str] = [
     # dir is gated (like ``profiles``/``run``) so future trust-root material is
     # covered without a new entry. sel_trust_root.py opens the key directly, not through
     # this gate.
-    #
-    # Spec Builder's decision record (``trust/spec-builder-decisions.json``) relies
-    # on that whole-directory gating. The app refuses a second answer for a decision
-    # it has recorded, so an agent able to write the file could erase an entry to
-    # make a settled decision answerable again, or forge one to lock a decision the
-    # user never answered. Gating the leaf alone was not enough: its parent under
-    # ``workspace/`` was itself replaceable with one ``ln -s``, and the app opens the
-    # path directly (as keystone writers must), so it would have followed the link.
     "trust",
     # Retained V1 member-memory binding records. The leaf name says "bindings",
     # but a binding FILE carries the RAW session key it binds: a record on disk
@@ -1262,15 +1254,7 @@ _WRITE_PROTECTED_HOME_PATHS += [
     f"{prefix}/app-sources"
     for prefix in _CREW_HOME_PREFIXES
 ]
-_WRITE_PROTECTED_HOME_PATHS += [
-    # The Meetings app's per-meeting user notes and their pasted images: free text
-    # the user cannot regenerate, kept outside the meeting directory every meeting
-    # agent may ``fs_write``. Write-only on purpose: the dashboard serves the images
-    # through ``/api/file-raw``, which applies the READ floor. The app backend opens
-    # these files directly and never routes through this gate.
-    f"{prefix}/apps/meetings/data/notes"
-    for prefix in _CREW_HOME_PREFIXES
-]
+# An app's own write-only directories come from its ``agentReadOnlyDirs`` (paths.py).
 
 
 # ── kiro-cli agent-spec directory (~/.kiro/agents) ──

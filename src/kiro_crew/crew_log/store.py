@@ -159,6 +159,7 @@ from kiro_crew.crew_log.store_retention import (  # noqa: F401
     sweep_expired,
 )
 from kiro_crew.crew_log.store_segment_reads import (  # noqa: F401
+    _SEEK_SPAN,
     _TAIL_WINDOW,
     _anchor_exists,
     _Bounded,
@@ -166,6 +167,7 @@ from kiro_crew.crew_log.store_segment_reads import (  # noqa: F401
     _has_content,
     _iter_entries,
     _iter_entries_located,
+    _offset_below,
     _parses_to_object,
     _read_first_entry_seq,
     _read_header_line,

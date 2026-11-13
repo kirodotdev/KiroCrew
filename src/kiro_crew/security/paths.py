@@ -389,6 +389,9 @@ def sensitive_write_path_refusal(path_str: str, base_dir: str | None = None) -> 
         matched = _path_in_home_dirs(
             path_str, _SENSITIVE_HOME_DIRS + _WRITE_PROTECTED_HOME_PATHS, base_dir, strict=True
         ) or _is_keystone_publish_artifact(path_str, base_dir, strict=True)
+        matched = matched or _path_in_home_dirs(
+            path_str, _app_readonly_dir_rows(), base_dir, strict=True
+        )
         matched = matched or _native_store_write(path_str, base_dir)
         matched = matched or _install_root_write(path_str, base_dir)
     except PathResolutionStalled as exc:
@@ -510,9 +513,9 @@ def write_protected_home_paths() -> tuple[str, ...]:
     """Public, read-only view of the write-only-protected home-relative paths.
 
     Companion to :func:`sensitive_home_dirs` — these stay readable but must not
-    be written by an agent tool.
+    be written by an agent tool, the app-declared rows after the core ones.
     """
-    return tuple(_WRITE_PROTECTED_HOME_PATHS)
+    return (*_WRITE_PROTECTED_HOME_PATHS, *_app_readonly_dir_rows())
 
 
 def crew_home_prefixes() -> tuple[str, ...]:
@@ -718,6 +721,7 @@ from .paths_resolver import (  # noqa: E402
 )
 from .paths_targets import (  # noqa: E402
     _OVERRIDE_ANCHORED_LEAVES,
+    _app_readonly_dir_rows,
     _candidate_forms,
     _home_dir_targets,
     _resolve_root_anchors,
@@ -799,6 +803,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.security.paths_targets import (  # noqa: F401
         _ADAPTER_ROOT_ENVS,
+        _APP_READONLY_ROWS_BUDGET_SECS,
+        _APP_READONLY_ROWS_TTL_SECS,
         _HOME_TARGETS_TTL_COST_RATIO,
         _HOME_TARGETS_TTL_MAX_SECS,
         _HOME_TARGETS_TTL_SECS,
@@ -812,6 +818,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _TTL_MAX_SECS_MAX,
         _TTL_MAX_SECS_MIN,
         _anchor_targets,
+        _app_readonly_rows_cache,
+        _app_readonly_rows_clock,
+        _app_readonly_rows_lock,
+        _app_readonly_rows_pending,
         _BuiltTargets,
         _cached_home_dir_targets,
         _env_float,
@@ -823,6 +833,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _home_targets_tier,
         _home_targets_ttl,
         _lexical_root,
+        _list_app_readonly_dir_rows,
+        _on_event_loop,
         _rebuild_targets_bounded,
         _report_expiry_pin,
         _resolved_env_root,

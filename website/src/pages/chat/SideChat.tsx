@@ -90,7 +90,7 @@ function handBack(vars: SideSubmit): Pick<SendRecovery, 'text' | 'pastes'> {
  *  lazy-loading (the Lexical editor) before it gives up on placing the caret. */
 const SEED_FOCUS_WAIT_MS = 5000
 
-export default function SideChat({ slot, onFileOpen, onArtifactOpen }: {
+export default function SideChat({ slot, onFileOpen, onFolderOpen, onArtifactOpen }: {
   slot: string
   /** Open a path named in a side reply as a Files tab of the panel this chat
    *  sits in — the same opener the host hands the main transcript. Capability
@@ -98,6 +98,9 @@ export default function SideChat({ slot, onFileOpen, onArtifactOpen }: {
    *  OS reveal (a clipboard copy on a remote dashboard), a path link stays a
    *  plain link. */
   onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
+  /** Open a folder named in a side reply as a folder tab of the same panel;
+   *  absent, the folder chip takes the same OS-reveal fallback. */
+  onFolderOpen?: (path: string) => void
   /** Open an artifact link as an artifact tab of the same panel; absent, the
    *  link navigates away from the chat. */
   onArtifactOpen?: (slug: string) => void
@@ -987,6 +990,7 @@ export default function SideChat({ slot, onFileOpen, onArtifactOpen }: {
         // The host's own openers, so a path or artifact named in a side reply
         // opens where the main transcript opens it: a tab of this panel.
         onFileOpen={onFileOpen}
+        onFolderOpen={onFolderOpen}
         onArtifactOpen={onArtifactOpen}
         transcript={{
           sessionId: `side:${slot}`,

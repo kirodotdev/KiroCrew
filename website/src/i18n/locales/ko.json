@@ -7245,7 +7245,7 @@
       "image_zoom_hint": "{{key}}+스크롤로 확대/축소 (더블클릭하면 맞춤)",
       "html_preview": "HTML 미리보기",
       "invalid_json": "잘못된 JSON:",
-      "json_string_show_all_other": "전체 보기({{count}}자)",
+      "json_string_show_all_other": "전체 보기({{n}}자)",
       "json_string_show_less": "간략히 보기",
       "media_preview_failed": "재생에 실패했습니다. 브라우저가 이 파일을 디코딩할 수 없습니다.",
       "null": "null",
@@ -7288,10 +7288,10 @@
       "light_background": "밝은 배경",
       "dark_background": "어두운 배경",
       "sheet_tabs_label": "시트",
-      "showing_first_rows_other": "전체 {{count}}행 중 {{shown}}행 표시",
-      "items_count_other": "항목 {{count}}개",
-      "lines_count_other": "{{count}}줄",
-      "more_count_other": "{{count}}개 더"
+      "showing_first_rows_other": "전체 {{total}}행 중 {{shown}}행 표시",
+      "items_count_other": "항목 {{n}}개",
+      "lines_count_other": "{{n}}줄",
+      "more_count_other": "{{n}}개 더"
     },
     "folderColorNames": {
       "amber": "호박색",
@@ -12867,6 +12867,16 @@
         "state_finished": "완료됨",
         "state_queued": "대기열에 있음"
       },
+      "mcpLoadingBar": {
+        "ready_of_total": "MCP 서버 {{total}}개 중 {{ready}}개 준비됨",
+        "still_connecting": "MCP 서버가 아직 연결 중입니다. 각 서버의 도구는 연결되면 표시됩니다.",
+        "state_connecting": "연결 중",
+        "state_disabled": "꺼짐",
+        "state_registry_dropped": "정책에 따라 제외됨",
+        "not_counted": "집계에서 제외: {{n}}",
+        "untracked": "일부 서버는 추적되지 않습니다",
+        "list_label": "이 세션의 MCP 서버"
+      },
       "taskProgressBar": {
         "all_tasks_complete": "모든 작업이 완료되었습니다",
         "aria_collapse_task_list": "{{total}}개 중 {{done}}개 작업 완료. 작업 목록 접기",
@@ -15310,9 +15320,9 @@
         "crew_mode": "Ultra Mode",
         "crew_mode_desc": "채팅이 작업을 크루에게 맡기고 보드에서 추적할 수 있게 합니다.",
         "crew_mode_desc_summary": "채팅의 작업을 크루에게 맡깁니다.",
-        "crew_oauth": "{{productName}}의 GitHub 로그인",
-        "crew_oauth_desc": "{{productName}}이(가) 직접 GitHub에 로그인합니다. 접근을 없애려면 연결에서 GitHub 연결을 해제하세요.",
-        "crew_oauth_desc_summary": "Kiro Agent 채팅이 GitHub 프로필, 조직, 공개 저장소를 사용하게 합니다. 켠 다음 설정 > 연결에서 GitHub를 연결하세요.",
+        "crew_oauth": "{{productName}}의 MCP 로그인",
+        "crew_oauth_desc": "{{productName}}이(가) 직접 MCP 서버에 로그인하고, 지원하는 하네스(Kiro Agent, Claude, Codex 등)의 채팅에 그 로그인을 넘깁니다. kiro-cli 채팅은 이전처럼 로그인합니다. 접근을 없애려면 연결에서 서버 연결을 해제하세요.",
+        "crew_oauth_desc_summary": "채팅이 {{productName}}이(가) 로그인하는 MCP 서버(GitHub, Asana, Google, 직접 추가한 서버 등)를 사용하게 합니다. 켠 다음 설정 > 연결에서 연결하세요.",
         "explore": "탐색",
         "explore_desc": "상단 바에 탐색을 추가합니다. 해 볼 기능, 진행 상황, 새 채팅의 오늘 해 보기 카드가 표시됩니다.",
         "explore_desc_summary": "상단 바에 사용해 볼 기능을 표시합니다.",
@@ -16209,6 +16219,7 @@
       "diff_env_added": "추가된 환경 변수: {{names}}",
       "diff_env_removed": "제거된 환경 변수: {{names}}",
       "remove_mark": "제거",
+      "stop_sharing": "이 서버 공유 안 함",
       "footprint_failed": "MCP 서버의 메모리 사용량을 읽을 수 없습니다.",
       "footprint_owner_only": "메모리 수치는 크루 소유자만 볼 수 있습니다.",
       "review_what_approve_does": "승인: 복사본 하나가 모든 채팅을 위해 이것을, 각 채팅의 샌드박스 밖에서 실행합니다. 건너뛰기: 각 채팅 안에서 계속 실행됩니다.",

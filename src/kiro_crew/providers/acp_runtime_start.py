@@ -15,7 +15,8 @@ Instance fields written: ``_client``, ``_cloud_governance_scope``,
 
 Instance fields read: ``_accepts_elicitation``, ``_child_fidelity_aware``, ``_crew_agent``,
 ``_harness_pin``, ``_keepalive_routed``, ``_on_gate_acquired``, ``_on_gate_queued``,
-``_tool_search``, ``member_context``, ``memory_mode``, ``owning_app``, ``start_priority``.
+``_tool_search``, ``focus_resume``, ``member_context``, ``memory_mode``, ``owning_app``,
+``start_priority``.
 """
 
 from __future__ import annotations
@@ -474,6 +475,7 @@ async def _load_session_with_retry(
     require_replay: bool = False,
     crew_agent: str | None = None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    focus_resume: bool = False,
 ) -> AcpSessionHandle | None:
     """Resume via session/load, retrying past a stale native session lock.
 
@@ -508,6 +510,7 @@ async def _load_session_with_retry(
             require_replay=require_replay,
             crew_agent=crew_agent,
             start_priority=start_priority,
+            focus_resume=focus_resume,
         )
 
     swept = False
@@ -956,6 +959,7 @@ async def _start_kiro_runtime_impl(
                         require_replay=self.is_kas_backend,
                         crew_agent=self._crew_agent,
                         start_priority=start_priority,
+                        focus_resume=self.focus_resume,
                     )
                 finally:
                     if cloud_hold is not None:

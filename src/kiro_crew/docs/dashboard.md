@@ -39,6 +39,7 @@ Multi-session parallel chat with full Markdown rendering, syntax-highlighted cod
 - **Regenerate replies**: regenerate assistant replies with variant history navigation.
 - **Prompt history**: ↑/↓ arrow keys navigate through previous prompts. To keep the arrow keys for moving the cursor only, turn off **Recall Sent Messages with Arrow Keys** under Settings → Chat → Composer.
 - **Tool purpose pills**: tool call labels show purpose text, persisted across reloads.
+- **MCP servers still connecting**: while any of a chat's MCP servers is still connecting, a small pill above the message box reads "N of M MCP servers ready", and it goes away by itself once none is connecting. N is the connected servers and M the connected plus the connecting ones. Click the pill to list them; a server that is not loading (failed, waiting for a sign-in, switched off, left out by policy) is listed under **Not counted**, and its error stays in the MCP view of the chat's session options. A server's tools appear in the chat as it connects. The pill is not shown in a Bot's chat, and it shows nothing on an agent harness that does not report which servers are connecting.
 - **Batch tool rejection**: reject multiple pending tool approvals at once.
 - **Cancel queued messages**: cancel button for messages waiting in the queue.
 - **Edit queued messages**: edit a message waiting in the queue in place before it runs (order preserved); automatic recovery entries stay immutable so their delivery receipts remain bound to the original message.

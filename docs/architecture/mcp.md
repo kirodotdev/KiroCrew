@@ -1433,15 +1433,18 @@ On the **Sharing** view, each row's control is one switch, **Enable MCP sharing*
 Turning it on reads the launch, then sends the stub write carrying that
 `expected_launch`. Turning a row's switch off turns a share off. A row refused
 as `changed_needs_reapproval` reads **Paused · command changed**. It runs
-nothing shared, so its switch reads off; pressing it writes nothing and moves
-focus to **Approve update**, which is the only control that approves the new
-launch, pinned to the refused launch's own `expected_launch` (or to the launch a
-`launch_display_stale` answer brought, which Details then shows). That answer is
-a rejected write, so both surfaces say it through `ErrorNotice` with the agent
-hand-off: the page in one notice naming the server and pointing at its Details,
-and the Review dialog inside that server's block, above the launch it then
-shows, never on the page as well. An answer that brings no launch to show reads
-as a changed launch. A row refused as
+nothing shared, so it draws no switch. It offers two buttons: **Approve
+update**, the only control that approves the new launch, pinned to the
+refused launch's own `expected_launch` (or to the launch a
+`launch_display_stale` answer brought, which Details then shows), and **Don't
+share this server**, which takes the mark off and approves nothing. Below
+`md`, those buttons take a full-width line under the server's name, so they
+cannot squeeze the name column. A `launch_display_stale` answer is a rejected
+write, so both surfaces say it through `ErrorNotice` with the agent hand-off:
+the page in one notice naming the server and pointing at its Details, and the
+Review dialog inside that server's block, above the launch it then shows,
+never on the page as well. An answer that brings no launch to show reads as a
+changed launch. A row refused as
 `added_outside_dashboard` reads **Paused · not approved yet** and behaves the
 same with **Approve**. A marked row that cannot share (a refusal with no
 approvable identity, or an env a shared copy would withhold) has no switch,
@@ -4899,7 +4902,8 @@ lead's row measures 7,808, so its budget is 7,850.
 #### A server that is still starting
 
 A session's start does not wait for the agent's own MCP servers when a person
-is waiting on it (`acp/mcp_start_wait.py`), so a turn can begin while some of
+is waiting on it (`acp/mcp_start_wait.py`), a new chat and a re-opened one
+alike, so a turn can begin while some of
 them are still connecting. Such a server is not in the model's tool list yet, and
 the host's tool loader answers a request for one of its tools as though it did
 not exist. Two parts keep the model from repeating that to the user. Both reach

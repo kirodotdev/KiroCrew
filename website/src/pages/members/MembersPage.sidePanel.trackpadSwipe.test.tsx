@@ -390,7 +390,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       await waitFor(() => expect(sliding()).toBe(false), { timeout: 3000 })
       expect(screen.getByTestId('member-side-panel')).toHaveAttribute('data-placement', 'docked')
       await waitFor(() => expect(dashTab()).toHaveAttribute('aria-selected', 'true'))
-      expect(localStorage.getItem(PANEL_OPEN_KEY)).toBe('1')
+      expect(localStorage.getItem(`${PANEL_OPEN_KEY}:oncall`)).toBe('1')
     })
 
     /** The width the chat gives up for the sheet during a desktop drag, px. */
@@ -584,7 +584,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       await waitFor(() => expect(slideX()).toBeCloseTo(100, 0))
       swipe(chat, -20, 25)
       await waitFor(() => expect(screen.queryByTestId('member-side-panel')).toBeNull(), { timeout: 3000 })
-      expect(localStorage.getItem(PANEL_OPEN_KEY)).toBe('0')
+      expect(localStorage.getItem(`${PANEL_OPEN_KEY}:oncall`)).toBe('0')
     })
 
     it('a short rightward run lets the open panel settle back in', async () => {
@@ -835,7 +835,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       wheelSeq(chat, [...leadIn(per, t0), ...steps(per, 4, t0), ...tailSteps(per, 12, t0 + 3 * 16)])
       await waitFor(() => expect(sliding()).toBe(false), { timeout: 3000 })
       expect(screen.getByTestId('member-side-panel')).toHaveAttribute('data-placement', 'docked')
-      expect(localStorage.getItem(PANEL_OPEN_KEY)).toBe('1')
+      expect(localStorage.getItem(`${PANEL_OPEN_KEY}:oncall`)).toBe('1')
     })
 
     it('a quick flick that only just passes the start distance opens the hidden panel: its speed before 80px counts', async () => {
@@ -847,7 +847,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       expect(sliding()).toBe(true)
       await waitFor(() => expect(sliding()).toBe(false), { timeout: 3000 })
       expect(screen.getByTestId('member-side-panel')).toHaveAttribute('data-placement', 'docked')
-      expect(localStorage.getItem(PANEL_OPEN_KEY)).toBe('1')
+      expect(localStorage.getItem(`${PANEL_OPEN_KEY}:oncall`)).toBe('1')
     })
 
     it("a mouse thumb wheel's stray creep never slides the hidden panel out", async () => {

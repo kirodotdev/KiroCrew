@@ -2141,7 +2141,9 @@ jobs:
     # each leg on its own platform's larger-runner group by LABEL, hosted in a
     # fork that cannot reach an organization group.
     runs-on: ${{ matrix.os == 'ubuntu-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest') || matrix.os == 'windows-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-windows-4-core' || 'windows-latest') || matrix.os }}
-    timeout-minutes: 60
+    # One pass over a few hundred test files takes about 25-27 minutes on the
+    # Windows runner, so three passes need more room there than on Ubuntu.
+    timeout-minutes: ${{ matrix.timeout_minutes || 60 }}
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -2151,6 +2153,7 @@ jobs:
             pytest_timeout: "120"
           - os: windows-latest
             pytest_timeout: "180"
+            timeout_minutes: 90
     env:
       KIROCREW_TMP_RESIDUE_STRICT: "1"
       LEAF_REPEAT: "3"

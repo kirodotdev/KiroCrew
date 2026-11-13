@@ -1973,6 +1973,52 @@ in-gateway code your app runs.
 - Hosts at App Kit seam level 3 or later honour the field; read `ctx.sdk_level` and
   treat a lower level as "nothing masks the file".
 
+## Agent read-only directories
+
+### `agentReadOnlyDirs`: Directories Agents May Read and Never Write
+
+An app that keeps state an agent must not rewrite (a user's own notes, a record of
+answers already given) lists the directories, relative to its own data directory
+(`<data home>/apps/<name>/data/`):
+
+```json
+{
+  "agentReadOnlyDirs": ["notes", "trust"]
+}
+```
+
+Agents can then read everything inside each directory and write nothing there: an
+agent's file-edit tools are refused under it, and every sandboxed process (agent shells,
+MCP servers, other apps' backends) sees it read-only in every sandbox mode. Your app's
+own backend still writes it, and so does any in-gateway code your app runs.
+
+- An entry follows the `credentialMasks` grammar: a relative path inside your data
+  directory, no leading `/`, no `.`, `..` or empty segment, no backslash, colon,
+  control character or lone surrogate, no segment starting or ending with a space or
+  ending with a dot, at most 240 bytes and 16 segments. At most 32 entries.
+- An entry cannot be, or sit beneath, one of your `credentialMasks` files: a mask names
+  a file, so the manifest is refused. A directory that holds a masked file is fine.
+- It can only add a fence. A listed path outside your data directory is refused, and
+  the field never makes anything writable or visible that Kiro Crew fences.
+- A symlink at a listed directory, or at a directory between the data home and it,
+  refuses every sandboxed spawn until it is replaced with a real directory.
+- On Linux an absent listed directory is created (empty) before a sandboxed process
+  starts, once your app's `data/` folder exists, so it can be sealed. While Kiro Crew
+  holds your data aside for an update or uninstall there is no `data/` folder, so a
+  process started in that window finds the directory absent and only the file-tool fence
+  applies.
+- On macOS and Linux a sandboxed process cannot rename or remove the folders above a
+  listed directory; it can still create and edit other files in them.
+- The fence follows your data when Kiro Crew moves it: during an update, and after an
+  uninstall that keeps your data (`apps/.<name>-agent-readonly-dirs.json` keeps the list).
+  A Linux sandboxed process already running when the move happens keeps the seals it
+  started with, so it can write the moved directories until it restarts; every process
+  started after the move sees them read-only.
+- The installed app folder is writable from inside the sandbox, so this protects the
+  directory from an agent that writes files, not from one that rewrites your `app.json`.
+- Hosts at App Kit seam level 7 or later honour the field; read `ctx.sdk_level` and
+  treat a lower level as "nothing fences the directories".
+
 ## Notification channels
 
 ```json
@@ -2407,6 +2453,8 @@ before it runs your command, which is the same silent failure:
   200 characters long
 - `credentialMasks` must be an array of at most 32 paths relative to the app's data
   directory (see [Credential masks](#credential-masks))
+- `agentReadOnlyDirs` must be an array of at most 32 paths relative to the app's data
+  directory (see [Agent read-only directories](#agent-read-only-directories))
 - Each cron entry must specify either `every` or `cron_expr`
 - A non-empty `crons` requires `"cron": true` under `permissions`. Install,
   update and self-registration refuse the manifest otherwise; an app already

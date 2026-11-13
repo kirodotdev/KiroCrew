@@ -416,6 +416,7 @@ async def get_or_create(
     wait_if_busy: bool = True,
     _won_race_retries: int = 0,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    focus_resume: bool = False,
     **extra_factory_kwargs: Any,
 ) -> tuple[LLMProvider, bool, bool]:
     """Reserve logical ownership for the complete claim/allocation call, held while the key is being ended."""
@@ -480,6 +481,7 @@ async def get_or_create(
                     _won_race_retries=_won_race_retries,
                     _reservation=token,
                     start_priority=start_priority,
+                    focus_resume=focus_resume,
                     **extra_factory_kwargs,
                 )
             finally:
@@ -550,6 +552,7 @@ async def _get_or_create_impl(
     _won_race_retries: int = 0,
     _reservation: object | None = None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    focus_resume: bool = False,
     **extra_factory_kwargs: Any,
 ) -> tuple[LLMProvider, bool, bool]:
     """Claim a live session or cold-start one, returning its held lease.
@@ -716,6 +719,7 @@ async def _get_or_create_impl(
             wait_if_busy=wait_if_busy,
             _won_race_retries=_won_race_retries,
             start_priority=start_priority,
+            focus_resume=focus_resume,
             app_name=app_name,
             app_launch_agent=app_launch_agent,
             owning_app=owning_app,
@@ -768,6 +772,7 @@ async def _get_or_create_impl(
             wait_if_busy=wait_if_busy,
             _won_race_retries=_won_race_retries + 1,
             start_priority=start_priority,
+            focus_resume=focus_resume,
             app_name=app_name,
             app_launch_agent=app_launch_agent,
             owning_app=owning_app,
@@ -1210,6 +1215,7 @@ async def _get_or_create_impl(
         # Ordered by start priority (rule: ``kiro_crew.start_priority``); the
         # provider's own spawn and session/new queues read the same answer.
         provider.start_priority = start_priority
+        provider.focus_resume = focus_resume
         async with self._held_start_permit(
             key,
             start_priority,
@@ -1609,6 +1615,7 @@ async def _get_or_create_impl(
             wait_if_busy=wait_if_busy,
             _won_race_retries=_won_race_retries + 1,
             start_priority=start_priority,
+            focus_resume=focus_resume,
             app_name=app_name,
             app_launch_agent=app_launch_agent,
             owning_app=owning_app,

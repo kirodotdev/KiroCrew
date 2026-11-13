@@ -376,6 +376,15 @@ def stale_unit_notes() -> list[str]:
     return []
 
 
+def restart_policy_notes() -> list[str]:
+    """One advisory line per scope whose installed systemd unit restarts on
+    anything other than ``always`` (:func:`linux.restart_policy_notes`); empty
+    off systemd."""
+    if current_platform() == Platform.SYSTEMD:
+        return linux.restart_policy_notes()
+    return []
+
+
 class ServiceStopRefused(RuntimeError):
     """The service manager refused to stop a running unit.
 

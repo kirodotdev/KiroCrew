@@ -15,10 +15,13 @@ in ``paths_lists`` and the resolver in ``paths_resolver``, both below it.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import threading
 import time
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from pathlib import Path
 from typing import NamedTuple
 
@@ -41,6 +44,7 @@ from .paths_resolver import (
     _resolved_forms_bounded,
     _run_resolution_bounded,
     _stall_prefix,
+    path_resolve_executor,
 )
 
 logger = logging.getLogger("kiro_crew.security.paths")
@@ -709,6 +713,8 @@ def _home_targets_tier(home_dirs: list[str]) -> str:
         return "write"
     if home_dirs == _KEYSTONE_ARTIFACT_PARENTS:
         return "keystone-artifact"
+    if home_dirs == _app_readonly_dir_rows():
+        return "app-readonly-dirs"
     return f"unnamed {len(home_dirs)}-entry"
 
 
@@ -1159,3 +1165,78 @@ def _rebuild_targets_bounded(home_dirs: list[str], roots: _ResolvedRoots) -> set
     if targets is None:
         raise PathResolutionStalled(roots.home, _stall_prefix(roots.home))
     return targets
+
+
+#: How long the event loop reuses one listing of the apps' ``agentReadOnlyDirs`` rows.
+#: Only a declaration added within this window can be missing from the tool gate: a
+#: listing never drops a fence that stood when it was taken, and a running agent's OS
+#: sandbox reads the declarations only at its spawn anyway.
+_APP_READONLY_ROWS_TTL_SECS = 1.0
+#: The listing's deadline: the anchor rebuild's budget, under its own name so a test can
+#: hold the listing without cutting the rebuild short too.
+_APP_READONLY_ROWS_BUDGET_SECS = _PATH_RESOLVE_REBUILD_TIMEOUT_SECS
+#: The clock the listing's expiry is read from, patched by tests.
+_app_readonly_rows_clock = time.monotonic
+_app_readonly_rows_lock = threading.Lock()
+#: ``(expiry, KIROCREW_HOME, rows)`` of the last listing, which only the event loop reuses.
+_app_readonly_rows_cache: tuple[float, str, tuple[str, ...]] | None = None
+#: ``(KIROCREW_HOME, future, missed a deadline)`` of the listing in flight on the
+#: ``mc-pathres`` threads.
+_app_readonly_rows_pending: tuple[str, Future[tuple[str, ...]], bool] | None = None
+
+
+def _list_app_readonly_dir_rows() -> tuple[str, ...]:
+    """List the declared rows: scans ``apps/`` and stats each manifest and record."""
+    from kiro_crew.apps import agent_readonly_dirs  # call time: security never loads apps
+
+    return agent_readonly_dirs.write_protected_home_paths()
+
+
+def _on_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+def _app_readonly_dir_rows() -> list[str]:
+    """The ``agentReadOnlyDirs`` apps declare, as write-only rows, listed within a deadline.
+
+    The listing reads the filesystem, so every caller takes it on the ``mc-pathres``
+    threads and waits at most the anchor rebuild's budget. A listing that misses it
+    raises :class:`PathResolutionStalled`, which every gate turns into a refusal, and
+    stays the one listing in flight for its data home: later callers refuse at once
+    rather than wait again or start another, so a wedged listing holds one thread and
+    costs one deadline, not one per call.
+    The write gate runs on the event loop once per file-edit call, so there the rows
+    come from a listing at most ``_APP_READONLY_ROWS_TTL_SECS`` old; any other thread
+    takes a new listing unless one is already in flight, as the sandbox does at a spawn.
+    """
+    global _app_readonly_rows_cache, _app_readonly_rows_pending
+    home = os.environ.get("KIROCREW_HOME", "")
+    with _app_readonly_rows_lock:
+        cached = _app_readonly_rows_cache if _on_event_loop() else None
+        if cached is not None and cached[1] == home and _app_readonly_rows_clock() < cached[0]:
+            return list(cached[2])
+        pending = _app_readonly_rows_pending
+        if pending is None or pending[0] != home or pending[1].done():
+            pending = (home, path_resolve_executor().submit(_list_app_readonly_dir_rows), False)
+            _app_readonly_rows_pending = pending
+    try:
+        rows = pending[1].result(timeout=0 if pending[2] else _APP_READONLY_ROWS_BUDGET_SECS)
+    except FuturesTimeoutError:
+        with _app_readonly_rows_lock:
+            if _app_readonly_rows_pending is pending:
+                _app_readonly_rows_pending = (home, pending[1], True)
+        listed = home or str(Path.home())
+        raise PathResolutionStalled(listed, _stall_prefix(listed)) from None
+    with _app_readonly_rows_lock:
+        if _app_readonly_rows_pending is not None and _app_readonly_rows_pending[1] is pending[1]:
+            _app_readonly_rows_pending = None
+        _app_readonly_rows_cache = (
+            _app_readonly_rows_clock() + _APP_READONLY_ROWS_TTL_SECS,
+            home,
+            rows,
+        )
+    return list(rows)

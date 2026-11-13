@@ -1013,10 +1013,12 @@ def relocate_glued_tail_marker(text: str) -> str:
 #
 # Agent control tags ride in HTML comments, which the dashboard's markdown
 # pipeline renders as nothing (rehype-raw emits comment nodes the react
-# renderer skips). Three families exist in ``src/``:
+# renderer skips). Four families exist in ``src/``:
 #   * ``<!-- keep-visible -->``       — collapse-all exemption
 #   * ``<!-- deliver:<route> -->``    — heartbeat routing
 #   * ``<!-- plan_task_id:<id> -->``  — task-planner Apply-to-Tasks anchor
+#   * ``<!-- option-action:close=<label> -->`` — dashboard close-session chip,
+#     matched by string checks (``_is_string_tag_line``), not by these regexes
 #
 # ONE GRAMMAR, TAIL-ANCHORED + FENCE-GUARDED, case-insensitive, both
 # recognizers (this regex and ``website/src/app-sdk/protocol/
@@ -1194,6 +1196,68 @@ def _in_open_fence(text: str, idx: int) -> bool:
     return walk.inside
 
 
+_STRING_TAG_FAMILIES = frozenset({"option-action"})
+_STRING_TAG_OPENER = "option-action:"
+_STRING_TAG_MAX_LINES = 8
+
+
+def _is_string_tag_line(line: str) -> bool:
+    """Whether *line* (no newline) is a complete ``option-action`` tag line.
+
+    Same bounds as :data:`_CONTROL_TAG_BODY`: indent ≤3, ≤16 blanks before the
+    family name, ≤256 characters after its colon, no ``>``, trailing blanks
+    ≤16; the family name is compared case-insensitively.
+    """
+    lead = len(line) - len(line.lstrip(" \t"))
+    trail = len(line) - len(line.rstrip(" \t"))
+    if lead > 3 or trail > 16:
+        return False
+    s = line.strip(" \t")
+    if len(s) < 7 or not (s.startswith("<!--") and s.endswith("-->")):
+        return False
+    body = s[4:-3]
+    inner = body.lstrip()
+    if ">" in body or len(body) - len(inner) > 16:
+        return False
+    head, sep, rest = inner.partition(":")
+    return bool(sep) and head.lower() in _STRING_TAG_FAMILIES and len(rest) <= 256
+
+
+def _is_string_tag_partial(line: str) -> bool:
+    """Whether *line* (no newline) is a still-arriving ``option-action`` tag
+    line: ``<!--``, ≤16 blanks, then a prefix of ``option-action:`` or that
+    opener followed by a ``>``-free body of ≤258 characters."""
+    if len(line) - len(line.lstrip(" \t")) > 3:
+        return False
+    s = line.lstrip(" \t").lower()
+    if not s.startswith("<!--"):
+        return False
+    inner = s[4:].lstrip()
+    if not inner or len(s) - 4 - len(inner) > 16:
+        return False
+    if len(inner) <= len(_STRING_TAG_OPENER):
+        return _STRING_TAG_OPENER.startswith(inner)
+    return (
+        inner.startswith(_STRING_TAG_OPENER)
+        and len(inner) - len(_STRING_TAG_OPENER) <= 258
+        and ">" not in inner
+    )
+
+
+def _string_tag_line_start(text: str, *, at_end: bool) -> int | None:
+    """Where a complete ``option-action`` tag line ending *text* starts -- at
+    its leading newline, as a :data:`_TRAILING_CONTROL_LINES_RE` match does --
+    else None. *at_end* admits the message's own trailing whitespace after it.
+    """
+    end = len(text.rstrip()) if at_end else len(text)
+    if len(text) - end > 32:
+        return None
+    ls = text.rfind("\n", 0, end) + 1
+    if not _is_string_tag_line(text[ls:end]):
+        return None
+    return max(ls - 1, 0)
+
+
 def is_control_tag_tail(text: str) -> bool:
     """Whether *text*, read from a line-leading position, is so far NOTHING
     BUT a control-tag tail: complete recognized tag lines (stacked, with their
@@ -1206,16 +1270,21 @@ def is_control_tag_tail(text: str) -> bool:
     own start and at its last line break, so a call costs one linear pass
     over the span rather than a search from every position -- a hold is
     re-judged on every byte, and a search per byte is quadratic in the span.
+    Only a span the two grammars reject falls back to the full strip, for the
+    string-checked ``option-action`` family; callers bound the span they hold.
     """
     if _TRAILING_CONTROL_LINES_RE.fullmatch(text) is not None:
         return True
     nl = text.rfind("\n")
     if nl == -1:
-        return _PARTIAL_CONTROL_LINE_RE.fullmatch(text) is not None
-    return (
+        if _PARTIAL_CONTROL_LINE_RE.fullmatch(text) is not None:
+            return True
+    elif (
         _PARTIAL_CONTROL_LINE_RE.fullmatch(text, nl) is not None
         and _TRAILING_CONTROL_LINES_RE.fullmatch(text, 0, nl) is not None
-    )
+    ):
+        return True
+    return strip_control_comments(text, hide_partial=True) == ""
 
 
 def strip_control_comments(text: str, *, hide_partial: bool = False) -> str:
@@ -1248,10 +1317,25 @@ def strip_control_comments(text: str, *, hide_partial: bool = False) -> str:
         pm = _PARTIAL_CONTROL_LINE_RE.search(text)
         if pm is not None and not _in_open_fence(text, pm.start()):
             text = text[: pm.start()]
-    m = _TRAILING_CONTROL_LINES_RE.search(text)
-    if m is None or _in_open_fence(text, m.start()):
-        return text
-    return text[: m.start()]
+        else:
+            nl = text.rfind("\n")
+            cut = max(nl, 0)
+            if _is_string_tag_partial(text[nl + 1 :]) and not _in_open_fence(text, cut):
+                text = text[:cut]
+    at_end = True
+    for _ in range(_STRING_TAG_MAX_LINES + 1):
+        m = _TRAILING_CONTROL_LINES_RE.search(text)
+        if m is not None and not _in_open_fence(text, m.start()):
+            text = text[: m.start()]
+            at_end = False
+        start = _string_tag_line_start(text, at_end=at_end)
+        if start is None or _in_open_fence(text, start):
+            return text
+        text = text[:start]
+        if text.endswith("\n"):
+            return text
+        at_end = False
+    return text
 
 
 #: Prefix closures of the marker grammars, for

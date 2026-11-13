@@ -1575,6 +1575,8 @@ class McpSessionReport:
             "ready": list(self._ready),
             "failed": list(self._failed),
             "awaiting_auth": list(self._awaiting_auth),
+            "states": {state: list(names) for state, names in self.not_ready().items()},
+            "states_omitted": self.left_out,
             "failures": dict(self._failures),
             "restart_to_load": self.restart_to_load(),
         }

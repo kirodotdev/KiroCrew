@@ -57,6 +57,7 @@ interface ChatPaneChromeProps {
   handleSnipComplete: (file: File) => void
   closeSessionTab: (key: string) => void
   openShortNameMatch: (match: ShortNameMatch) => void
+  resumeSidClosed: (() => void) | null
   ownsSessionTabs: boolean
   selectSessionTab: (key: string) => void
   sessionTabs: SessionTabsApi
@@ -81,7 +82,7 @@ interface ChatPaneChromeProps {
 export default function ChatPaneChrome({
   embedded, activeSlot, connected, dispatch, isMobile, navigate, provider, setVoiceRecoverySlot, switchSlotGone, titleInTopbar, undeletableHistory, unresumableResume, crewWindow, messages,
   slotRunning, splitMode, selectionCapabilitiesQ, actionError, setActionError, setUploadError, setUploadHint, snipFrame, uploadError, uploadHint, handleSnipCancel, handleSnipComplete, closeSessionTab,
-  openShortNameMatch, ownsSessionTabs, selectSessionTab, sessionTabs, setSidError, setSidMatches, sidError, sidMatches, splitFeatureEnabled, chipDefault, dismissPinStatus, pinError, pinStatus,
+  openShortNameMatch, resumeSidClosed, ownsSessionTabs, selectSessionTab, sessionTabs, setSidError, setSidMatches, sidError, sidMatches, splitFeatureEnabled, chipDefault, dismissPinStatus, pinError, pinStatus,
   inlineSidePanelShowing, openSidebar, sidebarOpen, COLLAPSED_SESSION_TABS_INSET,
 }: ChatPaneChromeProps) {
   // The cover is drawn while the window's chunk loads and after it failed to
@@ -121,6 +122,7 @@ export default function ChatPaneChrome({
         sidMatches={sidMatches}
         setSidMatches={setSidMatches}
         openShortNameMatch={openShortNameMatch}
+        resumeSidClosed={resumeSidClosed}
         activeSlot={activeSlot}
         provider={provider}
         selectionCapabilitiesQ={selectionCapabilitiesQ}

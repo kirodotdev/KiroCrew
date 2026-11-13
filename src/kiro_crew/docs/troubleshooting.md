@@ -300,7 +300,8 @@ Remove the restriction the way the message names, then start a new session.
 ### A server's tools are not there yet on a chat's first message
 
 A new chat's first message is sent as soon as Kiro Crew's own MCP servers are
-ready. It does not wait for the servers you added, so one that is slow to start
+ready. The first message after you re-open a saved chat is sent the same way.
+Neither message waits for the servers you added, so one that is slow to start
 may still be connecting while the agent works on that message. (The few servers
 Kiro Crew attaches to the session itself, a Connection's bridge for example, get
 a wait of at most 5 seconds.)

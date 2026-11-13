@@ -1002,7 +1002,9 @@ missing sample, so a frontend rebuild that recreates `static/dist/` is not an
 update) logs one CRITICAL line, records `update_restart_ready.mark(REASON_ASSETS_GONE)`
 and calls `on_change` (the boot passes `push_refresh("update_available")`), so the
 dashboard shows the same "update ready, restart to use it" notice a staged update
-shows. A later healthy sample drops that note, and only that reason's note, so a
+shows. A confirmed vanish while a staged update's note is up leaves that note as it
+is (the CRITICAL line is still logged, once per gap): it already asks for the restart that brings the bundle back, and it names the
+version the next update cycle checks before building it again. A later healthy sample drops that note, and only that reason's note, so a
 staged update's note is never cleared by a healthy bundle. It returns `False` on
 every exit and never sets `shutdown_event`; the exit status 75
 (`STALE_ASSET_EXIT_CODE`) and the 120 s drain, the supervisor re-entry check and

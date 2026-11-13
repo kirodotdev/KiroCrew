@@ -1687,9 +1687,9 @@ async def backfill_channel_folder(state: "DashboardState", namespace: str) -> di
 
     loop = asyncio.get_running_loop()
     try:
-        sessions = await loop.run_in_executor(None, log.list_sessions)
+        sessions = await loop.run_in_executor(None, log.list_sessions_indexed)
     except Exception:
-        logger.warning("channel backfill: list_sessions failed for %s", namespace, exc_info=True)
+        logger.warning("channel backfill: session listing failed for %s", namespace, exc_info=True)
         report["reason"] = "unavailable"
         return report
 

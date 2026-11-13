@@ -581,7 +581,14 @@ best-effort drain with the bounded barrier described in
 [acp-client.md](acp-client.md#kas-managed-mcp-readiness). Kiro retains its exact
 legacy notification declaration and drain; KAS readiness neither changes its
 timeout policy nor introduces a new Kiro startup failure. The notification
-contract and outbound-wire parity tests pin both sides.
+contract and outbound-wire parity tests pin both sides. The step that parks a
+re-opened session in the start agent
+([acp-client.md](acp-client.md#session-resume-via-sessionload)) sits inside the
+KAS branch of `load_session` and behind `can_release`, so a `session/load` on
+the Kiro harness (`ACP_BACKEND_KIRO`), on any other host, or on an engine
+without the release verb is the one request it always was
+(`test_kas_reopen_parking.py::TestEveryOtherResume`). A Kiro CLI harness choice
+that runs on the KAS path is a KAS session and is parked like any other.
 
 ### KAS skill scope
 

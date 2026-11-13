@@ -12,12 +12,8 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard import session_control as sc
-from kiro_crew.dashboard.chat_delivery import (
-    queue_entry_is_user_origin,
-    queued_text_for_display,
-    sanitize_outbound,
-)
-from kiro_crew.dashboard.chat_utils import _reorder_queued_rows
+from kiro_crew.dashboard.chat_delivery import queue_entry_is_user_origin, sanitize_outbound
+from kiro_crew.dashboard.chat_utils import _redact_for_display, _reorder_queued_rows
 from kiro_crew.validation import QUEUE_ENTRY_ID_MAX_CHARS
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -82,11 +78,12 @@ def _queue_entry_from(entry: dict[str, Any], caller_key: str, caller_tab: str) -
 def _queue_excerpt(content: Any) -> str:
     """One entry's text for the listing: display-redacted, then cut.
 
-    Redacted with ``user_origin=False`` whoever wrote it: the reader is an agent,
-    not the session's own human, so a person's queued words get the redaction
-    every non-human surface applies.
+    Redacted as ``queued_text_for_display(user_origin=False)`` does, whoever wrote
+    it: the reader is an agent, not the session's own human, so a person's queued
+    words get the redaction every non-human surface applies. The direct call is
+    what lists this module as its own redaction sink in the security posture.
     """
-    text = queued_text_for_display(content if isinstance(content, str) else "", user_origin=False)
+    text = _redact_for_display(content if isinstance(content, str) else "")
     if len(text) <= MAX_QUEUE_EXCERPT_CHARS:
         return text
     return text[:MAX_QUEUE_EXCERPT_CHARS] + " …[truncated]"

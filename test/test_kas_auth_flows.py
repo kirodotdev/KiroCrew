@@ -10,6 +10,11 @@ import pytest
 
 from kiro_crew.auth.login import builder_id
 from kiro_crew.auth.login.builder_id import BuilderIdAuthError, RegisteredClient
+from kiro_crew.auth.login.endpoints import (
+    OIDC_SCOPES,
+    OIDC_SCOPES_EXTRA_KEY,
+    oidc_scopes,
+)
 from kiro_crew.auth.login.portal import (
     PortalAuthError,
     exchange_code,
@@ -25,6 +30,9 @@ from kiro_crew.auth.refresh import (
 from kiro_crew.auth.store import KasToken, SocialProvider, TokenStore
 
 pytestmark = pytest.mark.asyncio
+
+# A made-up prefix: the tests never name a real non-prod one.
+_TEST_SCOPES = oidc_scopes("test_prefix")
 
 
 class _FakeResp:
@@ -408,6 +416,39 @@ async def test_refresh_sso_oidc_success(tmp_path: Path):
     out = await ensure_fresh(store, stale, session=session)
     assert out.access_token == "new"
     assert out.client_id == "cid"  # creds carried forward for next refresh
+
+
+async def test_register_client_sends_the_scopes_it_is_given():
+    session = _FakeSession([_FakeResp(200, {"clientId": "c", "clientSecret": "s"})] * 2)
+    public = await builder_id.register_client("us-east-1", session=session)
+    prefixed = await builder_id.register_client("us-east-1", session=session, scopes=_TEST_SCOPES)
+    assert session.calls[0][1]["scopes"] == list(OIDC_SCOPES)
+    assert session.calls[1][1]["scopes"] == list(_TEST_SCOPES)
+    assert (public.scopes, prefixed.scopes) == (OIDC_SCOPES, _TEST_SCOPES)
+
+
+async def test_refresh_sso_oidc_keeps_the_registrations_scopes(tmp_path: Path):
+    """Refresh sends only the client credentials (the scopes are the registration's),
+    and carries the recorded scopes forward so the next sign-in can reuse it."""
+    store = TokenStore(tmp_path)
+    stale = KasToken(
+        access_token="old",
+        expires_at=datetime.now(timezone.utc) + timedelta(seconds=10),
+        provider="Enterprise",
+        identity="identity_center",
+        refresh_token="rt",
+        profile_arn="arn:x",
+        region="us-east-1",
+        client_id="cid",
+        client_secret="csec",
+        extra={OIDC_SCOPES_EXTRA_KEY: list(_TEST_SCOPES)},
+    )
+    store.save(stale)
+    session = _FakeSession([_FakeResp(200, {"accessToken": "new", "expiresIn": 3600})])
+    out = await ensure_fresh(store, stale, session=session)
+    assert "scopes" not in session.calls[0][1]
+    assert session.calls[0][1]["clientId"] == "cid"
+    assert out.extra[OIDC_SCOPES_EXTRA_KEY] == list(_TEST_SCOPES)
 
 
 async def test_refresh_sso_oidc_http_error_raises(tmp_path: Path):

@@ -470,6 +470,41 @@ async def test_a_vanished_bundle_is_reported_and_the_gateway_keeps_serving(caplo
 
 
 @pytest.mark.asyncio
+async def test_a_vanish_under_a_staged_note_is_logged_once_and_keeps_the_note(caplog):
+    """The staged note already asks for the restart, so it is kept with its
+    version; the vanish itself is still logged, once."""
+    from kiro_crew.dashboard.stale_asset_watchdog import run_stale_asset_watchdog
+
+    caplog.set_level(logging.WARNING, logger=_WATCHDOG_LOGGER)
+    update_restart_ready.mark(update_restart_ready.REASON_STAGED, version="9.9.9")
+    shutdown = asyncio.Event()
+    changed: list[int] = []
+    reads = {"n": 0}
+
+    def _gone() -> bool:
+        reads["n"] += 1
+        return reads["n"] == 1  # present at arm time, then gone for good
+
+    with patch("kiro_crew.dashboard.stale_asset_watchdog.assets_present", side_effect=_gone):
+        task = asyncio.ensure_future(
+            run_stale_asset_watchdog(
+                shutdown, interval=0.01, confirm_delay=0.01, on_change=lambda: changed.append(1)
+            )
+        )
+        await async_wait_until(
+            lambda: reads["n"] >= 12, describe=lambda: "several confirmed missing samples"
+        )
+        shutdown.set()
+        assert await await_until(task, what="watchdog stopped") is False
+
+    note = update_restart_ready.current()
+    assert note is not None
+    assert (note.reason, note.version) == (update_restart_ready.REASON_STAGED, "9.9.9")
+    assert changed == []
+    assert len(_records(caplog, level=logging.CRITICAL, text="keeps serving")) == 1
+
+
+@pytest.mark.asyncio
 async def test_the_watchdog_never_sets_the_shutdown_event_itself():
     """Watched across many ticks of a permanent vanish, the event stays clear."""
     from kiro_crew.dashboard.stale_asset_watchdog import run_stale_asset_watchdog

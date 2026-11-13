@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from kiro_crew import platform_compat
-from kiro_crew.apps import credential_masks
+from kiro_crew.apps import agent_readonly_dirs, credential_masks
 from kiro_crew.config.paths import config_dir
 from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIXES
 from kiro_crew.sandbox_leaves import (
@@ -180,6 +180,124 @@ def _hardlink_refused_leaves() -> frozenset[str]:
     declared directory hides files these passes never judged.
     """
     return _CREW_HARDLINK_REFUSED_LEAVES | frozenset(_app_declared_leaves())
+
+
+def _app_declared_readonly_leaves() -> tuple[str, ...]:
+    """The crew-home leaves apps declare in ``agentReadOnlyDirs``, at ``data/`` and staged.
+
+    Read per call, through the module, so a manifest changed since the last spawn is seen
+    by the next one. Every entry is under its app's own data directory
+    (:mod:`kiro_crew.apps.agent_readonly_dirs` refuses any other spelling).
+    """
+    return agent_readonly_dirs.declared_crew_leaves()
+
+
+def _app_data_dir_settled(root: str, leaf: str) -> bool:
+    """Whether a declared directory may be created under *leaf*'s app data directory.
+
+    True only when ``apps/<name>/data`` is a real directory, so a spawn never creates
+    ``data/`` itself. The app lifecycle reads an owned ``data/`` as evidence of where the
+    app's data lives: ``install_app`` deletes a held-aside ``.<name>-data-tmp`` as stale
+    when it finds one beside it, so a ``data/`` made by a spawn after a keep-data
+    uninstall was interrupted past its move-aside would have the next install delete the
+    only copy. A ``data/`` that already stands decides that question the same way with or
+    without the declared directory inside it, so creating there changes nothing the
+    lifecycle reads, and nothing at the move-aside name is consulted: an agent can create
+    that name, and it must not be able to switch the seal off by doing so.
+    """
+    parts = leaf.split(credential_masks.ENTRY_SEPARATOR)
+    try:
+        data = os.lstat(os.path.join(root, *parts[:3]))
+    except OSError:
+        return False
+    return stat.S_ISDIR(data.st_mode)
+
+
+def _establish_app_readonly_dirs(established: list[str] | None = None) -> list[str]:
+    """Refuse a linked ``agentReadOnlyDirs`` directory, and create an absent one to seal.
+
+    For every declared spelling in the live data home: a symlink (or junction) at the
+    directory, or at a component between the data home and it, raises
+    :class:`SandboxCeilingUnsealable`. A seal binds, or names, what the path reaches, while
+    the name stays in the writable data home, so a planted link would move the fence off
+    the directory its app writes. The data home itself and its parents are not walked, as
+    for a masked leaf (a symlinked data home is supported).
+
+    Linux only, at the ``data/`` spelling, and only inside an app data directory that
+    already stands (:func:`_app_data_dir_settled`): an absent declared directory is
+    created (``mount(2)`` cannot seal an absent path, and an agent could otherwise
+    create it and write inside it), must then not be a link, and is
+    appended to *established* so the launcher requires it and carries its identity. The
+    staged spelling only exists while an update holds the data aside, so it is never
+    created, and neither is a spelling at or beneath a declared credential mask, which
+    names a file. Returns the paths created. Never removes or truncates anything.
+    """
+    root = str(config_dir())
+    created: list[str] = []
+    data_leaves = set(agent_readonly_dirs.declared_data_leaves())
+    mask_leaves = _app_declared_leaves()
+    for leaf in _app_declared_readonly_leaves():
+        target = os.path.join(root, *leaf.split(credential_masks.ENTRY_SEPARATOR))
+        linked = _first_linked_component_below(root, leaf)
+        if linked is None:
+            try:
+                info = os.lstat(target)
+            except FileNotFoundError:
+                info = None
+            except OSError as exc:
+                raise SandboxCeilingUnsealable(
+                    f"cannot stat the read-only app directory {safe_terminal_line(target)}: "
+                    f"{safe_terminal_line(str(exc))}. Refusing rather than sealing a path "
+                    "this cannot classify."
+                ) from exc
+            if info is not None and (
+                stat.S_ISLNK(info.st_mode) or platform_compat.is_link_or_junction(target)
+            ):
+                linked = target
+        if linked is not None:
+            raise SandboxCeilingUnsealable(
+                f"the path {safe_terminal_line(linked)} is a link, and an app declares "
+                f"{safe_terminal_line(target)} read-only to agents in its agentReadOnlyDirs. "
+                "A seal would land on whatever the link reaches while the name stays "
+                "replaceable. Replace the link with a real directory."
+            )
+        if established is None or leaf not in data_leaves:
+            continue
+        if any(
+            leaf == mask or leaf.startswith(mask + credential_masks.ENTRY_SEPARATOR)
+            for mask in mask_leaves
+        ):
+            # A credential mask names a FILE here, so a directory must never be created
+            # at or under it (validation refuses that declaration; a manifest that
+            # skipped validation must not refuse every spawn by it).
+            continue
+        if info is None and not _app_data_dir_settled(root, leaf):
+            continue
+        if info is None:
+            try:
+                os.makedirs(target, mode=0o700, exist_ok=True)
+            except OSError as exc:
+                raise SandboxCeilingUnsealable(
+                    f"cannot create the read-only app directory {safe_terminal_line(target)} "
+                    f"to seal it: {safe_terminal_line(str(exc))}. Refusing rather than "
+                    "leaving the name creatable by an agent."
+                ) from exc
+            created.append(target)
+        try:
+            made = os.lstat(target)
+        except OSError as exc:
+            raise SandboxCeilingUnsealable(
+                f"cannot stat the read-only app directory {safe_terminal_line(target)} after "
+                f"establishing it: {safe_terminal_line(str(exc))}."
+            ) from exc
+        if stat.S_ISLNK(made.st_mode):
+            raise SandboxCeilingUnsealable(
+                f"the read-only app directory {safe_terminal_line(target)} became a link "
+                "while it was being established; refusing rather than sealing what it "
+                "reaches."
+            )
+        established.append(target)
+    return created
 
 
 #: The tolerated leaves must BE masked leaves -- an entry naming something outside

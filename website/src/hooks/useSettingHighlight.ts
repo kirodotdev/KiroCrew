@@ -49,6 +49,8 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   'about.update-notifications': 'about.update-the-gateway-automatically',
   // WeChat's access select took WhatsApp's "agent" wording in place of "bot".
   'channels.who-can-message-the-bot-wechat': 'channels.who-can-message-the-agent-wechat',
+  // The Crew-owned sign-in preview covers every MCP server, not only GitHub.
+  'developer.github-sign-in-by-kiro-crew': 'developer.mcp-sign-in-by-kiro-crew',
   // The six Google products' OAuth apps became one Google entry.
   'connections.oauth-client-gmail': 'connections.oauth-client-google',
   'connections.oauth-client-google-drive': 'connections.oauth-client-google',

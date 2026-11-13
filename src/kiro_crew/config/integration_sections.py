@@ -1201,6 +1201,18 @@ class TunnelConfig:
             sensitive=True,
         ),
     )
+    relay_viewer_oidc_scope_prefix: str = field(
+        default="",
+        metadata=_meta(
+            "Relay Viewer OIDC Scope Prefix",
+            "For testing against a non-prod control plane only, like kiro-cli's "
+            "api.oidc.scopePrefix: the prefix Builder ID and IAM Identity Center "
+            "sign-ins request their scopes under, in place of the public one. Empty "
+            "(the default) keeps the public scopes. Lower-case letters and "
+            "underscores only; any other value is ignored with a warning. Applies to "
+            "the next sign-in.",
+        ),
+    )
     relay_viewer_relay_domain: str = field(
         default="",
         metadata=_meta(

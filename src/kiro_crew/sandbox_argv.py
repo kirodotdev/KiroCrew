@@ -34,6 +34,8 @@ from kiro_crew.config.write_provenance import launcher_record as _published_file
 from kiro_crew.platform import current_context
 from kiro_crew.sandbox_aliases import (
     _app_declared_leaves,
+    _app_declared_readonly_leaves,
+    _establish_app_readonly_dirs,
     _referent_identity,
     _refuse_aliased_masked_leaves,
     _refuse_multilinked_credential_leaves,
@@ -434,7 +436,40 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
     voice_runtime_roots = tuple(_voice_runtime_sandbox_paths())
     voice_runtime_parents = tuple(_voice_runtime_parent_paths())
     voice_runtime_ancestor_guards = () if namespace else tuple(_voice_runtime_ancestor_guards())
-    relocated_crew_readonly = tuple(_relocated_crew_targets(_CREW_READONLY_LEAVES))
+    # The directories apps declare in ``agentReadOnlyDirs`` join the crew-home READONLY
+    # targets in every tier, spelled the same way, so each one is sealed, its parents are
+    # guarded against rename and it is re-anchored under a relocated data home exactly as
+    # a core READONLY leaf is. The one spawn that names a declared spelling exactly in
+    # ``extra_visible_dirs`` (its own app's backend, ``app_declared_readonly_targets``)
+    # gets that spelling unsealed; nothing else lifts one, and a declared spelling that a
+    # mask covers stays masked (the plan keeps a mask over a seal).
+    # Compared after folding a linked data-home spelling onto its canonical root, as the
+    # namespace plan folds the seals, so a lifted canonical spelling is not sealed again
+    # through its alias.
+    aliases = request.crew_home_aliases
+    lifted = frozenset(
+        sandbox_plan.fold_crew_home_alias(path, aliases) for path in request.extra_visible_dirs
+    )
+
+    def _sealed(path: str) -> bool:
+        return sandbox_plan.fold_crew_home_alias(path, aliases) not in lifted
+
+    app_readonly_leaves = tuple(
+        leaf for leaf in _app_declared_readonly_leaves() if leaf not in _CREW_READONLY_LEAVES
+    )
+    app_readonly = tuple(
+        entry
+        for entry in (
+            f"{prefix}/{leaf}" for prefix in _CREW_HOME_PREFIXES for leaf in app_readonly_leaves
+        )
+        if _sealed(os.path.join(home, entry))
+    )
+    relocated_crew_readonly = tuple(
+        (
+            *_relocated_crew_targets(_CREW_READONLY_LEAVES),
+            *(t for t in _relocated_crew_targets(app_readonly_leaves) if _sealed(t)),
+        )
+    )
     kiro_agents_targets = tuple(_resolved_kiro_agents_targets())
     install_root_targets = tuple(_resolved_install_root_targets())
     # A renamed parent carries a seal away on both backends, so every entry resolving a
@@ -447,7 +482,7 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         for target in (
             *voice_runtime_parents,
             *kiro_agents_targets,
-            *(os.path.join(home, rel) for rel in _CREW_READONLY_TARGETS),
+            *(os.path.join(home, rel) for rel in (*_CREW_READONLY_TARGETS, *app_readonly)),
             *relocated_crew_readonly,
             *install_root_targets,
         )
@@ -529,7 +564,7 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         tier_dirs=tier_dirs,
         cc_files=tuple(_CC_FILES),
         cc_expose_files=tuple(_CC_EXPOSE_FILES),
-        crew_readonly_targets=tuple(_CREW_READONLY_TARGETS),
+        crew_readonly_targets=(*_CREW_READONLY_TARGETS, *app_readonly),
         crew_hidden_dirs=(*_CREW_HIDDEN_DIRS, *app_hidden),
         unreadable_mask_leaves=tuple(_CREW_UNREADABLE_MASK_LEAVES),
         sensitive_env_prefixes=tuple(_SENSITIVE_ENV_PREFIXES),
@@ -773,6 +808,9 @@ def namespace_argv(
     # absent name gets no mask.
     _materialize_env_mask_target(_required_targets)
     _materialize_refresh_chains_mask_target(_required_targets)
+    # The directories apps declare read-only to agents: a linked one refuses the spawn, and
+    # an absent one is created so its seal is never vacuous.
+    _establish_app_readonly_dirs(_required_targets)
     # CLEANUP BEFORE THE REFUSAL, and this order is a contract rather than a preference.
     # Both sweeps and the reconciliation remove names that are themselves hard links to a
     # masked credential leaf -- a pre-upgrade orphan is a link to the signing key by
@@ -987,6 +1025,9 @@ def sandbox_exec_argv(
     # AFTER the cleanup above, which is the ordering the namespace path also establishes: a
     # link the cleanup would have removed must not be what refuses.
     alias_masks = _refuse_multilinked_credential_leaves(masks_are_path_only=True)
+    # A Seatbelt seal is a path rule, so a declared read-only directory reached through a
+    # link is refused here too; an absent one needs no creating, the rule holds for it.
+    _establish_app_readonly_dirs()
 
     # A caller that pins a window to an inode is asking for a guarantee no path-rule
     # profile can make in full: the allow names a MUTABLE pathname, and a same-UID peer

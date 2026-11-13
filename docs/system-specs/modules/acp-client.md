@@ -904,8 +904,14 @@ entry would pick the agent a resumed conversation runs as) and the file-tool
 write floor refuses. Only the views themselves go into the agents directory, because
 kiro-cli resolves `--agent <name>` there by name and knows no other directory;
 everything else there is a row in the IDE's drop-down. Builds before `v0.10.0` kept
-these side files in the agents directory; nothing reads, moves or removes them there,
-so such a build sharing the directory is unsupported. Each sidecar records the alias's
+these side files in the agents directory; nothing reads or moves them there, so such a
+build sharing the directory is unsupported. kiro-cli 3.1.0 loads every `.json` under
+the agents directory as an agent, dot-prefixed subdirectories included, so the boot
+drain removes the ledger and sidecars such a build left in
+`.kirocrew-skill-projection-metadata/` (`_remove_legacy_metadata_dir`): only regular
+files whose name and content prove Crew wrote them (a ledger of view names only, or a
+view-named sidecar carrying the managed marker), never through a link, and the
+directory once it is empty. Any other file there stays, and with it the directory. Each sidecar records the alias's
 exact byte digest AND the digest of its identity (the view the alias is named by,
 env values out), so a stale or replaced sidecar cannot authorize deletion of a
 different spec, while an alias another program merely re-serialized or
@@ -2351,8 +2357,75 @@ ends it through `terminate_session` before any prompt, so no prompt runs in the
 start agent. An id the engine cannot
 resolve falls back to `vibe` with a `_kiro/customAgent/not_found` notification
 (measured on the 0.66.33 bundle), so (A) still refuses a dropped entry.
-`session/load` names no mode and registers no start agent: a resumed session
-already has a mode, its own agent, so its servers queue as before.
+`session/load` names no mode: the engine resumes a session in the mode it
+stored, its own agent, and ignores `_meta.kiro.modeId` on a load, so that
+agent's servers queue first again. It does take the agent definitions re-sent
+with a load over the ones it kept. A re-open a person is waiting on
+(`mcp_start_wait.person_waits`, see "Which servers the first prompt waits for"
+below) uses both facts, on a host that can free a session and keep its record
+(`can_release`) and for a batch that ends in the start agent `with_start_agent`
+appended. An entry that only carries the id (a sub-agent target the user named
+that way) is not it: it declares what its author gave it, servers included.
+`runtime_session_load._park_in_start_agent` runs before the load and sends up to
+three requests, none of which starts a server of the session's own agent:
+`session/load` with
+`kas_start_agent.parking_load` (the session's own agent without `mcpServers` and
+with `includeMcpJson: false`, an empty session-level array), `session/set_mode`
+to the start agent, which makes it the stored mode, and the release verb. That
+`set_mode` is the one the runtime sends outside
+`runtime_mode_activation._activate_mode_bracketed`: the start agent is Kiro
+Crew's own entry, built in code with no spec file, tool or server, so it loads
+no spec to bracket, and a switch that fails here must leave the re-open its
+fallback, where the helper would end the session
+(`test_every_set_mode_send_goes_through_the_one_bracketed_helper` holds it to
+that one id). Only
+a session that load brings back in its own agent is parked. One the engine
+brings back in another agent of the batch (a session can be switched to one
+while it runs; that load starts that agent's servers) is freed and left in it,
+because the switch after the load would
+put its own agent in that one's place; its re-open takes the order it always
+took. The
+load that follows then resumes in the start agent, queues the session-level
+array alone, and the `set_mode` after it queues the agent's servers behind and
+puts the session's own agent back as the stored mode. Measured on kiro-cli
+3.2.0 with six slow agent servers, Kiro Crew's server connected 3.0 s after a
+plain load and 1.2 s after a parked one; the three requests took 0.2 s, and the
+earlier turns were replayed and the session's tools answered as after a plain
+load.
+
+Every other resume sends one load, as it always did. Three things keep a
+session whose re-open was cut off between those steps (stored mode: the start
+agent) whole, whoever resumes it next. Every KAS `session/load` registers the
+start agent, under the refusals `session/new` applies, because a stored mode the
+batch does not carry resumes in `vibe`. `load_session` activates the runtime's
+own agent when the caller named no agent and the session came back in the start
+agent, or in a mode the load sent no definition for, as `create_session`
+activates an injected default. And frames staged in
+the start agent count toward readiness on a load as they do on a new session
+(`start_mode_ran_servers`). A session stored in the start agent whose agent has
+since lost its servers or gained the engine's sub-agent tool, or whose batch is
+full, resumes in `vibe`: no definition was sent for that mode, so the same
+activation puts the session's own agent back, and a mode the batch did carry
+(the session's own, a sub-agent target) is left as the engine resumed it. A
+session the engine or another client left in one of the engine's own built-in
+agents (`vibe`, `spec`, `plan` and the like) is put back in its own agent the
+same way, because the engine answers that load exactly as it answers one whose
+start agent fell back to `vibe` (measured, kiro-cli 3.2.1); Kiro Crew itself
+has no way to put a session in a built-in (its agent picker starts a new
+session, and nothing calls a running session's `set_mode`:
+`test_no_kiro_crew_entry_point_switches_a_running_session`). One more
+limit: the start agent is known by its id, so a session that was switched to
+another agent carrying that id is put back in its own agent as well. When
+the engine does not advertise the session's own agent, guard (A) refuses the
+load and the provider starts a fresh session and replays
+Kiro Crew's own transcript. A parked copy the engine did not confirm freeing is
+recorded (`_parked_copies`): the parking step raises, and a later load of that
+id on the same process is refused, because the engine ignores the batch of a
+load for a session it still holds and the held copy's agent declares no server.
+A parking load the engine answered with an error loaded nothing, so the id is
+not recorded and the provider's retry past a stale session lock loads it again;
+a load with no answer, or an answer too large to read, may still be held.
+Pinned by `test_kas_reopen_parking.py`.
 
 Step 4 (`set_model`) is **conditional**: only sent when `model` is explicitly
 set (i.e., for the default kirocrew agent).  Custom agents skip this so
@@ -2626,7 +2699,9 @@ session, in the chat's MCP panel and for every other reader.
   session starts again: a later value of a list that fits does not bring back
   the report that was left out.
 - **Readers.** A turn's `[MCP SERVERS]` block and `mcp_server_wait`;
-  `payload()` does not carry it (no dashboard reads it yet). Names only: a
+  `payload()` carries it as `states`, with `states_omitted` (`left_out`), for the
+  chat's loading display. Not zero means the report is partial; it totals what
+  each list left out, so it is not a number of servers. Names only: a
   failure reason stays in `failures`.
 - **A change is announced, not polled for.** `fold_frame` calls the report's
   `on_change` when the fold changed it, and `forget_reported` when it dropped
@@ -2663,19 +2738,28 @@ One rule, stated in `first_prompt_brief_wait` and applied where a session start
 ends (`runtime_session_load._wait_managed_mcp`, for `session/new` and
 `session/load` alike):
 
-| Servers | A person is waiting (`StartPriority.FOREGROUND`) | Nobody is waiting (`BACKGROUND`) |
+| Servers | A person is waiting (`person_waits`) | Nobody is waiting |
 |---|---|---|
 | Kiro Crew's own managed servers | required: the whole start budget, the start fails without them | the same |
 | Sent on the session by Kiro Crew (a Connection's bridge, a routed stub) | best effort, at most `MOUNTED_MCP_WAIT_SECS` (5 s) | the same |
 | The agent's own (the user's), which stay in the agent's block | not waited for by the start; left to the first turn (below) | best effort, at most 5 s |
 
-A person is waiting when `kiro_crew.start_priority` says so: the claim the
-session manager puts on the provider it starts, threaded from `create_session`
-and `_load_session_with_retry`. A caller that passes none starts as `BACKGROUND`:
-a sub-agent child, an unattended run (which also holds its first prompt up to
-`UNATTENDED_MCP_WAIT_SECS` for its declared servers), a warm start, a late
-collected start, and a re-sent server set (`session_provider_mcp_reinject`), so
-each waits exactly as before.
+`person_waits` is the one predicate, and WHO IS WAITING decides it, not the
+queue the start waited in. A person is waiting when the start claimed
+`FOREGROUND` (`kiro_crew.start_priority`: the claim the session manager puts on
+the provider it starts, threaded from `create_session` and
+`_load_session_with_retry`), or when it is the dashboard owner's focus resume
+prefetch (`focus_resume`, set only by `ws._handle_slot_focused` and threaded
+through `schedule_eager_spawn`, `get_or_create` and `LLMProvider.focus_resume`
+to `load_session`). That prefetch stays `BACKGROUND` in every start queue (see
+"Start priority" below), yet the person it is for is about to type, and a
+message they send joins it. The same predicate decides whether a re-open parks
+the session in the start agent first (above). A caller that passes neither is a
+start nobody waits on: a sub-agent child, an unattended run (which also holds
+its first prompt up to `UNATTENDED_MCP_WAIT_SECS` for its declared servers), a
+warm start, a late collected start, a bulk Resume, every reload other than the
+owner's own, and a re-sent server set (`session_provider_mcp_reinject`), so each
+waits exactly as before.
 
 Kiro CLI does not wait for a user's servers either. Not waiting is safe because
 the host reads its server list when a tool is loaded, so a server that connects
@@ -2689,7 +2773,10 @@ waiting safe, and not every turn is told. So the start records the servers it
 skipped on the session's report (`left_to_turn`, from `left_to_first_turn`), and
 what the first turn does turns on one fact, never on the start priority alone:
 whether the prompt being sent carries a block that spells out every one of
-those servers that has not reported. Each block hands the session the names its
+those servers that has not reported. A re-opened chat is no different: its
+`load_session` records `left_to_turn` through the same call, for a `FOREGROUND`
+load and for the owner's focus resume prefetch alike (`left_to_first_turn` reads
+`person_waits`), so the first prompt after a re-open is told or holds. Each block hands the session the names its
 still-starting row spells out, under its own mark (the block's fence opener,
 whose nonce is made per block), through the reader the gateway installs on its
 context builder (`agent_sdk.mcp_problems.TurnMcpStatesReader.told`). The report
@@ -3096,8 +3183,11 @@ Resume via `session/load`" above): only the session-level tier is
 queued by `session/new`, and the `set_mode` switch queues the agent's servers
 behind it. Measured on kiro-cli 3.2.0 with twelve slow agent servers, Crew's
 servers connected 13.5 s after `session/new` in the session's own agent and
-1.3 s after it through the start agent. Crew's servers still wait behind the
-agent's on `session/load` (the engine resumes in the stored mode), in a session
+1.3 s after it through the start agent. A `session/load` a person waits on
+gets the same order by parking the stored session in the start agent first (see
+the same section). Crew's servers still wait behind the agent's on every other
+`session/load` that resumes in the session's own agent (the engine resumes in
+the stored mode), in a session
 whose agent mounts the engine's sub-agent tool, and behind any other session's
 servers queued earlier in that process. The runtime reader feeds
 every `_kiro/mcp/status` frame, for any session and before routing, to
@@ -4101,7 +4191,9 @@ message, and shows a failed fetch's own error text under its lead
   the route" below), and `/api/sessions/usage` takes its vault-owned path.
   On KAS's relay started on Crew's sign-in alone, `/api/models` answers the
   gate's refusal with the engine's recorded list instead
-  (`models_kas_bundle.api_models_kas_crew_relay`), and spawns nothing. On
+  (`models_kas_bundle.api_models_kas_crew_relay`), and spawns nothing. With
+  nothing recorded it answers `auto`, except that a `kiro_probe_timed_out`
+  refusal stands. On
   `/api/models` the gate is not the only
   source of that code: when the gate passes but the spawned `--list-models` read
   itself surfaces an expired or signed-out login, `_fetch_kiro_catalog`
@@ -4377,7 +4469,10 @@ applies it.
   owner's own slot create, agent switch, project switch or tab-menu Reload; the
   focus resume prefetch, every other reload (the `session_reload` verb, a Bot's
   spec or harness change, the image repair) and any app-token request stay
-  BACKGROUND. Every messaging
+  BACKGROUND. (What a start does for a person once it runs is a separate
+  question with its own predicate, `mcp_start_wait.person_waits`: the focus
+  resume prefetch is a start a person is about to wait on without being a
+  FOREGROUND claim in any queue here.) Every messaging
   channel, for a message a person sent: each transport's `receive` sets
   `person_origin` on the inbound it dispatches, a message the gateway built
   itself (a nudge or monitor wake, built by `build_inbound`) does not, and the
@@ -5256,7 +5351,8 @@ calls `reject_if_kiro_unverified` and never spawns `--list-models`
 (`dashboard/handlers/models_kas_bundle.py`; the kiro-cli path below is unchanged
 for every other configuration, the relay route included, except that a relay
 started on Crew's sign-in alone answers the kiro-cli gate's refusal with the
-same recording, without a cold probe). Measured on the bundled
+same recording, without a cold probe, and keeps a timed-out gate's 503 while
+nothing is recorded). Measured on the bundled
 engine (`test/fixtures/acp_frames/kas/bundle-session-live.jsonl`), `session/new`
 carries no `models` object: the list is the `configOptions` `model` select, each
 option with `_meta.kiro.rateMultiplier` and no structured context window. The
@@ -5661,6 +5757,14 @@ This avoids the Linux bubblewrap failure (`Failed to make /` private to the new 
 namespace): the outer namespace launcher's seccomp filter deliberately denies mount
 and unshare. It also avoids nesting Seatbelt on macOS. The env opt-in alone does
 not grant a sandbox waiver: the existing mask preflight and OS wrap still apply.
+
+While the adapter does not offer `external-sandbox`, a new codex chat shows one
+notice row saying shell commands, git included, fail. The row comes from
+`KNOWN_LIMITATIONS` in `agent_sdk/backends_routing.py`: plain data per harness
+(the missing config value, the message, the adapter package, the first fixed
+release or `""` while none exists), read by `known_limitation_issue` through the
+same offer test `permission_value_for` uses (`offers_config_value`). Tests:
+`test/test_codex_known_limitation_notice.py`.
 
 ### Codex MCP result envelopes
 

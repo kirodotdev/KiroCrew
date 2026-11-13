@@ -1226,6 +1226,7 @@ class DashboardState:
     ack_notification = _dashboard_services.ack_notification
     unack_notification = _dashboard_services.unack_notification
     resolve_skill_review_notifications = _dashboard_services.resolve_skill_review_notifications
+    acknowledge_notifications_where = _dashboard_services.acknowledge_notifications_where
     clear_notifications = _dashboard_services.clear_notifications
     ensure_context_snapshots_loaded = _dashboard_services.ensure_context_snapshots_loaded
     context_snapshot_for = _dashboard_services.context_snapshot_for

@@ -231,17 +231,22 @@ def custody_on(slug: str) -> bool:
 
 
 def _is_registry_url(url: Any) -> bool:
-    """Whether *url* is a registry provider's MCP endpoint. Blocking.
+    """Whether *url* is the MCP endpoint of a card Crew signs in to. Blocking.
 
-    Such an entry belongs to that provider's card (its client, port and vault
-    key), whatever name it was added under: the owner-server path never claims it.
+    Such an entry belongs to that card (its client, port and vault key),
+    whatever name it was added under: the owner-server path never claims it. A
+    registry provider outside :data:`SUPPORTED_SLUGS` has no Crew sign-in on its
+    card, so its url takes the owner-server path like any other.
     """
     from kiro_crew.connections.registry import get_all_registry_providers
 
     if not isinstance(url, str):
         return False
     wanted = url.rstrip("/")
-    return any(str(p["mcp_url"]).rstrip("/") == wanted for p in get_all_registry_providers())
+    return any(
+        p["slug"] in SUPPORTED_SLUGS and str(p["mcp_url"]).rstrip("/") == wanted
+        for p in get_all_registry_providers()
+    )
 
 
 def signs_in_custom(entry: Any) -> bool:

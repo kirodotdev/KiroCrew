@@ -7245,7 +7245,7 @@
       "image_zoom_hint": "{{key}}+滚动以缩放（双击恢复适应大小）",
       "html_preview": "HTML 预览",
       "invalid_json": "无效的 JSON：",
-      "json_string_show_all_other": "显示全部（{{count}} 个字符）",
+      "json_string_show_all_other": "显示全部（{{n}} 个字符）",
       "json_string_show_less": "收起",
       "media_preview_failed": "播放失败：浏览器无法解码此文件。",
       "null": "null",
@@ -7288,10 +7288,10 @@
       "light_background": "浅色背景",
       "dark_background": "深色背景",
       "sheet_tabs_label": "工作表",
-      "showing_first_rows_other": "显示 {{shown}} 行，共 {{count}} 行",
-      "items_count_other": "{{count}} 项",
-      "lines_count_other": "{{count}} 行",
-      "more_count_other": "还有 {{count}} 项"
+      "showing_first_rows_other": "显示 {{shown}} 行，共 {{total}} 行",
+      "items_count_other": "{{n}} 项",
+      "lines_count_other": "{{n}} 行",
+      "more_count_other": "还有 {{n}} 项"
     },
     "folderColorNames": {
       "amber": "琥珀色",
@@ -12867,6 +12867,16 @@
         "state_finished": "已完成",
         "state_queued": "排队中"
       },
+      "mcpLoadingBar": {
+        "ready_of_total": "{{ready}} / {{total}} 个 MCP 服务器已就绪",
+        "still_connecting": "MCP 服务器仍在连接。每个服务器连接后，其工具即可使用。",
+        "state_connecting": "连接中",
+        "state_disabled": "已关闭",
+        "state_registry_dropped": "因策略未加载",
+        "not_counted": "未计入：{{n}}",
+        "untracked": "部分服务器未跟踪",
+        "list_label": "本会话的 MCP 服务器"
+      },
       "taskProgressBar": {
         "all_tasks_complete": "所有任务已完成",
         "aria_collapse_task_list": "已完成 {{done}}/{{total}} 个任务。折叠任务列表",
@@ -15310,9 +15320,9 @@
         "crew_mode": "Ultra Mode",
         "crew_mode_desc": "让一个对话把任务交给一个团队，并在看板里跟踪它们。",
         "crew_mode_desc_summary": "把对话的任务交给团队。",
-        "crew_oauth": "由 {{productName}} 登录 GitHub",
-        "crew_oauth_desc": "{{productName}} 自己登录 GitHub。在“连接”页面断开 GitHub 即可收回权限。",
-        "crew_oauth_desc_summary": "让 Kiro Agent 聊天使用你的 GitHub 资料、组织和公开仓库。打开后，到“设置 > 连接”中连接 GitHub。",
+        "crew_oauth": "由 {{productName}} 登录 MCP",
+        "crew_oauth_desc": "{{productName}} 自己登录 MCP 服务器，并把登录交给它支持的运行框架上的聊天，例如 Kiro Agent、Claude 或 Codex。kiro-cli 聊天照旧登录。在“连接”页面断开服务器即可收回权限。",
+        "crew_oauth_desc_summary": "让聊天使用 {{productName}} 登录的 MCP 服务器，例如 GitHub、Asana、Google 和你添加的服务器。打开后，到“设置 > 连接”中连接它们。",
         "explore": "探索",
         "explore_desc": "在顶栏加入探索：可试用功能、你的进度，以及新聊天里的“今天试试”卡片。",
         "explore_desc_summary": "在顶栏列出可以试用的功能。",
@@ -16209,6 +16219,7 @@
       "diff_env_added": "新增环境变量：{{names}}",
       "diff_env_removed": "删除环境变量：{{names}}",
       "remove_mark": "移除",
+      "stop_sharing": "不共享此服务器",
       "footprint_failed": "无法读取 MCP 服务器的内存占用。",
       "footprint_owner_only": "只有 crew 所有者可以查看内存数据。",
       "review_what_approve_does": "批准：为所有聊天只运行一份，在每个聊天的沙盒之外运行。跳过：它继续在每个聊天里各自运行。",

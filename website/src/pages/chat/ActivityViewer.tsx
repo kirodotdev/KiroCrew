@@ -1108,12 +1108,14 @@ function ArtifactListRow({ row, busy, onOpen, onSave }: {
   )
 }
 
-export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, onFileOpen, onArtifactOpen, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onReconcileSource, onDismissSource, issues, selectedIssueUrl, onSelectIssue, onReconcileIssue, onAddToChat, pins, pinsLoading, onJumpToPin, onPutPinInComposer, onUnpin, slotTitle, chatMode, remoteEnvironmentName }: {
+export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, onFileOpen, onFolderOpen, onArtifactOpen, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onReconcileSource, onDismissSource, issues, selectedIssueUrl, onSelectIssue, onReconcileIssue, onAddToChat, pins, pinsLoading, onJumpToPin, onPutPinInComposer, onUnpin, slotTitle, chatMode, remoteEnvironmentName }: {
   /** Set when the session runs on a remote environment: the Git view then
    *  shows the guest's checkout instead of the gateway's local one. */
   remoteEnvironmentName?: string
   subagents: Record<string, SubagentActivity>; toolLog: ToolActivity[]; open: boolean; onToggle: () => void; slot: string
   onFileOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void
+  /** Side Chat's folder opener: a folder a side reply names opens as a panel tab. */
+  onFolderOpen?: (path: string) => void
   navLinks?: ExtractedLink[]; navResolving?: boolean
   sources?: PullRequestLink[]; selectedSourceUrl?: string; onSelectSource?: (url: string) => void; onReconcileSource?: (url: string) => void; onDismissSource?: (url: string) => void; onAddToChat?: (text: string) => void
   /** Issue links mentioned in this session, plus the Issues tab's own selection. */
@@ -1524,7 +1526,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
         </div>
       )}
 
-      {effectiveTab === 'side' && <SideChat slot={slot} onFileOpen={onFileOpen} onArtifactOpen={onArtifactOpen} />}
+      {effectiveTab === 'side' && <SideChat slot={slot} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} onArtifactOpen={onArtifactOpen} />}
 
       {/* Scroll to bottom button (tools tab only) */}
     </div>

@@ -124,7 +124,7 @@ export const PREVIEW_FLAG_SETTING_IDS: ReadonlySet<string> = new Set([
   'developer.webhooks',
   'developer.ultra-mode',
   'developer.explore',
-  'developer.github-sign-in-by-kiro-crew',
+  'developer.mcp-sign-in-by-kiro-crew',
   'developer.chat-on-a-crew',
   'developer.composable-layout',
   'developer.folder-conductor',

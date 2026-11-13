@@ -916,6 +916,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SUPERVISOR_SEARCH_DEPTH,
         _config_dir_owner,
         _desktop_supervisor_pid,
+        _force_stop_command,
         _gateway_pid,
         _manual_stop_command,
         _pid_exited,

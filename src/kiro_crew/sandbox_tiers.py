@@ -19,7 +19,7 @@ from types import ModuleType
 
 import kiro_crew as _kiro_crew_pkg
 from kiro_crew import sandbox_plan
-from kiro_crew.apps import credential_masks
+from kiro_crew.apps import agent_readonly_dirs, credential_masks
 from kiro_crew.atomic_write import refuse_linked_parent
 from kiro_crew.config.paths import config_dir, kiro_agents_dir
 from kiro_crew.platform import current_context
@@ -315,6 +315,51 @@ def app_declared_mask_targets(
         if not carveout_shadowed_by_foreign_mask(target, mode=mode)
         and not carveout_chain_has_planted_link(target)
         and _liftable_declared_file(target)
+    )
+
+
+def app_declared_readonly_targets(
+    app_name: str, *, builtin: bool, mode: str = "standard"
+) -> tuple[str, ...]:
+    """Absolute paths of the directories *app_name* declares in ``agentReadOnlyDirs``.
+
+    Every sandbox seals those directories read-only, and the app's spawned backend is
+    their writer, so ``apps/backend.py`` hands exactly these spellings back as
+    ``extra_visible_dirs`` for that one spawn, and ``sandbox_argv._live_plan_host`` leaves
+    a declared seal off a spawn that names its exact spelling there. Nothing else in that
+    list lifts a seal. Each is under ``apps/<app_name>/data/`` by construction
+    (:mod:`kiro_crew.apps.agent_readonly_dirs`). A leaf that is, holds or sits beneath a
+    core leaf of any disposition is dropped, and so is a spelling beneath another mask or
+    reached through a planted link, so a declaration never lifts a core fence and never
+    cancels a mask: the lift returns only what the declaration added. *builtin* names the
+    code the spawn executes, as for :func:`app_declared_mask_targets`.
+
+    Returns ``()`` for an app that declares nothing.
+    """
+    core = (
+        *_CREW_HIDDEN_LEAVES,
+        *_RELOCATED_CREW_HIDDEN_LEAVES,
+        *_CREW_READONLY_LEAVES,
+        *_CREW_SANDBOX_VISIBLE_LEAVES,
+    )
+    leaves = tuple(
+        leaf
+        for leaf in agent_readonly_dirs.declared_crew_leaves_for(app_name, builtin=builtin)
+        if not any(
+            entry == leaf or entry.startswith(leaf + "/") or leaf.startswith(entry + "/")
+            for entry in core
+        )
+    )
+    if not leaves:
+        return ()
+    home = str(Path.home())
+    targets = [os.path.join(home, entry) for entry in _crew_home_entries(leaves)]
+    targets.extend(_relocated_crew_targets(leaves))
+    return tuple(
+        target
+        for target in targets
+        if not carveout_shadowed_by_foreign_mask(target, mode=mode)
+        and not carveout_chain_has_planted_link(target)
     )
 
 

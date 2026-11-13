@@ -240,8 +240,12 @@ describe('IssueList', () => {
   })
 
   it('reads the list again when an app reopens it after the route cache expires', async () => {
+    // Both mounts share one app id, so the reopen finds the first mount's client;
+    // a fresh id per run keeps a repeat from inheriting the last run's cache.
+    appSeq += 1
+    const appName = `issues-app-stale-${appSeq}`
     const mount = () => render(
-      <AppApiProvider appName="issues-app-stale" allowedApiPaths={[ISSUES_PATH]} navigateFn={() => {}}>
+      <AppApiProvider appName={appName} allowedApiPaths={[ISSUES_PATH]} navigateFn={() => {}}>
         <IssueList query={QUERY} />
       </AppApiProvider>,
     )

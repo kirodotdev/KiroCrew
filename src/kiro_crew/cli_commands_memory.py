@@ -328,9 +328,12 @@ def _memory_backup_cmd(action: str, args: argparse.Namespace) -> None:
             raise ValueError("--store names no store; nothing was restored.")
         chosen = getattr(args, "from_backup", None)
         if getattr(args, "cancel_pending", False):
-            from kiro_crew.memory_stores import owned_store_path
+            from kiro_crew.memory_stores import declared_store_names, owned_store_path
 
-            path = owned_store_path(target_store)
+            # An undeclared --store is refused here: ``owned_store_path`` would log
+            # its resolution failure with a traceback above the one-line refusal.
+            is_declared = target_store in declared_store_names()
+            path = owned_store_path(target_store) if is_declared else None
             if chosen or path is None:
                 raise ValueError("Cancel requires an available memory store and cannot use --from")
             cancelled = memory_backup.cancel_pending_restore(path)

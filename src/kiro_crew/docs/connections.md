@@ -300,7 +300,7 @@ it from there. Which address applies depends on what runs the sign-in:
 
 | What runs the sign-in | When | Redirect address | Domain entry the admin needs |
 |---|---|---|---|
-| Kiro Crew itself, local | The **GitHub sign-in by Kiro Crew** feature preview (`dashboard.feature_previews.crew_oauth`, which also covers the Atlassian card) is on, chats run on a backend Kiro Crew bridges such as Kiro Agent, and `dashboard.url` is not a public HTTPS address | `http://127.0.0.1:48100/callback` | `http://127.0.0.1:*/**` covers it |
+| Kiro Crew itself, local | The **MCP sign-in by Kiro Crew** feature preview (`dashboard.feature_previews.crew_oauth`, which also covers the Atlassian card) is on, chats run on a backend Kiro Crew bridges such as Kiro Agent, and `dashboard.url` is not a public HTTPS address | `http://127.0.0.1:48100/callback` | `http://127.0.0.1:*/**` covers it |
 | Kiro Crew itself, on a gateway with a public HTTPS `dashboard.url` | As above, with `dashboard.url` set to `https://<dashboard host>` | `https://<dashboard host>/api/connections/oauth/callback` | `https://<dashboard host>/**`, its own entry |
 | Kiro CLI or the KAS engine | Every other case | A loopback address whose port that runtime picks at each sign-in | `http://127.0.0.1:*/**` and `http://localhost:*/**` |
 
@@ -500,10 +500,11 @@ env names only, never their values. A row's state is one of:
 | **Paused · command changed** | Its command or settings changed since you approved it, so it runs inside each chat until you press **Approve update** |
 | **Paused · not approved yet** | It was added in a config file and never approved here; **Approve** shares it |
 
-A paused row's switch reads off, and pressing it takes you to its approve button
-instead of approving anything. A row that cannot share but still carries a mark has
-**Remove** in place of a switch, which takes the mark off. **Enable all shareable**
-lists the servers it would share by name, and shares them only when you confirm.
+A paused row has no switch. It offers its approve button and **Don't share this
+server**, which takes the mark off and approves nothing. A row that cannot share
+but still carries a mark has **Remove** in place of a switch, which takes the mark
+off. **Enable all shareable** lists the servers it would share by name, and shares
+them only when you confirm.
 
 **Pre-install npm servers** installs each server started with `npx` (or
 `npm exec`) that has Share on and is not paused, ahead of time, so a chat starts it

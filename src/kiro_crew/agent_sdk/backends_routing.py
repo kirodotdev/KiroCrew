@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 from enum import Enum
 from typing import FrozenSet
 
@@ -823,17 +824,94 @@ def permission_value_for(backend: str, config_options: object) -> str:
     """
     option_id, required = permission_config_for(backend)
     preferred_id, preferred = ACP_BACKEND_PREFERRED_PERMISSION_CONFIG.get(backend, ("", ""))
-    if not preferred or preferred_id != option_id or not isinstance(config_options, list):
+    if not preferred or preferred_id != option_id:
         return required
+    return preferred if offers_config_value(config_options, option_id, preferred) else required
+
+
+def offers_config_value(config_options: object, option_id: str, value: str) -> bool:
+    """Whether ``session/new``'s *config_options* list *value* among *option_id*'s choices.
+
+    Anything unreadable is False: the adapter is not known to offer it.
+    """
+    if not isinstance(config_options, list):
+        return False
     for option in config_options:
         if not isinstance(option, dict) or option.get("id") != option_id:
             continue
         values = option.get("options")
         if isinstance(values, list) and any(
-            isinstance(entry, dict) and entry.get("value") == preferred for entry in values
+            isinstance(entry, dict) and entry.get("value") == value for entry in values
         ):
-            return preferred
-    return required
+            return True
+    return False
+
+
+@dataclass(frozen=True)
+class KnownLimitation:
+    """A harness problem a newer adapter release fixes, as plain data.
+
+    Read today by :func:`known_limitation_issue` for a new chat's notice; kept free
+    of any surface so a Settings card row can read the same entries later.
+    """
+
+    #: Stable handle for tests and a later card row's label key.
+    id: str
+    #: The ``agent.acp_backend`` id this applies to.
+    harness: str
+    #: The condition: the session is affected while ``session/new`` does NOT offer
+    #: this ``(option_id, value)`` (:func:`offers_config_value`).
+    missing_config_value: tuple[str, str]
+    #: What the user reads, in English like every other new-chat notice.
+    message: str
+    #: The package the fix ships in.
+    needs_adapter: str
+    #: The first ``needs_adapter`` release with the fix; ``""`` while none exists.
+    fixed_in: str
+
+
+#: Every known limitation, in the order a chat shows them.
+#:
+#: codex: Crew writes ``mode=external-sandbox`` only when the adapter offers it
+#: (:data:`ACP_BACKEND_PREFERRED_PERMISSION_CONFIG`); without it the session keeps
+#: ``read-only``, whose own OS sandbox Crew's sandbox refuses, so every shell command
+#: fails. The condition is that same offer, so the notice cannot disagree with what
+#: the session writes. No codex-acp release offers it yet
+#: (agentclientprotocol/codex-acp#732 is unmerged), so ``fixed_in`` is empty.
+KNOWN_LIMITATIONS: tuple[KnownLimitation, ...] = (
+    KnownLimitation(
+        id="codex_shell_in_crew_sandbox",
+        harness=ACP_BACKEND_CODEX,
+        missing_config_value=ACP_BACKEND_PREFERRED_PERMISSION_CONFIG[ACP_BACKEND_CODEX],
+        message=(
+            "Shell commands, git included, fail in this codex chat: this codex-acp "
+            "does not offer the external-sandbox mode Kiro Crew's sandbox needs. "
+            "No codex-acp release adds it yet (agentclientprotocol/codex-acp#732). "
+            "Once one does, a Kiro Crew update will name the release to install."
+        ),
+        # ``ACP_BACKEND_NODE_ADAPTER_PACKAGES[codex]``, spelled out: this leaf may not
+        # import ``backends_launch``; a test holds the two equal.
+        needs_adapter="@agentclientprotocol/codex-acp",
+        fixed_in="",
+    ),
+)
+
+
+def known_limitation_issue(backend: str, config_options: object) -> str:
+    """The notice for each :data:`KNOWN_LIMITATIONS` entry this session has, else ``""``.
+
+    *config_options* is the session's ``session/new`` ``configOptions``. Silent
+    while there are none (both drivers start from ``[]``), as the other new-chat
+    notices are before the handshake: no options is no evidence of a missing offer.
+    """
+    if not isinstance(config_options, list) or not config_options:
+        return ""
+    return " ".join(
+        entry.message
+        for entry in KNOWN_LIMITATIONS
+        if entry.harness == backend
+        and not offers_config_value(config_options, *entry.missing_config_value)
+    )
 
 
 def permission_setting_for(backend: str) -> tuple:

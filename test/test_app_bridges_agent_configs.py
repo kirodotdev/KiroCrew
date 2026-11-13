@@ -223,6 +223,7 @@ class TestBuiltinDeclaredResourcesActuallyRegister:
         # into a valid builtin's persisted manifest.
         declared.discard("config_keys_error")
         declared.discard("credential_masks_errors")
+        declared.discard("agent_readonly_dirs_errors")
 
         manifest = AppManifest.from_dict(
             {
@@ -243,6 +244,7 @@ class TestBuiltinDeclaredResourcesActuallyRegister:
                 "mcpServers": {"m": {"command": "c"}},
                 "config_keys": ["probe-owned"],
                 "credentialMasks": ["secrets.json"],
+                "agentReadOnlyDirs": ["notes"],
                 "platform": {"requiresDesktopApp": True},
                 "permissions": {"storage": True},
                 "ui": {"entry": "ui/dist/index.js"},

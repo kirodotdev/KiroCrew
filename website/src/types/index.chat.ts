@@ -110,6 +110,32 @@ export interface McpSessionReport {
    * Optional because an older gateway sends no such key.
    */
   restart_to_load?: string[]
+  /**
+   * The servers this session cannot use right now, by what is true of each.
+   * Optional: a gateway or an agent backend that does not report it sends no
+   * such key, and then no server is known to be connecting.
+   */
+  states?: McpSessionStates
+  /**
+   * Not zero when the report left servers out because one of its lists was
+   * full: it is then partial. A total of what each list left out, not a
+   * number of servers.
+   */
+  states_omitted?: number
+}
+
+/** A session's not-ready servers by state; a state with no server is left out. */
+export interface McpSessionStates {
+  /** Declared and not reported yet: still starting. */
+  connecting?: string[]
+  /** Waits for a person to authorize it. */
+  needs_sign_in?: string[]
+  /** Reported a failed start. */
+  failed?: string[]
+  /** Switched off by its owner, or reported disabled by the host. */
+  disabled?: string[]
+  /** Dropped by the host's registry instead of started. */
+  registry_dropped?: string[]
 }
 
 /** A Slack code channel a session runs in (`slack/code_channels/dashboard_view.py`).

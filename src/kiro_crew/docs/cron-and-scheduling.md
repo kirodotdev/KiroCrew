@@ -194,7 +194,7 @@ Jobs can override the global tool approval mode. Set `approval_mode` to `"auto"`
 kirocrew cron add "auto-check" "check pipeline" --every 300 --approval-mode auto
 ```
 
-Or turn it on for a job from the Schedule page. Only the owner can turn `"auto"` on: the MCP tools `cron_add` and `cron_update` refuse `approval_mode="auto"` (they still accept `""`, which turns it off), so an agent creates the job and the user switches it to auto on the Schedule page. If `cron_update` later changes what an auto job does (message, agent, model, schedule, channel or thread), auto-approve turns off and the user turns it back on there; a rename keeps it.
+Or turn it on for a job from the Schedule page: open the job and set its Approval field to Auto-approve. Only the owner can turn `"auto"` on: the MCP tools `cron_add` and `cron_update` refuse `approval_mode="auto"` (they still accept `""`, which turns it off), so an agent creates the job and the user switches it to auto on the Schedule page or with `kirocrew cron update <job-id> --approval-mode auto`; the refusal names both. If `cron_update` later changes what an auto job does (message, agent, model, schedule, channel or thread), auto-approve turns off and the user turns it back on there; a rename keeps it.
 
 ## Next Run Display
 

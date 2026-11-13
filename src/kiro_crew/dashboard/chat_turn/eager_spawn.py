@@ -443,6 +443,7 @@ def schedule_eager_spawn(
     allow_resume: bool = False,
     start_priority: StartPriority = StartPriority.BACKGROUND,
     on_ended: Callable[[Exception | None], None] | None = None,
+    focus_resume: bool = False,
 ) -> "asyncio.Task | None":
     """Speculatively create *slot*'s session ahead of its first message.
 
@@ -466,6 +467,11 @@ def schedule_eager_spawn(
     Reload), where the person is about to type; the focus-driven resume prefetch,
     the other reloads and app callers stay BACKGROUND (rule:
     ``kiro_crew.start_priority``).
+
+    ``focus_resume`` is set by the focus-driven resume prefetch alone. Its start
+    keeps that BACKGROUND place in the queues, and the session layer is told the
+    owner came back to the chat, so the re-open is done as one a person is about
+    to wait on (rule: ``acp.mcp_start_wait.person_waits``).
 
     ``on_ended`` is called once the start has ended without being cancelled,
     with the exception that failed it or ``None``; a reload reads it to say how
@@ -518,6 +524,7 @@ def schedule_eager_spawn(
             signal_generation=_arm_generation,
             start_priority=start_priority,
             on_ended=on_ended,
+            focus_resume=focus_resume,
         )
     )
     slot._eager_spawn_task = task
@@ -579,6 +586,7 @@ async def _eager_spawn(
     signal_generation: float | None = None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
     on_ended: Callable[[Exception | None], None] | None = None,
+    focus_resume: bool = False,
 ) -> None:
     """Debounce, re-validate, then create the slot's session and release it.
 
@@ -900,6 +908,7 @@ async def _eager_spawn(
                     allow_resume=allow_resume,
                     _bound=_bound,
                     start_priority=start_priority,
+                    focus_resume=focus_resume,
                 )
             finally:
                 # Every exit that is not a registration -- refused, another
@@ -945,6 +954,7 @@ async def _spawn_admitted_prefetch(
     allow_resume: bool,
     _bound: tuple,
     start_priority: StartPriority,
+    focus_resume: bool = False,
 ) -> None:
     """The admitted half of ``_eager_spawn``: handshake, guards, registration.
 
@@ -1001,6 +1011,7 @@ async def _spawn_admitted_prefetch(
                 speculative_resume=allow_resume,
                 reasoning_effort_override=slot.reasoning_effort or None,
                 start_priority=start_priority,
+                focus_resume=focus_resume,
                 **_app_allocation_kwargs(slot),
                 **_slot_backend_allocation_kwargs(slot),
             )

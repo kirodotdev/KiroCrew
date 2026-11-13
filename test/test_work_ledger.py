@@ -512,6 +512,18 @@ def test_close_accepted_needs_a_pass_verdict(verdicts):
     assert closed is not None and closed.state == "rejected"
 
 
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_create_refuses_an_acceptance_that_is_not_strict_json(bad):
+    """A NaN/Infinity in the acceptance would serialise to a bare `NaN`/`Infinity`
+    token that the Crew board's strict JSON.parse rejects, so it is refused at the
+    store, never minted."""
+    wl.ensure_conductor(CONDUCTOR, goal="g")
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "create", title="t", acceptance={"x": bad})
+    assert (caught.value.code, caught.value.field) == (wl.CODE_INVALID_VALUE, "acceptance")
+    assert wl.list_work_items(CONDUCTOR) == []
+
+
 def test_an_unknown_item_and_an_unknown_action_are_named_distinctly():
     wl.ensure_conductor(CONDUCTOR)
     with pytest.raises(wl.WorkLedgerError) as unknown:
