@@ -58,6 +58,8 @@ let listItems: ListItem[] = []
 let listUnused: Array<{ name: string; reason: 'wakatime_disabled' | 'jira_multi_host' | 'jira_host_precedence' }> = []
 /** Non-fatal managed catalog warning returned by the list endpoint. */
 let listManagedError = false
+/** What `GET /api/secrets/usage` answers: item name -> the places using it. */
+let listUsage: Record<string, Array<{ kind: string; name: string; key: string }>> = {}
 /** When set, the next `/api/secrets` GET rejects — drives the error path. */
 let listShouldFail = false
 
@@ -146,6 +148,9 @@ function installFetch() {
       if (listShouldFail) return Promise.reject(new Error('boom'))
       return Promise.resolve(okJson(listBody()))
     }
+    if (method === 'GET' && url === '/api/secrets/usage') {
+      return Promise.resolve(okJson({ usage: listUsage, incomplete: [] }))
+    }
     // POST /api/secrets and DELETE /api/secrets/:name both just acknowledge.
     return Promise.resolve(okJson({ ok: true }))
   })
@@ -197,6 +202,7 @@ beforeEach(() => {
   listManaged = []
   listItems = []
   listUnused = []
+  listUsage = {}
   listManagedError = false
   listShouldFail = false
   localStorage.setItem('kiro_crew_token', 'test-token')
@@ -271,6 +277,19 @@ describe('SecretsPanel rail', () => {
     expect(option).toHaveTextContent(S.status_unused)
     await user.click(option)
     expect(await screen.findByText(M.wakatime_unused_hint)).toBeInTheDocument()
+  })
+
+  it('drops "Not used" and its hint from an ignored item that some place still uses', async () => {
+    const user = userEvent.setup()
+    listNames = ['WAKATIME_API_KEY']
+    listUnused = [{ name: 'WAKATIME_API_KEY', reason: 'wakatime_disabled' }]
+    listUsage = { WAKATIME_API_KEY: [{ kind: 'mcp_server', name: 'wakatime-mcp', key: 'WAKATIME_API_KEY' }] }
+    mount()
+    const option = await screen.findByRole('option', { name: /WAKATIME_API_KEY/ })
+    await user.click(option)
+    expect(await screen.findByText('wakatime-mcp')).toBeInTheDocument()
+    expect(option).not.toHaveTextContent(S.status_unused)
+    expect(screen.queryByText(M.wakatime_unused_hint)).toBeNull()
   })
 
   it('keeps the Add path when the list fails to load, and offers the hand-off', async () => {

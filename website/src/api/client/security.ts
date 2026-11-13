@@ -408,6 +408,32 @@ export interface SecretsListResponse {
   managed_error?: boolean
 }
 
+/** Which kind of place references a vault item (`secrets_usage.py`). */
+export type SecretUsageKind =
+  | 'mcp_server'
+  | 'env_file'
+  | 'cron_job'
+  | 'setting'
+  | 'connection'
+  | 'integration'
+  | 'approved_api'
+  | 'sprites_profile'
+
+/** One place that would read a vault item: its kind, its own name (server,
+ *  file, job or setting) and the key holding the reference. Never a value. */
+export interface SecretUsagePlace {
+  kind: SecretUsageKind
+  name: string
+  key: string
+}
+
+/** What `GET /api/secrets/usage` answers with. An item absent from `usage` has
+ *  no use found in the scanned places; a kind in `incomplete` could not be read. */
+export interface SecretsUsageResponse {
+  usage: Record<string, SecretUsagePlace[]>
+  incomplete: SecretUsageKind[]
+}
+
 /** One changed key in a settings file edited outside the dashboard. `before` /
  *  `after` are present only when the value cannot carry a credential; `redacted`
  *  marks a value the gateway withheld. */
@@ -517,6 +543,8 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
      * and the server-side ephemeral gate always runs, matching every other method
      * here. */
     secretsList: () => get('/api/secrets').then(j) as Promise<SecretsListResponse>,
+    /** Where each stored item is referenced, by place name only. */
+    secretsUsage: () => get('/api/secrets/usage').then(j) as Promise<SecretsUsageResponse>,
     /** Store a vault secret under *name*, replacing any current value. A string
      *  stores a plain secret; a `SecretItemBody` stores a typed item (login,
      *  note) and the server validates its fields.

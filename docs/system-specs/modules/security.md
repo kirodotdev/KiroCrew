@@ -1273,6 +1273,37 @@ Security properties:
   has that revision (check and delete under one store lock, `409 changed`
   otherwise). A change card's Undo of a secret it saved uses it, so a value saved
   over it since is never deleted in its place.
+- **Usage listing.** `GET /api/secrets/usage` (`dashboard/handlers/secrets_usage.py`,
+  behind `_owner_only`) answers, per stored item, the places that would resolve
+  it: an MCP server's `env` in an agent spec, a crewmate file the rewriter
+  takes (`mate_overlays.list_mate_sources`), or the global
+  `~/.kiro/settings/mcp.json` (both read strictly: a spec or file that fails to
+  read marks the scan incomplete), a credential key of the data-home
+  `.env`, a scheduled job's approved grant (`secret_env`, not a pending request),
+  and the `agent.deepseek_env`, `agent.strands_env` and
+  `tunnel.relay_lease_credential` settings, plus the client and token entries
+  Crew-owned OAuth reads by name for each Connections card and each recorded
+  owner-added remote server (names computed with `crew_oauth_dcr.client_entry_name`
+  and `crew_oauth.token_entry_name`, never matched by pattern, never read), and
+  the other by-name readers in `dashboard/handlers/secrets_usage_readers.py`
+  (Bitbucket Server, Linear, Jev, OTLP headers, Sprites profiles and the token
+  each saved Sprites machine was made with, `kirocrew secrets authorize`
+  approvals), each by its owner module's own rule and only while it is set to
+  read the entry now. A settings load that fell back to defaults (an unreadable
+  `config.json` or `config.local.json`, or a discarded section) marks every
+  settings-backed kind incomplete instead of reading the defaults. Because any code can read the vault by
+  name, an item absent from the answer is shown as "no use found", never as
+  unused. Each place is matched as its own
+  resolver reads it (whole name first, then `NAME#FIELD` where the reader takes a
+  field). A row carries the place's kind, its name and the key holding the
+  reference, never a value or file content; every place name and key (a job
+  name, a grant key, a spec's server and env key) goes through the Schedule
+  board's redaction. A kind that cannot be read is listed in `incomplete`, so the
+  pane never calls an item unused on a partial scan. With the `secrets_vault`
+  preview off the route reads nothing and answers as the path did before it
+  existed (405, `Allow: DELETE`). A remote server's `headers`
+  and the process environment are not scanned: the first is never resolved, and
+  the second is not a reference Kiro Crew wrote.
 - **Sandbox-hidden.** The `.vault` directory sits under the crew data home,
   which the OS-level sandbox bind-mounts away from the agent subprocess tree,
   so the agent cannot read the ciphertext off disk either. On Linux a mount

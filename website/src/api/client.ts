@@ -141,6 +141,8 @@ export type {
   SecretListItem,
   SecretLoginPublicFields,
   SecretsListResponse,
+  SecretUsagePlace,
+  SecretsUsageResponse,
 } from './client/security'
 export type {
   RemoteControlState,
