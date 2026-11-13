@@ -601,14 +601,23 @@ async def hmac_proxy_middleware(request: web.Request, handler) -> web.Response:
 # =============================================================================
 
 
+async def api_liveness(request: web.Request) -> web.Response:
+    # Served at /health (HMAC-exempt): the gateway's own liveness poll, every
+    # 15 s for the life of the backend. Answers from this process alone, with
+    # no service-manager read: each such read spawns `systemctl` scopes, and a
+    # slow manager would turn this poll into a steady stream of failed ones.
+    return web.json_response({"status": "ok"})
+
+
 async def api_health(request: web.Request) -> web.Response:
-    # Served at BOTH /health (HMAC-exempt, gateway-internal liveness poll) and
-    # /api/health (proxied, reached by the browser at /apps/dev-fleet/api/health).
-    # ``start_id`` lets the dashboard's restart handshake wait for the NEW
-    # gateway process rather than "a 200 came back" (see _gateway_start_id).
+    # Served at /api/health (proxied, reached by the browser at
+    # /apps/dev-fleet/api/health). ``start_id`` lets the dashboard's restart
+    # handshake wait for the NEW gateway process rather than "a 200 came back"
+    # (see _gateway_start_id). Read through the shared, briefly cached reader so
+    # a burst of polls costs one service-manager read.
     # None-safe: a platform that cannot report identity returns None here and
     # the frontend degrades to reload-on-first-response instead of hanging.
-    return web.json_response({"status": "ok", "start_id": await live._gateway_start_id()})
+    return web.json_response({"status": "ok", "start_id": await live._cached_gateway_start_id()})
 
 
 # NOT here: the make-live and restart-gateway handlers. Both reach the live-target
@@ -645,5 +654,6 @@ __all__ = (
     "api_dev_fleet_worktree",
     "api_dev_fleet_worktree_remove",
     "api_health",
+    "api_liveness",
     "hmac_proxy_middleware",
 )

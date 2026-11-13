@@ -294,7 +294,7 @@ verification. Route names below are relative to that prefix.
 
 | Route | Description |
 |-------|-------------|
-| `/apps/dev-fleet/api/health` | Liveness + gateway **start identity**: `{status, start_id}`. `start_id` is the live unit's `ExecMainStartTimestampMonotonic` (launchd: job PID; foreground last resort: run-marker pid; `null` when unavailable); the dashboard polls it to detect the NEW process after a restart (see Action narration). Served on the proxied `/api/` namespace because the gateway only forwards `/apps/dev-fleet/api/*` to the backend. (The bare `/health` carries the same body but is HMAC-exempt and reached only by the gateway's own internal liveness poll.) |
+| `/apps/dev-fleet/api/health` | Liveness + gateway **start identity**: `{status, start_id}`. `start_id` is the live unit's `ExecMainStartTimestampMonotonic` (launchd: job PID; foreground last resort: run-marker pid; `null` when unavailable); the dashboard polls it to detect the NEW process after a restart (see Action narration). Served on the proxied `/api/` namespace because the gateway only forwards `/apps/dev-fleet/api/*` to the backend. Concurrent requests share one identity read, and a finished read is reused for 2 s (`_GATEWAY_START_ID_TTL`). The bare `/health` answers `{status}` only, with no service-manager read. It is HMAC-exempt and reached only by the gateway's own internal liveness poll. |
 | `/apps/dev-fleet/api/fleet` | Lightweight worktree + pod list (polled every 12s), including `main_repo` and `main_repo_inferred`. `?fresh=1` forces cache bypass. Answers `{worktrees: [], needs_setup: true}` when no main checkout was found (see Main Checkout Discovery) and `{worktrees: [], error}` when a named checkout is unreadable. |
 | `/apps/dev-fleet/api/worktree?name=` | Lazy per-branch detail: PR, commits, disk usage |
 | `/apps/dev-fleet/api/pod/logs?name=&n=` | Pod journal tail (recent N lines, default 120, clamped to 1..1000) |
@@ -1239,12 +1239,19 @@ scheduling the restart and hands it to the frontend:
   in its `run/gateway-<port>.pid` sidecar — written before readiness is
   published, rewritten by the replacement, and consumed by the same
   changed-identity comparison unchanged.
-- The current identity is reported by extending the existing **`/health`**
-  surface (`{status, start_id}`). Because the gateway proxies only
-  `/apps/dev-fleet/api/*` to the backend, the same handler is registered at
-  **`/api/health`** and the dashboard polls **`/apps/dev-fleet/api/health`**
-  (the bare `/health` stays HMAC-exempt for the gateway's internal liveness
-  poll). The gateway is treated as recovered ONLY when the reported `start_id`
+- The current identity is reported on the proxied **`/api/health`** route
+  (`{status, start_id}`), and the dashboard polls
+  **`/apps/dev-fleet/api/health`**, because the gateway proxies only
+  `/apps/dev-fleet/api/*` to the backend. The bare `/health` is liveness only
+  (`{status}`): it stays HMAC-exempt for the gateway's internal 15 s liveness
+  poll and reads nothing from the service manager, because each identity read
+  can spawn two `systemctl` scopes. `/api/health` reads the identity through
+  `_cached_gateway_start_id`: concurrent requests share one in-flight read, and
+  a finished read (a stamp, or `null`, also for a read that raised) is reused
+  for 2 s. The handshake polls about every 2 s, so the reuse delays recovery by
+  at most one poll. `_restart_gateway` and `_make_live` call the uncached
+  `_gateway_start_id` right before the bounce. The gateway is treated as
+  recovered ONLY when the reported `start_id`
   DIFFERS from the one captured before the restart. A 200 from the old process
   still winding down returns the SAME identity and is correctly NOT counted as
   recovered.
