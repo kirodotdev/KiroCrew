@@ -26,7 +26,7 @@ import {
 import { useTheme } from '../../hooks/useTheme'
 import { i18nT } from '../../i18n/t'
 import type { AppDispatch } from '../../store'
-import { openActivityPanel } from '../../store/chatSlice'
+import { openActivityPanel, switchSlot } from '../../store/chatSlice'
 import { openCrewSession } from './command-center/CrewWorkerList'
 import type { ChatMessage } from '../../types'
 import { mergeIntoDraft, setDraft } from '../../utils/chatDrafts'
@@ -602,9 +602,20 @@ export function useChatPageResourcesController({
    *  The folder twin of handleFileOpen, and deliberately much thinner: there is
    *  no content to prefetch (FolderPanel owns its own ['browse-files', path]
    *  query). Only reachable for paths the backend already
-   *  confirmed are directories, so there is no not-found branch to handle. */
-  const handleFolderOpen = useCallback((dirPath: string) => {
-    tabsCtl.openFolder(dirPath, activeSlotRef.current ?? null)
+   *  confirmed are directories, so there is no not-found branch to handle.
+   *  `opts.slot` is the same split-pane override openFile takes (#9921); a
+   *  pane whose chat is not the one the panel shows switches the panel to it. */
+  const handleFolderOpen = useCallback((dirPath: string, opts?: { slot?: string | null }) => {
+    const slot = opts?.slot !== undefined ? opts.slot : (activeSlotRef.current ?? null)
+    if (slot !== null && slot !== activeSlotRef.current) {
+      // The panel is bound to activeSlot, so reveal the pane's chat the way
+      // `openCrewSession` does: open held (its history loads after the
+      // switch), then switch.
+      tabsCtl.openFolder(dirPath, slot, { hold: true })
+      dispatch(switchSlot({ key: slot, announceOnMissing: true, gesture: true }))
+    } else {
+      tabsCtl.openFolder(dirPath, slot)
+    }
     dispatch(openActivityPanel())
     search.close()
     // eslint-disable-next-line react-hooks/exhaustive-deps -- same as handleFileOpen above: `search.close` is a useCallback([]) and the enclosing `search` object is a fresh literal every render, so listing it would churn the onFolderOpen prop on every transcript row

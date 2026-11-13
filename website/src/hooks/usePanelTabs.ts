@@ -525,8 +525,8 @@ const tabChoices = new Map<string, number>()
  *  checked but did not land. No entry means the strip has not been shown in
  *  this page session, which is a plain open. */
 const stoppedAt = new Map<string, number | 'landed' | null>()
-/** Per strip, a view opened with `openPanelView(..., { hold: true })` that a
- *  discovery open may not take the focus from (see there). */
+/** Per strip, a tab opened with `hold: true` (`openPanelView`, or a folder via
+ *  `openFolder`) that a discovery open may not take the focus from (see there). */
 const heldViews = new Map<string, string>()
 /** Ends the show of `slot`'s strip: the panel closed, or it shows another chat
  *  (see `notePanelShown`). */
@@ -1228,9 +1228,17 @@ export function usePanelTabs(
   /** Open a directory listing as its own tab. Keyed `folder:${path}` so a
    *  directory and a same-named file never collide on id, and so re-opening the
    *  same directory focuses the existing tab instead of stacking duplicates. */
-  const openFolder = useCallback((path: string, slot: string | null = null) => {
-    upsert({ id: `folder:${path}`, kind: 'folder', title: basename(path), path, slot })
-  }, [upsert])
+  const openFolder = useCallback((path: string, slot: string | null = null, opts?: { hold?: boolean }) => {
+    // Same slot/bucket routing as openFile (see its note).
+    const target = slot !== null ? bucketKey(slot) : key
+    const id = `folder:${path}`
+    mutateSlot(target, b => upsertInBucket(b, {
+      id, kind: 'folder', title: basename(path), path, slot,
+    }), target === key ? defaultLeadingId : null, { choice: true })
+    // `hold`: as in `openPanelView` — a split pane opens this in its own chat's
+    // strip just before switching to it, and that chat's history loads after.
+    if (opts?.hold) heldViews.set(target, id)
+  }, [key, defaultLeadingId])
 
   /** Open (or refocus) the app tab hosting one MCP App render. Keyed by
    *  tool-call id, so a re-render of the same app reuses its tab instead of
