@@ -474,6 +474,8 @@ class TestTheFirstTurn:
         TurnMcpStatesReader(_Sessions(handle)).told("dashboard:tab-1", _MARK, ("users-fast",))
 
         await _goes_out(hold_untold_first_turn(handle, _PROMPT_WITH_THE_BLOCK), "told first turn")
+        # The turn that went out spent the start's wait: nothing is left for the next one.
+        assert (handle._mcp_report.left_to_turn, handle._mcp_report.left_omitted) == ((), 0)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("how", ["registry-dropped", "disabled"])
@@ -506,6 +508,7 @@ class TestTheFirstTurn:
         _deliver(handle, _settled(how, fast="failed"))
 
         await _goes_out(hold_untold_first_turn(handle, "ping"), "untold first turn")
+        assert (handle._mcp_report.left_to_turn, handle._mcp_report.left_omitted) == ((), 0)
 
     @pytest.mark.asyncio
     async def test_a_server_that_goes_back_to_connecting_after_the_build_holds_the_prompt(
@@ -614,6 +617,8 @@ class TestTheFirstTurn:
         handle = await _started(runtime)
         monkeypatch.setattr(session_handle_mcp, "MOUNTED_MCP_WAIT_SECS", 0)
         await finished(hold_untold_first_turn(handle), "first turn")
+        # The first turn clears the start's list, which is why the second one cannot hold.
+        assert handle._mcp_report.left_to_turn == ()
         monkeypatch.setattr(session_handle_mcp, "MOUNTED_MCP_WAIT_SECS", FALLBACK_TIMEOUT_SECS)
 
         await _goes_out(hold_untold_first_turn(handle), "second turn")

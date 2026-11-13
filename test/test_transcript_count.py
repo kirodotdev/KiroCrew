@@ -314,6 +314,13 @@ def test_append_of_a_metadata_shaped_entry_adds_nothing(tmp_path: Path) -> None:
     base, log = _fixture(tmp_path)
     log.append("k", "user", "x", entry={"_type": "metadata", "role": "user", "content": "x"})
     _same_as_full_count(base)
+    assert _stored(base, "k") == 6  # the fixture's six messages; metadata is not one
+
+
+#: The message count each outside change leaves: the first three lines (the metadata
+#: line and two rows), one rewritten row, six same-size rows, and the fixture's six
+#: plus one foreign row.
+_RECOUNTED = {"truncate_rows": 2, "rewrite": 1, "same_size_other_mtime": 6, "grow": 7}
 
 
 @pytest.mark.parametrize("how", ["truncate_rows", "rewrite", "same_size_other_mtime", "grow"])
@@ -334,6 +341,7 @@ def test_a_file_changed_outside_the_append_path_is_recounted(tmp_path: Path, how
         with open(path, "ab") as handle:  # a foreign writer, not the append path
             handle.write(b'{"role": "user", "content": "foreign"}\n')
     _same_as_full_count(base)
+    assert _stored(base, "k") == _RECOUNTED[how]
 
 
 def test_a_torn_last_line(tmp_path: Path) -> None:
@@ -352,8 +360,10 @@ def test_an_empty_file(tmp_path: Path) -> None:
     log.init()
     log._path("k").write_bytes(b"")
     _same_as_full_count(base)
+    assert _stored(base, "k") == 0
     log.append("k", "user", "first")
     _same_as_full_count(base)
+    assert _stored(base, "k") == 1
 
 
 @pytest.mark.parametrize("damage", ["missing", "garbage", "wrong_types", "wrong_count_keys"])
