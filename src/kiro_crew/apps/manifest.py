@@ -153,6 +153,9 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
     _L10N_QUOTED_CHARS,
     _L10N_QUOTED_KEYS,
     _OVERLAY_SLUG_RE,
+    BOT_GRANT_FAMILIES,
+    BOT_GRANT_FAMILY,
+    BOT_SCOPE_NAMES,
     L10N_LOCALE_RE,
     L10N_TEXT_CAPS,
     LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT,
@@ -180,9 +183,11 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
     UIOverlay,
     UIPage,
     UISidebar,
+    _bot_scopes,
     _granted_list,
     _l10n_quoted,
     _sidebar_order,
+    bot_grant_entries,
     clamp_lifecycle_timeout,
     lifecycle_timeout_error,
     lifecycle_timeout_seconds,
@@ -255,7 +260,8 @@ def cron_permission_error(manifest: AppManifest) -> str:
 #:
 #: * ``apps/routes.py`` ``setup_routes`` -- ``manifest``, ``config``, and the lifecycle
 #:   verbs ``uninstall`` (whose ``uninstall/preview`` child is covered by the segment),
-#:   ``update``, ``enable``, ``disable``, ``open``, ``dev``, ``migrate-cleanup``
+#:   ``update``, ``enable``, ``disable``, ``open``, ``dev``, ``migrate-cleanup``,
+#:   ``bot-grants``
 #: * ``dashboard/routes/system.py`` -- ``token``
 #: * ``apps/job_routes.py`` -- ``_jobs``
 #:
@@ -267,6 +273,7 @@ def cron_permission_error(manifest: AppManifest) -> str:
 CORE_APP_ROUTE_SEGMENTS = frozenset(
     {
         "_jobs",
+        "bot-grants",
         "config",
         "dev",
         "disable",

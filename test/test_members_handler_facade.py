@@ -80,6 +80,7 @@ _ROUTES = frozenset(
         "api_member_rules_get",
         "api_member_rules_put",
         "api_member_thread",
+        "api_member_wake",
         "api_members",
     }
 )
@@ -149,11 +150,12 @@ def test_a_facade_patch_of_every_scanned_name_reaches_every_module_holding_it() 
 
 
 def test_a_shared_seam_is_held_by_every_owner_that_reads_it() -> None:
-    """``_member_names_for_slug`` is defined once and read by three route owners; each
+    """``_member_names_for_slug`` is defined once and read by four route owners; each
     holds it, so a facade patch of it reaches every route that asks the question."""
     holders = sorted(m.__name__ for m in _family() if "_member_names_for_slug" in vars(m))
     assert holders == [
         f"{OWNER_PREFIX}access",
+        f"{OWNER_PREFIX}app",
         f"{OWNER_PREFIX}drawer",
         f"{OWNER_PREFIX}rules",
         f"{OWNER_PREFIX}thread",
@@ -165,7 +167,7 @@ def test_the_owners_are_every_members_sibling_in_layer_order() -> None:
     listed before it -- the order the facade loads them and a read resolves in."""
     owners = list(_index().owners)
     assert sorted(owners) == sorted(_owner_paths())
-    assert len(owners) == 6
+    assert len(owners) == 7
     late: dict[str, list[str]] = {}
     for position, owner in enumerate(owners):
         tree = ast.parse(_owner_paths()[owner].read_text(encoding="utf-8"))

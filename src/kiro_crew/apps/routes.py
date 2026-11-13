@@ -156,6 +156,7 @@ from kiro_crew.apps.registry_pipeline.subprocess_env import (
     _proxy_env_has_credentials,
 )
 from kiro_crew.apps.routes_art import handle_app_art_file, handle_blob_proxy
+from kiro_crew.apps.routes_bot_grants import handle_bot_grants
 from kiro_crew.apps.routes_enable import handle_disable_app, handle_enable_app, handle_open_app
 from kiro_crew.apps.routes_install import (
     handle_install_app,
@@ -264,6 +265,8 @@ def register_app_routes(app: web.Application) -> None:
     app.router.add_post("/api/apps/{name}/disable", handle_disable_app)
     app.router.add_post("/api/apps/{name}/open", handle_open_app)
     app.router.add_post("/api/apps/{name}/dev", handle_app_dev_mode)
+    app.router.add_get("/api/apps/{name}/bot-grants", handle_bot_grants)
+    app.router.add_put("/api/apps/{name}/bot-grants", handle_bot_grants)
     app.router.add_delete("/api/apps/{name}/migrate-cleanup", handle_migrate_cleanup)
     app.router.add_get("/apps/{name}/ui/{path:.*}", handle_app_ui_file)
     app.router.add_get("/apps/{name}/art/{path:.*}", handle_app_art_file)
@@ -287,6 +290,7 @@ def register_app_routes(app: web.Application) -> None:
 #   ``routes_static`` -- An installed app's UI bundle and the dev-mode toggle.
 #   ``routes_art`` -- The installed-art route, and the git blob proxy with its validators.
 #   ``routes_listing`` -- The app list, one app, its manifest and config, the publish providers.
+#   ``routes_bot_grants`` -- The Bots the owner ticked for an app (``permissions.bots``).
 #   ``routes_install`` -- Installing from a local path, updating, and registering an external app.
 #   ``routes_uninstall`` -- The uninstall, its preview and cron retry, and migrated-app cleanup.
 #   ``routes_enable`` -- Enable, disable and open an installed app.
@@ -298,6 +302,7 @@ _OWNERS = (
     "kiro_crew.apps.routes_static",
     "kiro_crew.apps.routes_art",
     "kiro_crew.apps.routes_listing",
+    "kiro_crew.apps.routes_bot_grants",
     "kiro_crew.apps.routes_install",
     "kiro_crew.apps.routes_uninstall",
     "kiro_crew.apps.routes_enable",
@@ -313,6 +318,13 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.apps.bot_grant_store import (  # noqa: F401
+        MAX_BOT_GRANTS,
+    )
+    from kiro_crew.apps.bot_grants import (  # noqa: F401
+        app_granted_bots,
+        set_app_granted_bots,
+    )
     from kiro_crew.apps.bridges import (  # noqa: F401
         _prune_stale_app_resources,
         _registration_source,
@@ -336,6 +348,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _is_safe_repo_identifier,
         _read_declared_art,
         _touch_served_blob,
+    )
+    from kiro_crew.apps.routes_bot_grants import (  # noqa: F401
+        _not_installed,
+        _owner_denial,
+        _view,
     )
     from kiro_crew.apps.routes_enable import (  # noqa: F401
         _BUILTIN_SERVICE_APPS,

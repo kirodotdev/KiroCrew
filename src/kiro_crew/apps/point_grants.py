@@ -170,6 +170,15 @@ register_permission_grants(
     USER_SESSION_REACH_GRANT_FAMILIES, user_session_reach_grant_entries, explicit_only=True
 )
 
+# ``permissions.bots`` (``apps.bot_grants``): the Bot scopes an app holds. Explicit-only,
+# so a stored set that never named a scope approves none, whatever the manifest declares.
+from kiro_crew.apps.manifest_sections import (  # noqa: E402
+    BOT_GRANT_FAMILIES,
+    bot_grant_entries,
+)
+
+register_permission_grants(BOT_GRANT_FAMILIES, bot_grant_entries, explicit_only=True)
+
 
 __all__ = [
     "EntriesFn",

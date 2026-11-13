@@ -20,6 +20,7 @@ from pathlib import Path
 
 from kiro_crew import platform_compat
 from kiro_crew.apps import agent_readonly_dirs, credential_masks, protected_app_state
+from kiro_crew.apps.bot_grant_store import remove_granted_bots
 from kiro_crew.apps.builtin_fold import carry_folded_switch
 from kiro_crew.apps.host_exec_grants import revoke_host_exec
 from kiro_crew.apps.manager_builtins import (
@@ -495,6 +496,13 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         protected_app_state.set_owner_disabled(name, False)
     except (OSError, ValueError):
         logger.warning("could not clear an uninstalled app's disable record", exc_info=True)
+    # The Bots the owner ticked go only once the uninstall committed, so a failed one
+    # keeps them. A record left by a failure here grants nothing to a later install:
+    # it names this install's ``installedAt`` (``bot_grant_store.read_granted_bots``).
+    try:
+        remove_granted_bots(name)
+    except (OSError, ValueError):
+        logger.warning("could not remove an uninstalled app's ticked Bots", exc_info=True)
     refresh_app_config_keys()
     logger.info("Uninstalled app %s (keep_data=%s)", name, keep_data)
 

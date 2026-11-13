@@ -555,6 +555,34 @@ def _granted_list(value: Any) -> list[str]:
     return [str(v) for v in value if v]
 
 
+#: The entries ``permissions.bots`` may hold; ``apps.bot_grants`` grants only these.
+BOT_SCOPE_NAMES = ("read", "wake")
+
+
+def _bot_scopes(value: Any) -> list[str]:
+    """The known ``permissions.bots`` entries, each once, in manifest order."""
+    out: list[str] = []
+    for entry in _granted_list(value):
+        if entry in BOT_SCOPE_NAMES and entry not in out:
+            out.append(entry)
+    return out
+
+
+#: The staged grant family the Bot scopes are stored under (``point_grants``).
+BOT_GRANT_FAMILY = "bots"
+BOT_GRANT_FAMILIES = (BOT_GRANT_FAMILY,)
+
+
+def bot_grant_entries(permissions: Any) -> dict[str, list[str]]:
+    """The ``bots`` family a manifest's ``permissions`` (parsed or a raw dict) declares."""
+    raw = (
+        permissions.get("bots")
+        if isinstance(permissions, dict)
+        else getattr(permissions, "bots", None)
+    )
+    return {BOT_GRANT_FAMILY: _bot_scopes(raw)}
+
+
 @dataclass
 class Permissions:
     """Declared permissions for an app."""
@@ -602,6 +630,11 @@ class Permissions:
     #: which is the default. Shown at the trust prompt and held back on a widening
     #: update like a new API path.
     reachableByUserSessions: list[str] = field(default_factory=list)  # noqa: N815
+    #: Bot scopes (``apps.bot_grants``): ``"read"`` lists the Bots the owner ticked
+    #: for this app with their status and goals, ``"wake"`` sends one of them the
+    #: gateway's fixed wake line. Any other entry is dropped. A staged grant family,
+    #: so an update that adds a scope waits for the owner.
+    bots: list[str] = field(default_factory=list)
     # WS cross-app visibility opt-in: app names (or ["*"]) allowed to use
     # slots:app:<this-app> / subagent:app:<this-app> declarations to observe
     # this app's slots and subagents. Empty list = no cross-app visibility.
@@ -639,6 +672,8 @@ class Permissions:
             d["workerAutoApprove"] = True
         if self.reachableByUserSessions:
             d["reachableByUserSessions"] = self.reachableByUserSessions
+        if self.bots:
+            d["bots"] = self.bots
         if self.exposeToApps:
             d["exposeToApps"] = self.exposeToApps
         return d
@@ -672,6 +707,7 @@ class Permissions:
             agentTurns=data.get("agentTurns") is True,  # noqa: N815
             workerAutoApprove=data.get("workerAutoApprove") is True,  # noqa: N815
             reachableByUserSessions=declared_verbs(data.get("reachableByUserSessions")),
+            bots=_bot_scopes(data.get("bots")),
             exposeToApps=_granted_list(data.get("exposeToApps")),  # noqa: N815
         )
 

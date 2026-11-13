@@ -1,6 +1,7 @@
 """The gates and checks every Crew Members route shares.
 
-The existence-hiding 404 for an app-token caller, the SEL row a granted owner read
+The existence-hiding 404 for an app-token caller, the one scope gate an app token
+passes to reach a Bot (``_app_bot_gate``), the SEL row a granted owner read
 leaves, the late-bound SEL accessor, and the name questions the routes ask of a slug:
 which addressable crew names derive it, and whether any registered crew still owns it.
 
@@ -10,6 +11,7 @@ and patch; this module never imports it.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from aiohttp import web
@@ -53,6 +55,54 @@ async def _deny_app_caller(request: web.Request, operation: str) -> web.Response
     except Exception:  # pragma: no cover - audit must never change the outcome
         logger.debug("SEL audit for %s app denial failed", operation, exc_info=True)
     return web.json_response({"error": "not found", "code": "not_found"}, status=404)
+
+
+def _not_found() -> web.Response:
+    return web.json_response({"error": "not found", "code": "not_found"}, status=404)
+
+
+async def _app_bot_gate(
+    request: web.Request, scope: str, operation: str, slug: str | None = None
+) -> tuple[str, tuple[str, ...]] | web.Response:
+    """``(app, ticked Bot slugs)`` for an app token holding *scope*, else the 404 to send.
+
+    The one door an app token has into the Bots (``apps.bot_grants``): the app's
+    approved ``permissions.bots`` must hold *scope*, and, when *slug* is given, the
+    owner must have ticked that Bot for the app. Every refusal is the same 404 the
+    app-caller guard sends, so an app cannot tell a Bot it was not given from one
+    that does not exist. Only call it for an app-token request.
+    """
+    from kiro_crew.apps.bot_grants import app_bot_scopes, app_granted_bots
+
+    request_app = request.get("app", "")
+    if not request_app:
+        return _not_found()
+    scopes = await asyncio.to_thread(app_bot_scopes, request_app)
+    if not scopes:
+        # An app with no Bot scope at all is refused, and audited, exactly as before
+        # the scopes existed.
+        denied = await _deny_app_caller(request, operation)
+        return denied if denied is not None else _not_found()
+    ticked = await asyncio.to_thread(app_granted_bots, request_app) if scope in scopes else ()
+    reason = ""
+    if scope not in scopes:
+        reason = f"permissions.bots does not grant {scope!r}"
+    elif slug is not None and slug not in ticked:
+        reason = "the owner has not given this Bot to the app"
+    try:
+        _sel().log_api_access(
+            caller=request_app,
+            operation=operation,
+            outcome="denied" if reason else "allowed",
+            source="app_bot_scope",
+            resources=slug or "",
+            error=reason,
+        )
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.debug("SEL audit for %s failed", operation, exc_info=True)
+    if reason:
+        return _not_found()
+    return request_app, ticked
 
 
 def _audit_owner_read(request: web.Request, operation: str) -> None:

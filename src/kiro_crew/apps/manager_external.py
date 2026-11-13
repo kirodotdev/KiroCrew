@@ -17,6 +17,7 @@ from typing import Any
 
 from kiro_crew.apps import protected_app_state
 from kiro_crew.apps.admission import app_admission_denied
+from kiro_crew.apps.bot_grant_store import remove_granted_bots
 from kiro_crew.apps.execution import repository_bound_grant_denied
 from kiro_crew.apps.host_exec_grants import grant_host_exec
 from kiro_crew.apps.manager_builtins import _builtin_owns_install
@@ -28,7 +29,7 @@ from kiro_crew.apps.manager_records import (
     InstalledApp,
     _approved_grants_after_manifest_change,
     _approved_grants_snapshot,
-    _declared_grant_entries,
+    _consented_grant_entries,
     _effective_approved_grants,
     _held_back_entries,
     _now_iso,
@@ -317,7 +318,7 @@ def register_external_app(
         # The first manifest of a registration that declared nothing, sent by this
         # owner route: approved as declared, as a first registration with it would be.
         # The sealed store, not the agent-writable app.json, says none came before.
-        approved_grants = _declared_grant_entries(new_permissions)
+        approved_grants = _consented_grant_entries(new_permissions)
     elif existing:
         approved_grants = _approved_grants_after_manifest_change(
             existing_approved=prior_grants,
@@ -325,7 +326,7 @@ def register_external_app(
             new_permissions=new_permissions,
         )
     else:
-        approved_grants = _declared_grant_entries(new_permissions)
+        approved_grants = _consented_grant_entries(new_permissions)
     widened_grants = bool(manifest_data) and any(
         _held_back_entries(approved_grants, new_permissions).values()
     )
@@ -414,7 +415,14 @@ def register_external_app(
                 detail += f" ({'; '.join(rollback_errors)})"
             return AppResult(ok=False, name=name, error=detail)
     else:
-        # New registration
+        # New registration. Ticked Bots that an earlier install under this name left
+        # behind go first; if they cannot be removed, nothing is registered.
+        try:
+            remove_granted_bots(name)
+        except (OSError, ValueError) as exc:
+            return AppResult(
+                ok=False, name=name, error=f"could not clear earlier Bot access for {name!r}: {exc}"
+            )
         dest.mkdir(parents=True, exist_ok=True)
         meta = InstalledApp(
             name=name,

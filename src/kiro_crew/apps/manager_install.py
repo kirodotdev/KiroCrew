@@ -22,6 +22,7 @@ from typing import Iterator
 
 from kiro_crew.apps import agent_readonly_dirs, credential_masks, protected_app_state
 from kiro_crew.apps.admission import app_admission_denied
+from kiro_crew.apps.bot_grant_store import remove_granted_bots
 from kiro_crew.apps.execution import repository_bound_grant_denied
 from kiro_crew.apps.manager_records import (
     APP_MANIFEST_FILENAME,
@@ -30,7 +31,7 @@ from kiro_crew.apps.manager_records import (
     InstalledApp,
     _approved_grants_after_manifest_change,
     _approved_grants_snapshot,
-    _declared_grant_entries,
+    _consented_grant_entries,
     _effective_approved_grants,
     _held_back_entries,
     _now_iso,
@@ -256,6 +257,15 @@ def install_app(
             f"`kirocrew app update {name}`), or uninstall first.",
         )
 
+    # Ticked Bots that an earlier install under this name left behind go before
+    # this one exists; if they cannot be removed, nothing is installed.
+    try:
+        remove_granted_bots(name)
+    except (OSError, ValueError) as exc:
+        return AppResult(
+            ok=False, name=name, error=f"could not clear earlier Bot access for {name!r}: {exc}"
+        )
+
     source_repository = _effective_source_repository(source_repository)
     trust_denied = repository_bound_grant_denied(
         name, repository=market_coordinate or source_repository
@@ -465,7 +475,7 @@ def install_app(
     # outlive its record, and that set is restored byte for byte.
     prior_grants_text = _approved_grants_snapshot(name)
     try:
-        _write_approved_grants(name, _declared_grant_entries(grant_source(manifest)))
+        _write_approved_grants(name, _consented_grant_entries(grant_source(manifest)))
         _write_installed(name, meta)
 
         # Create data directory

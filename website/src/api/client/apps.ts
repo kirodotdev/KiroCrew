@@ -54,6 +54,15 @@ export type ExternalRegistryRow = {
   review?: string
 }
 
+/** `GET/PUT /api/apps/{name}/bot-grants`: the ticked Bot slugs and the Bot scopes. */
+export interface AppBotGrants {
+  bots: string[]
+  /** What the manifest's `permissions.bots` declares. */
+  declaredScopes: string[]
+  /** The declared scopes the owner approved; an update's new scope waits until then. */
+  scopes: string[]
+}
+
 /** The surfaces a contributed file-menu row can appear on. */
 export type FileMenuSurface = 'file-overflow' | 'tree-context' | 'folder-row'
 
@@ -88,9 +97,12 @@ export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fet
     listApps,
     getApp: (name: string) => fetch('/api/apps/' + encodeURIComponent(name)).then(j).then(normalizeInstalledApp),
     getAppManifest: (name: string) => fetch('/api/apps/' + encodeURIComponent(name) + '/manifest').then(j),
+    // The Bots the owner ticked for an app (`permissions.bots`), and its approved scopes.
+    getAppBotGrants: (name: string) => fetch('/api/apps/' + encodeURIComponent(name) + '/bot-grants').then(j) as Promise<AppBotGrants>,
+    setAppBotGrants: (name: string, bots: string[]) => put('/api/apps/' + encodeURIComponent(name) + '/bot-grants', { bots }).then(j) as Promise<AppBotGrants>,
     installApp: (source: string) => post('/api/apps/install', { source }).then(j),
     // grantsConsent names the staged entries the owner was shown; only those are approved.
-    enableApp: (name: string, sessionApprovalConsent = false, grantsConsent?: { api: string[]; events: string[]; linkPreviewHosts?: string[]; linkPreviewTextPatterns?: string[]; linkPreviewFullUrl?: string[]; messageActions?: string[]; linkOpenHosts?: string[]; linkOpenFullUrl?: string[]; composerActions?: string[]; selectionActions?: string[]; workerAutoApprove?: string[]; reachableByUserSessions?: string[] }, memberThreadsConsent = false) => post('/api/apps/' + encodeURIComponent(name) + '/enable', {
+    enableApp: (name: string, sessionApprovalConsent = false, grantsConsent?: { api: string[]; events: string[]; bots?: string[]; linkPreviewHosts?: string[]; linkPreviewTextPatterns?: string[]; linkPreviewFullUrl?: string[]; messageActions?: string[]; linkOpenHosts?: string[]; linkOpenFullUrl?: string[]; composerActions?: string[]; selectionActions?: string[]; workerAutoApprove?: string[]; reachableByUserSessions?: string[] }, memberThreadsConsent = false) => post('/api/apps/' + encodeURIComponent(name) + '/enable', {
       sessionApprovalConsent,
       // Only a consent whose disclosure named member threads says so; the
       // server refuses a consent that omits a scope the live manifest declares.
