@@ -21,6 +21,7 @@ github-actions
 dependabot
 renovate
 kiro-agent
+Copilot
 # Placeholder or tool accounts that GitHub links from `Co-authored-by:` trailers.
 codex
 noreply
