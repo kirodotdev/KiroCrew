@@ -307,19 +307,26 @@ by evidence: on each POSIX save `config.write_provenance.staging_hook` reads the
 `(dev, ino)` off the writer's own descriptor BEFORE the rename publishes it (a stat of the name
 afterwards could meet a file someone else put there) and records it, with the identity of the file it replaces, under the leaf's name in
 `<data_home>/config-provenance/published`, headed by a nonce fresh to the gateway process. The
-gateway lists only the latest identity per name, so an older file it once wrote, put back at the
-name, refuses as a rollback. A record that cannot be rewritten is removed before the save goes
+gateway admits only the latest identity per name, so an older file it once wrote, put back at the
+name, refuses as a rollback. It admits that identity for a pass that saw any file of the unbroken
+run of its own saves that led to it (bounded, `write_provenance._MAX_RUN`): on a fresh host the boot
+writers save several times within one spawn's window, and with only the last save listed, two saves
+between a pass and its pin would refuse that spawn (a first boot's default-install registry clone
+is one). Every file between the pass's and the latest left the name through the gateway's own
+rename, so nothing the pass inspected is left at another name. A save that replaced a file the
+gateway did not publish starts a new run, so a rewrite by anything else in between still refuses. A record that cannot be rewritten is removed before the save goes
 ahead, and a save whose record can be neither rewritten nor removed is refused, so the record
 never vouches for a file older than the one at the name. It holds descriptors on both the replaced and
-the published file, so the
-inode cannot be freed and its number reused by another file while it is vouched for. The plan carries the record's path, that nonce and the two
+the published file of every save in the run, so no
+inode can be freed and its number reused by another file while it is vouched for. The plan carries the record's path, that nonce and the two
 names (`published_file_record`). On a changed occupant at one of those names, and only after
 the kind check, the launcher (`_published_by_gateway`) accepts when the entry at the name is the
 same kind of entry the pass saw (the same link, for a symlinked config, which the writer writes
 through), the object it pinned is a regular file, and the record -- opened no-follow, first line
-equal to the plan's nonce -- lists that object as published under the name by a save that
-replaced the very file this spawn's pass saw there (each entry is `<replaced> -> <published>`,
-so a save by another process in between, or an older gateway file put back, is not vouched for). One read answers,
+equal to the plan's nonce -- lists that object as published under the name for the very file this spawn's pass saw there
+(each entry is `<replaced> -> <published>`, one per file of the run, each naming the run's latest
+file, so a save by another process in between, or an older gateway file put back, is not vouched
+for). One read answers,
 because the record is written before the file it vouches for is published. Everything else refuses
 as before: a rewrite the gateway did not make, a swap after one of its writes (the swapped-in
 object is not listed), a record from another gateway process, and any other sealed name. The
