@@ -26,6 +26,7 @@ stored-but-unusable credential.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
@@ -138,7 +139,13 @@ async def _profiles_page(
     """
     async with session.post(url, json=body, headers=headers) as resp:
         if resp.status != 200:
-            text = await resp.text()
+            # The body is only log material. A mislabelled or unknown charset makes
+            # decoding raise, and that must still end as ControlPlaneError so the
+            # caller can move on to the next host.
+            try:
+                text = await resp.text()
+            except (ValueError, LookupError):
+                text = "<undecodable body>"
             raise ControlPlaneError(
                 f"ListAvailableProfiles failed: HTTP {resp.status} {text[:500]}"
             )
@@ -168,7 +175,11 @@ async def _profiles_page(
 
 
 async def list_available_profiles(
-    access_token: str, *, region: str, session: aiohttp.ClientSession
+    access_token: str,
+    *,
+    region: str,
+    session: aiohttp.ClientSession,
+    viewer_cps_url: str = "",
 ) -> ProfileListing:
     """Return the caller's Kiro profiles from the first control plane that has any.
 
@@ -179,13 +190,35 @@ async def list_available_profiles(
     malformed or reaches neither a profile nor its last page is skipped;
     ControlPlaneError is raised when a host refused and none had profiles, since the
     refusing host may hold the profile and an empty list would wrongly say there is
-    none. A transport error is not caught here. When
+    none. A transport error is not caught here, except at *viewer_cps_url*. When
     every host answered and listed none, the empty result names those hosts and the
     pages they took, for the diagnostic log.
+
+    *viewer_cps_url* is the relay viewer's own control plane
+    (``tunnel.relay_viewer_cps_url``, held to https:// or a loopback http:// when the
+    config is read), passed only while the viewer is on. It is asked before the hosts
+    above, because a non-prod control plane (gamma) holds profiles the prod hosts do
+    not list. The viewer already sends this sign-in to that host, so asking it here
+    shares the token with no new party. Any failure there, a transport error included,
+    counts as a refusal and the prod hosts are asked next.
     """
     errors: list[ControlPlaneError] = []
     empty: list[ProfileListing] = []
+    if viewer_cps_url:
+        try:
+            listing = await _list_profiles_at(viewer_cps_url, access_token, session)
+        except (ControlPlaneError, aiohttp.ClientError, asyncio.TimeoutError) as err:
+            # Type only for a transport error: its message can carry the resolver's text.
+            detail = err if isinstance(err, ControlPlaneError) else type(err).__name__
+            logger.warning("ListAvailableProfiles at %s failed: %s", viewer_cps_url, detail)
+            errors.append(ControlPlaneError(f"the relay viewer control plane failed: {detail}"))
+        else:
+            if listing.profiles:
+                return listing
+            empty.append(listing)
     for url in control_plane_urls(region):
+        if url.rstrip("/") == viewer_cps_url.rstrip("/"):
+            continue  # already asked above
         try:
             listing = await _list_profiles_at(url, access_token, session)
         except ControlPlaneError as err:
