@@ -4,7 +4,7 @@ status: accepted
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-13
 last-audited: 2026-11-13
-audited-at: 27e9359419
+audited-at: 1bfb59ea14
 doc-pr: null
 implementation-prs: [36302]
 tracking-issues: [36299]
@@ -124,7 +124,9 @@ check.
 ## 4. Non-goals
 
 - No new code, tool, field, schema or stored format.
-- No change to `accept_eval`, the acceptance bar or verdict recording.
+- No change to `accept_eval` or verdict recording. The acceptance bar was a
+  non-goal here too; the amendment below lets the conductor correct one item's
+  bar mid-round, never weaker than the goal asks.
 - No change to liveness: `stale` / `orphaned` are untouched.
 - No change to the crewmate conductor's grants; it reads the same shared rule
   (`read_message_detail` in `src/kiro_crew/agent_parts/spec_prompts.py`).
@@ -152,3 +154,78 @@ The read goes through `session_control.read_messages`, which authorizes with
 `authorize_target` and redacts each row before returning it. The conductor can
 read only sessions it could already read by hand. No new egress: the rows stay
 in the conductor's own turn.
+
+## Amendment 2026-11-13: re-plan one item mid-round on a drift finding
+
+The owner's ask, verbatim: "看一看我们是不是做了drfit检查，能够中途换方案"
+(check whether we have a drift check that can change the plan midway).
+Every code reference in this section was read at `1bfb59ea14`.
+
+### A.1 Problem
+
+The drift read in section 2 can show that the item itself is wrong, not the
+worker. Four cases come up: the work is already on main, the item is
+mis-scoped, it needs a split, or its bar cannot be met. Section 2 only lets the
+conductor steer the worker back toward the item as written. And
+`goal-conductor/SKILL.md` (lines 576-577) says "Re-planning between rounds is
+expected ... Re-planning mid-round is not: let the round finish." So the
+worker keeps going on a wrong item until the round ends. Today the skill
+re-plans a running item only when the person's own message invalidates it
+(section "Goal changes mid-flight"), never on the conductor's own finding.
+
+### A.2 Decision
+
+When a worker's new lines show the item itself is wrong, the conductor
+re-plans that one item in the same patrol turn. It picks one of three moves:
+
+| Case | Move |
+|---|---|
+| Already done on main, or no longer needed | `work_ledger_record` `action=close` `state=abandoned` with the reason |
+| Mis-scoped or needs a split | close it `abandoned` with the reason, then `create` the replacement item(s) at once |
+| Bar is wrong or cannot be met | `action=accept` with the corrected bar |
+
+Then it `session_send`s the worker what changed and records the instruction
+with `action=decide` on the item that is still open: the re-barred item, or the
+replacement. A closed item refuses `decide` (`item_closed`), so the reason for a
+close goes in that `close` call's own `decision` field. A replacement item may
+be bound to the same worker session after the close, as the skill's close step
+already describes; `create` still counts against the open-item cap.
+
+The tools already do this. `action=close` stores its `decision` text as the
+reason on a `close` event. `action=accept` replaces an open item's bar and
+appends a `decision` event (`apply_acceptance_update`). Both are in
+`src/kiro_crew/work_ledger_writes.py`. Today the skill teaches `accept` only
+for promoting a `TBD` PR number. No code, tool or stored format changes.
+
+### A.3 Safety
+
+- **Never weaker.** A corrected bar may never be weaker than the goal asks. It
+  may name the right PR, the right check or a narrower item whose sibling
+  carries the rest. It may not drop a check, lower a count or swap a
+  machine-checked bar for a looser one to make an item pass.
+- **Shown to the owner.** Every bar change is in the ledger as a `decision`
+  event, and every item closed this way as a `close` event carrying the
+  reason. The conductor names each one in its next report to the owner: the
+  item, the old bar or the replacement, and why.
+- **Item-level only.** This reverses SKILL:577 for one item at a time. A
+  round-level re-plan (changing the round's plan, cancelling the round, or
+  applying a changed goal) still waits for the round boundary.
+- The verdict stays `accept_eval`'s answer over the item's bar, as section 2.1
+  says. The transcript still never passes or fails an item.
+
+### A.4 Who gets it
+
+Both conductors. Ultra Mode reads it from `goal-conductor/SKILL.md`; the Bot
+(crewmate) conductor reads it from the shared rule in
+`src/kiro_crew/agent_parts/spec_prompts.py`, which
+`test/test_mate_conductor_parity.py` keeps the same for both.
+
+### A.5 Rollout
+
+This extends the drift check of
+[#36302](https://github.com/kirodotdev/KiroCrew/pull/36302), still open when
+this was written. One follow-up prompt PR, after this amendment merges and
+rebased on #36302 if that has landed: one paragraph after SKILL patrol step 5,
+one sentence in the shared `read_message_detail` rule, and SKILL:577 reworded
+to allow item-level re-plans. Exit criteria: the parity test passes, and the
+spec byte goldens move only for the two conductor specs.
