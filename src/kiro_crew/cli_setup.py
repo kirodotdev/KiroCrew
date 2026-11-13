@@ -828,7 +828,10 @@ def _setup_slack_tokens() -> None:
         return
 
     print("── Slack Credentials ──\n")
-    print("  See docs/guides/slack-setup.md for how to create a Slack app.\n")
+    print(
+        "  How to create a Slack app: "
+        "https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/slack-setup.md\n"
+    )
 
     answer = input("  Configure Slack tokens? [Y/n]: ").strip().lower()
     if answer in ("n", "no"):
