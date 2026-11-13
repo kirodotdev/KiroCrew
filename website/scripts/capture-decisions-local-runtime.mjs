@@ -276,7 +276,7 @@ async function main() {
   }
   {
     const { page, picker } = await openPage(provider({ localPermitted: false }))
-    await expectText(picker, "Turned off by your organization's policy.", 'the policy note')
+    await expectText(picker, "Not allowed by your administrator.", 'the policy note')
     if (!(await picker.getByRole('radio', { name: 'Laya' }).isDisabled())) throw new Error('a withdrawn model is choosable')
     await save(picker, 'decisions-local-blocked-light')
     await page.context().close()

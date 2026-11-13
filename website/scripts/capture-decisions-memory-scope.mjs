@@ -1,5 +1,5 @@
 /**
- * Screenshot harness for the Decisions (Jev) card with the recalled-memory scope.
+ * Screenshot harness for the Decision models card with the recalled-memory scope.
  *
  * Runs the REAL built SPA (website/dist) behind the shared static server, answering
  * every /api/** call from fixtures via Playwright route interception — gateway-free,

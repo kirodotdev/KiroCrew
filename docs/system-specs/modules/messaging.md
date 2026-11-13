@@ -2236,7 +2236,7 @@ so a mid-turn message with files would lose them.
 **The dashboard composer makes the same choice per send.** While a web chat
 slot is busy, `useComposerSend` (`website/src/components/chat-input/busySend.tsx`)
 decides what Enter and the send button do: the split button's per-slot mode
-picks between steering the running turn, queueing, and `Auto (Jev)` (the gateway
+picks between steering the running turn, queueing, and `Auto (decision model)` (the gateway
 decides; offered only when the host passes `jevAutoAvailable`); in the Enter send
 mode, ⌘↩ / Ctrl+Enter performs the other action for that one send; and a
 host that passes `busyMode="steer-only"` has no queue and always steers (no

@@ -56,6 +56,13 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   'connections.oauth-client-google-sheets': 'connections.oauth-client-google',
   'connections.oauth-client-google-docs': 'connections.oauth-client-google',
   'connections.oauth-client-google-slides': 'connections.oauth-client-google',
+  // The Decisions card is named for the feature, decision models, not for one
+  // provider, and the hosted provider's key is named for the company that issues it.
+  'developer.decisions-jev': 'developer.decision-models',
+  'developer.jev-api-key': 'developer.typesafe-api-key',
+  'developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls': 'developer.also-send-tool-call-arguments-so-the-decision-model-can-flag-risky-calls',
+  'developer.also-send-the-conversation-and-tool-call-inputs-so-jev-can-score-compaction': 'developer.also-send-the-conversation-and-tool-call-inputs-so-the-decision-model-can-score-compaction',
+  'developer.also-send-snippets-of-recalled-memories-so-jev-can-drop-the-ones-that-do-not-help': 'developer.also-send-snippets-of-recalled-memories-so-the-decision-model-can-drop-the-ones-that-do-not-help',
   // The banner switch is labelled by when it fires.
   'notifications.show-a-banner-for-new-notifications': 'notifications.show-a-banner-while-this-window-is-open',
 }

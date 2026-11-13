@@ -432,9 +432,12 @@ async def switch_slot_model(
             error="non-owner identity rejected",
         )
         if caller.request is not None:
-            return _owner_denial_response(caller.request, "arming Jev routing is owner-only")
+            return _owner_denial_response(
+                caller.request, "arming decision-model routing is owner-only"
+            )
         return web.json_response(
-            {"error": "arming Jev routing is owner-only", "code": "owner_only"}, status=403
+            {"error": "arming decision-model routing is owner-only", "code": "owner_only"},
+            status=403,
         )
     model_name = "auto" if jev_route else _normalize_model(raw_model)
     # Judged on THIS slot's harness: a member DM runs on agent.member_acp_backend.

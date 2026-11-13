@@ -65,8 +65,8 @@ const FRAMES = [
     card: true,
     switchOff: true,
     consent: { enabled: false, permits: false },
-    cardShows: ["Your fleet's policy blocks Jev, hosted by TypeSafe"],
-    cardAbsent: [/^Sent to/, /sent over the internet to Jev/, /No decision model is chosen/],
+    cardShows: ["Your fleet's administrator does not allow Jev, hosted by TypeSafe"],
+    cardAbsent: [/^Sent to/, /sent over the internet to the decision model/, /No decision model is chosen/],
   },
   {
     name: 'decisions-sagemaker-unpermitted',

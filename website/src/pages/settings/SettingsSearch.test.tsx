@@ -229,10 +229,10 @@ describe('SettingsSearch', () => {
     // could not check.
     vi.spyOn(api, 'dashboardConfig').mockRejectedValue(new Error('offline'))
     setup()
-    fireEvent.change(input(), { target: { value: 'Decisions' } })
+    fireEvent.change(input(), { target: { value: 'Decision models' } })
     await waitFor(() => {
       expect(
-        screen.getAllByRole('option').some(o => /Decisions/i.test(o.textContent ?? '')),
+        screen.getAllByRole('option').some(o => /Decision models/i.test(o.textContent ?? '')),
       ).toBe(true)
     })
   })

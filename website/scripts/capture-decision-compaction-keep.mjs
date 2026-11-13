@@ -23,7 +23,7 @@
  *    does not, and a reader cannot tell which row a frame is about. Each scene serves
  *    its own slot detail (the harness reads `detail` at request time) with its own
  *    record, so the numbers on the line differ frame to frame too.
- *  - the SWITCH. The third consent row on the Decisions (Jev) card, plus the
+ *  - the SWITCH. The third consent row on the Decision models card, plus the
  *    point row it unlocks. The `withheld` pass serves the SAME fixtures with the
  *    scope revoked and ASSERTS both are absent, because "the row appears" is only
  *    half the claim.
@@ -508,7 +508,7 @@ async function main() {
       })
       await page.waitForTimeout(1400)
       const row = page.getByRole('switch', {
-        name: 'Also send the conversation and tool-call inputs so Jev can score compaction',
+        name: 'Also send the conversation and tool-call inputs so the decision model can score compaction',
       })
       await row.waitFor({ timeout: 20000 })
       await row.evaluate(el => el.scrollIntoView({ block: 'center' }))
@@ -546,7 +546,7 @@ async function main() {
     })
     await page.waitForTimeout(1400)
     const row = page.getByRole('switch', {
-      name: 'Also send the conversation and tool-call inputs so Jev can score compaction',
+      name: 'Also send the conversation and tool-call inputs so the decision model can score compaction',
     })
     await row.waitFor({ timeout: 20000 })
     check(

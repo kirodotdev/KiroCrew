@@ -435,22 +435,25 @@ def _seam_withdrawn() -> bool:
     """Whether governance withdraws the seam for the provider configured now. Filesystem IO.
 
     A local preset adds ``capabilities.decisions_local`` on top of
-    ``capabilities.decisions``; any other provider reads the hosted row. Derived from the config,
-    never from the request, so a caller cannot pick the more permissive row.
+    ``capabilities.decisions``; any other provider reads the hosted row, and every one
+    reads its own ``providers`` entry. Derived from the config, never from the
+    request, so a caller cannot pick the more permissive row or entry.
     """
     from kiro_crew.decisions import gate as _gate
     from kiro_crew.decisions.capability import (
         is_decisions_denied,
         is_local_preset,
         names_local_preset,
+        provider_id,
     )
 
     endpoint, model = _gate.configured_endpoint(), _gate.configured_provider_model(None)
     # Preparing counts: the switch is offered while the chosen preset downloads. An
     # unattested preset shape answers under both rows too, as on the send path, and
-    # the local evaluation already holds the hosted row's deny.
+    # the local evaluation already holds the hosted row's deny. The configured model's
+    # own ``providers`` entry is asked with them, as the send path asks it.
     local = is_local_preset(endpoint, model, serving=False) or names_local_preset(endpoint, model)
-    return is_decisions_denied(local=local)
+    return is_decisions_denied(local=local, provider=provider_id(endpoint, model))
 
 
 async def api_decisions_consent_get(request: web.Request) -> web.Response:
@@ -805,7 +808,7 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
         await _audit(request, operation=OP_CONSENT_PUT, outcome="denied", error="capability_denied")
         return web.json_response(
             {
-                "error": "the decision seam is withdrawn by governance policy",
+                "error": "decision models are turned off by your administrator",
                 "code": _CODE_CAPABILITY_DENIED,
             },
             status=403,
@@ -1094,15 +1097,15 @@ def _provider_payload() -> dict:
     """The presets and the preset the config names now. Filesystem IO."""
     from kiro_crew.config import live
     from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.dashboard.handlers.decisions_offers import provider_offers
     from kiro_crew.dashboard.handlers.decisions_sagemaker import (
         PRESET_SAGEMAKER,
         configured_sagemaker,
         endpoint_refused,
-        hosted_offers,
     )
     from kiro_crew.decisions import gate as _gate
     from kiro_crew.decisions import impl_sagemaker, local_models
-    from kiro_crew.decisions.capability import denied_sides
+    from kiro_crew.decisions.capability import PROVIDER_SAGEMAKER, denied_sides
     from kiro_crew.decisions.local_runtime import get_runtime
 
     cfg = live.snapshot() or KiroCrewConfig.load()
@@ -1117,21 +1120,33 @@ def _provider_payload() -> dict:
     if sagemaker is not None:
         active = PRESET_SAGEMAKER
     hosted_denied, local_denied = denied_sides()
-    hosted_permitted, sagemaker_permitted = hosted_offers(
-        hosted_denied, (sagemaker or {}).get("region", "")
+    offers = provider_offers(
+        hosted_denied=hosted_denied,
+        local_denied=local_denied,
+        sagemaker_region=(sagemaker or {}).get("region", ""),
+        custom_endpoint=endpoint if active == "custom" else None,
     )
+    hosted_permitted = offers["hosted_permitted"]
+    sagemaker_permitted = offers["sagemaker_permitted"]
     # The hosted default (or an unset endpoint, which falls back to it) that the
-    # ceiling's ``endpoints`` list refuses is a provider the send path never reaches:
-    # report "No model" so the card asks for a choice instead of naming a destination.
-    # The config is not rewritten. A row-level denial keeps its own reading.
+    # ceiling's ``endpoints`` or ``providers`` list refuses is a provider the send path
+    # never reaches: report "No model" so the card asks for a choice instead of naming
+    # a destination. The config is not rewritten. A row-level denial keeps its own reading.
     if active == local_models.PRESET_JEV and not hosted_denied and not hosted_permitted:
         active = local_models.PRESET_NONE
     # The same holds for a configured SageMaker address whose own regional runtime host
-    # the ceiling refuses, whatever other regions it permits: the send path and the
-    # consent PUT refuse that host, so it reads "No model". Whether the SageMaker OPTION
-    # is offered (any region) is a separate answer, ``sagemaker_permitted``.
+    # the ceiling refuses, whatever other regions it permits, or that the ``providers``
+    # list does not allow: the send path and the consent PUT refuse it, so it reads "No
+    # model". Whether the SageMaker OPTION is offered is a separate answer.
     configured_refused = False
-    if active == PRESET_SAGEMAKER and not hosted_denied and endpoint_refused(endpoint, audit=False):
+    if (
+        active == PRESET_SAGEMAKER
+        and not hosted_denied
+        and (
+            not offers["listed"].get(PROVIDER_SAGEMAKER, False)
+            or endpoint_refused(endpoint, audit=False)
+        )
+    ):
         active = local_models.PRESET_NONE
         configured_refused = True
     return {
@@ -1161,8 +1176,13 @@ def _provider_payload() -> dict:
         # SageMaker runtime host in at least one region.
         "sagemaker_permitted": sagemaker_permitted,
         # The configured SageMaker address itself is refused by the ceiling's
-        # ``endpoints`` list (its own regional host), so ``active`` reads "none".
+        # ``endpoints`` list (its own regional host) or its ``providers`` list, so
+        # ``active`` reads "none".
         "configured_refused": configured_refused,
+        # Per decision model, by allow-list id: whether the ceiling allows it, every
+        # part that governs it ANDed (``decisions_offers``). The picker draws a refused
+        # model greyed with the administrator's wording; the PUT refuses it.
+        "provider_permitted": offers["provider_permitted"],
     }
 
 
@@ -1255,14 +1275,18 @@ async def resume_local_decision_model() -> str:
         return await asyncio.to_thread(resume_configured)
 
 
-def _carry_consent(endpoint: str) -> bool:
+def _carry_consent(endpoint: str, model: str) -> bool:
     """Re-bind a standing consent to local *endpoint*; whether it did. Filesystem IO."""
     from kiro_crew.decisions import consent
-    from kiro_crew.decisions.capability import is_decisions_denied
+    from kiro_crew.decisions.capability import is_decisions_denied, provider_id
     from kiro_crew.decisions.local_models import is_loopback_endpoint
 
-    # Only route-built preset addresses reach here, so both rows govern.
-    if not is_loopback_endpoint(endpoint) or is_decisions_denied(local=True):
+    # Only route-built preset addresses reach here, so both rows govern, and the
+    # preset's own ``providers`` entry: a standing consent is never carried to a
+    # model the ceiling does not allow.
+    if not is_loopback_endpoint(endpoint) or is_decisions_denied(
+        local=True, provider=provider_id(endpoint, model)
+    ):
         return False
     # One locked check-and-write: a consent revoked while this PUT ran stays revoked.
     return consent.rebind_if_enabled(endpoint)
@@ -1335,7 +1359,7 @@ async def api_decisions_provider_put(request: web.Request) -> web.Response:
     # "No model" sends nothing and runs nothing, so no row has anything to withhold:
     # it is the way out on a fleet that denies both, and it is never refused.
     if endpoint != ENDPOINT_NONE and await asyncio.to_thread(
-        switch_refused, endpoint, local=target_local
+        switch_refused, endpoint, model, local=target_local
     ):
         await _audit(
             request,
@@ -1346,7 +1370,7 @@ async def api_decisions_provider_put(request: web.Request) -> web.Response:
         )
         return web.json_response(
             {
-                "error": "this decision model is turned off by policy",
+                "error": "this decision model is not allowed by your administrator",
                 "code": _CODE_CAPABILITY_DENIED,
             },
             status=403,
@@ -1385,7 +1409,7 @@ async def api_decisions_provider_put(request: web.Request) -> web.Response:
         # which is also the state the keystone is in -- nothing is sent until the
         # owner turns the switch off and on again.
         try:
-            carried = await asyncio.to_thread(_carry_consent, endpoint)
+            carried = await asyncio.to_thread(_carry_consent, endpoint, model)
         except Exception as exc:
             carried = False
             await _audit(

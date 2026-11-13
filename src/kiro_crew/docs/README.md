@@ -53,7 +53,7 @@ organized for someone browsing the repository.
 | [work-ledger.md](work-ledger.md) | The conductor/worker record: work items, acceptance conditions, and how a dispatched worker reports. |
 | [artifacts.md](artifacts.md) | Saving, versioning, and reverting generated UI and documents. |
 | [computer-use.md](computer-use.md) | Reading and driving native desktop applications; opt-in and off by default. |
-| [decisions.md](decisions.md) | Jev decisions: letting a small fast model pick the automatic skill for a sampled conversation and pick whether a mid-turn message steers or queues, with the shipped behaviour as the fallback; flagging a risky tool call on its own card in a session that approves its own calls, which changes no permission; and a basic diagnostic log for all of them. |
+| [decisions.md](decisions.md) | Decision models: letting a small fast model pick the automatic skill for a sampled conversation and pick whether a mid-turn message steers or queues, with the shipped behaviour as the fallback; flagging a risky tool call on its own card in a session that approves its own calls, which changes no permission; and a basic diagnostic log for all of them. |
 | [browser-control.md](browser-control.md) | Driving a real web page from the dashboard's Browser panel. |
 
 ## Channels

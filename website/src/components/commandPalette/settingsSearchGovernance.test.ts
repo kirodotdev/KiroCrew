@@ -3,7 +3,7 @@
  *
  * `settingsRegistry.gen.ts` is codegen'd from the static settings tree, so it lists
  * every entry the build ships whether or not the running gateway offers it. The
- * Decisions (Jev) toggle is governed by `capabilities.decisions`: under a pin
+ * Decision models toggle is governed by `capabilities.decisions`: under a pin
  * `FeaturePreviewsSection` renders no card, and an unfiltered corpus would then hand
  * the user a search result that navigates to a section where the row is absent —
  * which reads as a broken page rather than a feature the fleet withdrew.
@@ -396,9 +396,9 @@ describe('the palette provider honours it', () => {
     // section where nothing is there. Searching for the ROW's own words is the path,
     // because nobody looking for an API key types "Decisions".
     const hasKeyRow = (results: string[]) =>
-      results.some(id => id.endsWith('developer.jev-api-key'))
-    expect(hasKeyRow(ids(search(ON, 'Jev API key')))).toBe(true)
-    expect(hasKeyRow(ids(search(OFF, 'Jev API key')))).toBe(false)
+      results.some(id => id.endsWith('developer.typesafe-api-key'))
+    expect(hasKeyRow(ids(search(ON, 'TypeSafe API key')))).toBe(true)
+    expect(hasKeyRow(ids(search(OFF, 'TypeSafe API key')))).toBe(false)
   })
 
   it('drops the judge provider and judge model selects when decisions are withdrawn', () => {

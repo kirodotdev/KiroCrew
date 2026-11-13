@@ -3825,6 +3825,12 @@ seam. A policy pins the seam off MACHINE-WIDE with one object -- every surface, 
 {"version": 1, "capabilities": {"decisions": {"scopes": {"models": {"mode": "allow", "allow": ["jev-latest"]}, "points": {"mode": "deny", "deny": ["tool.risk"]}}}}}
 ```
 
+**Which decision models: the `providers` list.** A fourth inner ruleset, `providers` (`identifier`), is the per-model allow list: every decision model the picker offers has its own entry, by its picker id (`decisions/capability.py::provider_id`: `jev` for the hosted provider, each local preset id, `sagemaker`, `custom` for a hand-written address; "No model" is never asked). Every check that reads the row for the CONFIGURED provider asks that provider's entry too, inside the same policy-generation bracket (`capability.is_decisions_denied(provider=...)`): the send path (`gate._consented_for`), the consent and provider writes (`403 decisions_capability_denied`), the consent carry, the SageMaker connection test and the local runtime's resume. So a model the list refuses is neither selectable nor used, whichever writer named it in `config.json`, and the recorded consent stays in place but inert. `GET /api/decisions/provider` reports the per-model answer as `provider_permitted`, and the picker draws a refused model greyed with the administrator's wording. Like `models` and `endpoints` it binds the decision provider only, not the judge's LLM lane. A ceiling without the list permits every model. The row's `enabled` stays the full off switch, for which the card draws a plain "turned off by your administrator" notice in place of its controls. Detail: [decisions](decisions.md) section 7.2.
+
+```json
+{"version": 1, "capabilities": {"decisions": {"scopes": {"providers": {"mode": "deny", "deny": ["jev"]}}}}}
+```
+
 ### Extensions, app versions and developer mode — `capabilities.extension_install`, `app_versions`, `capabilities.app_dev_mode`
 
 Three keys from the RFC [crew-lts-edition](../../request-for-change/rfc-crew-lts-edition.md) appendix ("Extension install", "Extension uninstall", "Plugin sync", "App versions", "App developer mode"). `kiro_crew/extension_governance.py` is the one reader: each check asks `governance_permits` on the host key, fail-closed, and writes a SEL `governance_decision` row for a denial or a governed permit, so an ungoverned host records nothing new. In an LTS build an unnamed key answers the baseline, where all three are off; in the `oss` edition an unnamed key permits, as before.

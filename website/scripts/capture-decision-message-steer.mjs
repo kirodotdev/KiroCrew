@@ -8,7 +8,7 @@
  *
  * Two surfaces, because the feature is a choice and its receipt:
  *
- *  - the MODE. `Auto (Jev)` sits beside Steer and Queue in the split send
+ *  - the MODE. `Auto (decision model)` sits beside Steer and Queue in the split send
  *    button's picker, and it is drawn only when the dashboard config reports
  *    `decisions_enabled: true` AND the keystone consent reports `permits: true`.
  *    The `withheld` pass serves the SAME fixtures with the fleet answer flipped
@@ -265,7 +265,7 @@ async function main() {
     console.log('wrote', `${OUT}/03-picker-${theme}.png`)
     check(
       await page.getByTestId('busy-send-mode-auto').isVisible(),
-      `${theme}: Auto (Jev) is offered beside Steer and Queue`,
+      `${theme}: Auto (decision model) is offered beside Steer and Queue`,
     )
     check(
       (await page.getByTestId('busy-send-mode-steer').isVisible())
@@ -292,7 +292,7 @@ async function main() {
   await openPicker()
   check(
     (await page.getByTestId('busy-send-mode-auto').count()) === 0,
-    'withheld: Auto (Jev) is absent when decisions_enabled is false',
+    'withheld: Auto (decision model) is absent when decisions_enabled is false',
   )
   check(
     await page.getByTestId('busy-send-mode-steer').isVisible(),

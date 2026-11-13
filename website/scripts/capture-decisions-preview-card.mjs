@@ -1,5 +1,5 @@
 /**
- * Screenshot harness for the Decisions (Jev) card in Settings > Developer >
+ * Screenshot harness for the Decision models card in Settings > Developer >
  * Feature Previews.
  *
  * Runs the REAL built SPA (website/dist) behind the shared in-process static
@@ -388,7 +388,7 @@ async function main() {
     })
     return page
   }
-  const decisionsSwitch = (page) => page.getByRole('switch', { name: 'Decisions (Jev)' })
+  const decisionsSwitch = (page) => page.getByRole('switch', { name: 'Decision models' })
   /** The card itself — the SettingsCard wrapper the switch sits in. */
   const decisionsCard = (page) =>
     decisionsSwitch(page).locator('xpath=ancestor::div[@data-settings-card][1]')
@@ -436,7 +436,7 @@ async function main() {
     await decisionsSwitch(page).waitFor({ state: 'visible', timeout: 15000 })
     await page.waitForFunction(
       (want) => {
-        const el = document.querySelector('[role="switch"][aria-label="Decisions (Jev)"]')
+        const el = document.querySelector('[role="switch"][aria-label="Decision models"]')
         return !!el && (el.getAttribute('aria-disabled') === 'true') !== want
       },
       enabled,
@@ -876,7 +876,7 @@ async function main() {
     if (!(await heldBudget.isDisabled())) {
       throw new Error('the history ceiling accepts typing while consent is off')
     }
-    if (!/takes effect once the main Jev switch is on/i.test((await page.textContent('body')) ?? '')) {
+    if (!/takes effect once the main switch is on/i.test((await page.textContent('body')) ?? '')) {
       throw new Error('the held ceiling does not say what turns it on')
     }
     // The first-run default for the shared block: the state a reader meets before they
@@ -938,7 +938,7 @@ async function main() {
     })
     await page.goto(base + '/settings/developer', { waitUntil: 'domcontentloaded' })
     await settled(page, { enabled: true })
-    const note = page.getByText(/does not list what Jev decides yet/i)
+    const note = page.getByText(/does not list what the decision model decides yet/i)
     await note.waitFor({ state: 'visible', timeout: 5000 })
     if ((await page.getByRole('tablist', { name: /what Jev decides/i }).count()) > 0) {
       throw new Error('a list is drawn for a gateway that projected no points')

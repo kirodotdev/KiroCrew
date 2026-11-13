@@ -140,7 +140,7 @@ async def set_model_target(
             or folded in _JEV_ROUTE_SPELLINGS
         ):
             raise SessionControlError(
-                "Auto and Auto (Jev) can only be picked by the owner from the model picker",
+                "Auto and Auto (decision model) can only be picked by the owner from the model picker",
                 code="model_owner_only",
                 status=403,
             )
@@ -984,7 +984,7 @@ def landing_holds_lease(key: str) -> bool:
 #: Lowercased spellings of the picker's Jev entry that ``session_set_model``
 #: refuses alongside the exact sentinel: its display label and any case of the
 #: sentinel id. Owner-only, like the sentinel itself.
-_JEV_ROUTE_SPELLINGS = frozenset({"auto (jev)", "auto:jev"})
+_JEV_ROUTE_SPELLINGS = frozenset({"auto (jev)", "auto:jev", "auto (decision model)"})
 
 
 def _target_busy_error(body: dict[str, Any] | None = None) -> SessionControlError:

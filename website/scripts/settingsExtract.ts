@@ -208,7 +208,7 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'ReplyThreadsRow.tsx': DEVELOPER_PREVIEWS,
   // The default agent's opt-in MCP sets, mounted below the preview groups.
   'DefaultMcpGrantsSection.tsx': DEVELOPER_PREVIEWS,
-  // The Decisions (Jev) card, which FeaturePreviewsSection mounts. Its own file
+  // The Decision models card, which FeaturePreviewsSection mounts. Its own file
   // because it is a list and a detail rather than one row, and mapped here for the
   // reason the section above is: a control on a Settings pane that search cannot
   // find is the coverage gap this map exists to close.
@@ -225,6 +225,9 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // control added to it belongs to the same deep link, and leaving it unmapped
   // would mean the extractor never looks at the file at all.
   'DecisionsPointPanel.tsx': DEVELOPER_PREVIEWS,
+  // The hosted provider's API key, drawn inside that provider's entry of the
+  // decision model picker. Governed like the card it belongs to.
+  'DecisionsHostedKeyField.tsx': DEVELOPER_PREVIEWS,
   'AboutPanel.tsx': 'about',
   // AboutPanel.tsx's owners (the in-app update step-up and request card; a gateway
   // install's Updates card body; the desktop app's Restart gateway row; the two

@@ -139,9 +139,9 @@ export interface DecisionsProviderData {
   /** `jev`, `none` (no decision model), a preset id, or `custom` for an address set by hand in config.json. */
   active: string
   configured_endpoint: string
-  /** The configured address is a literal loopback one, so no Jev key is sent to it. */
+  /** The configured address is a literal loopback one, so no TypeSafe API key is sent to it. */
   loopback?: boolean
-  /** Fleet policy allows hosted Jev: `capabilities.decisions` and the ceiling's endpoints list. When false the picker hides it. Absent on an older gateway. */
+  /** Policy allows the hosted provider: `capabilities.decisions`, the ceiling's endpoints list for its host and its `providers` entry. Absent on an older gateway. */
   hosted_permitted?: boolean
   /** Fleet policy allows a local preset (`capabilities.decisions_local`). Absent on an older gateway. */
   local_permitted?: boolean
@@ -151,10 +151,16 @@ export interface DecisionsProviderData {
   sagemaker?: DecisionsSageMakerTarget | null
   /** `boto3` is installed, so a SageMaker endpoint can be used. Absent on an older gateway. */
   sagemaker_available?: boolean
-  /** Policy permits a SageMaker runtime host in some region. When false the picker hides the option. Absent on an older gateway. */
+  /** Policy permits a SageMaker runtime host in some region and the `providers` list allows SageMaker. Absent on an older gateway. */
   sagemaker_permitted?: boolean
-  /** The configured SageMaker address's own regional host is refused by the ceiling. */
+  /** The configured SageMaker address is refused by the ceiling: its own regional host, or the `providers` list. */
   configured_refused?: boolean
+  /**
+   * Per decision model, by its allow-list id (`jev`, each preset id, `sagemaker`,
+   * `custom`): whether the administrator's policy allows it, every part of the
+   * ceiling that governs it already combined. Absent on an older gateway.
+   */
+  provider_permitted?: Record<string, boolean>
 }
 
 /** A SageMaker endpoint as the picker names it; the gateway builds the address. */
