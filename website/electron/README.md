@@ -419,6 +419,14 @@ left as the user set it.
   `showTrayIcon` key in this app's config file; only `false` hides the icon
   (`tray-icon.js`), and the icon appears or disappears as soon as either
   setting changes.
+- **Minimize to tray** (off by default, Windows and Linux) makes minimizing
+  hide the window to the tray instead of the taskbar; click the tray icon to
+  bring it back. It is offered on Windows, and on Linux only when the desktop
+  has a tray (a StatusNotifier host on the session bus, asked with the
+  `dbus-send` in a fixed system directory, never one found on `PATH`; GNOME
+  has none without an extension). It stays off while
+  **Show tray icon** is off. The choice is the `minimizeToTray` key; only
+  `true` turns it on (`minimize-to-tray.js`).
 - **GPU rendering.** Hardware acceleration is on by default, except in a
   Windows RDP session (`SESSIONNAME` starting with `RDP-`), where it starts
   off. The decision, first match wins (`disable-gpu.js`):

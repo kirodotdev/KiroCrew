@@ -153,6 +153,9 @@ const store = new Store({
     closeAction: "background",
     // Only false hides it, and only while the close button quits. See tray-icon.js.
     showTrayIcon: true,
+    // Only true hides a minimized window, and only while a tray icon can bring
+    // it back. See minimize-to-tray.js.
+    minimizeToTray: false,
     linuxFrameless: null,
     // Written by gpu-crash-fallback.js when the GPU process dies at startup;
     // read before Chromium initializes on the next launch.

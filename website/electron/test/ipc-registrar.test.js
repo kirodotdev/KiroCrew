@@ -43,6 +43,8 @@ const SHELL_HANDLES = [
   "image:copy-at",
   "local-gateway:get",
   "local-gateway:set",
+  "minimize-to-tray:get",
+  "minimize-to-tray:set",
   "pane:clear-http-cache",
   "relay-crew:open",
   "remote-crew:forward-pane-ports",
@@ -543,13 +545,13 @@ test("registerShell owns the exact shell channel set and is idempotent", () => {
 
   assert.deepEqual([...h.handlers.keys()].sort(), SHELL_HANDLES);
   assert.deepEqual([...h.listeners.keys()].sort(), SHELL_LISTENERS);
-  assert.equal(h.handlers.size + h.listeners.size, 47);
+  assert.equal(h.handlers.size + h.listeners.size, 49);
 
   // boot-complete is a further non-update host channel, but it is deliberately
   // gateway-owned and scoped to a single connecting WebContents. Registering it
   // globally here would weaken its sender check and leak listeners.
   assert.match(GATEWAY_SOURCE, /ipcMain\.on\("boot-complete", onComplete\)/);
-  assert.equal(h.handlers.size + h.listeners.size + 1, 48);
+  assert.equal(h.handlers.size + h.listeners.size + 1, 50);
   assert.equal(h.handlers.has("boot-complete"), false);
   assert.equal(h.listeners.has("boot-complete"), false);
 
@@ -1875,7 +1877,7 @@ test("pane:clear-http-cache is gated to the local dashboard sender", async () =>
   assert.equal(purges.length, 0);
 });
 
-// ── close-action:* (#12204) and tray-icon:* (#21924) ────────────────────────
+// ── close-action:* (#12204), tray-icon:* and minimize-to-tray:* (#21924) ────
 //
 // The settings sit in the MAIN window's Settings, beside its close button, so
 // every channel answers only that window's own top frame on its dashboard
@@ -1887,6 +1889,8 @@ const MAIN_WINDOW_SETTING_CHANNELS = [
   ["close-action:set", ["quit"]],
   ["tray-icon:get", []],
   ["tray-icon:set", [false]],
+  ["minimize-to-tray:get", []],
+  ["minimize-to-tray:set", [true]],
 ];
 const MAIN_WINDOW_ONLY = (channel) => ({
   message: `${channel} is restricted to the main window's dashboard`,

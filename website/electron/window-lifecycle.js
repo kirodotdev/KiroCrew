@@ -17,6 +17,7 @@ const {
   setCloseAction,
 } = require("./close-action");
 const { getTrayIcon, setTrayIcon } = require("./tray-icon");
+const { createMinimizeToTray } = require("./minimize-to-tray");
 const { attachHtmlFullScreen } = require("./html-fullscreen");
 const { menuBarCanOverlap } = require("./fullscreen-top-reserve");
 const {
@@ -995,6 +996,7 @@ function createWindowLifecycle(options) {
         persist();
       },
     }));
+    mainWindow.on("minimize", minimizeToTray.minimizeHandler(mainWindow));
 
     return mainWindow;
   }
@@ -1115,6 +1117,9 @@ function createWindowLifecycle(options) {
     syncTray();
     return state;
   }
+
+  // Minimize to tray needs a tray to bring the window back (minimize-to-tray.js).
+  const minimizeToTray = createMinimizeToTray({ store, platform, trayShown: () => tray !== null, log: glog });
 
   async function promptRemoteHost() {
     const focused = BaseWindow.getFocusedWindow() || mainWindow;
@@ -1777,6 +1782,7 @@ function createWindowLifecycle(options) {
       get: () => getTrayIcon(store, { isMac: IS_MAC }),
       set: setTrayIconAndLog,
     },
+    minimizeToTray: { get: minimizeToTray.get, set: minimizeToTray.set },
     getSummonWindow,
     focusedDashboardWindow,
     focusedDashboardWebContents,

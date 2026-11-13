@@ -329,6 +329,14 @@ contextBridge.exposeInMainWorld("trayIconAPI", {
   set: (show) => ipcRenderer.invoke("tray-icon:set", !!show),
 });
 
+// Whether minimizing the main window hides it to the tray, as
+// {on, offered, canEnable}. Answered only to the main window's own dashboard,
+// like closeActionAPI.
+contextBridge.exposeInMainWorld("minimizeToTrayAPI", {
+  get: () => ipcRenderer.invoke("minimize-to-tray:get"),
+  set: (on) => ipcRenderer.invoke("minimize-to-tray:set", on === true),
+});
+
 // File-open bridge for the chat path chip's "Open in editor" affordance. Hands
 // a filesystem PATH — never a URL scheme — to the main process, which validates
 // it and calls shell.openPath so the file opens in the OS default handler on the
