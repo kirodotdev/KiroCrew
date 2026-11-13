@@ -337,6 +337,52 @@ cannot cancel another request in the same slot. `register_voice_lifecycle()`
 cancels active work during dashboard shutdown, and the registry bounds concurrent
 synthesis so simultaneous local requests cannot load unbounded models.
 
+## Playback bar, Pause and Resume
+
+In a Sessions chat, `VoicePlaybackBar` sits above the composer while
+`voicePlaying` or `voicePreparing` is set. It shows "Preparing audio…" or
+"Reading aloud" in two rows inside one glass pane. The first row holds the
+status and two buttons: Pause reading / Resume reading, then Stop reading. The
+second row, set off by a hairline and aligned to the end, holds Read again alone,
+so no row has more than two buttons. Stop dispatches `voice-stop`, Read again
+dispatches `voice-restart` (see above). Pause dispatches `voice-pause`; the store flag
+`voicePaused` then turns the same button into Resume reading, which dispatches
+`voice-resume`, and the status text reads "Paused". The toggle is one element,
+so keyboard focus stays on it. The bar is a container: while it is narrower than
+680 px (a phone, or a narrow dock), the Pause / Resume and Stop labels hide
+visually and remain the buttons' accessible names, so the status text always has
+room, in every locale. Read again, alone on its row, keeps its label until the
+viewport is narrower than 360 px.
+
+`voicePaused` is the single source of truth. The playback owner sets it first
+and then holds every engine at its current position, so Resume continues from
+there instead of from sentence 1:
+
+- The PCM player suspends its `AudioContext`. Audio that arrives while paused is
+  decoded and scheduled on the frozen clock, skips the autoplay-resume wait, and
+  plays when Resume resumes the context.
+- The media-element path pauses the active element. A queued chunk is not
+  started while paused (`playNextVoiceChunk` returns early), and Resume plays the
+  active element again or starts the next queued chunk. Each `play()` captures
+  a play-attempt token. Pause, a newer play, and teardown invalidate that token,
+  so an older rejected promise cannot report a failure or stop resumed playback.
+  A rejection from the current attempt still reports the playback error.
+- Client fallback speech pauses and resumes the Web Speech engine, and speech
+  that starts while paused starts held. Stopping cancels the engine and releases
+  a paused queue so the next utterance is heard.
+
+Pause is ignored unless a reading is playing or preparing. Pausing during a gap
+between sentences keeps the bar and the button visible. The reducers for
+`setVoicePlaying` and `setVoicePreparing` clear `voicePaused` once both flags are
+false, so Stop, a new turn, a failed request and the end of playback all leave
+nothing held. Escape and the reply menu's Read aloud item keep meaning Stop.
+
+Read again while paused ends the pause and speaks from the first sentence.
+Restart's teardown (`silenceVoice`) stops the PCM sources, the media element and
+the Web Speech queue, and its final `setVoicePlaying(false)` clears
+`voicePaused`; the replayed requests then start on a running `AudioContext`
+(`VoicePcmPlayer.unlock()` resumes a suspended one now that the flag is clear).
+
 ## Configuration and API
 
 Configuration is stored under `voice_reply` in the Crew configuration file.

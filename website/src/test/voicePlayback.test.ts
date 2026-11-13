@@ -41,7 +41,8 @@ describe('PCM streaming playback', () => {
     vi.stubGlobal('AudioContext', Context)
     const playing = vi.fn()
     const error = vi.fn()
-    return { nodes, playing, error, player: new VoicePcmPlayer(playing, error) }
+    const listener = { paused: false }
+    return { nodes, playing, error, listener, player: new VoicePcmPlayer(playing, error, () => listener.paused) }
   }
 
   it('schedules adjacent chunks without a media-element loading gap', async () => {
@@ -99,6 +100,113 @@ describe('PCM streaming playback', () => {
     await vi.waitFor(() => expect(nodes).toHaveLength(1))
     expect(resume).toHaveBeenCalledOnce()
     player.close()
+  })
+
+  describe('pause and resume', () => {
+    /** A context whose state follows suspend() and resume(), as a real one does. */
+    function stubStatefulContext(initial: 'running' | 'suspended' = 'running') {
+      const contexts: StatefulContext[] = []
+      class StatefulContext {
+        state: AudioContextState = initial
+        currentTime = 1
+        destination = {}
+        decodeAudioData = vi.fn().mockResolvedValue({ duration: 0.2 })
+        close = vi.fn().mockResolvedValue(undefined)
+        suspend = vi.fn(() => { this.state = 'suspended'; return Promise.resolve() })
+        resume = vi.fn(() => { this.state = 'running'; return Promise.resolve() })
+        createBufferSource() {
+          return { start: vi.fn(), stop: vi.fn(), connect: vi.fn(), disconnect: vi.fn(), onended: null }
+        }
+        constructor() { contexts.push(this) }
+      }
+      vi.stubGlobal('AudioContext', StatefulContext)
+      return contexts
+    }
+
+    function newPlayer() {
+      const listener = { paused: false }
+      const player = new VoicePcmPlayer(vi.fn(), vi.fn(), () => listener.paused)
+      return { player, listener }
+    }
+
+    it('suspends the audio clock on pause and resumes it on resume', async () => {
+      const contexts = stubStatefulContext()
+      const { player } = newPlayer()
+      player.enqueue(new ArrayBuffer(2))
+      await vi.waitFor(() => expect(contexts).toHaveLength(1))
+      await vi.waitFor(() => expect(contexts[0].decodeAudioData).toHaveBeenCalled())
+
+      player.pause()
+      expect(contexts[0].suspend).toHaveBeenCalledOnce()
+      expect(contexts[0].state).toBe('suspended')
+      player.resume()
+      expect(contexts[0].resume).toHaveBeenCalledOnce()
+      expect(contexts[0].state).toBe('running')
+      player.close()
+    })
+
+    it('does nothing when no audio has ever been queued', () => {
+      const contexts = stubStatefulContext()
+      const { player } = newPlayer()
+      player.pause()
+      player.resume()
+      expect(contexts).toHaveLength(0)
+    })
+
+    it('keeps audio that arrives while paused silent, without the autoplay resume, until resume', async () => {
+      const contexts = stubStatefulContext()
+      const { player, listener } = newPlayer()
+      listener.paused = true
+      player.enqueue(new ArrayBuffer(2))
+      await vi.waitFor(() => expect(contexts[0]?.decodeAudioData).toHaveBeenCalled())
+
+      expect(contexts[0].suspend).toHaveBeenCalledOnce()
+      expect(contexts[0].resume).not.toHaveBeenCalled()
+      expect(contexts[0].state).toBe('suspended')
+
+      listener.paused = false
+      player.resume()
+      expect(contexts[0].state).toBe('running')
+      player.close()
+    })
+
+    it('does not use the autoplay resume for a context that is already suspended while paused', async () => {
+      const contexts = stubStatefulContext('suspended')
+      const { player, listener } = newPlayer()
+      listener.paused = true
+      player.enqueue(new ArrayBuffer(2))
+      await vi.waitFor(() => expect(contexts[0]?.decodeAudioData).toHaveBeenCalled())
+      expect(contexts[0].resume).not.toHaveBeenCalled()
+      expect(contexts[0].suspend).not.toHaveBeenCalled()
+      player.close()
+    })
+
+    it('does not unlock a suspended context while paused', () => {
+      const contexts = stubStatefulContext('suspended')
+      const { player, listener } = newPlayer()
+      listener.paused = true
+      player.unlock()
+      expect(contexts[0].resume).not.toHaveBeenCalled()
+      player.close()
+    })
+
+    it('plays new audio after a stop that happened while paused', async () => {
+      const contexts = stubStatefulContext()
+      const { player, listener } = newPlayer()
+      player.enqueue(new ArrayBuffer(2))
+      await vi.waitFor(() => expect(contexts[0]?.decodeAudioData).toHaveBeenCalled())
+      listener.paused = true
+      player.pause()
+      expect(contexts[0].state).toBe('suspended')
+
+      player.stop()
+      listener.paused = false
+      player.enqueue(new ArrayBuffer(4))
+      await vi.waitFor(() => expect(contexts[0].decodeAudioData).toHaveBeenCalledTimes(2))
+      expect(contexts[0].resume).toHaveBeenCalledOnce()
+      expect(contexts[0].state).toBe('running')
+      player.close()
+    })
   })
 
   it('clears queued chunks after one decode failure instead of repeatedly reporting it', async () => {

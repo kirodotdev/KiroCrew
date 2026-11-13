@@ -6225,6 +6225,9 @@
     "voicePlaybackBar": {
       "preparing": "Preparando o áudio…",
       "playing": "Lendo em voz alta",
+      "paused": "Em pausa",
+      "pause": "Pausar a leitura",
+      "resume": "Retomar a leitura",
       "stop": "Parar a leitura",
       "restart": "Ler de novo",
       "restartFromStart": "Ler de novo desde o início"

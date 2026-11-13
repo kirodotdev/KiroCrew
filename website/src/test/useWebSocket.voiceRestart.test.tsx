@@ -219,6 +219,106 @@ describe('Read aloud restart', () => {
     })
   })
 
+  describe('while paused', () => {
+    const pauseReading = () => act(() => { window.dispatchEvent(new Event('voice-pause')) })
+
+    it('ends the pause and plays the first sentence again when the audio was paused mid-reading', async () => {
+      const { hook, ws } = await mount()
+      await stream(ws, FIRST, 1)
+      await act(async () => { chunkFor(ws, requestIdOf(0), 'first') })
+      const paused = MockAudio.instances[0]
+      pauseReading()
+      expect(chat().voicePaused).toBe(true)
+      paused.pause.mockClear()
+
+      await restart()
+
+      expect(chat().voicePaused).toBe(false)
+      expect(paused.pause).toHaveBeenCalled()
+      expect(synthesizedTexts()).toEqual([FIRST.trim(), FIRST.trim()])
+      await act(async () => { chunkFor(ws, requestIdOf(1), 'again') })
+      expect(MockAudio.instances).toHaveLength(2)
+      expect(MockAudio.instances[1].play).toHaveBeenCalledOnce()
+      expect(chat().voicePlaying).toBe(true)
+      hook.unmount()
+    })
+
+    it('ends the pause when the audio was paused while still being prepared', async () => {
+      const { hook, ws } = await mount()
+      await stream(ws, FIRST, 1)
+      pauseReading()
+      expect(chat().voicePaused).toBe(true)
+
+      await restart()
+
+      expect(chat().voicePaused).toBe(false)
+      expect(chat().voicePreparing).toBe(true)
+      await act(async () => { chunkFor(ws, requestIdOf(1), 'again') })
+      expect(MockAudio.instances).toHaveLength(1)
+      expect(MockAudio.instances[0].play).toHaveBeenCalledOnce()
+      hook.unmount()
+    })
+
+    it('releases the audio clock a pause froze, so the replay is audible', async () => {
+      const contexts: { state: string; resume: ReturnType<typeof vi.fn> }[] = []
+      class FakeContext {
+        state = 'running'
+        currentTime = 0
+        destination = {}
+        decodeAudioData = vi.fn().mockResolvedValue({ duration: 0.2 })
+        suspend = vi.fn(() => { this.state = 'suspended'; return Promise.resolve() })
+        resume = vi.fn(() => { this.state = 'running'; return Promise.resolve() })
+        close = vi.fn().mockResolvedValue(undefined)
+        createBufferSource() {
+          return { start: vi.fn(), stop: vi.fn(), connect: vi.fn(), disconnect: vi.fn(), onended: null }
+        }
+        constructor() { contexts.push(this) }
+      }
+      vi.stubGlobal('AudioContext', FakeContext)
+      const { hook, ws } = await mount()
+      await stream(ws, FIRST, 1)
+      await act(async () => {
+        ws.simulateMessage({ type: 'voice_chunk', data: { request_id: requestIdOf(0), slot: ACTIVE, audio: btoa('wav'), audioMime: 'audio/wav' } })
+      })
+      await vi.waitFor(() => expect(chat().voicePlaying).toBe(true))
+      pauseReading()
+      expect(contexts[0].state).toBe('suspended')
+
+      await restart()
+
+      expect(chat().voicePaused).toBe(false)
+      expect(contexts[0].state).toBe('running')
+      hook.unmount()
+    })
+
+    it('cancels paused client speech so the replay is not held silent', async () => {
+      const cancelSpeech = vi.fn()
+      const pauseSpeech = vi.fn()
+      const speak = vi.fn()
+      const resumeSpeech = vi.fn()
+      class FakeUtterance { constructor(public text: string) {} onend = null; onerror = null }
+      vi.stubGlobal('SpeechSynthesisUtterance', FakeUtterance)
+      vi.stubGlobal('speechSynthesis', { speak, cancel: cancelSpeech, pause: pauseSpeech, resume: resumeSpeech, paused: true })
+      const { hook, ws } = await mount()
+      act(() => { speakReply(store.dispatch, ACTIVE, 'The whole reply.') })
+      act(() => {
+        ws.simulateMessage({ type: 'voice_error', data: { slot: ACTIVE, request_id: 'manual-1', code: 'voice_unavailable' } })
+      })
+      expect(speak).toHaveBeenCalledOnce()
+      pauseReading()
+      expect(chat().voicePaused).toBe(true)
+      expect(pauseSpeech).toHaveBeenCalled()
+
+      await restart()
+
+      expect(cancelSpeech).toHaveBeenCalled()
+      expect(resumeSpeech).toHaveBeenCalled()
+      expect(chat().voicePaused).toBe(false)
+      expect(chat().voicePreparing).toBe(true)
+      hook.unmount()
+    })
+  })
+
   describe('manual Read aloud', () => {
     const REPLY = 'The whole reply, read aloud from the menu.'
 

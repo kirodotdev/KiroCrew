@@ -5885,6 +5885,9 @@
     "voicePlaybackBar": {
       "preparing": "音声を準備中…",
       "playing": "読み上げ中",
+      "paused": "一時停止中",
+      "pause": "読み上げを一時停止",
+      "resume": "読み上げを再開",
       "stop": "読み上げを停止",
       "restart": "もう一度読む",
       "restartFromStart": "最初からもう一度読み上げる"
