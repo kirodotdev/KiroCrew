@@ -1533,6 +1533,7 @@ class _ChatSlot:
     load_window = _slot_transcript.load_window
     loaded_messages = _slot_transcript.loaded_messages
     release_saved_head = _slot_transcript.release_saved_head
+    _fold_head = _slot_transcript._fold_head
     sidebar_messages = _slot_transcript.sidebar_messages
     to_dict = _slot_transcript.to_dict
 

@@ -1526,6 +1526,16 @@ no longer destroy older turns.
   lands while a save writes (`slot_transcript._fold_head`) is subtracted when
   the save commits (`write_guards.saved_rows_still_held`, rows matched by
   identity), so the folded rows are not counted as the window's on-disk part.
+  A native clear (`_keep_cleared_turns`) saves the slot, then folds the same
+  way, up to the row that was last before the save, the rows `_disk_window_len`
+  counts as saved (normally all of them) and, when no row stays in the window,
+  the other writers' lines `_frozen_prefix_cache` holds. When a row stays beside
+  such lines it folds nothing: the save merged them among the window's rows by
+  time, so no count of rows is the boundary, and every row stays in the window
+  for the next flush. The folded turns are then read from the transcript like
+  any folded row. A refused or failed save does not raise that count, and the
+  rows past it stay in the window for the next flush, as do the rows that
+  arrived during the save.
 - **Idle window release** (`dashboard/slot_window_release.py`): the flush loop,
   at most once a minute and after its flush, folds every saved row older than
   the newest `_WINDOW_ROWS` of a slot idle for ten minutes into the frozen
