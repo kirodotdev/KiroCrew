@@ -307,10 +307,16 @@ async def _cron_run_sequence(
                 # the one-shot flag so this turn re-injects it exactly
                 # once; the finally re-arms it if the turn never lands.
                 _seq_reinjection = consume_reinjection(self.sessions, agent_session_key)
+                from kiro_crew.cron_service.prompt_mention import expand_cron_prompt_mention
+
+                # Per step: a project prompt resolves against the step's own cwd.
+                _step_msg = await expand_cron_prompt_mention(
+                    msg, step.cwd, job_id=job.id, job_name=job.name
+                )
                 # Off-loop: build_message embeds the episodic query.
                 full_message, _ = await run_in_embed_pool(
                     self.ctx_builder.build_message,
-                    msg,
+                    _step_msg,
                     is_new,
                     agent_session_key,
                     interactive=False,
@@ -851,6 +857,9 @@ async def _cron_run_single(
         # Skill triggers read the job's own prompt: the acknowledged-items list
         # below is Kiro Crew's text, so its words must not load or veto a skill.
         trigger_text = msg
+        from kiro_crew.cron_service.prompt_mention import expand_cron_prompt_mention
+
+        msg = await expand_cron_prompt_mention(msg, _single_cwd, job_id=job.id, job_name=job.name)
         if job.acked_items:
             msg += (
                 "\n\n[User has seen and acknowledged ALL of the following — "
