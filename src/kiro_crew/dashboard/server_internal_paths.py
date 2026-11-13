@@ -325,6 +325,9 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         # the "/api/crons" entry above — without this entry those MCP calls
         # fall through to cookie auth and fail with "Token required".
         "/api/cron-folders",
+        # The model picker's read-only list (GET only) and ``kirocrew models``,
+        # which sends X-Internal-Secret after proving the gateway peer.
+        "/api/models",
         "/api/taskrunner",
         "/api/artifacts",
         # The sandboxed MCP server's Bedrock remote leg: consent must be
