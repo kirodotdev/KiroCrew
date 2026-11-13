@@ -13,14 +13,27 @@ handles each one calls in here:
   auto-approves never reaches Crew, so it has no approval span.
 - **Steers.** :func:`steered`: a zero-length ``kirocrew.steer`` in the turn it went
   into, carrying ``kirocrew.steer.mode`` and never the text.
-Best-effort: a failure here is logged and the turn goes on. Off, each call
-returns at the switch read.
+- **Sends and queue wait.** :func:`sending` around a ``session_send`` or broadcast
+  delivery names the sender's tool span (else its turn span); :func:`note_queued`
+  times a queue entry from its append, and :func:`drained` hands the turn that
+  drains entries their wait and senders. A top-level turn's binding takes them once
+  (:func:`take_queued`): one link per sender and ``kirocrew.queue.wait_ms`` (the
+  oldest entry's) on its turn span.
+
+Best-effort and bounded like the turn registries. Off, each call returns at the
+switch read; :func:`drained` and :func:`sending` still set their hand-over, so a
+turn never inherits one an earlier turn left untaken.
 """
 
 from __future__ import annotations
 
+import contextvars
 import logging
+import threading
 import time
+from collections import OrderedDict
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -38,8 +51,13 @@ STEER_INTERRUPT = "interrupt"
 STEER_FOLLOW_UP = "follow_up"
 _STEER_MODES = frozenset({STEER_INTERRUPT, STEER_FOLLOW_UP})
 
+#: The queued-entry ``meta`` key naming the span that sent it, ``<trace id>:<span id>``.
+META_SENDER = "trace_sender"
 #: Spelled out rather than imported from ``constants`` (pinned by ``test_tracing_steps``).
 _CAUSE_TIMEOUT = "approval_timeout"
+_MAX = 4096
+_MAX_LINKS = 64
+_HEX_DIGITS = frozenset("0123456789abcdef")
 
 
 @dataclass
@@ -175,3 +193,123 @@ def steered(mode: str, *, source: object = None, subagent_id: str = "") -> None:
             span.end(end_time=span.start_time)  # a point: when it went in
     except Exception:
         logger.debug("steer trace failed", exc_info=True)
+
+
+# ── sends and queue wait ──────────────────────────────────────────────────
+
+_lock = threading.Lock()
+#: Queue entry id -> monotonic time it was appended.
+_queued_at: "OrderedDict[str, float]" = OrderedDict()
+
+
+@dataclass
+class _Queued:
+    """A one-shot hand-over: the first top-level turn to read it takes it."""
+
+    senders: tuple[str, ...]
+    wait_ms: int | None = None
+
+
+_QUEUED: contextvars.ContextVar[_Queued | None] = contextvars.ContextVar(
+    "kirocrew_trace_queued", default=None
+)
+
+
+def note_queued(queue_id: str) -> None:
+    """Queue entry *queue_id* was appended now."""
+    if not queue_id or provider.peek() is None:
+        return
+    with _lock:
+        _queued_at[queue_id] = time.monotonic()
+        while len(_queued_at) > _MAX:
+            _queued_at.popitem(last=False)
+
+
+def _sender_ref(session_key: str) -> str:
+    """``<trace>:<span>`` of the send tool span open in *session_key*'s turn, else that turn."""
+    turn = turns.open_turn_of_session(session_key)
+    if turn is None:
+        return ""
+    context = (turns.role_span(turn, turns.ROLE_SEND) or turn.turn_span).get_span_context()
+    return f"{context.trace_id:032x}:{context.span_id:016x}"
+
+
+@contextmanager
+def sending(session_key: str) -> Iterator[dict[str, str]]:
+    """Around one peer delivery from *session_key*: yields the queue ``meta`` naming the sender.
+
+    A turn the delivery starts at once copies this context, so it takes the
+    sender from here; a queued one reads it back from its entry (:func:`drained`).
+    """
+    ref = ""
+    if session_key and provider.peek() is not None:
+        try:
+            ref = _sender_ref(session_key)
+        except Exception:
+            logger.debug("sender trace read failed", exc_info=True)
+    token = _QUEUED.set(_Queued((ref,)) if ref else None)
+    try:
+        yield {META_SENDER: ref} if ref else {}
+    finally:
+        _QUEUED.reset(token)
+
+
+@contextmanager
+def drained(entries: Iterable[Any]) -> Iterator[None]:
+    """Around starting the turn that drains these queue entries: their wait and senders."""
+    now, started, senders = time.monotonic(), None, []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        with _lock:
+            at = _queued_at.pop(str(entry.get("id") or ""), None)
+        if at is not None and (started is None or at < started):
+            started = at
+        meta = entry.get("meta")
+        ref = meta.get(META_SENDER) if isinstance(meta, dict) else None
+        if isinstance(ref, str) and ref:
+            senders.append(ref)
+    wait_ms = int((now - started) * 1000) if started is not None else None
+    holder = (
+        _Queued(tuple(dict.fromkeys(senders))[:_MAX_LINKS], wait_ms)
+        if senders or wait_ms is not None
+        else None
+    )
+    token = _QUEUED.set(holder)
+    try:
+        yield
+    finally:
+        _QUEUED.reset(token)
+
+
+def _link(ref: str) -> Any:
+    """A link to the span *ref* names, or ``None`` when it is not two hex ids."""
+    from kiro_crew.tracing import ids
+
+    trace_id, _, span_id = ref.partition(":")
+    if not ids.is_hex32(trace_id) or len(span_id) != 16 or not set(span_id) <= _HEX_DIGITS:
+        return None
+    if trace_id == "0" * 32 or span_id == "0" * 16:
+        return None
+    return runs.link(trace_id, span_id)
+
+
+def take_queued() -> tuple[tuple[Any, ...], dict[str, Any]]:
+    """``(links, turn-span attrs)`` handed to this turn, taken once; empty when off."""
+    holder = _QUEUED.get()
+    if holder is None or provider.peek() is None:
+        return (), {}
+    senders, wait_ms = holder.senders, holder.wait_ms
+    holder.senders, holder.wait_ms = (), None
+    try:
+        links = tuple(link for link in map(_link, senders) if link is not None)
+    except Exception:
+        logger.debug("sender trace link failed", exc_info=True)
+        links = ()
+    return links, ({"kirocrew.queue.wait_ms": wait_ms} if wait_ms is not None else {})
+
+
+def reset_for_testing() -> None:
+    """Forget every queued entry's time. Test isolation only."""
+    with _lock:
+        _queued_at.clear()

@@ -2003,6 +2003,23 @@ A tool the harness auto-approves never reaches Crew, so it has no approval span;
 does a Crew policy that answers before a prompt is shown. The dashboard and channel
 approvals find their turn through the root bound in the task that streams it.
 
+**Queue wait and senders.** `SlotQueueRepository.queue_append` notes each entry's
+append time in memory (`steps.note_queued`; not on the entry, whose dict shape is
+compared wholesale). The drain (`queue_drain._start_next_queued_turn`) hands the
+drained entries to the turn's task (`steps.drained`), and `bind_turn` takes them once
+for a top-level turn: `kirocrew.queue.wait_ms`, from the oldest entry's append to the
+drain, on the turn span only. A `session_send` or broadcast delivery
+(`session_deliver._deliver_peer`, given the sender's session key by
+`session_messaging.send_to_target`) names the sender's open `session_send` /
+`session_broadcast` tool span, else its turn span: on the queued entry as
+`meta.trace_sender` (`<trace id>:<span id>`), and in the context a turn started at once
+copies. The receiving turn takes one link per sender. After a restart, entries keep
+their senders and lose their wait.
+
+**Workflow launch.** `pin_launcher` keeps the open `workflow_run` tool span (else the
+launching turn), sets `kirocrew.launched_workflow_run_id` on it, and the run's anchor
+links to it (`surfaces.root(links=)`); the run is a separate trace.
+
 **Trace id.** `dashboard/chat_runner.py::_run_chat` binds `turn._recovery_turn_id`
 through `dashboard/trace_binding.py::bind_turn` around the turn, and that id is the
 trace id of each stream the same task opens; the n-th stream is `kirocrew.attempt=n`.
@@ -2069,8 +2086,9 @@ named by the script's `META["name"]`, and the outcome: `finished`, `failed` or
 - A run authored from an intent (`start_from_intent`) has an `Authoring` phase first;
   the author's model turns are one call under it, `invoke_agent Authoring:author`,
   bound in the task the runner starts for the author.
-- `WorkflowRunner.run_background` pins the turn open for the launching session
-  (`pin_launcher`, by `turns.open_turn_of_session`) before the run is scheduled.
+- `WorkflowRunner.run_background` pins the launcher for the launching session
+  (`pin_launcher`, by `turns.open_turn_of_session`) before the run is scheduled: its
+  open `workflow_run` tool span, else the turn (see Workflow launch above).
 - The completion turn: `workflow_startup`'s auto-turn starts it inside
   `delivering(run_id)`, or queues it with `meta.workflow_run_id`, which the queue
   drain hands over (`run_of`). `bind_turn` takes the run once (top-level turns
@@ -2210,7 +2228,8 @@ A turn's trace id is the turn id itself when it is 32 hex, else
 whole attribute vocabulary; anything else is dropped. Ids follow #24884's hook
 contract with a `kirocrew.` prefix: `kirocrew.turn_id`, `kirocrew.acp_session_id`,
 `kirocrew.tool_call_id`, `kirocrew.subagent_id`, `kirocrew.work.item_id`,
-`kirocrew.cron.job_id`, `kirocrew.workflow_run_id` and `kirocrew.agent_id` raw;
+`kirocrew.cron.job_id`, `kirocrew.workflow_run_id`, `kirocrew.launched_workflow_run_id`
+and `kirocrew.agent_id` raw;
 `kirocrew.parent_session_key_hash`, `kirocrew.crew.root`, `kirocrew.crew.dispatcher`
 and `kirocrew.work.conductor_hash` hashed like the session key; `kirocrew.session_key_hash` and `session.id` a
 keyed HMAC-SHA256 (32 hex) under `SecretVault.derive_subkey("trace-correlation")`;

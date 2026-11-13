@@ -1,4 +1,5 @@
-"""Phase 4a: the steps inside a turn: derived model calls, compaction, approvals, steers."""
+"""Phase 4: the steps inside a turn: derived model calls, compaction, approvals,
+steers, queue wait, and the links a send and a workflow launch leave."""
 
 from __future__ import annotations
 
@@ -17,11 +18,12 @@ from kiro_crew.acp.types import (
     TurnUsage,
 )
 from kiro_crew.testing.clock import ManualClock
-from kiro_crew.testing.wait import until_parked
+from kiro_crew.testing.wait import await_until, until_parked
 from kiro_crew.tracing import provider, runs, steps, subagents, surfaces, turns
 
 NS = "00112233445566778899aabbccddeeff"
 KEY = b"k" * 32
+SENDER = "dashboard:sender"
 
 
 @pytest.fixture
@@ -35,6 +37,7 @@ def spans():
     turns.reset_for_testing()
     runs.reset_for_testing()
     subagents.reset_for_testing()
+    steps.reset_for_testing()
     provider.reset_for_testing()
 
 
@@ -377,3 +380,98 @@ async def test_an_injected_steer_emits_exactly_one_span(spans, monkeypatch, held
     assert steer.parent.span_id == turn.turn_span.get_span_context().span_id
     assert steer.attributes == {**turn.common, "kirocrew.steer.mode": steps.STEER_INTERRUPT}
     assert steer.start_time == steer.end_time
+
+
+# ── sends and queue wait ──────────────────────────────────────────────────
+
+
+def _sender_with_send_tool():
+    """The sender's turn, with its session_send tool call open."""
+    turn = turns.start_turn(_source("acp-sender", SENDER))
+    turns.tool_started("acp-sender", "tc-send", kind="other", tool_name="mcp_core_session_send")
+    (tool,) = [entry[1] for entry in turns._open_tools.values()]
+    return turn, tool.get_span_context()
+
+
+async def _receiver_turn(turn_id):
+    """A top-level dashboard turn, bound the way ``_run_chat`` binds it."""
+    from kiro_crew.dashboard import trace_binding
+
+    token = await trace_binding.bind_turn(
+        SimpleNamespace(), SimpleNamespace(key="chat-9"), turn_id, top=True
+    )
+    try:
+        async for _ in turns.traced(_source("acp-recv", "dashboard:chat-9"), _stream(_done())):
+            pass
+    finally:
+        turns.release_turn_root(token)
+
+
+@pytest.mark.asyncio
+async def test_a_queued_turn_links_to_its_sender_and_carries_its_wait(spans, clock):
+    sender, tool = _sender_with_send_tool()
+    with steps.sending(SENDER) as meta:
+        entry = {"id": "q1", "meta": {"other": 1, **meta}}
+    steps.note_queued("q1")
+    clock.advance(3)
+    steps.note_queued("q2")  # a later entry drained with it: the oldest one's wait counts
+    with steps.drained([entry, {"id": "q2"}]):
+        task = asyncio.ensure_future(_receiver_turn("d" * 32))
+    await await_until(task, what="the drained turn")
+    sender.finish(None)
+    turn = _turn_span(spans, "acp-recv")
+    (link,) = turn.links
+    assert (link.context.trace_id, link.context.span_id) == (tool.trace_id, tool.span_id)
+    assert turn.attributes["kirocrew.queue.wait_ms"] == 3000
+    # On the turn span alone, not on its children.
+    (chat,) = [
+        s
+        for s in spans.get_finished_spans()
+        if s.name.startswith("chat") and s.parent and s.parent.span_id == turn.context.span_id
+    ]
+    assert "kirocrew.queue.wait_ms" not in chat.attributes
+
+
+@pytest.mark.asyncio
+async def test_a_peer_delivery_carries_its_sender_on_both_arms(spans):
+    from kiro_crew.dashboard import session_deliver
+
+    sender, tool = _sender_with_send_tool()
+    calls, started = [], []
+
+    class _Slot:
+        running = False
+
+        def enqueue_or_run_prompt(self, text, run, state, *, extra_meta=None, relay_meta=None):
+            calls.append(extra_meta)
+            # The run arm: the turn's task copies the delivery's context.
+            started.append(asyncio.ensure_future(_receiver_turn("f" * 32)))
+            return True
+
+    origin = session_deliver.peer(steer=False, sender=SENDER)
+    outcome = await session_deliver._deliver_peer(None, _Slot(), "hi", origin, None, {"q": 1})
+    assert outcome == session_deliver.DELIVERED_TURN
+    await await_until(started[0], what="the started turn")
+    sender.finish(None)
+    # The queue arm's entry names the sender, beside the caller's own meta.
+    assert calls == [{"q": 1, steps.META_SENDER: f"{tool.trace_id:032x}:{tool.span_id:016x}"}]
+    (link,) = _turn_span(spans, "acp-recv").links
+    assert link.context.span_id == tool.span_id
+
+
+def test_a_queue_append_starts_the_entrys_wait(spans, clock):
+    from kiro_crew.dashboard.slot_queue_repository import SlotQueueRepository
+
+    owner = SimpleNamespace(_queue=[], _note_enqueue=lambda: None)
+    queue_id = SlotQueueRepository(id_provider=lambda: "q7").queue_append(owner, "hello")
+    clock.advance(1.5)
+    with steps.drained(owner._queue):
+        links, attrs = steps.take_queued()
+        assert steps.take_queued() == ((), {})  # taken once
+    assert queue_id == "q7" and links == () and attrs == {"kirocrew.queue.wait_ms": 1500}
+
+
+def test_a_malformed_sender_reference_links_nothing(spans):
+    for ref in ("", "x:y", "0" * 32 + ":" + "0" * 16, "A" * 32 + ":" + "1" * 16, "1" * 32 + ":1"):
+        with steps.drained([{"id": "q", "meta": {steps.META_SENDER: ref}}]):
+            assert steps.take_queued() == ((), {})

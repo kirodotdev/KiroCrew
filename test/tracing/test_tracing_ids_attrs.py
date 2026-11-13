@@ -153,6 +153,8 @@ def test_the_attribute_allowlist_is_pinned():
             "kirocrew.approval.wait_ms",
             "kirocrew.approval.decided_by",
             "kirocrew.approval.outcome",
+            "kirocrew.queue.wait_ms",
+            "kirocrew.launched_workflow_run_id",
             "langfuse.observation.cost_details",
             "langfuse.observation.type",
             "langfuse.observation.usage_details",
