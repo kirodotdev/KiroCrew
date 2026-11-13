@@ -10,11 +10,12 @@
  *   answer (up to `CREW_POLL_MAX_MS`); a fast answer resets it to the base.
  * - Cap: at most `CREW_POLL_CAP` list requests are in flight per origin. A read that
  *   finds the cap full (first read or re-read) waits its turn in a FIFO queue and
- *   then reads fresh data, so four of the six connections are always free for sends
- *   and everything else. A slot is released in `finally`, so a rejected read frees it.
+ *   then reads fresh data, so worker lists leave room for every other read. A slot
+ *   is released in `finally`, so a rejected read frees it.
  *
- * shortcut: the cap counts this route only; other background polls are not
- * counted. Move them onto this scheduler if they start to crowd sends.
+ * The cap counts this route only. Every read, this one included, then takes its
+ * turn at the read gate (`api/readGate.ts`), which is what keeps connections
+ * free for a send.
  */
 import { api } from '../api/client'
 
