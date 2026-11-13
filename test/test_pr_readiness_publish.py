@@ -120,6 +120,11 @@ if [ "$1" = "api" ]; then
     esac
   fi
   case "$*" in
+    *"/actions/runs?event=pull_request_target"*)
+      # Sensitive Change Review's own runs on the head. Matched ahead of the
+      # `event=pull_request` glob, which would answer it too.
+      [ -f "$FIXTURES/fail_pt_runs" ] && { echo 'gh: Server Error (HTTP 500)' >&2; exit 1; }
+      cat "$FIXTURES/pt_runs.json"; exit 0 ;;
     *"/actions/runs?event=pull_request"*)
       [ -f "$FIXTURES/fail_runs" ] && { echo 'gh: Server Error (HTTP 500)' >&2; exit 1; }
       cat "$FIXTURES/runs.json"; exit 0 ;;
@@ -507,6 +512,8 @@ def _recheck_runner(
     ci_cancelled_twin: bool = False,
     fail_fork_checks: bool = False,
     codeql_pr_runs: tuple[dict[str, object], ...] = (),
+    sensitive_status: str = "completed",
+    sensitive_conclusion: str = "success",
 ) -> Runner:
     spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     job_env = spec["jobs"]["readiness"]["env"]
@@ -566,6 +573,20 @@ def _recheck_runner(
     # same pull_request runs page.
     workflow_runs.extend(codeql_pr_runs)
     (runner.fixtures / "runs.json").write_text(json.dumps({"workflow_runs": workflow_runs}))
+    # Sensitive Change Review is read from its own `pull_request_target` run on
+    # the head, green by default.
+    sensitive_run = {
+        "id": 8,
+        "name": "Sensitive Change Review",
+        "event": "pull_request_target",
+        "path": ".github/workflows/sensitive-change-review.yml",
+        "status": sensitive_status,
+        "conclusion": sensitive_conclusion if sensitive_status == "completed" else None,
+        "run_started_at": "2026-08-07T19:00:20Z",
+        "head_repository": {"full_name": head_repo},
+        "head_branch": "feat/x",
+    }
+    (runner.fixtures / "pt_runs.json").write_text(json.dumps({"workflow_runs": [sensitive_run]}))
     # CodeQL is a `dynamic` run and its security verdict is a separate exact-SHA
     # check-run, so both pages back the publish re-check. Green by default, so a
     # test that says nothing about CodeQL keeps its own subject.
@@ -665,6 +686,42 @@ def test_a_success_with_every_lane_done_still_publishes_success(runner: Runner) 
     result = _recheck_runner(runner, "completed").run()
     assert result.published is not None
     assert result.published["state"] == "success"
+
+
+@pytest.mark.parametrize(
+    ("status", "conclusion", "state", "label"),
+    [
+        ("completed", "failure", "failure", "readiness: action required"),
+        ("in_progress", "success", "pending", "readiness: checking"),
+    ],
+)
+def test_a_sensitive_review_re_run_since_the_evaluation_holds_the_success(
+    runner: Runner, status: str, conclusion: str, state: str, label: str
+) -> None:
+    """Sensitive Change Review is a `pull_request_target` run, so the
+    `pull_request` page cannot see a re-run of it. A green `pull_request` run of
+    the same path (a PR's own copy) on that page does not mask its verdict."""
+    _recheck_runner(runner, "completed", sensitive_status=status, sensitive_conclusion=conclusion)
+    page = json.loads((runner.fixtures / "runs.json").read_text())
+    page["workflow_runs"].append(
+        {
+            "id": 99,
+            "name": "Sensitive Change Review",
+            "event": "pull_request",
+            "path": ".github/workflows/sensitive-change-review.yml",
+            "status": "completed",
+            "conclusion": "success",
+            "run_started_at": "2026-08-07T19:00:30Z",
+            "head_repository": {"full_name": "kirodotdev/KiroCrew"},
+            "head_branch": "feat/x",
+        }
+    )
+    (runner.fixtures / "runs.json").write_text(json.dumps(page))
+    result = runner.run(pr_labels=("readiness: passed",))
+    assert result.published is not None
+    assert result.published["state"] == state
+    assert "Sensitive Change Review" in result.published["description"]
+    assert label in result.added
 
 
 def _listing_empty_but_check_runs_name(runner: Runner, run: dict[str, object]) -> None:

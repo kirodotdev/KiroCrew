@@ -84,7 +84,7 @@ pull_request
   |-- security-scope-review.yml
   |                     "Security Scope Review"  which legit ops a tightening refuses, blocking
   |-- sensitive-change-review.yml
-  |                     "Sensitive Change Review"  reasoned review record on sensitive paths, advisory
+  |                     "Sensitive Change Review"  reasoned review record on sensitive paths, blocking
   |                                      (on pull_request_target, so it runs the default branch's copy)
   |-- codeql.yml        "CodeQL"  Analyze (<language>); replaces GitHub default setup
   |
@@ -4425,20 +4425,24 @@ same-repository PR the gate keeps one sticky comment (by `github-actions[bot]`,
 marked `<!-- sensitive-change-review -->`) listing the sensitive files and the
 template to paste. That comment is why the job holds `pull-requests: write`.
 
-**Advisory for now.** `PR Readiness` does not read it yet; enrolling it is the
-rest of [#16870](https://github.com/kirodotdev/KiroCrew/issues/16870). The
-enrolled lane has to read the `pull_request_target` run of
-`sensitive-change-review.yml`, never a check by its name.
+**A readiness lane.** `PR Readiness` reads the newest `pull_request_target` run
+of `sensitive-change-review.yml` for the PR's head, never a check by its name. A
+check another workflow posts under that name, or a `pull_request` run of a PR's
+own copy of the file, leaves the lane pending. A red run reds readiness, so a
+sensitive-path PR reaches `readiness: passed` only once its record is filled in.
+A head last pushed before the gate moved to `pull_request_target` has no such run
+and waits for a push or a reopen.
 
 ## `pr-readiness.yml`: the aggregator
 
 It executes no tests. It resolves the PR's current head SHA, **drops stale events**,
 reads the head's `pull_request` workflow runs **once** and picks the latest run per
-monitored workflow out of that page, and publishes **one `PR Readiness` commit
+monitored workflow out of that page (Sensitive Change Review's
+`pull_request_target` runs take one more read), and publishes **one `PR Readiness` commit
 status plus one `readiness:` label**.
 
 - **Always required:** Fast Gate, CI, Build, Code Review, PR Hygiene, Issue Gate,
-  and Internal Content Scan (the same-repository workflow or the fork check-run). `Fast Gate` is a lane in
+  Sensitive Change Review, and Internal Content Scan (the same-repository workflow or the fork check-run). `Fast Gate` is a lane in
   its own right and not merely CI's precondition — a red gate must red the PR, and
   `await-fast-gate` reports `failure` rather than the gate that actually broke, so
   the readable verdict has to come from the gate workflow itself. It carries CI's
@@ -4792,7 +4796,8 @@ Two subtleties:
 
   A `success` is re-checked before it is published, on every head: the publish step reads
   the runs page once more and downgrades to `pending` if a monitored lane has started since
-  (to `failure` if one has turned red), so a run in an isolated `pull_request_target` or
+  (to `failure` if one has turned red), Sensitive Change Review re-read from its
+  `pull_request_target` run, so a run in an isolated `pull_request_target` or
   `workflow_dispatch` group cannot land a stale success over a re-run -- and this is the
   write a re-run's hold cannot defend against on its own, since the hold lands in seconds
   and the delayed publish lands after it. A fork head's runs list the fork as
@@ -4806,7 +4811,7 @@ Two subtleties:
   fails its check ONLY on a real BLOCK) publishes red. Both arms collapse a lane's runs the
   way the verdict step does, a cancelled max-id run yielding to a later-started sibling, so
   the re-check never reds a lane the evaluation scored green. CodeQL is read on same-repo heads only -- it
-  is a `dynamic` run, invisible to a re-check filtered to `event=pull_request`, and its
+  is a `dynamic` run, invisible to the lane re-check above, and its
   security verdict is a separate exact-SHA check-run a re-scan re-opens; a fork head cannot
   run it. The fork re-check matches a row by its check-run **name** as well as its
   `external_id`, so renaming a fork lane holds every head reviewed under the old name at
@@ -5535,7 +5540,7 @@ Making `PR Readiness` a required status remains an explicit branch-protection
 or ruleset setting outside the workflow.
 
 The aggregate covers the latest PR result for Fast Gate, CI, Build, Code Review,
-PR Hygiene, Issue Gate, Internal Content Scan, Opus 5.5 Review, GPT 6.1 Review (two GPT passes plus
+PR Hygiene, Issue Gate, Sensitive Change Review, Internal Content Scan, Opus 5.5 Review, GPT 6.1 Review (two GPT passes plus
 conditional Opus adjudication), Security Scope Review, Design Review, UX Review,
 and First Principles Review. For managed CodeQL it requires
 both the dynamic analysis workflow and the exact-head `CodeQL` security result

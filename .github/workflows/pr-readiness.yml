@@ -1131,6 +1131,11 @@ jobs:
           # entry: `PR Readiness` is the one required status, so a lane this
           # list omits is a gate that can go red without reddening the PR.
           workflow_specs+=("issue-gate.yml|Issue Gate")
+          # Sensitive Change Review runs on `pull_request_target` for every PR,
+          # whatever its base, so its run executes the default branch's file.
+          # The loop reads it from those runs alone: a PR can add a workflow
+          # that posts a check of the same name, never a run of this kind.
+          workflow_specs+=("sensitive-change-review.yml|Sensitive Change Review")
 
           # True only for a fork PR into a non-default base (see below).
           fork_base_hold=false
@@ -1358,9 +1363,10 @@ jobs:
             fi
           }
 
-          # The monitored workflows whose `pull_request` trigger lists `edited`.
+          # The monitored workflows whose `pull_request` (or, for Sensitive
+          # Change Review, `pull_request_target`) trigger lists `edited`.
           # test_pr_readiness_evaluate.py pins this list to those triggers.
-          edited_lanes=" codex-review.yml issue-gate.yml pr-hygiene.yml "
+          edited_lanes=" codex-review.yml issue-gate.yml pr-hygiene.yml sensitive-change-review.yml "
 
           # `${arr[@]+"${arr[@]}"}` rather than `"${arr[@]}"`: on the transport
           # failure path above the array is EMPTY, and bash < 4.4 (macOS ships
@@ -1600,6 +1606,16 @@ jobs:
                 codeql_source=advanced
               fi
             else
+              src="$pr_runs"
+              # The one lane that is not a `pull_request` run (see its spec).
+              if [ "$file" = "sensitive-change-review.yml" ]; then
+                src="$(gh_head_runs "$REPO" "$SHA" pull_request_target "$pr_runs")" || {
+                  rc=$?
+                  if [ "$rc" -eq 22 ]; then exit 1; fi
+                  transport_failed=true
+                  break
+                }
+              fi
               # Bind the run to this PR by (head repository, head branch), NOT
               # by `.pull_requests`: that array is empty on every fork run, so
               # filtering on it matched nothing and reported each already-green
@@ -1627,8 +1643,7 @@ jobs:
                           and .head_repository.full_name == $head_repo
                           and .head_branch == $head_ref)]
                 | max_by(.id) // empty
-              ' <<<"$pr_runs")"
-              src="$pr_runs"
+              ' <<<"$src")"
             fi
             # Fork approval can start runs out of id order, so the max-id twin gets
             # cancelled; the latest-started same-head run wins (ties: whole seconds).
@@ -2281,8 +2296,9 @@ jobs:
           # that started since would otherwise be published over as success --
           # the one write that lets armed auto-merge land while a lane runs,
           # and the write a re-run's hold cannot defend against: the hold lands
-          # in seconds and this publish lands after it. One read, on every
-          # success; any open monitored lane downgrades this publish to
+          # in seconds and this publish lands after it. One runs-page read (and
+          # the sensitive lane's, below), on every success; any open monitored
+          # lane downgrades this publish to
           # pending, and a failed read does too (stamped, so the self-heal
           # sweep re-fires it).
           #
@@ -2298,16 +2314,23 @@ jobs:
           # it cannot see is the seven Stage-2 fork review lanes, which run from
           # the default branch and report as check-runs on the head SHA; those
           # get their own read further down.
+          #
+          # Sensitive Change Review is not a `pull_request` run: it is re-read
+          # from its own `pull_request_target` runs, bound and collapsed the
+          # way evaluation reads it, so a re-run that turned red (or is
+          # running) since the evaluation is not published over as success.
           if [ "$STATUS_STATE" = "success" ]; then
             # The page is kept: the fork arm below reads Fast Gate's newest run
             # from it rather than spending a second request.
             runs_page=""
             if runs_page="$(gh_head_runs "$REPO" "$SHA" pull_request)" \
+              && pt_page="$(gh_head_runs "$REPO" "$SHA" pull_request_target "$runs_page")" \
               && recheck="$(jq -rs --arg repo "$HEAD_REPO" --arg ref "$HEAD_REF" --arg lanes "$MONITORED_LANES" '
                 ($lanes | split(" ") | map(select(. != "")) | map(".github/workflows/" + .)) as $l
-                | [.[].workflow_runs[]
-                   | select((.path | IN($l[]))
-                            and (.head_repository.full_name // "") == $repo
+                | [(.[0].workflow_runs[] | select(.path | IN($l[]))),
+                   (.[1].workflow_runs[]
+                    | select(.path == ".github/workflows/sensitive-change-review.yml"))
+                   | select((.head_repository.full_name // "") == $repo
                             and (.head_branch // "") == $ref)]
                 # Newest run per lane, collapsed exactly as the verdict step
                 # collapses it: max id, and a cancelled max-id run yields to a
@@ -2329,7 +2352,7 @@ jobs:
                         | (.name // .path)) | join(", ")) as $red
                 | (map(select(.status != "completed") | (.name // .path)) | join(", ")) as $open
                 | "\($red)|\($open)"
-              ' <<<"$runs_page")"; then
+              ' <<<"$runs_page"$'\n'"$pt_page")"; then
               IFS='|' read -r red_lanes open_lanes <<<"$recheck"
               # A red lane publishes red: a pending here would overwrite the
               # failure that lane's own evaluation already published.
@@ -2350,7 +2373,7 @@ jobs:
               DESCRIPTION="[read-failed] Readiness could not be re-checked before publishing success; it will be re-evaluated"
             fi
             # CodeQL is a `dynamic` run, so the re-check above -- filtered to
-            # `event=pull_request` and MONITORED_LANES -- is structurally blind
+            # MONITORED_LANES and Sensitive Change Review -- is structurally blind
             # to it. Without this, a CodeQL re-run had no
             # way to hold the publish: the delayed publisher saw only green
             # pull-request lanes and wrote success over the pending that re-run's
