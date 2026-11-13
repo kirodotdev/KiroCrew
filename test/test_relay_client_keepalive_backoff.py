@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import socket
 
 import pytest
 from relay_client_helpers import (
@@ -459,14 +460,21 @@ async def test_reconnecting_status_says_why_the_last_connection_ended() -> None:
 
 @asyncio_test
 async def test_a_dial_that_keeps_failing_says_so_in_status() -> None:
-    async with FakeRelay() as relay, FakeCrew() as crew:
-        client, _, ingress = make_client(relay, crew, sleep=RecordingSleep())
-        await relay.__aexit__()
-        await client.start()
-        try:
-            await async_wait_until(lambda: len(client.delays) >= 2)
-            snapshot = client.snapshot()
-            assert snapshot["state"] == "reconnecting"
-            assert snapshot["error"].startswith("the last relay connection ended: dial failed: ")
-        finally:
-            await stop(client, ingress)
+    # Bound but never listening: every dial is refused, and no other listener on
+    # the host can take the port while the test holds it.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as refusing:
+        refusing.bind(("127.0.0.1", 0))
+        async with FakeCrew() as crew:
+            client, _, ingress = make_client(
+                refusing.getsockname()[1], crew, sleep=RecordingSleep()
+            )
+            await client.start()
+            try:
+                await async_wait_until(lambda: len(client.delays) >= 2)
+                snapshot = client.snapshot()
+                assert snapshot["state"] == "reconnecting"
+                assert snapshot["error"].startswith(
+                    "the last relay connection ended: dial failed: "
+                )
+            finally:
+                await stop(client, ingress)

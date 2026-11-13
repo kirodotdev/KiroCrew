@@ -368,7 +368,7 @@ class FakeCrew:
 
 
 def make_client(
-    relay: FakeRelay,
+    relay: "FakeRelay | int",
     crew: "FakeCrew | int",
     *,
     source: Optional[StaticHostTokenSource] = None,
@@ -388,13 +388,14 @@ def make_client(
     ingress = LoopbackIngress(
         "127.0.0.1", port, gateway=gateway, max_ws_message_bytes=WS_MESSAGE_MAX_BYTES
     )
+    host_url = relay.url if isinstance(relay, FakeRelay) else f"ws://127.0.0.1:{relay}/v1/host"
     kwargs: Dict[str, Any] = {}
     if sleep is not None:
         kwargs["sleep"] = sleep
     if monotonic is not None:
         kwargs["monotonic"] = monotonic
     client = RelayClient(
-        host_url=relay.url,
+        host_url=host_url,
         crew_url_for=lambda ep: f"https://{ep}.us-east-1.relay.example",
         token_source=source,
         ingress=ingress,

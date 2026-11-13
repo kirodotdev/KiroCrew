@@ -12,6 +12,7 @@ import asyncio
 import base64
 import json
 import logging
+import socket
 import stat
 import threading
 import uuid
@@ -171,6 +172,8 @@ class FakeLeaseService:
         self.requests: List[Dict[str, Any]] = []
         self.releases: List[Dict[str, Any]] = []
         self.on_refused_credential: Any = None
+        #: False drops every call with no answer, while the server keeps its port.
+        self.reachable = True
         self._server: Optional[TestServer] = None
 
     @property
@@ -194,6 +197,11 @@ class FakeLeaseService:
             await self._server.close()
 
     async def _route(self, request: web.Request) -> web.Response:
+        if not self.reachable:
+            transport = request.transport
+            assert transport is not None
+            transport.abort()
+            return web.Response()
         if request.headers.get("X-Amz-Target") == RELEASE_TARGET:
             return await self._release(request)
         return await self._renew(request)
@@ -621,23 +629,25 @@ async def test_failed_calls_back_off_on_the_reconnect_steps_then_reset(
 
 
 async def test_a_service_it_cannot_reach_is_retried_later(tmp_path: Path, clock: StepClock) -> None:
-    async with FakeLeaseService() as gone:
-        url = gone.url
-    source = LeaseHostTokenSource(
-        lease_url=url,
-        credential=str(credential_file(tmp_path)),
-        crew_version="0.9.1.0",
-        home=tmp_path,
-        rng=TopRng(),
-        sleep=clock.sleep,
-        monotonic=clock.monotonic,
-    )
-    try:
-        with pytest.raises(HostTokenRetryLater, match="could not be reached"):
-            await source.current()
-        assert await clock.next_sleep() == 2.0
-    finally:
-        await source.aclose()
+    # Bound but never listening: every call is refused, and no other listener on
+    # the host can take the port while the test holds it.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as refusing:
+        refusing.bind(("127.0.0.1", 0))
+        source = LeaseHostTokenSource(
+            lease_url=f"http://127.0.0.1:{refusing.getsockname()[1]}",
+            credential=str(credential_file(tmp_path)),
+            crew_version="0.9.1.0",
+            home=tmp_path,
+            rng=TopRng(),
+            sleep=clock.sleep,
+            monotonic=clock.monotonic,
+        )
+        try:
+            with pytest.raises(HostTokenRetryLater, match="could not be reached"):
+                await source.current()
+            assert await clock.next_sleep() == 2.0
+        finally:
+            await source.aclose()
 
 
 @pytest.mark.parametrize(
@@ -1583,7 +1593,9 @@ async def _connected_then_unreachable(lease: FakeLeaseService, relay: FakeRelay,
     # service goes away.
     clock.now += 600
     relay.tokens.clear()
-    await lease.__aexit__()
+    # Unreachable in place: the server keeps its port, so no other listener on
+    # the host can take it and answer the source's next call.
+    lease.reachable = False
     return leg
 
 
