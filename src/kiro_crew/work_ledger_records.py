@@ -288,6 +288,15 @@ class ConductorRecord:
     #: current goal then counts from the upgrade, and the next header write
     #: settles it to the board's create total (:func:`_settle_goal_base`).
     goal_items_base: int = 0
+    #: A random id minted with the board and by each ``new_goal`` (and by the next
+    #: goal write on a header from before it), so every round of one goal shares it;
+    #: the tracer keys a round's trace on it. Rides no crew-log entry: a rebuild
+    #: keeps the cache's, as it does :attr:`goal_items_base`.
+    goal_id: str = ""
+    #: When the current round began: stamped with the board, and by a goal write that
+    #: changes the round or starts a new goal. The tracer rolls a round's trace over
+    #: by its age. Rides no crew-log entry: a rebuild keeps the cache's.
+    round_started_at: str = ""
 
     @property
     def goal_items_used(self) -> int:
@@ -311,6 +320,8 @@ class ConductorRecord:
             "created_total": self.created_total,
             "concurrency_cap": self.concurrency_cap,
             "goal_items_base": self.goal_items_base,
+            "goal_id": self.goal_id,
+            "round_started_at": self.round_started_at,
         }
 
     @classmethod
@@ -341,6 +352,8 @@ class ConductorRecord:
                 if "goal_items_base" in raw
                 else LEGACY_GOAL_BASE
             ),
+            goal_id=_as_str(raw.get("goal_id")),
+            round_started_at=_as_str(raw.get("round_started_at")),
         )
 
 

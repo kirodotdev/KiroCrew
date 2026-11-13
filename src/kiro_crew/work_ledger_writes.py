@@ -225,7 +225,9 @@ def ensure_conductor(
             parent_item=parent_item,
             created_at=_now_iso(),
             generation=secrets.token_hex(8),
+            goal_id=secrets.token_hex(8),
         )
+        record.round_started_at = record.created_at
         _write_record(directory / _CONDUCTOR_FILE, record.to_dict())
         try:
             atomic_write(directory / _KEY_FILE, slot_key + "\n", mode=0o600)
@@ -396,9 +398,15 @@ def _write_goal(
             # before the counter starts the goal's count after its records.
             current.created_total = len(_stored_item_ids(slot_key))
         _settle_goal_base(current)
+        if new_goal or not current.goal_id:
+            # A goal of its own: its rounds share this id (see ConductorRecord.goal_id).
+            current.goal_id = secrets.token_hex(8)
+            current.round_started_at = _now_iso()
         if new_goal:
             current.goal_items_base = current.created_total
         if checked_round is not None:
+            if checked_round != current.round:
+                current.round_started_at = _now_iso()
             current.round = checked_round
         if checked_concurrency is not None:
             current.concurrency_cap = checked_concurrency

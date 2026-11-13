@@ -236,6 +236,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.dashboard import (  # noqa: F401
         session_control,
+        trace_binding,
     )
     from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
         _is_restricted_session,
@@ -256,6 +257,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         is_channel_session_key,
     )
     from kiro_crew.metrics import work as work_metrics  # noqa: F401
+    from kiro_crew.tracing import work as trace_work  # noqa: F401
     from kiro_crew.validation import (  # noqa: F401
         WORK_LEDGER_READ_SCHEMA,
         WORK_LEDGER_RECORD_SCHEMA,

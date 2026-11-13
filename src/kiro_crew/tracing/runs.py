@@ -141,11 +141,13 @@ def outcome(
     *,
     outcome_key: str = "",
     rollup: "Rollup | None" = None,
+    attrs: Mapping[str, Any] | None = None,
 ) -> None:
     """Write ``<kind> outcome <status>`` under *ref*, carrying the run's roll-up (R2, R3).
 
     *outcome_key* tells apart several ends of one run (a re-opened work item's
-    ledger event id); a run with one end leaves it empty.
+    ledger event id); a run with one end leaves it empty. *attrs* are the run's
+    own allowlisted keys, the ones its anchor carries.
     """
     from kiro_crew.tracing import ids
 
@@ -158,7 +160,13 @@ def outcome(
         ),
         parent=parent_of(ref.trace_id, ref.span_id),
         attributes=_run_attrs(
-            state, ref, {"kirocrew.run.status": status, **(rollup.attrs() if rollup else {})}
+            state,
+            ref,
+            {
+                **(attrs or {}),
+                "kirocrew.run.status": status,
+                **(rollup.attrs() if rollup else {}),
+            },
         ),
     ).end()
 

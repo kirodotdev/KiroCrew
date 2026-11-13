@@ -191,6 +191,19 @@ class TelemetryConfig:
             sensitive=True,
         ),
     )
+    traces_ultra_mode: str = field(
+        default="run",
+        metadata=_meta(
+            "Traces: Ultra Mode Shape",
+            "How an Ultra Mode or Bot conductor's work is traced while Traces "
+            "Enabled is on. 'run' (default): one trace per round, an 'ultra round "
+            "N' root with the conductor's turns and one 'work_item' span per item "
+            "holding its worker's turns, so a round reads as one waterfall. "
+            "'turn': every turn is its own trace, joined by the shared "
+            "kirocrew.crew.root and kirocrew.work.item_id attributes.",
+            enum=["run", "turn"],
+        ),
+    )
     beacon_enabled: bool = field(
         default=True,
         metadata=_meta(

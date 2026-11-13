@@ -1638,6 +1638,12 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # it reads nothing but that worker's own binding and item, it writes nothing,
         # and it runs only while ``telemetry.traces_enabled`` is on.
         "tracing/crew.py",
+        # The Ultra Mode round trace (tracing RFC §5.5). It reads the header of a
+        # board whose key the route or the slot already resolved, and lists that
+        # board's items to know which are open when a round begins and ends. The
+        # same argument as ``tracing/crew.py``: it resolves no supplied identity,
+        # writes nothing to the store, and runs only while tracing is on.
+        "tracing/work.py",
         # The hub half of remote dispatch (rfc-conductor-remote-dispatch wave 4). A
         # remote worker reports into its OWN crew's store, so the hub files those
         # reports on the conductor's read: it reads the conductor's own board (the
