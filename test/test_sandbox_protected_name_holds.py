@@ -506,7 +506,14 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   inode stays the same on a republish. The parent is the app's data
     #:   directory, which agents read and write, so an enclosing mask would hide the
     #:   app's data and leaf-only is the only hold, as for ``host-exec-grants``.
-    EXPECTED: dict[str, int] = {"standard": 348, "cc": 355, "strict": 356}
+    #:
+    #: One more root-level leaf, three entries per tier (one per data-home path):
+    #:
+    #: * ``chat_steering_off.json`` -- the steering files each chat switched off,
+    #:   sealed read-only so an agent cannot switch off a rule for its own chat. A
+    #:   file at the data-home root beside writable siblings, rewritten in place,
+    #:   so leaf-only is the only hold, as for ``shared_crew_preview.json``.
+    EXPECTED: dict[str, int] = {"standard": 351, "cc": 358, "strict": 359}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

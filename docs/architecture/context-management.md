@@ -101,6 +101,39 @@ chat, whose essentials envelope decides them. `GET /api/chat/slots/{slot}/steeri
 `_load_steering_resources` sends. Design:
 `docs/request-for-change/rfc-chat-steering-context.md`.
 
+**A chat can switch one of those files off, where Crew writes its text.**
+`src/kiro_crew/steering_off.py` stores, per session key, the resolved paths a chat
+switched off (`chat_steering_off.json` under the data home, paths only, sealed
+read-only for the agent like the other keystone leaves; see
+[security](../system-specs/modules/security.md)). `build_message` reads that set
+itself (`steering_off_for(session_key)`) when its caller passes none, so every
+channel's turn honours it, and passes it as `steering_off` beside `steering_dirs`
+through `build_session_context` and
+`post_compaction_parts` to one writer: `_load_steering_resources`, the Claude Code
+`[Steering resources]` load, at session start and after compaction, which leaves
+those documents out. The same load also serves Codex, but only a Claude Code chat
+honours the set: the Claude Code backend reads neither steering tree itself, so
+that load is the one sender Crew can name for an in-tree file there, and a Codex
+chat's list offers no switch, so a set stored while the chat ran on Claude Code
+is ignored once it runs on Codex. An empty
+set takes exactly the old call, so the turn text is unchanged.
+`PUT /api/chat/slots/{slot}/steering` switches a row whose `switch` is `on` or
+`off`: only a Claude Code chat's files that load sends whose resolved target sits inside
+`~/.kiro/steering` or `<project>/.kiro/steering`. A file the load reads but
+withholds (`inclusion` other than `always`) reaches no turn, so it reads `none`
+and keeps its own reason. The load's own documents from
+outside the trees (`AGENTS.md`, `~/.claude/CLAUDE.md`), a tree link that
+resolves outside its tree, and every file of a tree whose root is itself a link
+(only the home or project anchor is resolved), and a tree file a Claude Code
+memory file (`CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`) links to, read
+`none`, because Claude Code loads `CLAUDE.md`
+itself and removing Crew's copy would not hold. Folder steering takes no
+switch-off on any harness, because a harness may load a folder file itself (Codex
+and kiro-cli load the project `AGENTS.md`); those rows read `none` too, and a
+file KAS or kiro-cli loads reads `unavailable`. #34598 tracks offering it where
+one harness can say exactly which files it loads. A member
+chat's envelope is not filtered: its rows stay `briefing`.
+
 Then the per-turn blocks of §2 follow, and the user's own text is last. This
 build happens *after* the user's message arrives, so it lands directly on
 time-to-first-token: `build_session_context` stamps `_mark(...)` per group

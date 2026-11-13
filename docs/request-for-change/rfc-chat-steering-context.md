@@ -4,9 +4,9 @@ status: partial
 author: RohanK6
 created: 2026-11-08
 last-audited: 2026-11-09
-audited-at: 9b9ad79704
+audited-at: 52a2ebb3c2
 doc-pr: 33133
-implementation-prs: [33600]
+implementation-prs: [33600, 33966]
 tracking-issues: [33112, 29940, 30158, 31952]
 supersedes: []
 superseded-by: []
@@ -19,7 +19,11 @@ superseded-by: []
 is accepted for Crew-written text only, with native KAS and Kiro CLI v2 rows
 shown as "not available" with the reason. P3 waits for the Phase 0 verdict.
 P1 is on main from
-[#33600](https://github.com/kirodotdev/KiroCrew/pull/33600); P2 and P3 are
+[#33600](https://github.com/kirodotdev/KiroCrew/pull/33600), and P2 from
+[#33966](https://github.com/kirodotdev/KiroCrew/pull/33966) for the Claude Code
+steering load only (folder steering deferred,
+[#34598](https://github.com/kirodotdev/KiroCrew/issues/34598)); the member essentials envelope is not filtered yet
+([#33955](https://github.com/kirodotdev/KiroCrew/issues/33955)). P3 is
 open. Tracks
 [#33112](https://github.com/kirodotdev/KiroCrew/issues/33112). Every main-side
 reference was read at `231c0b28e7`. KAS steering behaviour is quoted from the

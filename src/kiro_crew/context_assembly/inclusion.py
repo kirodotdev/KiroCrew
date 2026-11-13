@@ -202,6 +202,7 @@ def steering_resources_part(
     essentials: str,
     context_groups: frozenset[str] | None,
     project: str | None = None,
+    steering_off: Collection[str] = frozenset(),
 ) -> str:
     """The agent config's ``file://`` steering text for this session, or ``""``.
 
@@ -221,7 +222,9 @@ def steering_resources_part(
     kiro-cli anchors them at its working directory, and it adds the project's
     steering and ``AGENTS.md`` that kiro-cli inherits. A harness that reads that
     ``AGENTS.md`` itself from its working directory (Codex) does not get it from
-    this load.
+    this load. *steering_off* holds the resolved paths this chat switched off;
+    only a Claude Code chat honours it, the one harness whose list offers the
+    switch, and a chat with none takes exactly the old call.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.agent_files import is_kirocrew_default_agent
@@ -232,6 +235,9 @@ def steering_resources_part(
         return ""
     if not _group_included(context_groups, CONTEXT_GROUP_PROJECT):
         return ""
-    return ctx._load_steering_resources(
-        project, harness_reads_agents_md=ctx.acp_driver.reads_project_agents_md(provider_type)
-    )
+    reads_agents_md = ctx.acp_driver.reads_project_agents_md(provider_type)
+    if steering_off and ctx.is_claude_code(provider_type):
+        return ctx._load_steering_resources(
+            project, steering_off, harness_reads_agents_md=reads_agents_md
+        )
+    return ctx._load_steering_resources(project, harness_reads_agents_md=reads_agents_md)

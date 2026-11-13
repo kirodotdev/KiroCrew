@@ -113,6 +113,7 @@ def build_session_context(
     member: str = "",
     execution_context: Any = None,
     steering_dirs: tuple[str, ...] = (),
+    steering_off: frozenset[str] = frozenset(),
     _v2_essentials: str | None = None,
     member_dispatch_mounted: bool | None = None,
     served_model: str = "",
@@ -420,6 +421,7 @@ def build_session_context(
         essentials=essentials,
         context_groups=context_groups,
         project=project,
+        steering_off=steering_off,
     )
     if steering_ctx:
         append_required(

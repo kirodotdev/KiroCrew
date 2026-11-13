@@ -102,6 +102,7 @@ def build_message(
     execution_context: Any = None,
     context_provider: "ContextPromptProvider | None" = None,
     steering_dirs: tuple[str, ...] = (),
+    steering_off: frozenset[str] | None = None,
     skill_bodies_session: str | None = None,
     skill_trigger_text: str | None = None,
     template_dir: str | None = None,
@@ -207,6 +208,12 @@ def build_message(
         user_text_range = (user_text_range[0] + len(_notices), user_text_range[1] + len(_notices))
     delivery = None
     blocks_reads = blocks_reads or self._session_memory_modes.get(session_key or "") == "temporary"
+    # The steering files this chat switched off, read here so every caller of this
+    # builder (dashboard, channel and messaging turns alike) honours them.
+    if steering_off is None:
+        from kiro_crew.steering_off import steering_off_for
+
+        steering_off = steering_off_for(session_key)
     native_documents: dict[str, str] = {}
     native_launch_sources: Collection[str] = ()
     # None = no session evidence; build_session_context then falls back to
@@ -413,6 +420,7 @@ def build_message(
                 member=desk_member,
                 execution_context=execution_context,
                 steering_dirs=steering_dirs,
+                steering_off=steering_off,
                 _v2_essentials=_essentials,
                 member_dispatch_mounted=member_dispatch_mounted,
                 served_model=served_model,
@@ -607,6 +615,7 @@ def build_message(
                 model_window=model_window,
                 runtime_source=runtime_source,
                 steering_dirs=steering_dirs,
+                steering_off=steering_off,
                 essentials=_essentials,
                 provider_type=provider_type,
                 context_provider=context_provider,

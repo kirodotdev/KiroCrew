@@ -58,6 +58,7 @@ def post_compaction_parts(
     context_provider: Any,
     native_launch_sources: Collection[str],
     query_text: str = "",
+    steering_off: frozenset[str] = frozenset(),
 ) -> list[str]:
     """What a turn re-injects after a confirmed compaction dropped session start.
 
@@ -200,6 +201,7 @@ def post_compaction_parts(
         essentials=_essentials,
         context_groups=context_groups,
         project=project,
+        steering_off=steering_off,
     )
     if _steering_ctx:
         parts.append(

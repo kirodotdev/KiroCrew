@@ -30,7 +30,8 @@ which documents the bounded section kept. A member chat's folder guides are
 
 from __future__ import annotations
 
-from collections.abc import Collection, Sequence
+import os
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final
 
@@ -53,6 +54,13 @@ REASON_LINK_NOT_ADMITTED: Final = "link_not_admitted"
 REASON_NOT_LOADED: Final = "not_loaded"
 REASON_FOLDER_CAP: Final = "folder_cap"
 REASON_HARNESS_HAS_NO_PATH: Final = "harness_has_no_path"
+REASON_SWITCHED_OFF: Final = "switched_off"
+
+#: Values of ``switch``: whether this chat can switch the file off.
+SWITCH_ON: Final = "on"
+SWITCH_OFF: Final = "off"
+SWITCH_UNAVAILABLE: Final = "unavailable"
+SWITCH_NONE: Final = "none"
 
 #: Values of a document's state in Crew's steering load.
 LOADER_KEPT: Final = "kept"
@@ -164,14 +172,18 @@ def tree_verdict(
     return REACHES_NO, REASON_HARNESS_HAS_NO_PATH
 
 
+def _tree_root(entry: dict[str, Any], project: str | None) -> Path | None:
+    """The steering tree one listed entry sits in, or ``None`` when it has none."""
+    if entry.get("source") == "user":
+        return Path.home() / ".kiro" / "steering"
+    if project:
+        return Path(project) / ".kiro" / "steering"
+    return None
+
+
 def _resolved_target(entry: dict[str, Any], project: str | None) -> Path | None:
     """The resolved path of one listed entry, or ``None`` when it has none."""
-    if entry.get("source") == "user":
-        root = Path.home() / ".kiro" / "steering"
-    elif project:
-        root = Path(project) / ".kiro" / "steering"
-    else:
-        root = None
+    root = _tree_root(entry, project)
     rel = entry.get("rel")
     if root is None or not isinstance(rel, str) or not rel:
         return None
@@ -179,6 +191,59 @@ def _resolved_target(entry: dict[str, Any], project: str | None) -> Path | None:
         return (root / rel).resolve()
     except (OSError, RuntimeError):
         return None
+
+
+def _inside_tree(target: Path, entry: dict[str, Any], project: str | None) -> bool:
+    """Whether *target* resolves inside the entry's own steering tree.
+
+    A link out of the tree can name a file the harness loads by itself
+    (``~/.claude/CLAUDE.md``), so only an in-tree file is Crew's alone to send.
+    Only the home or project anchor is resolved: ``.kiro/steering`` is appended
+    as written, so a tree root that is itself a link elsewhere holds nothing.
+    """
+    if entry.get("source") == "user":
+        anchor = Path.home()
+    elif project:
+        anchor = Path(project)
+    else:
+        return False
+    try:
+        return target.is_relative_to(anchor.resolve() / ".kiro" / "steering")
+    except (OSError, RuntimeError):
+        return False
+
+
+def _claude_memory_targets(project: str | None) -> frozenset[Path]:
+    """Resolved targets of the memory files Claude Code reads by itself.
+
+    ``CLAUDE.md`` in the user's Claude config directory (the one the ``claude``
+    CLI resolves: ``CLAUDE_CONFIG_DIR``, else ``~/.claude``), and ``CLAUDE.md``,
+    ``CLAUDE.local.md`` and ``.claude/CLAUDE.md`` in the project and each folder
+    above it. A memory file that is a link into a steering tree makes that tree
+    file natively read.
+    shortcut: an ``@path`` import inside a memory file is not followed; upgrade when
+    a harness can say exactly which files it loads.
+    """
+    # The resolution the ``claude`` CLI makes; ``acp.claude_settings_sources`` holds
+    # the same rule, which application code may not import.
+    override = os.environ.get("CLAUDE_CONFIG_DIR")
+    names: list[Path] = [(Path(override) if override else Path.home() / ".claude") / "CLAUDE.md"]
+    if project:
+        try:
+            start = Path(project).expanduser().resolve()
+        except (OSError, RuntimeError):
+            start = None
+        for folder in (start, *start.parents) if start is not None else ():
+            names += [folder / "CLAUDE.md", folder / "CLAUDE.local.md"]
+            names.append(folder / ".claude" / "CLAUDE.md")
+    found: set[Path] = set()
+    for name in names:
+        try:
+            if name.is_file():
+                found.add(name.resolve())
+        except (OSError, RuntimeError):
+            continue
+    return frozenset(found)
 
 
 def chat_steering_plan(
@@ -192,6 +257,8 @@ def chat_steering_plan(
     is_member: bool,
     folder_cut: Sequence[str] = (),
     loader_documents: Sequence[tuple[str, Path, bool]] = (),
+    folder_resolved: Mapping[str, str] | None = None,
+    steering_off: Collection[str] = frozenset(),
 ) -> list[dict[str, str]]:
     """One row per steering file this chat may receive.
 
@@ -201,21 +268,35 @@ def chat_steering_plan(
     the same spelling. A listed file the folder delivers (a folder that declares a
     tree the harness does not load) keeps one row, marked ``yes``.
     *loader_documents* is ``(display path, resolved path, kept)`` for each document
-    Crew's steering load admits.
+    Crew's steering load admits. *folder_resolved* maps a folder document's display
+    path to its resolved path, and *steering_off* holds the resolved paths this chat
+    switched off (:mod:`kiro_crew.steering_off`); the caller still lists those.
     """
     from kiro_crew import context as ctx
+
+    folder_resolved = folder_resolved or {}
 
     declared = (
         declared_steering_targets(agent, project)
         if provider_type == ctx.PROVIDER_ACP and not native_steering and not is_member
         else None
     )
+
     via_seam = _loads_through_crew(provider_type, native_steering, agent, is_member)
+    # The switch is offered on Claude Code alone; Codex runs the same load but is
+    # not offered it.
+    switchable = via_seam and ctx.is_claude_code(provider_type)
+    # Files Claude Code reads by itself through a memory file that resolves to them:
+    # Crew's copy is then not the only one, so no switch is offered for them.
+    natively_read = _claude_memory_targets(project) if switchable else frozenset()
     load = {resolved: kept for _display, resolved, kept in loader_documents} if via_seam else {}
     rows: list[dict[str, str]] = []
     seen: set[str] = set()
     used: set[Path] = set()
     via_folder = set(folder_documents)
+    # Files the folder section also sends: Crew's loader copy is then not the only
+    # one, so no switch is offered for them.
+    folder_sent = {folder_resolved[p] for p in folder_documents if p in folder_resolved}
     cut_by_folder = set(folder_cut)
     # A member chat's essentials envelope decides its folder guides too.
     folder_yes = (REACHES_BRIEFING, REASON_MEMBER_BRIEFING) if is_member else (REACHES_YES, "")
@@ -255,29 +336,57 @@ def chat_steering_plan(
             if reaches == REACHES_NO and path in cut_by_folder:
                 reason = REASON_FOLDER_CAP
         seen.add(path)
+        # Crew's load drops a stored switch-off for this file's text whichever row
+        # was switched, so a row for the same file through a link reads it too.
+        dropped_by_load = (
+            switchable
+            and target is not None
+            and load.get(target) is True
+            and str(target) not in folder_sent
+            and target not in natively_read
+            and path not in via_folder
+        )
+        # Switchable only for an in-tree file Crew's own Claude Code load sends: the
+        # folder section, a file the load withholds and anything outside the two
+        # trees are not switchable.
+        crew_written = (
+            dropped_by_load and target is not None and _inside_tree(target, entry, project)
+        )
         rows.append(
-            {
-                "name": str(entry.get("name") or ""),
-                "path": path,
-                "source": source,
-                "applies": applies,
-                "reaches": reaches,
-                "reason": reason,
-            }
+            _switched(
+                {
+                    "name": str(entry.get("name") or ""),
+                    "path": path,
+                    "source": source,
+                    "applies": applies,
+                    "reaches": reaches,
+                    "reason": reason,
+                },
+                resolved=str(target) if target is not None else folder_resolved.get(path, ""),
+                crew_written=crew_written,
+                steering_off=steering_off,
+                dropped_by_load=dropped_by_load,
+            )
         )
     for display, resolved, kept in loader_documents if via_seam else ():
-        if resolved in used or display in seen:
+        if resolved in used or display in seen or str(resolved) in folder_sent:
             continue
         seen.add(display)
         rows.append(
-            {
-                "name": display.replace("\\", "/").rsplit("/", 1)[-1],
-                "path": display,
-                "source": "agent",
-                "applies": _ALWAYS if kept else APPLIES_UNKNOWN,
-                "reaches": REACHES_YES if kept else REACHES_NO,
-                "reason": "" if kept else REASON_INCLUSION_WITHHELD,
-            }
+            _switched(
+                {
+                    "name": display.replace("\\", "/").rsplit("/", 1)[-1],
+                    "path": display,
+                    "source": "agent",
+                    "applies": _ALWAYS if kept else APPLIES_UNKNOWN,
+                    "reaches": REACHES_YES if kept else REACHES_NO,
+                    "reason": "" if kept else REASON_INCLUSION_WITHHELD,
+                },
+                resolved=str(resolved),
+                # Outside the two trees: the harness may load it by itself.
+                crew_written=False,
+                steering_off=steering_off,
+            )
         )
     for path, reaches, reason in [
         *((p, *folder_yes) for p in folder_documents),
@@ -287,13 +396,52 @@ def chat_steering_plan(
             continue
         seen.add(path)
         rows.append(
-            {
-                "name": path.replace("\\", "/").rsplit("/", 1)[-1],
-                "path": path,
-                "source": "folder",
-                "applies": _ALWAYS,
-                "reaches": reaches,
-                "reason": reason,
-            }
+            _switched(
+                {
+                    "name": path.replace("\\", "/").rsplit("/", 1)[-1],
+                    "path": path,
+                    "source": "folder",
+                    "applies": _ALWAYS,
+                    "reaches": reaches,
+                    "reason": reason,
+                },
+                resolved=folder_resolved.get(path, ""),
+                crew_written=False,
+                steering_off=steering_off,
+            )
         )
     return rows
+
+
+def _switched(
+    row: dict[str, str],
+    *,
+    resolved: str,
+    crew_written: bool,
+    steering_off: Collection[str],
+    dropped_by_load: bool = False,
+) -> dict[str, str]:
+    """*row* with its ``switch`` state, and the verdict a switched-off file gets.
+
+    ``on``/``off`` only for an in-tree file Crew's steering load sends on a Claude
+    Code chat, the one sender the plan can name for these files; ``unavailable`` where
+    the harness loads the file itself; ``none`` everywhere else, Codex, the folder
+    section and the load's own out-of-tree documents (``AGENTS.md``, ``CLAUDE.md``)
+    included. A row with no switch whose text the load drops because the same file
+    was switched off through another row (*dropped_by_load*) reads switched off too.
+    *resolved* rides
+    along as ``resolved`` for the switch route and is dropped before the response.
+    """
+    if crew_written and resolved:
+        if resolved in steering_off:
+            row.update(reaches=REACHES_NO, reason=REASON_SWITCHED_OFF, switch=SWITCH_OFF)
+        else:
+            row["switch"] = SWITCH_ON
+    elif dropped_by_load and resolved and resolved in steering_off:
+        row.update(reaches=REACHES_NO, reason=REASON_SWITCHED_OFF, switch=SWITCH_NONE)
+    elif row["reaches"] == REACHES_HARNESS:
+        row["switch"] = SWITCH_UNAVAILABLE
+    else:
+        row["switch"] = SWITCH_NONE
+    row["resolved"] = resolved
+    return row

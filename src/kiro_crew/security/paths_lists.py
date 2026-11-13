@@ -635,6 +635,9 @@ _CREW_SECRET_LEAVES: list[str] = [
     # ``/api/decisions/consent`` handler is the only writer and opens the path
     # directly, not through this gate.
     "decisions_consent.json",
+    # Steering files each chat switched off: a writable record would let an agent
+    # drop its own rules. Only ``PUT /api/chat/slots/{slot}/steering`` writes it.
+    "chat_steering_off.json",
     # The owner's Shared Crew preview switch. The record is what AUTHORIZES the
     # Crew to open to other people on the next start, so an agent that could
     # write it would share the owner's machine on the owner's behalf. The
