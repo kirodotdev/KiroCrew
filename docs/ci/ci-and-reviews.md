@@ -5205,7 +5205,11 @@ Nothing the fork controls can influence these reviews:
   finalize sweep — which completes a check-run row this PR left stranded, matched
   by the `<lane>-pr-<PR>-` prefix — now also compares the row's `external_id`
   run-id dimension and leaves alone any row written by a NEWER run, so an older
-  trigger's run can never overwrite a newer one's verdict on the same head.
+  trigger's run can never overwrite a newer one's verdict on the same head. The
+  sweep reads row ids only from a listing that succeeded: when the listing fails
+  (a rate limit, say), gh prints the error body on stdout, so the step logs the
+  failure, completes no row and exits non-zero. The rows stay incomplete, which
+  PR Readiness reads as pending.
 - The base SHA is re-fetched from the PR via the API and the diff is re-derived from
   GitHub's compare endpoint pinned to `(base_sha...head_sha)`. Stage 1's artifact is
   an untrusted **hint** only, so a fork faking it changes nothing.
