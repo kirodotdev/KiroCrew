@@ -749,7 +749,10 @@ def _owned_by(jobs: list[CronJob], session_key: str) -> list[CronJob]:
 _AUTO_APPROVAL_OWNER_ONLY = (
     "Error: approval_mode 'auto' can only be turned on by the owner. "
     "Create or update the job without it, then ask the user to turn on "
-    "auto-approve for this job on the Schedule page."
+    "auto-approve for this job: on the Schedule page, open the job, set its "
+    "Approval field to Auto-approve and save; or run "
+    "`kirocrew cron update <job-id> --approval-mode auto`. A later tool edit to "
+    "the job's message, agent, model, schedule, channel or thread turns it off again."
 )
 
 
@@ -761,7 +764,8 @@ _AUTO_RESETTING_FIELDS = frozenset(
 
 _AUTO_APPROVAL_RESET_NOTE = (
     " Auto-approve was turned off because the job changed; ask the user to turn it "
-    "back on for this job on the Schedule page."
+    "back on: on the Schedule page, open the job, set its Approval field to "
+    "Auto-approve and save; or run `kirocrew cron update {job_id} --approval-mode auto`."
 )
 
 
@@ -1216,7 +1220,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         )
         note = _sub_floor_timeout_note(args["timeout_secs"]) if "timeout_secs" in args else ""
         if was_auto:
-            note += _AUTO_APPROVAL_RESET_NOTE
+            note += _AUTO_APPROVAL_RESET_NOTE.format(job_id=updated.id)
         note += _never_fires_note(updated)
         return f"Updated job: {updated.id} ({updated.name}) [{sched_str}]{caveat}{note}"
 
