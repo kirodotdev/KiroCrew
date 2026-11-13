@@ -274,7 +274,7 @@ export function useMembersPageRosterSignals({ rosterRead, rosterView, slotKeyOf 
   // who does not remember a crewmate's name still knows what to type: the ones
   // the user made come first (origin Mine, or created on the dashboard), so a
   // crewmate just created is named rather than counted behind package and app
-  // rows, then roster order. Past that the line counts the rest ("A, B, C and 4
+  // rows, then roster order. Past that the line counts the rest ("A, B, C, and 4
   // more"): the hidden set is often dozens of package and app crewmates, and
   // naming them all is no help.
   const hiddenNames = useMemo(() => {
