@@ -223,6 +223,23 @@ async def test_a_refused_credential_is_named_with_its_status(
 
 
 @pytest.mark.asyncio
+async def test_a_credential_from_another_instance_is_explained(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The middleware's bare ``Forbidden`` names no cause; its code does, so doctor says it."""
+    from kiro_crew.auth_refusal_text import AUTH_REFUSAL_TEXT
+
+    port = await _run_doctor_against(
+        _gateway_app(secret="the-real-one"), monkeypatch, secret="a-stale-one"
+    )
+    out = capsys.readouterr().out
+    assert out == (
+        f"  adaptive controller: not read on port {port}: the gateway refused the read "
+        f"(HTTP 403): {AUTH_REFUSAL_TEXT['internal_auth_mismatch']}\n"
+    )
+
+
+@pytest.mark.asyncio
 async def test_an_unproven_peer_receives_nothing_and_is_named(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

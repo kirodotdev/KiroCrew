@@ -114,7 +114,7 @@ def _create_cron_folder(name: str) -> dict[str, object]:
         return {"error": f"gateway ownership not verified: {exc}"}
     except urllib.error.HTTPError as exc:
         try:
-            return {"error": str(json.loads(exc.read()).get("error") or f"{exc.code} {exc.reason}")}
+            return {"error": _refusal_text(json.loads(exc.read()), f"{exc.code} {exc.reason}")}
         except Exception:
             return {"error": f"{exc.code} {exc.reason}"}
     except (urllib.error.URLError, OSError) as exc:
@@ -132,6 +132,19 @@ def _create_cron_folder(name: str) -> dict[str, object]:
     except ValueError:
         return {"error": "gateway returned an unreadable answer"}
     return made if isinstance(made, dict) else {"error": "gateway returned an unreadable answer"}
+
+
+def _refusal_text(body: dict, fallback: object) -> str:
+    """The text to show for a gateway refusal whose JSON *body* was read.
+
+    An auth-layer refusal carries a bare ``Forbidden`` and a ``code``; the code names
+    what went wrong (most often a credential from another instance), so its
+    explanation from :mod:`kiro_crew.auth_refusal_text` is shown instead, the same
+    sentence an MCP tool gets. Any other refusal shows its ``error``, else *fallback*.
+    """
+    from kiro_crew.auth_refusal_text import auth_refusal_text
+
+    return auth_refusal_text(body.get("code")) or str(body.get("error") or fallback)
 
 
 def _spawn_row_text(row: dict[str, object]) -> str:
@@ -198,7 +211,7 @@ def _spawn(args: argparse.Namespace) -> None:
         except urllib.error.HTTPError as e:
             try:
                 body = json.loads(e.read())
-                print(f"Error: {body.get('error', e.reason)}")
+                print(f"Error: {_refusal_text(body, e.reason)}")
             except Exception:
                 print(f"Error: {e.code} {e.reason}")
             sys.exit(1)
@@ -293,7 +306,7 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
     except urllib.error.HTTPError as e:
         try:
             body = json.loads(e.read())
-            print(f"Error: {body.get('error', e.reason)}")
+            print(f"Error: {_refusal_text(body, e.reason)}")
         except Exception:
             print(f"Error: {e.code} {e.reason}")
         sys.exit(1)
@@ -433,7 +446,7 @@ def _artifact(args: argparse.Namespace) -> None:
             return {"error": f"gateway ownership not verified: {exc}"}
         except urllib.error.HTTPError as exc:
             try:
-                return {"error": json.loads(exc.read()).get("error", str(exc))}
+                return {"error": _refusal_text(json.loads(exc.read()), str(exc))}
             except Exception:
                 return {"error": str(exc)}
         except Exception as exc:
