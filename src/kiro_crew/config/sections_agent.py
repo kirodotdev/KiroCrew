@@ -24,6 +24,7 @@ from kiro_crew.config.sections_agent_fields import (
     DEFAULT_CWD_ALLOWED_ROOTS,
     JAIL_MODE_AUTO,
     KAS_BUNDLE_DEFAULT_URL,
+    KAS_FAIL_CLOSED_WEB_FETCH_BLOCKED_HELP,
     KAS_REFUSE_PLAIN_HTTP_MCP_HEADERS_HELP,
     YOLO_UNTIL_SHUTDOWN,
     coerce_model_context_tokens,
@@ -354,6 +355,13 @@ class AgentConfig:
         default=False,
         metadata=_meta(
             "KAS: refuse MCP headers over plain http", KAS_REFUSE_PLAIN_HTTP_MCP_HEADERS_HELP
+        ),
+    )
+    kas_fail_closed_web_fetch_blocked: bool = field(
+        default=False,
+        metadata=_meta(
+            "KAS: refuse all fetches on an unapplied blocked entry",
+            KAS_FAIL_CLOSED_WEB_FETCH_BLOCKED_HELP,
         ),
     )
     kas_bundle_url: str = field(

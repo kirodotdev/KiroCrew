@@ -34,6 +34,7 @@
         "kas_persist_mcp_sign_in": true,
         "kas_repair_kiro_cli_extract": true,
         "kas_refuse_plain_http_mcp_headers": false,
+        "kas_fail_closed_web_fetch_blocked": false,
         "kas_bundle_url": "https://kas.crew.kiro.dev",
         "native_skill_projection": true,
         "default_agent": "",
@@ -484,6 +485,20 @@
       "tags": [],
       "label": "KAS: refuse MCP headers over plain http",
       "help": "When true, the 'kas' backend no longer relays an MCP server's headers to a plain http:// url on another host, so they are never sent unencrypted; the server does not run and the session notice names it. When false (the default), Kiro Crew's local bridge sends the headers to that url as before. Only a JSON true turns it on. Read when a session starts.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "agent.kas_fail_closed_web_fetch_blocked",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "KAS: refuse all fetches on an unapplied blocked entry",
+      "help": "When true, on the 'kas' backend a toolsSettings.web_fetch.blocked entry KAS cannot apply (one naming a scheme or path, other regex syntax, or one too long) makes that agent refuse every web fetch until the entry is fixed, and the session notice says so. When false (the default), such an entry is named in the notice and refuses nothing. Only a JSON true turns it on. Read when a session starts.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
