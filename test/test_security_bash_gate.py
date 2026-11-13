@@ -369,7 +369,9 @@ class TestEnvDumpGrepAwsNarrowing:
         from kiro_crew import security
 
         shared = {rule.pattern for rule in security._ENV_CRED_SHARED_RULES}
-        assert all(compiled.pattern not in shared for compiled in security._ENV_CRED_PATTERNS)
+        assert all(
+            compiled.pattern not in shared for compiled in security._ENV_CRED_PATTERNS.values()
+        )
         real = security._deny_matcher
         seen: list[str] = []
 
@@ -446,7 +448,7 @@ class TestEnvDumpGrepAwsNarrowing:
 
         denial = _first_tool_input_denial(["env | egrep AWS_SECRET"], None, command_rules=True)
         assert denial is not None
-        assert _ENV_CRED_DENIAL_REASON in denial
+        assert denial[1].splitlines()[0] == _ENV_CRED_DENIAL_REASON
 
     @pytest.mark.parametrize("cmd", PRINTENV_DENIED)
     def test_printenv_of_a_secret_is_denied(self, cmd: str) -> None:
@@ -1197,6 +1199,46 @@ class TestARefusalNamesItsRuleAndSpan:
         assert "governance-pin-unresolved" in caplog.text
         assert "component=commands-ceiling-pin" in caplog.text
         assert absent not in caplog.text
+
+    @pytest.mark.parametrize(
+        ("command", "rule"),
+        [
+            ("env | grep AWS_SECRET", "credential-exfil-env-grep-aws"),
+            ("printenv AWS_SECRET_ACCESS_KEY", "credential-exfil-printenv-aws"),
+            ("declare -p AWS_SECRET_ACCESS_KEY", "keystone-env-cred-declare"),
+            ("echo $AWS_SECRET_ACCESS_KEY", "keystone-env-cred-echo"),
+            (
+                "awk 'BEGIN{print ENVIRON[\"AWS_SECRET_ACCESS_KEY\"]}'",
+                "keystone-env-cred-awk-environ",
+            ),
+            # Two reported over-blocks, refused on purpose until a narrowing is
+            # designed; changing either row is that decision.
+            (
+                "D=/usr/local/lib/python3.12/site-packages/kiro_crew/security\n"
+                'grep -n -A8 -E "^_(ENV_DUMP_GREP_AWS|ENV_DUMP_AWK_SED_AWS|PRINTENV_AWS_SECRET)'
+                '_PATTERN" '
+                '"$D/denied_rules_catalog.py" | head -40',
+                "keystone-env-cred-interpreter",
+            ),
+            (
+                "cat > script.sh <<'EOF'\n"
+                "# the token comes from env/Keychain\n"
+                "body=$(curl -s https://jira.example.com/rest | sed '$d')\n"
+                "jq -n --arg t 'Finding from AWS Security Hub' '{summary:$t}'\n"
+                "EOF",
+                "credential-exfil-env-awk-sed-aws",
+            ),
+        ],
+    )
+    def test_an_env_credential_refusal_names_which_rule_fired(
+        self, command: str, rule: str
+    ) -> None:
+        """Every rule of this tier shares one first line, so only the diagnostic can say which."""
+        from kiro_crew.security import _ENV_CRED_DENIAL_REASON
+
+        lines = self._reason(command).splitlines()
+        assert lines[0] == _ENV_CRED_DENIAL_REASON
+        assert f"rule={rule} component=env-credential " in self._diagnostic(command)
 
     def test_read_only_self_observation_is_still_allowed(self) -> None:
         """The diagnostic is not a new matcher: it says nothing about an allow."""
