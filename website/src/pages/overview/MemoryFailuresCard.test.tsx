@@ -10,6 +10,8 @@ const { api } = vi.hoisted(() => ({
   api: {
     recurringFailures: vi.fn(),
     createLesson: vi.fn(),
+    kirocrewConfig: vi.fn(),
+    patchConfig: vi.fn(),
     // ThemeProvider in the shared wrapper reads these on mount.
     themes: vi.fn(),
     themeDetail: vi.fn(),
@@ -37,6 +39,7 @@ beforeEach(() => {
   api.themeDetail.mockResolvedValue({})
   api.themeBoot.mockResolvedValue({})
   api.recurringFailures.mockResolvedValue({ failures: [failure], window_days: 7 })
+  api.kirocrewConfig.mockResolvedValue({})
 })
 
 describe('MemoryFailuresCard', () => {
@@ -157,6 +160,20 @@ describe('MemoryFailuresCard', () => {
     await waitFor(() => expect(api.recurringFailures).toHaveBeenCalled())
     await waitFor(() => expect(container.textContent).toBe(''))
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('scrolls itself into view once loaded when the weekly note\'s link focuses it', async () => {
+    const scroll = vi.fn()
+    const original = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = scroll
+    try {
+      renderWithProviders(<MemoryFailuresCard focus />)
+
+      await waitFor(() => expect(scroll).toHaveBeenCalledTimes(1))
+      expect(scroll.mock.contexts[0]).toHaveAttribute('id', 'memory-failures-card')
+    } finally {
+      Element.prototype.scrollIntoView = original
+    }
   })
 
   it('shows the card again once the re-auth banner signs a pre-owner session in', async () => {

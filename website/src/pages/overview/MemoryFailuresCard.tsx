@@ -9,6 +9,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { useScrollEdges } from '../../hooks/useScrollEdges'
 import { fmtNumber } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
+import RepeatedFailuresNoticeToggle from './RepeatedFailuresNoticeToggle'
 
 /**
  * Agent tool failures that keep coming back, read from the security event log
@@ -34,6 +35,9 @@ const NOTE_CLASS = { ok: 'text-ok', warn: 'text-warn' } as const
 /** The name a row goes by: the MCP tool or class error, else the rule, else the tool kind. */
 const failureName = (row: RecurringFailure) => row.tool || row.rule_id || row.tool_kind
 
+/** This card's element id, the landing spot for that focus. */
+export const FAILURES_CARD_ID = 'memory-failures-card'
+
 /** The query this card reads. */
 const MEMORY_FAILURES_QUERY_KEY = ['sel-recurring-failures'] as const
 
@@ -57,12 +61,14 @@ const isStaleOwnerSession = (e: unknown) => apiErrorCode(e) === STALE_OWNER_SESS
 type SaveNote = { tone: 'ok' | 'warn'; text: string }
 type SaveError = { title: string; message: string }
 
-export default function MemoryFailuresCard({ refreshTrigger, onLessonSaved, onDirtyChange }: {
+export default function MemoryFailuresCard({ refreshTrigger, onLessonSaved, onDirtyChange, focus = false }: {
   /** The Memory view's refresh signal: a change re-reads the findings. */
   refreshTrigger?: number
   onLessonSaved?: () => unknown
   /** True while a draft is open, so the page's leave guards can hold it. */
   onDirtyChange?: (dirty: boolean) => void
+  /** Scroll this card into view once its findings have loaded. */
+  focus?: boolean
 }) {
   const failures = useQuery({
     queryKey: MEMORY_FAILURES_QUERY_KEY,
@@ -79,6 +85,12 @@ export default function MemoryFailuresCard({ refreshTrigger, onLessonSaved, onDi
   useEffect(() => {
     if (refreshTrigger !== mountTrigger.current) void queryClient.invalidateQueries({ queryKey: MEMORY_FAILURES_QUERY_KEY })
   }, [refreshTrigger, queryClient])
+  const focused = useRef(false)
+  useEffect(() => {
+    if (!focus || !failures.isSuccess || failures.data === null || focused.current) return
+    focused.current = true
+    document.getElementById(FAILURES_CARD_ID)?.scrollIntoView({ block: 'start' })
+  }, [focus, failures.isSuccess, failures.data])
   const [draft, setDraft] = useState<{ signature: string; name: string; text: string; saving?: boolean } | null>(null)
   const [note, setNote] = useState<{ signature: string } & SaveNote | null>(null)
   const [saveError, setSaveError] = useState<SaveError | null>(null)
@@ -132,9 +144,10 @@ export default function MemoryFailuresCard({ refreshTrigger, onLessonSaved, onDi
   const td = 'px-2.5 py-2 border-b border-border text-sm align-top'
 
   return (
-    <Card>
+    <Card id={FAILURES_CARD_ID}>
       <CardTitle>{i18nT('pages.overview.memoryFailuresCard.title')}</CardTitle>
       <p className="text-[12px] leading-relaxed text-muted mb-2">{i18nT('pages.overview.memoryFailuresCard.hint')}</p>
+      <RepeatedFailuresNoticeToggle />
       {/* No hand-off: a draft lesson in this card may be unsaved. */}
       <ErrorNotice
         title={i18nT('pages.overview.memoryFailuresCard.load_failed')}

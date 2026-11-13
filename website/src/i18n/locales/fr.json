@@ -8718,7 +8718,9 @@
         "chat_stopped_refused_body": "Le modèle a refusé de répondre et la discussion s’est arrêtée. Ouvre la discussion pour voir pourquoi.",
         "chat_stopped_stalled_body": "La discussion s’est bloquée et n’a pas pu reprendre. Ouvre la discussion pour en démarrer une nouvelle.",
         "folder_agent_label_title": "Vérifie l’agent par défaut d’un dossier",
-        "folder_agent_label_body": "L’agent par défaut de ces dossiers porte le nom d’un Bot, mais les nouvelles discussions qui s’y trouvent ne s’exécutent pas sur ce Bot : {{folders}}. Pour utiliser le Bot, choisis-le comme agent par défaut dans les paramètres du dossier."
+        "folder_agent_label_body": "L’agent par défaut de ces dossiers porte le nom d’un Bot, mais les nouvelles discussions qui s’y trouvent ne s’exécutent pas sur ce Bot : {{folders}}. Pour utiliser le Bot, choisis-le comme agent par défaut dans les paramètres du dossier.",
+        "repeated_failures_title": "Des échecs d’outils reviennent sans cesse",
+        "repeated_failures_body": "Certains appels d’outils de l’agent ont échoué encore et encore cette semaine. Ouvre cette note pour les voir et en transformer un en leçon."
       },
       "notificationBanner": {
         "dismiss_notification": "Ignorer la notification",
@@ -18165,7 +18167,11 @@
         "trend": "Tendance",
         "trend_growing": "En hausse",
         "trend_new": "Nouveau",
-        "trend_steady": "Stable"
+        "trend_steady": "Stable",
+        "notice_label": "Note hebdomadaire dans la cloche",
+        "notice_description": "Une fois par semaine, la cloche te prévient quand un échec d’outil revient sans cesse. Désactivé par défaut.",
+        "notice_load_failed": "Impossible de lire le réglage de la note hebdomadaire",
+        "notice_save_failed": "Impossible d’enregistrer le réglage de la note hebdomadaire"
       },
       "memoryRetiredCard": {
         "actions": "Actions",
@@ -20426,7 +20432,9 @@
         "channel_tip_skills": "Quand {{productName}} rédige une nouvelle compétence, ou une modification d'une compétence, à partir de tes sessions. Rien ne change tant que tu ne l'as pas examinée.",
         "channel_tip_subagent": "Quand un agent auxiliaire en arrière-plan se termine, échoue ou est interrompu par un redémarrage, et qu'aucun chat ouvert n'affiche son résultat. Discret par défaut : ni son ni bannière.",
         "channel_tip_taskrunner": "Quand une exécution de tâche avance ou a besoin de toi : son plan est prêt, elle démarre, réessaie ou se replanifie, se termine, échoue, se bloque ou expire, ou est mise en pause après un redémarrage.",
-        "channel_tip_terminal": "Quand le shell d'un onglet de terminal se termine avec une erreur ou est tué. L'onglet se ferme, donc le code de sortie est conservé ici."
+        "channel_tip_terminal": "Quand le shell d'un onglet de terminal se termine avec une erreur ou est tué. L'onglet se ferme, donc le code de sortie est conservé ici.",
+        "channel_memory": "Échecs répétés",
+        "channel_tip_memory": "Une fois par semaine, quand un échec d’outil de l’agent est revenu sans cesse. Seulement si tu as activé la note hebdomadaire dans Mémoire."
       },
       "privacyPanel": {
         "recordMetricsDescription": "Collecter les métriques de performance sur cette machine.",

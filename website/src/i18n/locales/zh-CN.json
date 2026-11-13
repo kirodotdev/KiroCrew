@@ -8300,7 +8300,9 @@
         "chat_stopped_refused_body": "模型拒绝回答，聊天已停止。请打开聊天查看原因。",
         "chat_stopped_stalled_body": "聊天已停滞且无法恢复。请打开聊天，开始新的聊天。",
         "folder_agent_label_title": "检查文件夹的默认智能体",
-        "folder_agent_label_body": "这些文件夹的默认智能体与某个 Bot 同名，但其中的新聊天不会在该 Bot 上运行：{{folders}}。要使用该 Bot，请在文件夹设置中把它选为默认智能体。"
+        "folder_agent_label_body": "这些文件夹的默认智能体与某个 Bot 同名，但其中的新聊天不会在该 Bot 上运行：{{folders}}。要使用该 Bot，请在文件夹设置中把它选为默认智能体。",
+        "repeated_failures_title": "工具失败反复出现",
+        "repeated_failures_body": "本周智能体的一些工具调用一再失败。打开这条通知查看它们，并把其中一个转成经验。"
       },
       "notificationBanner": {
         "dismiss_notification": "关闭通知",
@@ -17249,7 +17251,11 @@
         "trend": "趋势",
         "trend_growing": "上升",
         "trend_new": "新出现",
-        "trend_steady": "持平"
+        "trend_steady": "持平",
+        "notice_label": "铃铛每周提醒",
+        "notice_description": "每周一次，当某个工具失败反复出现时，铃铛会提醒你。默认关闭。",
+        "notice_load_failed": "无法读取每周提醒设置",
+        "notice_save_failed": "无法保存每周提醒设置"
       },
       "memoryRetiredCard": {
         "actions": "操作",
@@ -19416,7 +19422,9 @@
         "channel_tip_skills": "当 {{productName}} 根据你的会话起草新技能或对现有技能的修改时。在你审核之前不会有任何改变。",
         "channel_tip_subagent": "当后台辅助代理完成、失败或因重启而中断，且没有打开的聊天显示其结果时。默认静默：不播放声音，也不显示横幅。",
         "channel_tip_taskrunner": "当任务运行有进展或需要你处理时：计划已就绪、开始、重试或重新规划、完成、失败、停滞或超时，或在重启后暂停。",
-        "channel_tip_terminal": "当终端标签页的 shell 以错误退出或被强制终止时。标签页会关闭，因此退出代码保留在这里。"
+        "channel_tip_terminal": "当终端标签页的 shell 以错误退出或被强制终止时。标签页会关闭，因此退出代码保留在这里。",
+        "channel_memory": "重复失败",
+        "channel_tip_memory": "每周一次，当智能体的某个工具失败反复出现时。仅在你在“记忆”中开启每周提醒后。"
       },
       "privacyPanel": {
         "recordMetricsLabel": "记录指标",

@@ -21,6 +21,7 @@ from kiro_crew.config.loader import DASHBOARD_PORT, config_dir
 from kiro_crew.dashboard import pinned_session_order
 from kiro_crew.dashboard.folder_repository import FOLDERS_FILE
 from kiro_crew.dashboard.interaction_coordinator import ApprovalCoordinator, QuestionCoordinator
+from kiro_crew.dashboard.repeated_failures_notice import RepeatedFailuresNotifier
 from kiro_crew.dashboard.slot_registry import SlotRegistry, TakeoverWatch, TruncationClaim
 from kiro_crew.dashboard.state_parts import dashboard_services as _dashboard_services
 from kiro_crew.dashboard.state_parts import session_events as _session_events
@@ -119,6 +120,7 @@ class DashboardState:
     bridge_actions: BridgeActionRegistry
     notification_channel_settings: ChannelSettings
     resource_pressure_notifier: ResourcePressureNotifier
+    repeated_failures_notifier: RepeatedFailuresNotifier
     file_indexes: FileIndexRegistry
     _chat_pins_lock: LoopBoundLock
     _folders_lock: LoopBoundLock
@@ -600,6 +602,8 @@ class DashboardState:
         # system.resources. State-owned like the bus/limiter/settings so its
         # lifecycle matches the gateway instance.
         self.resource_pressure_notifier = ResourcePressureNotifier(self.notification_bus)
+        # The opt-in weekly repeated-failures note, checked from the heartbeat.
+        self.repeated_failures_notifier = RepeatedFailuresNotifier()
         # Channel turn-ceiling producer. Registered HERE, once, beside the bus it
         # delivers through, rather than injected per channel: a channel that
         # forgot the wire would be a channel whose pauses are invisible to the

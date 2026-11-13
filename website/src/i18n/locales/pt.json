@@ -8718,7 +8718,9 @@
         "chat_stopped_refused_body": "O modelo se recusou a responder e o chat parou. Abra o chat para ver o motivo.",
         "chat_stopped_stalled_body": "O chat travou e não conseguiu se recuperar. Abra o chat para iniciar um novo.",
         "folder_agent_label_title": "Confira o agente padrão de uma pasta",
-        "folder_agent_label_body": "O agente padrão destas pastas tem o nome de um Bot, mas os novos chats nelas não são executados nesse Bot: {{folders}}. Para usar o Bot, escolha-o como agente padrão nas configurações da pasta."
+        "folder_agent_label_body": "O agente padrão destas pastas tem o nome de um Bot, mas os novos chats nelas não são executados nesse Bot: {{folders}}. Para usar o Bot, escolha-o como agente padrão nas configurações da pasta.",
+        "repeated_failures_title": "Falhas de ferramentas continuam voltando",
+        "repeated_failures_body": "Algumas chamadas de ferramentas do agente falharam várias vezes nesta semana. Abra este aviso para vê-las e transformar uma em lição."
       },
       "notificationBanner": {
         "dismiss_notification": "Dispensar notificação",
@@ -18165,7 +18167,11 @@
         "trend": "Tendência",
         "trend_growing": "Crescendo",
         "trend_new": "Nova",
-        "trend_steady": "Estável"
+        "trend_steady": "Estável",
+        "notice_label": "Aviso semanal no sino",
+        "notice_description": "Uma vez por semana, o sino avisa você quando uma falha de ferramenta continua voltando. Desativado por padrão.",
+        "notice_load_failed": "Não foi possível ler a configuração do aviso semanal",
+        "notice_save_failed": "Não foi possível salvar a configuração do aviso semanal"
       },
       "memoryRetiredCard": {
         "actions": "Ações",
@@ -20426,7 +20432,9 @@
         "channel_tip_skills": "Quando o {{productName}} rascunha uma nova habilidade, ou uma alteração em uma, a partir das suas sessões. Nada muda até você revisar.",
         "channel_tip_subagent": "Quando um agente auxiliar em segundo plano termina, falha ou é interrompido por uma reinicialização, e nenhum chat aberto está mostrando o resultado. Silencioso por padrão: sem som nem banner.",
         "channel_tip_taskrunner": "Quando uma execução de tarefa avança ou precisa de você: o plano está pronto, ela começa, tenta de novo ou refaz o plano, é concluída, falha, trava ou excede o tempo, ou é pausada após uma reinicialização.",
-        "channel_tip_terminal": "Quando o shell de uma aba de terminal sai com erro ou é encerrado à força. A aba fecha, então o código de saída fica guardado aqui."
+        "channel_tip_terminal": "Quando o shell de uma aba de terminal sai com erro ou é encerrado à força. A aba fecha, então o código de saída fica guardado aqui.",
+        "channel_memory": "Falhas repetidas",
+        "channel_tip_memory": "Uma vez por semana, quando uma falha de ferramenta do agente continuou voltando. Só se você ativou o aviso semanal em Memória."
       },
       "privacyPanel": {
         "recordMetricsLabel": "Registrar métricas",

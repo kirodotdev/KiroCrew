@@ -4200,6 +4200,25 @@ lesson, and a refusal keeps the draft with its reason. There is no MCP tool or C
 the findings: the sandbox withholds the security log from foreign-harness children, and
 `/api/lessons` is a mixed internal path an MCP caller reaches with the internal secret.
 
+**The weekly note** (`dashboard/repeated_failures_notice.py`, opt-in). With
+`memory.repeated_failures_notice` on (default off; a wrong-typed value reads as off,
+with the loader's type-mismatch warning), the bell gets at most one note per 7 days on
+the `system.memory` channel, and only when `scan` finds at least one recurring failure.
+The note names no tool and quotes no error; its link (`?view=memory&focus=failures`)
+scrolls the Memory view to the card, which is where the findings are read. The
+heartbeat calls `RepeatedFailuresNotifier.maybe_check` on every beat, which costs one
+clock read: the first check runs 10 minutes after start and then once a day, in a task
+of its own whose config read, state file and log scan run in a worker thread.
+Restart-safe through `repeated-failures-notice.json` under the data home, the time of
+the last note. It is written atomically BEFORE the note goes out, and a write that
+fails sends nothing, so a failing write cannot repeat the note on every check. A
+missing, unreadable or malformed file, a time without a zone, or a time in the future
+reads as "not sent yet" with a warning, and the next send rewrites it. The switch is a
+row at the top of the card (`RepeatedFailuresNoticeToggle.tsx`), saved through the
+config PATCH (`memory.repeated_failures_notice` is in `_EDITABLE_CONFIG` and classed as
+unable to widen what an agent may do). `test_repeated_failures_notice.py` pins
+off-by-default, once a week, the restart read and each bad-file case.
+
 ### Conflict resolution: which layer wins
 
 Priority, highest first. A lower layer never overrides a higher one:

@@ -321,6 +321,7 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         consolidation_write_child_process=section.read(
             "consolidation_write_child_process", _safe_bool
         ),
+        repeated_failures_notice=section.read("repeated_failures_notice", _safe_bool),
         recall_pool_processes=section.read("recall_pool_processes", _safe_int, 0, 8),
         recall_pool_worker_max_mb=section.read(
             "recall_pool_worker_max_mb", _safe_int, 256, 1024 * 1024

@@ -9990,7 +9990,11 @@
         "trend": "Trend",
         "trend_growing": "Growing",
         "trend_new": "New",
-        "trend_steady": "Steady"
+        "trend_steady": "Steady",
+        "notice_label": "Weekly note in the bell",
+        "notice_description": "Once a week, when a tool failure keeps coming back, the bell tells you. Off by default.",
+        "notice_load_failed": "Could not read the weekly note setting",
+        "notice_save_failed": "Could not save the weekly note setting"
       },
       "memoryRetiredCard": {
         "actions": "Actions",

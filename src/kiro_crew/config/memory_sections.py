@@ -410,6 +410,16 @@ class MemoryConfig:
             "lessons; every other memory write, learn_add and injection carry on.",
         ),
     )
+    repeated_failures_notice: bool = field(
+        default=False,
+        metadata=_meta(
+            "Weekly Repeated-Failures Note",
+            "On: at most once a week, when an agent tool failure kept coming back "
+            "during the last seven days, the bell gets one note that links to the "
+            "Repeated failures card on the Memory page. Off by default; nothing is "
+            "written to memory either way.",
+        ),
+    )
     kind_routing: str = field(
         default="off",
         metadata=_meta(

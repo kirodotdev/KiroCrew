@@ -510,6 +510,9 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # path expansion, sensitive-path exclusion and existence, so a path it declines is
     # skipped there rather than refused here.
     "skills.extra_paths": {"type": "str_list", "max_items": 64, "max_item_len": 4096},
+    # Memory → Repeated failures: the opt-in weekly bell note
+    # (dashboard/repeated_failures_notice.py). Default OFF in MemoryConfig.
+    "memory.repeated_failures_notice": {"type": "bool"},
     # Knowledge Library ingestion. Chunk budget max mirrors the point past which
     # a single sweep stops being a trickle; dedup cadence max is ~a day of sweeps.
     "knowledge.auto_add_documents": {"type": "bool"},

@@ -328,6 +328,9 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         # Generated skills still wait for approval unless
         # ``skills.approval_required`` (ordered above) is turned off.
         "skills.auto_create_from_sessions",
+        # The weekly repeated-failures bell note: a reminder to the owner, which
+        # writes no memory and grants nothing.
+        "memory.repeated_failures_notice",
         # Local recording only: the write route refuses the enable on a host
         # where it would start sending data out.
         "telemetry.enabled",
