@@ -7049,6 +7049,13 @@ matching is **whole-string** `fnmatch`, so a selector must carry wildcards:
 | left a lane       | `*removed:<id>;*` | `removed:<id>;`     |
 | any movement      | `*:<id>;*`        | `:<id>;`            |
 
+**The Hooks page's form states it.** With this event in `glob` mode,
+`website/src/pages/HookLaneMatcherHelp.tsx` renders the two selectors under the
+matcher and an **Insert a lane** menu of the status tags (the same truthiness
+`_status_tag_ids` reads) by name, which writes `*added:<id>;*` with the tag id. A
+failed `/api/chat/tags` read renders an `ErrorNotice` in place of the menu, never an
+empty one.
+
 **Both bounds of the id are load-bearing, not decoration.** Matching is `fnmatch`
 against the whole context, so a selector must pin the id at each end or it matches a
 DIFFERENT lane and the hook that runs belongs to someone else — for a close-out hook,
