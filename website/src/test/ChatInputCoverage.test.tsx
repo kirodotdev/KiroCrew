@@ -576,6 +576,25 @@ describe('ChatInput + menu trigger shortcuts', () => {
     expect(screen.queryByText('Use a skill')).toBeNull()
   })
 
+  it.each([
+    ['Use a skill', {}],
+    ['Reference a file', { onFileSelect: vi.fn() }],
+    ['Slash commands', {}],
+  ])('reopening + after "%s" closes that picker instead of stacking over it', (item, extra) => {
+    function Harness() {
+      const [value, setValue] = React.useState('')
+      return <ChatInput {...base} {...extra} value={value} onChange={setValue} />
+    }
+    renderWithProviders(<Harness />)
+    openPlusMenu()
+    const pick = screen.queryByTitle(item) ?? screen.getByText(item)
+    fireEvent.click(pick)
+    expect(screen.getByRole('listbox')).toBeInTheDocument()
+    openPlusMenu()
+    expect(screen.getByText('Use a skill')).toBeInTheDocument()
+    expect(screen.queryByRole('listbox')).toBeNull()
+  })
+
   it('a mousedown outside the portaled menu closes it', () => {
     renderWithProviders(<ChatInput {...base} onChange={vi.fn()} />)
     openPlusMenu()

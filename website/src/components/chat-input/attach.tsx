@@ -93,7 +93,7 @@ export function usePlusMenu({ pickers, value, onChange, composerControl, fileInp
   /** Read when the picker closes, so it may close over state declared later in render. */
   isTouchInput: () => boolean
 }) {
-  const { setSlashMenuOpen, setFilePickerOpen, setFileQuery, setSkillPickerOpen, setSkillQuery } = pickers
+  const { setSlashMenuOpen, setFilePickerOpen, setFileQuery, setSkillPickerOpen, setSkillQuery, closePickers } = pickers
   // "+" drop-up menu (upload file / image + browse toggle).
   const [plusOpen, setPlusOpen] = useState(false)
   const [sketchOpen, setSketchOpen] = useState(false)
@@ -120,7 +120,8 @@ export function usePlusMenu({ pickers, value, onChange, composerControl, fileInp
   // notably when the mobile keyboard closes (visualViewport-only signal).
   useAnchorRemeasure(plusOpen, measurePlus)
   const togglePlus = () => {
-    if (!plusOpen) measurePlus()
+    // The menu opens in place of any open picker, never stacked over it.
+    if (!plusOpen) { measurePlus(); closePickers() }
     setPlusOpen(o => !o)
   }
   // Open an in-input trigger picker from the + menu (mirrors typing the sigil):
