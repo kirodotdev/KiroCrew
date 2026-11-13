@@ -67,6 +67,71 @@ def _can_fire(command: str) -> bool:
     return bool(_CAN_FIRE_RE.search(command))
 
 
+#: The scratch root whose direct entries an ``rm`` may remove without the root row asking.
+_SCRATCH_ROOT = "/tmp"
+#: Characters that make a word more than its literal text (expansion, glob, brace, tilde).
+_NOT_LITERAL = frozenset("$`*?[]{}~\\'\"()")
+#: What may sit right before or after a plain command: nothing, a blank or a separator.
+#: A backtick or paren there means bash glues other text onto the first or last word.
+_COMMAND_EDGE = frozenset(" \t\n;&|")
+#: Separators that end a plain command (the shared reader's ``ShellCommand.separator``).
+_PLAIN_SEPARATORS = frozenset({"", ";", "&", "&&", "|", "||", "\n"})
+#: kiro-cli's display prefix on a shell call's title (``Running: rm -rf /tmp/x``).
+_TITLE_PREFIX = "Running:"
+
+
+def _is_scratch_entry(word: str) -> bool:
+    """*word* is ``/tmp/<name>``: ONE component directly under the scratch root. With no
+    folder on the way, no symlink an earlier command plants can redirect the delete,
+    and no trailing ``/`` follows a link at ``<name>`` itself."""
+    root, _, name = word.rpartition("/")
+    return root == _SCRATCH_ROOT and name not in ("", ".", "..")
+
+
+def scratch_rm_view(command: str) -> "str | None":
+    """*command* with the words of each plain ``rm`` whose every operand is a scratch
+    entry blanked, or ``None`` when there is none. Only the ``local-destructive-rm-rf-root``
+    row reads this view: its pattern matches any ``rm -rf /…``, and ``rm -rf /tmp/build``
+    is not the root. The ``rm`` must be the program word itself, unquoted, with literal
+    words only, no ``--``, and nothing glued on either edge; its redirections stay in
+    the text, and anything else stays for the row to judge."""
+    if "rm" not in command:
+        return None
+    try:
+        commands = _commands.read_commands(command, heredocs=True)
+    except Exception:  # noqa: BLE001 - an unreadable command keeps the row's reading
+        return None
+    spans: "list[tuple[int, int]]" = []
+    prev_separator = ""
+    for cmd in commands:
+        # A command cut at a backtick or paren, or one that starts right after such a
+        # cut, shares its words with a substitution bash splices in: not plain.
+        cut = {prev_separator, cmd.separator} - _PLAIN_SEPARATORS
+        prev_separator = cmd.separator
+        argv = list(cmd.argv)
+        if argv and argv[0].start == 0 and argv[0].raw == _TITLE_PREFIX:
+            argv = argv[1:]
+        if not argv or argv[0].raw != "rm" or cmd.heredocs or cut:
+            continue
+        before, after = argv[0].start - 1, argv[-1].end
+        if before >= 0 and command[before] not in _COMMAND_EDGE:
+            continue
+        if after < len(command) and command[after] not in _COMMAND_EDGE:
+            continue
+        words = [w.raw for w in argv[1:]]
+        operands = [w for w in words if not w.startswith("-")]
+        if not operands or "--" in words or any(set(w) & _NOT_LITERAL for w in words):
+            continue
+        if all(_is_scratch_entry(w) for w in operands):
+            spans.extend((w.start, w.end) for w in argv)
+    if not spans:
+        return None
+    out = list(command)
+    for start, end in spans:
+        out[start:end] = " " * (end - start)
+    return "".join(out)
+
+
 def _names_rm_word(command: str) -> bool:
     """``rm`` as its own word in *command*, once ``${X:-…}`` defaults are resolved, or
     once unquoted parameters are dropped (an unset ``$1`` glued to ``rm`` runs ``rm``)."""

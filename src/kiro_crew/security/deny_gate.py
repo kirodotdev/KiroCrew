@@ -846,7 +846,34 @@ def is_denied(
             )
 
     # ── Pattern passes (shared with the synthesized tier's ``segments=True``) ──
-    pattern_denial = _deny_pattern_passes(tool_name, lower, all_patterns, _reason, shipped, waive)
+    # The shipped ``rm -rf /.*`` row matches every absolute path. It reads a view where
+    # each plain ``rm`` of scratch entries only (``rm -rf /tmp/build``) is blanked, so it
+    # still judges every other rm and every other mention of the text. An operator's
+    # own copy of the pattern is not shipped-only and keeps reading the full text.
+    _rm = _submodule("rm_floor")
+    rm_root = (_rm._RM_FLOOR_BY_KIND.get("root", ("", ""))[1], True)
+    scratch_view = (
+        _rm.scratch_rm_view(tool_name)
+        if rm_root in all_patterns and rm_root[0] in shipped
+        else None
+    )
+    if scratch_view is None:
+        pattern_denial = _deny_pattern_passes(
+            tool_name, lower, all_patterns, _reason, shipped, waive
+        )
+    else:
+        # Matched on the view; every event still records the command as submitted.
+        pattern_denial = _deny_pattern_passes(
+            tool_name,
+            scratch_view.lower(),
+            [rm_root],
+            _reason,
+            shipped,
+            waive,
+            match_text=scratch_view,
+        ) or _deny_pattern_passes(
+            tool_name, lower, [p for p in all_patterns if p != rm_root], _reason, shipped, waive
+        )
     if pattern_denial is not None:
         return pattern_denial
     # ── Recursive-force rm floor (argv-structural, UNION with the regex) ──
@@ -855,7 +882,6 @@ def is_denied(
     # for recursive + force in any spelling against the root or home dir itself,
     # only for a row still in the effective set, and only when the text could
     # hold an rm at all, so a command with none is never refused by it.
-    _rm = _submodule("rm_floor")
     rm_enabled = {
         kind: rule for kind, rule in _rm._RM_FLOOR_BY_KIND.items() if rule[1] in regex_patterns
     }
@@ -921,16 +947,21 @@ def _deny_pattern_passes(
     reason: "Callable[[str], str]",
     shipped: frozenset[str] = frozenset(),
     waive: "Callable[[str], bool] | None" = None,
+    *,
+    match_text: "str | None" = None,
 ) -> str | None:
     """Run :func:`is_denied`'s whole-string and per-segment passes over *all_patterns*.
 
     Exceptions and the s3 download narrowing apply as there; no floor runs here.
     *shipped* gates the s3 download narrowing to shipped-only patterns. *waive* is
     the caller's :class:`_DenyWaiver`: a pattern it answers True for is skipped
-    where it would refuse, and every other pattern is still judged.
+    where it would refuse, and every other pattern is still judged. *match_text*, when
+    given, is the text the segments are cut from (*lower* is its lowercase); every
+    event still records *tool_name*, the command as submitted.
     """
     _rules = _submodule("denied_rules")
     _shell = _submodule("shell_normalizer")
+    text = tool_name if match_text is None else match_text
 
     # Memoizes the s3 download reading per command: the same command is asked
     # about once per matching segment.
@@ -1001,7 +1032,7 @@ def _deny_pattern_passes(
     # ``bash -c 'r\`` and ``m -rf /'`` and the ``-c`` script is never seen.
     # Emitting no view for the command itself is what keeps
     # this from fabricating one across its separators.
-    folded = _shell._fold_line_continuations(tool_name)
+    folded = _shell._fold_line_continuations(text)
     segments = [seg.strip() for seg in _split_segments(folded)]
     segments = [seg for seg in segments if seg]
     work: list[tuple[str, tuple[str, ...]]] = []
@@ -1012,7 +1043,7 @@ def _deny_pattern_passes(
     # not already produce.  Measured: skipping the duplicate halves the cost on a
     # command padded with thousands of interpreter tokens (a stall risk).
     if len(segments) != 1 or segments[0] != folded.strip():
-        work.append(("", _deny_segment_views(tool_name, False)))
+        work.append(("", _deny_segment_views(text, False)))
     for seg_raw in segments:
         work.append((seg_raw.lower(), _deny_segment_views(seg_raw)))
     for seg_lower, segment_views in work:
