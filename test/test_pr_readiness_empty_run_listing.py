@@ -37,7 +37,13 @@ class TestAnEmptyRunsListingIsNotNoRuns:
 
     @staticmethod
     def _empty_listings(runner: Runner) -> None:
-        for name in ("ci_runs.json", "green_runs.json", "codeql_pr_runs.json", "codeql_runs.json"):
+        for name in (
+            "ci_runs.json",
+            "green_runs.json",
+            "codeql_pr_runs.json",
+            "codeql_runs.json",
+            "pt_runs.json",
+        ):
             (runner.fixtures / name).write_text(TestAnEmptyRunsListingIsNotNoRuns._EMPTY)
 
     @staticmethod
@@ -65,7 +71,16 @@ class TestAnEmptyRunsListingIsNotNoRuns:
             run = {
                 "id": run_id,
                 "run_attempt": 1,
-                "event": "dynamic" if path.startswith("dynamic/") else "pull_request",
+                "event": (
+                    "dynamic"
+                    if path.startswith("dynamic/")
+                    # The one lane that runs on pull_request_target.
+                    else (
+                        "pull_request_target"
+                        if path.endswith("/sensitive-change-review.yml")
+                        else "pull_request"
+                    )
+                ),
                 "head_sha": runner.env["SHA"],
                 "head_repository": {"full_name": "kirodotdev/KiroCrew"},
                 "head_branch": "feat/x",
