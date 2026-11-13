@@ -21291,7 +21291,7 @@
       "deploy_task_state_stopped": "クルーのコンテナタスクは停止しました。",
       "deploy_task_state_missing": "ECS にはクルーのコンテナタスクがもう表示されていません。",
       "deploy_task_state_other": "ECS はクルーのコンテナタスクを {{status}} と報告しています。",
-      "deploy_task_stopped_when": "{{age}} 前に停止しました。",
+      "deploy_task_stopped_when": "{{age}}前に停止しました。",
       "deploy_task_cluster": "クラスター",
       "deploy_task_id": "タスク ID",
       "deploy_task_read_at": "{{time}} 時点",
