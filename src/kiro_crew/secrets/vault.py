@@ -21,7 +21,7 @@ import hashlib
 import hmac
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -83,6 +83,10 @@ def entry_item_type(entry: Any) -> str:
         if isinstance(item_type, str) and item_type:
             return item_type
     return ITEM_TYPE_SECRET
+
+
+#: How many names :meth:`SecretVault.add_item_under_free_name` tries before it gives up.
+_FREE_NAME_TRIES = 100
 
 
 class SecretVault:
@@ -288,6 +292,47 @@ class SecretVault:
 
         self._write_store(_mutate)
         return entry_revision(written)
+
+    async def add_item_under_free_name(
+        self,
+        base: str,
+        item_type: str,
+        fields: Mapping[str, Any],
+        reserved: Callable[[str], bool] = lambda _name: False,
+    ) -> str:
+        """Store a NEW typed item under *base*, else ``base (2)``, ``base (3)``, ...
+
+        Never overwrites: the first name no entry holds and *reserved* does not
+        refuse is picked inside the store's cross-process lock, so a writer that
+        took *base* a moment earlier keeps it. The item is validated before the
+        lock is taken (an invalid one raises
+        :class:`~kiro_crew.secrets.items.ItemError` and nothing is written).
+        Raises ``ValueError`` and writes nothing when no free name is found in
+        :data:`_FREE_NAME_TRIES` tries. Returns the name used.
+        """
+        plaintext = _items.encode_item(item_type, fields).encode("utf-8")
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._add_item_sync, base, item_type, plaintext, reserved
+            )
+
+    def _add_item_sync(
+        self, base: str, item_type: str, plaintext: bytes, reserved: Callable[[str], bool]
+    ) -> str:
+        used: list[str] = []
+
+        def _mutate(entries: dict) -> dict:
+            for n in range(1, _FREE_NAME_TRIES + 1):
+                name = base if n == 1 else f"{base} ({n})"
+                if name not in entries and not reserved(name):
+                    break
+            else:
+                raise ValueError("no free vault name")
+            used.append(name)
+            return {**entries, name: self._encrypt_entry(name, plaintext, item_type)}
+
+        self._write_store(_mutate)
+        return used[0]
 
     def get_many(self, names: list[str]) -> dict[str, Optional[SecretValue]]:
         """Batch-retrieve secrets, loading the store and key exactly once.

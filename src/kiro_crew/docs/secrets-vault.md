@@ -46,6 +46,28 @@ row opens its pane.
 If a value fails to save, the form keeps what you typed rather than clearing it,
 so you do not have to fetch the credential again.
 
+## Signing in to a website from the vault
+
+With the same preview on, when the agent's browser asks you to sign in, the
+sign-in card lists your saved logins for that site, one button each, labelled
+by the account's username. The first three show; **More** shows the rest. Click
+one and Kiro Crew types its username and password into the page for you;
+the agent never sees them and only learns whether the sign-in went through.
+Nothing is filled until you click.
+
+A login counts as "for that site" when it shares the site's base domain: a
+login saved for `appleid.apple.com` is offered on `developer.apple.com`, but one
+for `alice.github.io` is not offered on `bob.github.io`. For `localhost` or an
+IP address the host and port must match exactly. A login saved for an `https`
+address is never offered on an `http` page.
+
+To use a different account, open **Other account** and type it. When no saved
+login matches, the card asks you to type, as before. Either way, tick **Save to
+Secrets** if you want to keep what you typed. It is off by default. After the sign-in is
+typed into the page, the login is saved as a new entry named after the site
+(`github.com`, or `github.com (2)` if that name is taken); an existing entry is
+never replaced.
+
 ## Moving credentials out of `.env`
 
 `kirocrew secrets import` migrates plaintext credentials from `.env` into the

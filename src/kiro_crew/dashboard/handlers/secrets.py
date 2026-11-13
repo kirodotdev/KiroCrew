@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from aiohttp import web
@@ -171,6 +171,28 @@ def _channel_referenced_names() -> frozenset[str] | None:
     )
 
 
+async def _remote_channel_reserved(request: web.Request) -> Callable[[str], bool]:
+    """Whether *request* may not write a vault name, by the channel-credential rule.
+
+    Always ``False`` for the machine running the gateway. For any other caller,
+    a name in ``VAULT_CHANNEL_CREDENTIAL_KEYS`` or one a channel key's ``.env``
+    line or environment value references; an unreadable ``.env`` reserves every
+    name. The ``.env`` is read once, so the predicate itself never blocks.
+    """
+    if is_direct_local_request(request):
+        return lambda _name: False
+    referenced = await asyncio.to_thread(_channel_referenced_names)
+    return lambda name: (
+        name in VAULT_CHANNEL_CREDENTIAL_KEYS or referenced is None or name in referenced
+    )
+
+
+def _managed_name_owned(name: str) -> web.Response | None:
+    """The 409 for a name a Connections client secret or the WakaTime OAuth tokens own."""
+    owned = _connections_client_secret_owned(name)
+    return owned if owned is not None else _wakatime_oauth_tokens_owned(name)
+
+
 async def _channel_credential_owned(request: web.Request, name: str) -> web.Response | None:
     """Refuse a remote vault write to a name a channel credential resolves from.
 
@@ -184,12 +206,8 @@ async def _channel_credential_owned(request: web.Request, name: str) -> web.Resp
     treated as referencing every name. Returns the 409 to send, or ``None``
     when the write may proceed.
     """
-    if is_direct_local_request(request):
+    if not (await _remote_channel_reserved(request))(name):
         return None
-    if name not in VAULT_CHANNEL_CREDENTIAL_KEYS:
-        referenced = await asyncio.to_thread(_channel_referenced_names)
-        if referenced is not None and name not in referenced:
-            return None
     return web.json_response(
         {
             "error": "this secret holds a channel credential, which a remote session "
@@ -199,6 +217,19 @@ async def _channel_credential_owned(request: web.Request, name: str) -> web.Resp
         },
         status=409,
     )
+
+
+async def reserved_name_check(request: web.Request) -> Callable[[str], bool]:
+    """Whether a vault name is one this route's write would refuse, for *request*.
+
+    The same three guards ``api_secrets_set`` applies (a Connections client
+    secret, the WakaTime OAuth tokens, and, for a remote caller, a channel
+    credential), as one blocking-free predicate a writer that picks its own name
+    can test candidates with, inside the store lock. A ``.env`` that cannot be
+    read reserves every name for a remote caller, as the route does.
+    """
+    channel = await _remote_channel_reserved(request)
+    return lambda name: _managed_name_owned(name) is not None or channel(name)
 
 
 #: The feature preview (``dashboard.feature_previews``) that adds typed items to
@@ -605,7 +636,7 @@ async def api_secrets_set(request: web.Request) -> web.Response:
             },
             status=400,
         )
-    owned = _connections_client_secret_owned(name) or _wakatime_oauth_tokens_owned(name)
+    owned = _managed_name_owned(name)
     if owned is not None:
         return owned
     owned = await _channel_credential_owned(request, name)
@@ -675,7 +706,7 @@ async def api_secrets_delete(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "Secret name is required", "code": "missing_name"}, status=400
         )
-    owned = _connections_client_secret_owned(name) or _wakatime_oauth_tokens_owned(name)
+    owned = _managed_name_owned(name)
     if owned is not None:
         return owned
     owned = await _channel_credential_owned(request, name)
