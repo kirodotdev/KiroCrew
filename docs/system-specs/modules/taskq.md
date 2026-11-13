@@ -1622,7 +1622,8 @@ one.
 
 `classify_exception(exc, scope)` runs the registered adapters in order —
 `github` (headers, GraphQL `errors[]`, `gh` stderr wording), `http` (status
-codes, `Retry-After` delay-seconds or HTTP-date, `X-RateLimit-Reset` epoch,
+codes, `Retry-After` delay-seconds or HTTP-date, `X-RateLimit-Reset` epoch
+(or, below `1e9`, seconds left in the window),
 duck-typed over `urllib`/`aiohttp`/`httpx` error shapes; a retry hint that is
 no usable time, such as a 400-digit `Retry-After`, `inf`, or an instant more
 than 366 days out, from a header or from the error text, is dropped and the

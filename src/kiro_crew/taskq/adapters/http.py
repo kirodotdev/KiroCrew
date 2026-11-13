@@ -70,6 +70,8 @@ def header(headers: Any, name: str) -> str | None:
 # A server time further out than this is no retry hint anyone can wait for; past
 # it, the status-based retry stands instead of a wait that never ends.
 _MAX_RETRY_HORIZON_SECS = 366 * 24 * 3600.0
+# An ``X-RateLimit-Reset`` below one billion epoch seconds is a delay, not a time.
+_MIN_RESET_EPOCH = 1e9
 
 
 def _usable_retry_at(retry_at: float, now: float) -> float | None:
@@ -102,8 +104,11 @@ def parse_retry_after(value: str | None, now: float) -> float | None:
         return None
 
 
-def parse_reset_epoch(value: str | None) -> float | None:
-    """``X-RateLimit-Reset`` (GitHub, many APIs) -> absolute epoch seconds."""
+def parse_reset_epoch(value: str | None, now: float | None = None) -> float | None:
+    """``X-RateLimit-Reset`` (GitHub, many APIs) -> absolute epoch seconds.
+
+    Some APIs send the seconds left in the window instead of an epoch.
+    """
     if value is None:
         return None
     raw = value.strip()
@@ -118,7 +123,11 @@ def parse_reset_epoch(value: str | None) -> float | None:
     # Some APIs send milliseconds; anything past year 5138 is not seconds.
     if reset > 1e11:
         reset /= 1000.0
-    return _usable_retry_at(reset, time.time())
+    now = time.time() if now is None else now
+    # Seconds left in the window, not an epoch: count them from now.
+    if reset < _MIN_RESET_EPOCH:
+        reset = now + reset
+    return _usable_retry_at(reset, now)
 
 
 def status_of(exc: BaseException) -> int | None:
@@ -178,7 +187,7 @@ def retry_at_from(exc: BaseException, now: float) -> float | None:
     hdrs = headers_of(exc)
     retry_at = parse_retry_after(header(hdrs, "Retry-After"), now)
     if retry_at is None:
-        retry_at = parse_reset_epoch(header(hdrs, "X-RateLimit-Reset"))
+        retry_at = parse_reset_epoch(header(hdrs, "X-RateLimit-Reset"), now)
     if retry_at is None:
         explicit = getattr(exc, "retry_after", None)
         if isinstance(explicit, (int, float)) and not isinstance(explicit, bool):

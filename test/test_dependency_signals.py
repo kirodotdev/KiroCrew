@@ -275,6 +275,15 @@ class TestHttpAdapter:
         # Milliseconds are normalised to seconds.
         assert http.parse_reset_epoch(str(int((NOW + 5) * 1000))) == pytest.approx(NOW + 5)
 
+    def test_a_reset_given_as_seconds_left_is_a_delay_not_an_epoch(self) -> None:
+        def reset(value: str) -> float | None:
+            err = HttpErr("x", status=429, headers={"X-RateLimit-Reset": value})
+            return http.retry_at_from(err, NOW)
+
+        assert reset("30") == pytest.approx(NOW + 30)  # not 30 s after 1970
+        assert reset("0") == pytest.approx(NOW)
+        assert reset(str(int(NOW + 900))) == pytest.approx(NOW + 900)
+
     def test_a_retry_header_too_large_to_use_keeps_the_status_retry(self) -> None:
         huge = "9" * 400
         assert http.parse_retry_after(huge, NOW) is None
