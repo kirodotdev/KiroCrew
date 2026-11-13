@@ -100,7 +100,7 @@ export function useKiroUsageReadout() {
   // absence of an answer, so hiding it demands a SETTLED verdict: while the
   // config is unread, a dash the user can open beats silently dropping the only
   // surface that reports the failure.
-  const usageSegmentHidden = kiroUsageState === 'none'
+  const usageSegmentHidden = kiroUsageState === 'none' || kiroUsageState === 'api-key'
     ? !kiroCreditSurface
     : kiroUsageState === 'failed'
       ? kirocrewCfgLoaded && !kiroCreditSurface
@@ -177,6 +177,12 @@ export function kiroUsageSegment({ kiroUsageState, usageSegmentHidden, setKiroUs
       // spinner are both dropped: without it the failed and warming
       // states are one coin glyph apart in opacity alone.
       node = (<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_unavailable')} aria-label={i18nT('app.kiro_credit_usage_unavailable')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button>)
+    } else if (kiroUsageState === 'api-key') {
+      // The sessions bill a KIRO_API_KEY, not the login kiro-cli holds, so there
+      // is no balance to show. A muted dash with the same info mark as the
+      // account-only state, so it reads as a configuration and not a failed read;
+      // the modal behind it says whose credits are being spent.
+      node = (<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('components.kiroAccountModal.credit_usage_api_key')} aria-label={i18nT('components.kiroAccountModal.credit_usage_api_key')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span> <Info size={11} aria-hidden="true" data-testid="kiro-usage-api-key-mark" /></button>)
     } else if (kiroUsageState === 'signin-required' || kiroUsageState === 'signin-rejected') {
       // No live Kiro credential could be read (or it was rejected), so
       // the free API never got an answer about this account. Terminal,

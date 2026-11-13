@@ -6416,6 +6416,7 @@
       "credit_usage_sign_in_type": "この {{provider}} でのサインインではクレジット残高は表示されません。kiro-cli がサインイン中のユーザーを報告しないためです。",
       "credit_usage_config_unreadable": "設定を読み込めなかったため、残高を表示できません。",
       "credit_usage_signin_required": "ライブのクレジット使用量を利用できません: 有効な Kiro のサインイン資格情報を読み取れなかったため、無料の使用量 API は呼び出されていません。Kiro に再度サインインしてください (例: kiro-cli login を実行)。",
+      "credit_usage_api_key": "{{productName}} は KIRO_API_KEY で動作しているため、クレジットはそのキーのアカウントで消費され、サインイン中の Kiro ログインでは消費されません。ここには残高を表示しません。",
       "credit_usage_unavailable": "残高を読み取れませんでした。",
       "days_until_expiration": "有効期限までの日数: {{count}}",
       "estimated_overage_cost": "推定超過料金",

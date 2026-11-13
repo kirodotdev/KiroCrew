@@ -26,6 +26,8 @@ import kiro_crew.dashboard.handlers.sessions as sessions_mod
 from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import finished
 
+pytestmark = pytest.mark.usefixtures("no_ambient_kiro_api_key")
+
 
 def _park_scrape_for_an_hour(monkeypatch) -> None:
     """Park the usage scrape an hour ahead of the product's monotonic clock.

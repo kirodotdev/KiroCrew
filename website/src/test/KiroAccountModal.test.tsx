@@ -389,6 +389,25 @@ describe('KiroAccountModal', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
+  // The sessions run on a KIRO_API_KEY while kiro-cli's login is another
+  // account, so the balance the login would show is not what the chats spend.
+  // The modal says whose credits are used and offers no Refresh, which would
+  // answer the same until the key is removed.
+  it('explains that credits are spent on the API key, with no Refresh and no alert', async () => {
+    const usage = parseKiroUsagePayload({ usage: { available: false, reason: 'api_key' } })
+    expect(usage).toBe('api-key')
+    renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage={usage} />)
+
+    const notice = i18nT('components.kiroAccountModal.credit_usage_api_key')
+    expect(notice).toContain('KIRO_API_KEY')
+    expect(await screen.findByText(notice)).toBeInTheDocument()
+    expect(screen.queryByText('Could not read your balance.')).not.toBeInTheDocument()
+    expect(screen.queryByText('No balance reading is available for this account yet.')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Remaining credit balance/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Refresh/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
   // The gateway always sends the type for this state. A state that arrives
   // without one still names a provider in the notice, so the sentence never
   // reads "this  sign-in".
