@@ -154,6 +154,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("focus-mode:toggle", handler);
     return () => ipcRenderer.removeListener("focus-mode:toggle", handler);
   },
+  // The OS session locked (macOS and Windows; see session-lock.js). The page
+  // stops a dictation that is still recording.
+  onSessionLocked: (cb) => {
+    const handler = () => cb();
+    ipcRenderer.on("os-session-locked", handler);
+    return () => ipcRenderer.removeListener("os-session-locked", handler);
+  },
   // A macOS swipe main.js relays as one route-history step: -1 Back, 1 Forward
   // (see swipe-history.js). The SPA takes it through its guarded history step.
   onHistoryStep: (cb) => {
