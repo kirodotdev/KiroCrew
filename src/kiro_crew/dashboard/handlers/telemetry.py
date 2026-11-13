@@ -58,8 +58,12 @@ from kiro_crew.hooks import validate_file_path
 from kiro_crew.jsonl_util import bounded_records
 from kiro_crew.metrics.provider import (
     TELEMETRY_ENV_VAR,
+    _held_consent,
     env_pin,
+    env_pin_is_soft,
+    live_recorder_state,
     otlp_egress_listing,
+    outbound_consented,
     pin_env_var,
 )
 from kiro_crew.metrics.schema import RESOURCE_ATTR_PROCESS_START_TIME
@@ -233,6 +237,10 @@ class _TelemetryState(NamedTuple):
     # and also when posture could not be resolved (``otlp_configured`` is then
     # True: a disclosure that cannot name its destinations still says they exist).
     otlp_destinations: "tuple[dict, ...]" = ()
+    # ``outbound_consented``: a destination alone does not export, recording must
+    # also have been turned on explicitly. True when unresolvable, the disclosure
+    # direction.
+    export_permitted: bool = True
 
 
 def _telemetry_cfg() -> _TelemetryState:
@@ -254,10 +262,16 @@ def _telemetry_cfg() -> _TelemetryState:
     otlp_configured = False
     destinations: "tuple[dict, ...]" = ()
     retention_days = 0
+    export_permitted = True
     directory = config_dir() / "metrics"
     try:
-        cfg = KiroCrewConfig.load().telemetry
-        enabled = bool(cfg.enabled)
+        full_cfg = KiroCrewConfig.load()
+        cfg = full_cfg.telemetry
+        # An unparseable config file holds consent as unknown: no recorder is
+        # built, but a live one keeps running. Report what this process records.
+        held = _held_consent(full_cfg, bool(cfg.enabled))
+        live_recording, live_exporting = live_recorder_state()
+        enabled = live_recording if held is None else bool(held)
         retention_days = max(0, int(getattr(cfg, "retention_days", 0) or 0))
         if getattr(cfg, "local_dir", None):
             directory = Path(cfg.local_dir).expanduser()
@@ -277,6 +291,14 @@ def _telemetry_cfg() -> _TelemetryState:
                 for row in otlp_egress_listing(cfg)
             )
             otlp_configured = bool(destinations)
+            if otlp_configured:
+                # Unknown consent keeps the live recorder, so disclose what IT exports.
+                export_permitted = live_exporting if held is None else outbound_consented(full_cfg)
+            if held is None and live_exporting:
+                # The fallback load may list no destination (an unparseable file
+                # reads as defaults) while the kept reader still sends.
+                otlp_configured = True
+                export_permitted = True
         except Exception:
             # Posture unresolvable (a provider that raised, an uncomposable
             # context). Report egress rather than promising local-only: this
@@ -288,17 +310,29 @@ def _telemetry_cfg() -> _TelemetryState:
     except Exception:
         logger.debug("telemetry config load failed; assuming disabled", exc_info=True)
     env_var = TELEMETRY_ENV_VAR
+    soft = False
     try:
         env_var = pin_env_var()
         pin = env_pin()
+        soft = pin is not None and env_pin_is_soft()
     except Exception:
         logger.debug("telemetry env pin resolution failed", exc_info=True)
         pin = None
     if pin is not None:
         enabled = pin
-        env_pinned = True
+        # A soft pin (``KIROCREW_TELEMETRY_DISABLED`` holding the default off)
+        # gives way to a written ``telemetry.enabled``, so the switch stays
+        # usable: writing it is exactly how the user lifts that pin.
+        env_pinned = not soft
     return _TelemetryState(
-        enabled, directory, env_pinned, env_var, otlp_configured, retention_days, destinations
+        enabled,
+        directory,
+        env_pinned,
+        env_var,
+        otlp_configured,
+        retention_days,
+        destinations,
+        export_permitted,
     )
 
 
@@ -1917,6 +1951,8 @@ async def api_collection_status(request: web.Request) -> web.Response:
             "env_var": state.env_var,
             "overlay_override": overlay_override,
             "otlp_configured": state.otlp_configured,
+            # Whether a configured destination is actually sent to now.
+            "export_permitted": state.export_permitted,
             "otlp_destinations": [dict(row) for row in state.otlp_destinations],
             "metrics_dir": str(state.directory),
         }

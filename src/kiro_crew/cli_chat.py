@@ -357,6 +357,11 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
 
     await asyncio.to_thread(ensure_kiro_cli_kas_verdict)
     cfg = KiroCrewConfig.load()
+    # Chat records local metrics too, so it tells a terminal-only user once,
+    # like `gateway` and `run`.
+    from kiro_crew.metrics import notice as usage_notice
+
+    usage_notice.print_notice_in_background(cfg)
     if model:
         cfg.agent.model = model
     channel_id = os.environ.get("KIROCREW_CHANNEL_ID") or None

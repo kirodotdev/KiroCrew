@@ -496,7 +496,7 @@ def _kick_otel_crew_log_subscriber(state: DashboardState) -> None:
     the same shape as the ``_kick_*`` calls above it, and nothing is awaited in front
     of the publish.
 
-    A no-op for an unopted host (``telemetry.enabled`` off, the default): the consent
+    A no-op for a host with recording off (``telemetry.enabled`` false): the consent
     read returns, the thread finds nothing to subscribe, and the task ends. The bus
     subscription the install registers is a process-global write guarded by the bus's
     own lock, not loop-bound, so it is safe off the loop; a fold delivered before the
