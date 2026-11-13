@@ -306,10 +306,106 @@ class TestResolveRepoRoots:
         assert roots == [_real(repo)]
 
     def test_linked_worktree_dot_git_file_counts(self, tmp_path):
+        admin = tmp_path / "main" / ".git" / "worktrees" / "wt"
+        admin.mkdir(parents=True)
         wt = tmp_path / "wt"
         wt.mkdir()
-        (wt / ".git").write_text("gitdir: /elsewhere/.git/worktrees/wt\n")
+        (wt / ".git").write_text(f"gitdir: {admin}\n")
         assert touches.resolve_repo_roots([str(wt / "x.py")]) == [_real(wt)]
+
+    def test_a_relative_gitdir_resolves_against_its_folder(self, tmp_path):
+        """A submodule's pointer is relative to the folder holding the ``.git`` file."""
+        (tmp_path / "super" / ".git" / "modules" / "sub").mkdir(parents=True)
+        sub = tmp_path / "super" / "sub"
+        sub.mkdir()
+        (sub / ".git").write_text("gitdir: ../.git/modules/sub\n")
+        assert touches.find_git_root(str(sub)) == str(sub)
+
+    @pytest.mark.parametrize(
+        "pointer",
+        [
+            pytest.param("gitdir: {gone}\n", id="target_missing"),
+            pytest.param("gitdir: ../gone/.git\n", id="relative_target_missing"),
+            pytest.param("gitdir:\n", id="no_path"),
+            pytest.param("not a gitdir line\n", id="not_a_pointer"),
+        ],
+    )
+    def test_a_broken_dot_git_file_is_no_repository(self, tmp_path, pointer):
+        """git cannot open a folder whose ``.git`` file names no git directory
+        ("not a git repository: <path>"), so it is not listed and the follow-up
+        card's branch probe does not offer a worktree there."""
+        broken = tmp_path / "broken"
+        broken.mkdir()
+        gone = tmp_path / "gone" / ".git" / "worktrees" / "broken"
+        (broken / ".git").write_text(pointer.format(gone=gone))
+        assert touches.find_git_root(str(broken)) is None
+        assert touches.resolve_repo_roots([str(broken / "x.py")]) == []
+
+    def test_a_broken_dot_git_file_stops_the_walk(self, tmp_path):
+        """git ends discovery at a broken ``.git`` file instead of climbing on, so a
+        folder carrying one inside a repository is not that repository either."""
+        outer = _init_repo(tmp_path / "outer")
+        vendored = outer / "vendored"
+        vendored.mkdir()
+        (vendored / ".git").write_text("gitdir: ../missing/.git\n")
+        assert touches.find_git_root(str(vendored / "pkg")) is None
+        assert _project_git_branch(_real(vendored)) == {"repo": False}
+
+    @pytest.mark.parametrize(
+        "main, leaf",
+        [
+            pytest.param(b"main-\xff", b"wt", id="non_utf8_byte"),
+            pytest.param(b"main-\nrepo", b"wt", id="embedded_newline"),
+            pytest.param("main-\u2028repo".encode(), b"wt", id="unicode_line_separator"),
+            pytest.param(b"main", b"wt ", id="trailing_space"),
+        ],
+    )
+    def test_a_gitdir_target_keeps_its_filesystem_bytes(self, tmp_path, main, leaf):
+        """git takes everything after ``gitdir: `` up to the final line ending as the
+        path, byte for byte, so a main repository whose path holds a byte that is not
+        UTF-8 or a line break, or a worktree whose name ends in a space, still names
+        an existing git directory, and the linked worktree is a repository."""
+        admin = os.path.join(os.fsencode(tmp_path), main, b".git", b"worktrees", leaf)
+        try:
+            os.makedirs(admin)
+        except (OSError, ValueError) as exc:
+            pytest.skip(f"this filesystem refuses the name {main + leaf!r}: {exc}")
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        (wt / ".git").write_bytes(b"gitdir: " + admin + b"\n")
+        assert touches.find_git_root(str(wt)) == str(wt)
+        assert _project_git_branch(str(wt))["repo"] is True
+
+    @pytest.mark.parametrize(
+        "pointer, opens",
+        [
+            pytest.param(b"gitdir: <admin>\r\n", True, id="crlf"),
+            pytest.param(b"gitdir: <admin>\n\n\r\n", True, id="trailing_blank_lines"),
+            pytest.param(b"gitdir: <admin>\0junk\n", True, id="ends_at_nul"),
+            pytest.param(b"gitdir:<admin>\n", False, id="no_space"),
+            pytest.param(b"gitdir:  <admin>\n", False, id="two_spaces"),
+            pytest.param(b"gitdir: <admin>\nextra\n", False, id="second_line_is_path"),
+            pytest.param(b"gitdir: \0<admin>\n", False, id="empty_before_nul"),
+        ],
+    )
+    def test_the_pointer_is_framed_as_git_frames_it(self, tmp_path, pointer, opens):
+        """git opens a ``.git`` file only after exactly ``gitdir: `` and strips
+        nothing from its path but the trailing line endings, so the same existing
+        directory opens under one framing and not another, both ways."""
+        admin = tmp_path / "main" / ".git" / "worktrees" / "wt"
+        admin.mkdir(parents=True)
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        (wt / ".git").write_bytes(pointer.replace(b"<admin>", os.fsencode(admin)))
+        assert touches.find_git_root(str(wt)) == (str(wt) if opens else None)
+
+    def test_a_dot_git_file_longer_than_the_read_is_not_judged(self, tmp_path):
+        """A pointer not read whole cannot be judged, so the file counts, as an
+        unreadable one does, and git decides when it runs."""
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        (wt / ".git").write_bytes(b"gitdir: /gone/" + b"x" * touches._GITFILE_READ_LIMIT)
+        assert touches.find_git_root(str(wt)) == str(wt)
 
     def test_outside_any_repo_is_dropped(self, tmp_path):
         plain = tmp_path / "plain"
@@ -1245,19 +1341,34 @@ class TestExecutedToolTouches:
         client.available_models = MagicMock(return_value=[])
         client.client.pop_pending_oauth_requests = MagicMock(return_value=[])
 
+        # _run_chat reports an exception from the stream as a failed turn and logs it,
+        # so a check inside `stream` would fail the test only when that error path
+        # happens to raise as well. Keep the stream's own exception and raise it here.
+        stream_errors: list[Exception] = []
+
         async def run_stream(msg):
-            async for event in stream(slot):
-                if event.kind == EVENT_COMPLETE:
-                    yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="Done.")
-                yield event
+            try:
+                async for event in stream(slot):
+                    if event.kind == EVENT_COMPLETE:
+                        yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="Done.")
+                    yield event
+            except Exception as exc:
+                stream_errors.append(exc)
+                raise
 
         client.stream = run_stream
         state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
-        await await_until(
-            asyncio.ensure_future(_run_chat(state, slot, "hello")),
-            what="the tool-touch regression turn completing",
-        )
+        try:
+            await await_until(
+                asyncio.ensure_future(_run_chat(state, slot, "hello")),
+                what="the tool-touch regression turn completing",
+            )
+        except Exception:
+            if not stream_errors:
+                raise
         await TestExecutedToolTouches._walked(slot)
+        if stream_errors:
+            raise stream_errors[0]
         return slot
 
     @staticmethod
@@ -1327,6 +1438,15 @@ class TestExecutedToolTouches:
 
         slot = await self._run(tmp_path, monkeypatch, stream)
         assert slot._git_repos == [_real(repo)]
+
+    @pytest.mark.asyncio
+    async def test_a_check_inside_stream_fails_the_test_itself(self, tmp_path, monkeypatch):
+        async def stream(slot):
+            yield self._proposal("checked", tmp_path / "checked")
+            raise AssertionError("checked inside stream")
+
+        with pytest.raises(AssertionError, match="checked inside stream"):
+            await self._run(tmp_path, monkeypatch, stream)
 
     @pytest.mark.asyncio
     async def test_two_completed_calls_preserve_completion_order(self, tmp_path, monkeypatch):

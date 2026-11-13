@@ -606,18 +606,27 @@ retry. The claim and the op route share one per-session fence
 claim takes the lock first (so no new op starts), cancels the op in flight and is
 confirmed only once the route has left the fence, so a takeover never lands
 inside an op; `in_control` is published only if the lock is still held after the
-claim's own awaits (an Esc in between has already said `live`). A claim on a
+claim's own awaits (an Esc in between has already said `live`). Only a lock
+release leaves `in_control`: a supervisor state reported while the person holds
+the browser (`waiting_allow`, `error`), and a non-`live` state the claim took over,
+is queued on the session and published by the hand-back instead of `live`; the
+turn's fold, a new turn and a started stream drop it. A claim on a
 finished card (`done`, `error`) is refused (409 `turn_over`). **An agent op is
 not lost while the person is in control: it waits for the hand-back and then
 runs**, which is how the agent resumes by itself after a sign-in. The wait lives in
 the TOOL, not in one HTTP call: the op route answers at once with
 `user_in_control` and `hold: true`, and the `browser` tool parks itself as a
-`DeferredTool` (the shim runs one worker thread, and the ACP tool-stall watchdog
-ends a tool call silent for 600 s) that every `HANDBACK_POLL_S` (5 s) posts
+`DeferredTool` (the shim runs one worker thread, and the call has its own silence
+timer on the ACP side, `acp-client.md` "Per-call silence timer") that every `HANDBACK_POLL_S` (5 s) posts
 `/api/browser/handback` -- a short long-poll of at most `HANDBACK_WAIT_S` (3 s) on
 `LiveHub.wait_for_release`, the awaitable the release sets -- and every 30 s pings
-the session keepalive. On `released` the op is posted again and runs. Bounded by
-`HOLD_TIMEOUT_S` (10 minutes) in the shim, after which the agent is told
+the session keepalive with the call's heartbeat (`tool_call_id`, phase
+`waiting_for_handback`), beside the MCP progress note the stdio loop sends. On `released` the op is posted again and runs. Bounded by
+`HOLD_TIMEOUT_S` (10 minutes) from each park, owned by the gateway's hub
+(`LiveSession.parked_until`, one per session, so every call parked there hears
+the end; a re-posted op held again starts a new hold on both sides): a poll after it
+answers `hold_over: true`, and the shim's own deadline is `HOLD_GRACE_S` later,
+only for a gateway that stopped answering. Either way the agent is told
 `user_in_control` ("held for 10 minutes; tell them you are waiting and end your
 turn"). An op the claim cut short mid-flight answers `interrupted` with `hold`:
 the tool waits for the hand-back and then tells the agent to snapshot first; the op
@@ -672,13 +681,18 @@ are dropped. The answer's `delivered` says where it went:
 * `agent`: an agent op of this turn is parked on this takeover: the op route
   answered it `hold` (`LiveHub.park`, `LiveSession.parked`), so the tool polls
   `/api/browser/handback` until the hand-back. The flag is cleared by the
-  hand-back, the turn's start and its end. The hub keeps `{choice, note}` on the
+  hand-back, the turn's start and its end, and it lapses when the hub's hold
+  ends: a hand-back after that goes to chat, never to the turn's next op, and
+  the op's poll answers `hold_over` so the op is not run behind words the agent
+  never sees (`LiveHub.hold_over`). A claim before the poll saw a hand-back parks
+  the op again on the same end, so that earlier hand-back resumes nothing; a note
+  it carried rides on the `hold_over` answer instead. The hub keeps `{choice, note}` on the
   session (`LiveHub.take_handback` takes it once; a second note while one is
   untaken goes to chat); the poll answers `released` with `handed_back`, and the
   tool appends one line to the op's result (or to the `interrupted` text):
   `handed_back: {"choice", "note"}`, marked as the user's own words, not page
-  content. Should the poll go away without taking it, the turn's next op answer
-  carries it.
+  content. Should a poll that was still inside its hold go away without taking
+  it, the turn's next op answer carries it.
 * `chat`: no op is parked -- the turn is between ops (it may end without
   another), a view was reopened after its turn, or the turn ended under the
   takeover. The card fires `mc:browser-handback-chat`
@@ -995,8 +1009,8 @@ the last navigate or snapshot.
 |---|---|
 | `navigate`, `back` | stamp the old document and wait for a new one (or a matching href) with an injected clock |
 | `snapshot` | the accessibility walker, run in the page; refs are per snapshot |
-| `click` | a ref or `x`,`y`; `clicks: 2` is a double click |
-| `drag`, `hover`, `scroll` | ref or coordinates (`mouse_move` / `drag` helpers) |
+| `click` | a ref or `x`,`y`; `clicks: 2` is a double click. A ref is scrolled into view once, then re-measured without scrolling every 0.1 s until two reads in a row agree within 1 px (at most 6 re-reads), so a page that moves its layout on scroll is clicked where the target settled; a ref that measures empty to the end is refused `ref_stale` |
+| `drag`, `hover`, `scroll` | ref or coordinates (`mouse_move` / `drag` helpers); a ref settles as for `click` |
 | `type` | refuses a password field twice: by the ref's type and by whatever holds focus when the text would land |
 | `press_key`, `select_option`, `wait_for` (text / textGone / time / load), `console` | as named |
 | `screenshot` | writes a PNG under the screenshot directory below and returns its absolute path |
@@ -1344,9 +1358,11 @@ The config section is `browser`: `choice`, `live.enabled`, `live.quality`,
 
 `dashboard.use_builtin_browser` and `dashboard.browser_view_port` configured the
 agent browser this stack replaced. They are no longer fields. A `config.json`
-that still carries them loads, logs ONE warning naming them
-(`config/resolution.py`, `warn_retired_section_keys`), and drops them on the
-next save (`_SECTION_KEYS_DELIBERATELY_DROPPED`). `PUT /api/dashboard/config`
+that still carries them loads, logs ONE warning naming each one whose value
+differs from the default older builds wrote into every config they saved
+(`use_builtin_browser: true`, `browser_view_port: 0`; `config/resolution.py`,
+`warn_retired_section_keys`), and drops them on the next save
+(`_SECTION_KEYS_DELIBERATELY_DROPPED`). `PUT /api/dashboard/config`
 no longer accepts `use_builtin_browser`, and the change-card catalog no longer
 offers `browser.use-the-built-in-browser`.
 

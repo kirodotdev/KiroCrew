@@ -78,20 +78,15 @@ _FOUND_ONLY = (
 #: Remove an entry when its site is fixed; ``test_every_known_site_still_matches``
 #: fails on a stale one so the list cannot outlive the code.
 _KNOWN: dict[str, str] = {
-    "kiro_crew/apps/backend_runtime/pidfile.py::_forget_app_pid": _UNAUDITED,
-    "kiro_crew/apps/backend_runtime/pidfile.py::_forget_app_pid_if": _UNAUDITED,
-    "kiro_crew/apps/backend_runtime/pidfile.py::_record_app_pid": _UNAUDITED,
-    "kiro_crew/apps/backend_runtime/stale_reap.py::_reap_stale_app_backends": _UNAUDITED,
-    "kiro_crew/apps/builtins/meetings/backend/providers/tasks.py::"
-    "LocalTaskProvider._create_locked": _UNAUDITED,
+    "kiro_crew/apps/backend_runtime/pidfile.py::_forget_app_pid": _FOUND_ONLY,
+    "kiro_crew/apps/backend_runtime/pidfile.py::_forget_app_pid_if": _FOUND_ONLY,
     "kiro_crew/apps/builtins/ops_mission_control/backend/ledger_index.py::import_pending": (
         "union write: an empty base re-checks ids on the next import (see _read_cursor)"
     ),
     "kiro_crew/apps/builtins/pptx_maker/backend/routes.py::_write_deck_root": _UNAUDITED,
     "kiro_crew/apps/builtins/spec_builder/backend/repository.py::_forget_deleted": _UNAUDITED,
     "kiro_crew/apps/dependency_ledger.py::record_uninstall": _FOUND_ONLY,
-    "kiro_crew/apps/dev_mode.py::remove_dev_app": _UNAUDITED,
-    "kiro_crew/apps/dev_mode.py::set_dev_mode": _UNAUDITED,
+    "kiro_crew/apps/dev_mode.py::remove_dev_app": _FOUND_ONLY,
     "kiro_crew/autonudge_selfarm.py::forget_self_arm": _UNAUDITED,
     "kiro_crew/autonudge_selfarm.py::record_self_arm": _UNAUDITED,
     "kiro_crew/aws_consent.py::record_grant": _PRESERVES,
@@ -104,10 +99,8 @@ _KNOWN: dict[str, str] = {
     "record_built": _UNAUDITED,
     "kiro_crew/connections/mint.py::_forget_mint_spec": _FOUND_ONLY,
     "kiro_crew/connections/mint.py::_sweep_mint_specs": _FOUND_ONLY,
-    "kiro_crew/dashboard/handlers/mcp_config_entries.py::_replace_kirocrew_spec": _UNAUDITED,
-    "kiro_crew/dashboard/handlers/mcp_config_entries.py::_rmw_remove_entry": _UNAUDITED,
-    "kiro_crew/dashboard/handlers/mcp_config_entries.py::_set_kirocrew_entry": _UNAUDITED,
-    "kiro_crew/dashboard/handlers/mcp_config_entries.py::_set_tool_overrides": _UNAUDITED,
+    "kiro_crew/dashboard/handlers/mcp_config_entries.py::_replace_kirocrew_spec": _FOUND_ONLY,
+    "kiro_crew/dashboard/handlers/mcp_config_entries.py::_rmw_remove_entry": _FOUND_ONLY,
     "kiro_crew/irq.py::run.persist": "load_state documents a lost state as one duplicate wake",
     "kiro_crew/ledger_wake.py::forget_items": "_read_rate documents a lost map as one extra wake",
     "kiro_crew/ledger_wake.py::note_wake": "_read_rate documents a lost map as one extra wake",

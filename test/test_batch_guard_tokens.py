@@ -301,6 +301,33 @@ def test_a_resumed_session_passes_a_minted_id_its_resumed_text_showed():
     assert window.refusal_for("s", guard.WRITE) is None
 
 
+@pytest.mark.parametrize("tool", ["session_create", "session_fork", "work_dispatch"])
+def test_a_resumed_session_refuses_a_session_key_guessed_next_to_a_session_creator(tool):
+    # The same rule as for a ledger create: after a resume the restored history
+    # may hold any key, but a key the resumed text never showed, named in the
+    # batch of a tool that returns a new one, is still a guess.
+    guard = _guard()
+    create = _event(
+        tool_call_id="c",
+        tool_name=tool,
+        mcp_server_name="kirocrew-dashboard",
+        mcp_identity_trusted=True,
+        tool_input=json.dumps({"title": "reviewer"}),
+    )
+    window = guard.BatchWindow()
+    guard.mark_resumed(window)
+    guard.note_dispatched(window, create)
+    window.dispatched("s", guard.WRITE, text="send to chat-4046-1793158739")
+    assert window.refusal_for("s", guard.WRITE) is not None
+
+    shown = guard.BatchWindow()
+    guard.mark_resumed(shown)
+    guard.note_prompt(shown, "Your worker is chat-4046-1793158739.")
+    guard.note_dispatched(shown, create)
+    shown.dispatched("s", guard.WRITE, text="send to chat-4046-1793158739")
+    assert shown.refusal_for("s", guard.WRITE) is None
+
+
 def test_a_resumed_session_still_needs_proof_for_a_sha():
     guard = _guard()
     window = guard.BatchWindow()
@@ -464,9 +491,9 @@ def test_an_envelope_naming_another_tool_is_not_unwrapped():
             tool_input=json.dumps({"action": "bind", "item_id": "it_9fc6cc99"}),
         ),
         _event(tool_name="work_report", mcp_server_name="kirocrew-work", mcp_identity_trusted=True),
-        # Not write-class on main, so never a creator.
+        # A session tool that returns no new key.
         _event(
-            tool_name="session_create",
+            tool_name="session_status",
             mcp_server_name="kirocrew-dashboard",
             mcp_identity_trusted=True,
         ),
@@ -475,6 +502,14 @@ def test_an_envelope_naming_another_tool_is_not_unwrapped():
 )
 def test_a_call_that_mints_nothing_is_not_a_creator(event):
     assert _guard().is_creator(event) is False
+
+
+@pytest.mark.parametrize("tool", ["session_create", "session_fork", "work_dispatch"])
+def test_a_session_tool_that_returns_a_new_key_is_a_creator_and_stays_unjudged(tool):
+    event = _event(tool_name=tool, mcp_server_name="kirocrew-dashboard", mcp_identity_trusted=True)
+    assert _guard().is_creator(event) is True
+    # Not write-class: the guard never refuses the create itself.
+    assert _guard().classify(event) == ""
 
 
 @pytest.mark.parametrize(

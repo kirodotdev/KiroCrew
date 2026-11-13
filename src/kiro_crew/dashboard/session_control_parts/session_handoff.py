@@ -41,7 +41,7 @@ from kiro_crew.dashboard.session_control_parts.session_tree import (
     _tree_mutation_lock,
 )
 from kiro_crew.dashboard.session_control_parts.target_authorization import authorize_target
-from kiro_crew.dashboard.state import MAX_SLOTS_PER_CREATOR
+from kiro_crew.dashboard.state import creator_slot_cap_refusal
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -184,14 +184,9 @@ async def handoff_target(
             if (
                 getattr(slot, "_revived_by", "") != receiver.key
                 and getattr(slot, "_created_by", "") != receiver.key
-                and state.creator_slot_count(receiver.key) >= MAX_SLOTS_PER_CREATOR
+                and (cap_reason := creator_slot_cap_refusal(state, receiver.key)) is not None
             ):
-                raise SessionControlError(
-                    f"{receiver.key!r} already holds the per-caller slot cap "
-                    f"({MAX_SLOTS_PER_CREATOR})",
-                    code="creator_slot_cap_reached",
-                    status=409,
-                )
+                raise SessionControlError(cap_reason, code="creator_slot_cap_reached", status=409)
             tab = str(getattr(slot, "_tab_id", "") or "")
             # ``authorize_target`` found the receiver open, and nothing suspends between
             # it and this write. A close that lands during the write pops the receiver,

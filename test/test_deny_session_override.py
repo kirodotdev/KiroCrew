@@ -43,6 +43,7 @@ from kiro_crew.dashboard.chat import _run_chat
 from kiro_crew.dashboard.deny_override import (
     DENY_OVERRIDE_META_KEY,
     deny_key_family,
+    deny_key_note_label,
     override_decision,
     override_offer_key,
     slot_deny_waivers,
@@ -398,6 +399,72 @@ async def _run_answered(state, slot, answer: str):
         await _drain(task)
 
 
+class TestOverrideIsNeverRelayedToACodeChannel:
+    @pytest.mark.asyncio
+    async def test_a_code_channel_workers_override_card_stays_on_the_dashboard(
+        self, tmp_path, monkeypatch
+    ):
+        """A Slack Code channel relays its workers' prompts into the channel, but
+        an override is answered on the dashboard alone (as the linked mirror
+        rules): a Slack Approve would be read as a decline under an approved card."""
+        # The turn resolves the relay through chat_runner's composed namespace.
+        from kiro_crew.dashboard import chat_runner
+
+        _no_pins(monkeypatch)
+        state, client = _make_state(tmp_path, context_builder=_scripted_gate([_RM_ROOT]))
+        slot = _make_slot()
+        slot._created_by = "chat-1-1"  # a worker a code channel's session created
+        relayed: list[object] = []
+
+        def relay(*args, **kwargs):
+            relayed.append(args)
+            return None
+
+        monkeypatch.setattr(chat_runner, "start_worker_approval_relay", relay)
+        _set_stream(client, _stream())
+
+        await _run_answered(state, slot, "deny_override_once")
+
+        assert _permission_rows(slot), "the override card is still shown on the dashboard"
+        assert relayed == []
+        client.approve_tool.assert_called_once_with("req-1", deny_waivers=frozenset({_RM_ROOT}))
+
+    @pytest.mark.asyncio
+    async def test_a_relayed_mcp_prompt_carries_its_trusted_identity(self, tmp_path, monkeypatch):
+        """The runner hands the relay the event's MCP identity, so the channel's
+        card names the proven server/tool, not only the model-written title."""
+        from kiro_crew.dashboard import chat_runner
+
+        _no_pins(monkeypatch)
+        state, client = _make_state(tmp_path, context_builder=_scripted_gate([]))
+        slot = _make_slot()
+        slot._created_by = "chat-1-1"
+        relayed: list[dict] = []
+
+        def relay(*args, **kwargs):
+            relayed.append(kwargs)
+            return None
+
+        monkeypatch.setattr(chat_runner, "start_worker_approval_relay", relay)
+        event = _shell_event(
+            title="email_send",
+            tool_kind="other",
+            tool_input="{}",
+            is_shell=False,
+            mcp_server_name="mail",
+            tool_name="send",
+            mcp_identity_trusted=True,
+        )
+        _set_stream(client, _stream(event))
+
+        await _run_answered(state, slot, "approved")
+
+        assert relayed, "the prompt reached the code-channel relay"
+        assert relayed[-1]["mcp_server_name"] == "mail"
+        assert relayed[-1]["tool_name"] == "send"
+        assert relayed[-1]["mcp_identity_trusted"] is True
+
+
 class TestDashboardOverrideCard:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("mode", ["normal", "trust", "yolo"])
@@ -423,6 +490,25 @@ class TestDashboardOverrideCard:
         client.approve_tool.assert_called_once_with("req-1", deny_waivers=frozenset({_RM_ROOT}))
         client.reject_tool.assert_not_called()
         assert slot._deny_waivers == set()
+
+    @pytest.mark.asyncio
+    async def test_an_override_card_gets_no_chat_app_buttons(self, tmp_path, monkeypatch):
+        # A plain Approve from a chat app refuses an override card's call, so the
+        # bridged note must not offer one: the dashboard alone answers it.
+        _no_pins(monkeypatch)
+        handed: list[dict] = []
+        monkeypatch.setattr(
+            "kiro_crew.notifications.bridge_approval_note.schedule_pending_approval",
+            lambda state, fut, **kw: handed.append(kw),
+        )
+        state, client = _make_state(tmp_path, context_builder=_scripted_gate([_RM_ROOT]))
+        slot = _make_slot()
+        _set_stream(client, _stream())
+
+        await _run_answered(state, slot, "deny_override_once")
+
+        [kw] = handed
+        assert kw["answerable"] is False
 
     @pytest.mark.asyncio
     async def test_card_asks_for_no_rejection_reason(self, tmp_path, monkeypatch):
@@ -593,6 +679,76 @@ class TestDenyKeyFamily:
     def test_operator_or_unknown_key_has_none(self, key):
         # The client shows its generic line for an empty family.
         assert deny_key_family(key) == ""
+
+
+def _code_span_content(label: str) -> str:
+    """What a CommonMark parser reads out of the inline code span *label* is."""
+    fence = label[: len(label) - len(label.lstrip("`"))]
+    assert fence, f"not a code span: {label!r}"
+    assert label.endswith(fence), f"unbalanced fence: {label!r}"
+    inner = label[len(fence) : -len(fence)]
+    if inner.startswith(" ") and inner.endswith(" ") and inner.strip():
+        inner = inner[1:-1]
+    return inner
+
+
+class TestDenyKeyNoteLabel:
+    """How the transcript notice names a waived rule: an id when there is one, and
+    never a bare pattern -- the row renders markdown, so an unfenced regex is
+    reparsed and the rule it quotes comes out a different rule."""
+
+    def test_a_pattern_is_named_by_its_rule_id(self):
+        from kiro_crew.security import denied_rules
+
+        rule = next(r for r in denied_rules.BUILTIN_DENIED_RULES if r.pattern != r.id)
+        assert deny_key_note_label(rule.pattern) == f"`{rule.id}`"
+
+    def test_an_id_passes_through(self):
+        assert deny_key_note_label("self-protection-restart") == "`self-protection-restart`"
+
+    def test_an_operator_pattern_survives_the_markdown_pass(self):
+        # The shape the notice got wrong: a backtick pair (the command-substitution
+        # alternative) and a `*` pair, both of which markdown consumes.
+        pattern = r"`command\s+-v\s+tb`[^;&|\n]*\sinstall"
+        label = deny_key_note_label(pattern)
+        assert _code_span_content(label) == pattern
+        # The fence outgrew the backticks inside it, so neither can close the span.
+        assert label.startswith("``") and label.endswith("``")
+
+    def test_an_operator_pattern_is_trimmed_at_both_ends(self):
+        # The boilerplate head every deny pattern shares, then the part that
+        # actually names the rule -- which a head-only elision would drop.
+        boilerplate = r"(?:\A|[;&|\n ])(?:sudo|env|nohup)\s+" * 4
+        pattern = boilerplate + r"toolbox\s+install\s+kirocrew(?![\w-])"
+        inner = _code_span_content(deny_key_note_label(pattern))
+        assert len(inner) <= 72
+        head, _, tail = inner.partition("…")
+        assert head and tail, f"nothing elided: {inner!r}"
+        assert pattern.startswith(head)
+        assert pattern.endswith(tail)
+        assert "kirocrew(?![\\w-])" in tail
+
+    def test_a_newline_inside_a_pattern_cannot_end_the_paragraph(self):
+        assert _code_span_content(deny_key_note_label("a\nb")) == "a b"
+
+    @pytest.mark.parametrize("key", ["", "   "])
+    def test_a_nameless_key_says_so(self, key):
+        # Still a sentence a person can read, rather than "Security rule  overridden".
+        assert deny_key_note_label(key) == "(unnamed)"
+
+    def test_the_transcript_row_carries_the_label(self):
+        from kiro_crew.dashboard.chat_turn.tool_approval import (
+            DenyOverrideOffer,
+            _note_override_used,
+        )
+
+        rows: list[tuple] = []
+        slot = SimpleNamespace(append=lambda *a, **k: rows.append(a))
+        pattern = r"toolbox\s+install[^;&|\n]*\skirocrew"
+        _note_override_used(slot, DenyOverrideOffer(key=pattern, reason="", scope="session"))
+        _role, text, _cls = rows[0]
+        assert f"`{pattern}`" in text
+        assert text.endswith("overridden for the rest of this session.")
 
 
 class TestIneligibleKeepsTodaysRefusal:
@@ -1309,7 +1465,13 @@ class TestApproveRouteEndToEnd:
             if c.args[0] == "approval_resolved"
         ]
         assert frames == [
-            {"id": "rid-1", "approved": True, "slot": slot.key, "mid": body["request_mid"]}
+            {
+                "id": "rid-1",
+                "approved": True,
+                "slot": slot.key,
+                "mid": body["request_mid"],
+                "origin": "native",
+            }
         ]
 
     @pytest.mark.asyncio

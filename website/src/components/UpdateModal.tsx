@@ -4,7 +4,7 @@ import { AlertTriangle, Download, Loader2, X } from 'lucide-react'
 
 import { i18nT } from '../i18n/t'
 import type { UpdateState } from '../hooks/useUpdateSubscription'
-import { gatewayStopCommand } from '../hooks/useUpdateSubscription'
+import { editionOwnsUpdatePrompts, gatewayStopCommand } from '../hooks/useUpdateSubscription'
 import { useInstallDispatch } from '../hooks/useInstallDispatch'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
 import { CopyCommand } from './agentHarness/CopyCommand'
@@ -58,10 +58,12 @@ function UpdateReadyDialog({ label, children }: { label: string; children: React
  *
  * Consumes the shared ['update-state'] query cache populated by the
  * useUpdateSubscription hook (mounted once in shell/appShell.tsx). When an update has
- * finished downloading we surface this modal so the user can restart-and-
- * install on their terms. "Install Update & Restart App" calls back into Electron, which
- * stops the bundled gateway gracefully before ShipIt swaps the .app bundle,
- * then relaunches.
+ * finished downloading we surface this modal so the user can choose when it
+ * installs. "Install when I quit" only ARMS the update: nothing stops or
+ * restarts while the app runs, and the install happens on the user's own quit,
+ * after the bundled gateway has stopped. Once armed (the main process re-emits
+ * 'downloaded' with `armed: true`) the dialog says so and offers "Restart now",
+ * a plain quit and relaunch whose quit applies the armed update.
  *
  * Replayed states (payload.replayed — seeded from getInfo() after a renderer
  * reload) never open the modal: the user already saw and possibly dismissed
@@ -84,28 +86,41 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
     staleTime: Infinity,
   })
 
-  const [dismissed, setDismissed] = useState(false)
+  // Which surface the user closed: the "update ready" dialog or the install
+  // takeover. One value names it, so closing the dialog never hides a later
+  // install started from Settings > About.
+  const [dismissed, setDismissed] = useState<'ready' | 'takeover' | null>(null)
   // Re-open on each fresh "downloaded" event (version change resets dismiss).
   // Replayed payloads are excluded from both the reset and the open: a reload
   // must not undo the user's dismissal of this same staged version.
   const [lastVersion, setLastVersion] = useState<string | undefined>(undefined)
   if (update?.state === 'downloaded' && !update.replayed && update.version !== lastVersion) {
     setLastVersion(update.version)
-    setDismissed(false)
+    setDismissed(null)
   }
+  // A new install attempt shows its takeover again, even after the user left
+  // an earlier failure with Back to dashboard.
+  if (update?.state === 'installing' && dismissed === 'takeover') setDismissed(null)
 
   // Install-and-restart, with its one-way latch and the reset for a refused or
   // aborted handoff (see useInstallDispatch).
-  const { installMutation, dispatched: installing, dispatchInstall } = useInstallDispatch(update)
+  const {
+    installMutation, dispatched: installing, dispatchInstall,
+    armed, canArmOnQuit, canRestartNow, restartNow, restartNowPending, restartNowFailed,
+  } = useInstallDispatch(update)
 
-  const open = !!update && update.state === 'downloaded' && !update.replayed && !dismissed && !held
+  // An edition whose own update widget owns the prompts (editionOwnsUpdatePrompts)
+  // gets no ready dialog: on its lane `downloaded` also answers an arm the widget
+  // made, and the widget already says when that update installs.
+  const open = !!update && update.state === 'downloaded' && !update.replayed && dismissed === null && !held
+    && !editionOwnsUpdatePrompts(update)
 
   // Escape dismisses the modal (unless an install is in flight), matching the
   // backdrop-click affordance and keeping the overlay keyboard-accessible.
   useEffect(() => {
     if (!open) return
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !installing) setDismissed(true)
+      if (e.key === 'Escape' && !installing) setDismissed('ready')
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
@@ -135,7 +150,7 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
       <ErrorNotice
         variant="inline"
         askAgent
-        onHandoff={() => setDismissed(true)}
+        onHandoff={() => setDismissed('takeover')}
         message={i18nT('pages.settings.aboutPanel.update_error_gateway_still_running')}
         testId="update-modal-gateway-refusal"
       />
@@ -143,7 +158,7 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
     </div>
   ) : null
   const showsWindowsInstaller = update?.installHandoff === 'windows-installer'
-  const takeover = (update?.state === 'installing' || installFailed) && !dismissed
+  const takeover = update?.state === 'installing' || (installFailed && dismissed !== 'takeover')
   // The takeover takes focus when it appears. The "update ready" dialog it
   // replaces gives focus back to its opener as it unmounts, and that opener now
   // sits hidden under this screen. This effect runs after that restore.
@@ -172,7 +187,7 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
                 <ErrorNotice
                   variant="inline"
                   askAgent
-                  onHandoff={() => setDismissed(true)}
+                  onHandoff={() => setDismissed('takeover')}
                   message={i18nT('components.updateModal.install_failed_body')}
                   testId="update-modal-install-failed"
                 />
@@ -181,7 +196,7 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
             <button
               type="button"
               className="mt-1 px-3 py-1.5 text-sm rounded-md bg-accent text-accent-fg hover:opacity-90 cursor-pointer"
-              onClick={() => setDismissed(true)}
+              onClick={() => setDismissed('takeover')}
             >
               {i18nT('components.updateModal.back_to_dashboard')}
             </button>
@@ -204,7 +219,7 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
 
   const version = update!.version || ''
   const notes = (update!.notes || '').trim()
-  const dismiss = () => { if (!installing) setDismissed(true) }
+  const dismiss = () => { if (!installing) setDismissed('ready') }
   // The header is the dialog's status claim, so it follows a rejected request:
   // "Update ready" above a failure notice would leave both standing. Each key
   // stays a literal argument so the i18n key gate can resolve it.
@@ -256,19 +271,40 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
           {/* While the request has failed, the failure notice below is the only
               status claim: "ready to install" beside "failed to install" leaves
               the reader unable to tell which is true, or whether retrying helps. */}
-          {!installMutation.isError && (
+          {!installMutation.isError && !armed && (
             <p>{i18nT('components.updateModal.kirocrew')} {version && <span className="font-semibold">{version}</span>} {i18nT('components.updateModal.is_downloaded_and_ready_to_install')}</p>
+          )}
+          {armed && (
+            <p data-testid="update-modal-armed">{i18nT('components.updateModal.armed_installs_on_quit', { version })}</p>
           )}
           {notes && (
             <p className="mt-2 text-[13px] text-muted whitespace-pre-wrap max-h-40 overflow-auto">{notes}</p>
           )}
           {/* Not beside a failed request: "will close and relaunch automatically"
               would contradict the failure notice below it. */}
-          {!installMutation.isError && (
+          {!canArmOnQuit && !armed && (
+            <p className="mt-2 text-[12px] text-muted" data-testid="update-modal-app-too-old">
+              {i18nT('components.updateModal.armed_app_too_old')}
+            </p>
+          )}
+          {!installMutation.isError && !armed && canArmOnQuit && (
             <p className="mt-2 text-[12px] text-muted">
-              {i18nT('components.updateModal.install_restart_timing')}
+              {i18nT('components.updateModal.install_on_quit_timing')}
               {showsWindowsInstaller && ` ${i18nT('components.updateModal.windows_installer_handoff')}`}
             </p>
+          )}
+          {/* The restart request itself was refused or threw: nothing restarted,
+              and the update is still armed for the next quit. */}
+          {armed && restartNowFailed && (
+            <div className="mt-2">
+              <ErrorNotice
+                variant="inline"
+                message={i18nT('components.updateModal.restart_now_failed')}
+                askAgent
+                onHandoff={() => setDismissed('ready')}
+                testId="update-modal-restart-error"
+              />
+            </div>
           )}
           {/* The install IPC itself rejected (the main process threw before any
               update state was pushed), so nothing else on screen reports it and
@@ -280,7 +316,7 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
                 variant="inline"
                 message={i18nT('pages.settings.aboutPanel.update_error_install_unknown')}
                 askAgent
-                onHandoff={() => setDismissed(true)}
+                onHandoff={() => setDismissed('ready')}
                 testId="update-modal-install-error"
               />
             </div>
@@ -296,18 +332,31 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
           >
             {i18nT('components.updateModal.later')}
           </button>
-          <button
-            type="button"
-            className="px-3 py-1.5 text-sm rounded-md bg-accent text-accent-fg hover:opacity-90 cursor-pointer disabled:opacity-50"
-            onClick={dispatchInstall}
-            disabled={installing}
-          >
-            {installing
-              ? i18nT('components.updateModal.restarting')
-              : installMutation.isError
+          {armed ? (
+            canRestartNow && (
+              <button
+                type="button"
+                className="px-3 py-1.5 text-sm rounded-md bg-accent text-accent-fg hover:opacity-90 cursor-pointer disabled:opacity-50"
+                onClick={restartNow}
+                disabled={restartNowPending}
+              >
+                {restartNowPending
+                  ? i18nT('components.updateModal.restarting')
+                  : i18nT('components.updateModal.restart_now')}
+              </button>
+            )
+          ) : canArmOnQuit && (
+            <button
+              type="button"
+              className="px-3 py-1.5 text-sm rounded-md bg-accent text-accent-fg hover:opacity-90 cursor-pointer disabled:opacity-50"
+              onClick={dispatchInstall}
+              disabled={installing}
+            >
+              {installMutation.isError
                 ? i18nT('pages.settings.aboutPanel.try_again')
-                : i18nT('components.updateModal.restart_update')}
-          </button>
+                : i18nT('components.updateModal.install_on_quit')}
+            </button>
+          )}
         </div>
       </UpdateReadyDialog>
     </div>

@@ -854,6 +854,10 @@ class TestEnsureInstanceBoundary:
         with pytest.raises(aws.AWSError, match="iam:GetPolicy") as excinfo:
             source.ensure_instance_boundary("dev", "us-east-1")
         assert excinfo.value.missing_action == "iam:GetPolicy"
+        assert str(excinfo.value).startswith(
+            "could not read the permissions boundary 'kirocrew-ec2-boundary': grant "
+            "`iam:GetPolicy` (see `kirocrew cloud iam-policy`) and retry — "
+        )
         assert "iam:CreatePolicy" not in str(excinfo.value)
         assert ["iam", "create-policy"] not in calls
 

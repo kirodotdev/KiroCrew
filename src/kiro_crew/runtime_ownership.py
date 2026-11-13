@@ -90,7 +90,7 @@ import uuid
 from collections import Counter
 from collections.abc import Awaitable, Callable, Hashable, Iterable, Iterator, MutableSet
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -185,14 +185,34 @@ class _Entry:
     carries a race budget for exactly that), and both starts must be releasable
     on their own: if the two shared one reference, the loser's teardown would
     drop it and the winner's live process would be killed mid-turn.
+
+    Those two starts are nevertheless kept on SEPARATE processes, which is what
+    :meth:`admits` is for -- see the note on one session per process below.
     """
 
     runtime: OwnedRuntime
     key: Hashable
     leases: dict[str, str] = field(default_factory=dict)
+    # Closed to joins (:meth:`RuntimeOwnership.close_to_joins`): the process keeps
+    # its current holders and dies with the last of them, but no new lease lands.
+    closed: bool = False
 
     def has_room(self, cap: int) -> bool:
-        return len(self.leases) < cap
+        return not self.closed and len(self.leases) < cap
+
+    def admits(self, session_key: str, *, cap: int) -> bool:
+        """Whether a lease for *session_key* may land here: room, and not its own.
+
+        Room alone is not enough. One session key already holding a lease here is
+        a start of that session in flight or registered, and a SECOND start of the
+        same session on this process resumes the same persisted session id on it.
+        That id is one slot in the process: the two loads share the replay counter
+        and the session queue, and the load that reads the counter second sees no
+        replayed turn and evicts the id -- taking the winning start's live session
+        and its response routing with it. So they are kept apart, which is also
+        the behaviour when sharing is off and each start spawns its own process.
+        """
+        return self.has_room(cap) and session_key not in self.leases.values()
 
     def session_keys(self) -> list[str]:
         return sorted(set(self.leases.values()))
@@ -222,15 +242,22 @@ class Acquisition:
 class _Founding:
     """A spawn in flight for *key*, which same-key arrivals may wait on.
 
-    ``reserved`` counts the founder plus every waiter that has chosen to wait, so
-    an arrival waits only while the runtime being launched will still have room
-    for it. ``done`` resolves when the founding ends, published or not, and only
-    tells a waiter to look again -- never what it found.
+    ``sessions`` holds the session key of the founder plus of every waiter that
+    has chosen to wait, so an arrival waits only while the runtime being launched
+    will still have room for it. It is a list of keys rather than a count because
+    the room question is not the only one: a second start of a session already
+    reserved here may not join the runtime being launched (:meth:`_Entry.admits`),
+    so waiting for it would only delay the own process it must take -- and for a
+    person's foreground claim racing a background start, that wait is exactly the
+    one the allocator's priorities exist to avoid.
+
+    ``done`` resolves when the founding ends, published or not, and only tells a
+    waiter to look again -- never what it found.
     """
 
     key: Hashable
     done: asyncio.Future[None]
-    reserved: int = 1
+    sessions: list[str] = field(default_factory=list)
 
 
 class RuntimeOwnership:
@@ -272,13 +299,16 @@ class RuntimeOwnership:
         Placement: the runtime this session key last landed on, when it is still
         alive, compatible and has room -- which keeps a restart on the process
         its history is on -- then the first compatible runtime with room,
-        otherwise ``spawn()``. Compatible means an equal *key*, and room means
-        fewer than *cap* leases are held on it.
+        otherwise ``spawn()``. Compatible means an equal *key*, room means fewer
+        than *cap* leases are held on it, and a runtime already serving a lease
+        for THIS session key is neither (:meth:`_Entry.admits`).
 
         Every call mints its OWN lease, including a second call for a session key
         that already holds one. That is the point rather than an oversight: the
         allocator legitimately starts one session twice at once, and each start
-        has to be releasable without ending the other.
+        has to be releasable without ending the other. Those two starts land on
+        two processes, for the reason :meth:`_Entry.admits` gives: the second one
+        spawns no matter how much room the first one's runtime has.
 
         At ``cap=1`` no entry with a lease has room, so every acquisition spawns
         and serves exactly one lease -- which is the unpooled behaviour, with the
@@ -300,21 +330,31 @@ class RuntimeOwnership:
             if entry is not None:
                 return self._mint(entry, session_key, cap=cap, joined=True)
             founding = next(
-                (f for f in self._foundings if f.key == key and f.reserved < cap),
+                (
+                    f
+                    for f in self._foundings
+                    if f.key == key and len(f.sessions) < cap
+                    # Same rule as _Entry.admits, one step earlier: this session
+                    # could not join the runtime being launched, so it founds its
+                    # own now instead of waiting out a launch it must then leave.
+                    and session_key not in f.sessions
+                ),
                 None,
             )
             if founding is None:
                 break
-            founding.reserved += 1
+            founding.sessions.append(session_key)
             try:
                 # Shielded: a waiter's cancellation must not cancel the shared
                 # signal every other waiter is parked on.
                 await asyncio.shield(founding.done)
             finally:
                 if not founding.done.done():
-                    founding.reserved -= 1
+                    founding.sessions.remove(session_key)
 
-        founding = _Founding(key=key, done=asyncio.get_running_loop().create_future())
+        founding = _Founding(
+            key=key, done=asyncio.get_running_loop().create_future(), sessions=[session_key]
+        )
         self._foundings.append(founding)
         try:
             runtime = await spawn()
@@ -409,6 +449,25 @@ class RuntimeOwnership:
             total += len(entry.leases)
         return total
 
+    def close_to_joins(self, pid: int) -> int:
+        """Stop new leases landing on the live runtime(s) on *pid*; how many closed.
+
+        For a shared process that must be reclaimed while co-tenants still hold
+        it: recycling one co-tenant releases one lease and frees nothing, and a
+        recycled or returning chat with the same key would join the same process.
+        Closed, every such start founds a new process, and this one drains and is
+        killed by the release of its last lease. Never reopened.
+        """
+        closed = 0
+        for entry in self._entries:
+            if entry.closed or _pid_of(entry.runtime) != pid or not self._alive(entry):
+                continue
+            entry.closed = True
+            closed += 1
+        if closed:
+            logger.info("runtime_ownership outcome=closed_to_joins pid=%s", pid)
+        return closed
+
     def lease_keys_on_pid(self, pid: int) -> frozenset[str]:
         """WHICH sessions hold a live lease on *pid*, for the auth boundary.
 
@@ -462,12 +521,12 @@ class RuntimeOwnership:
             sticky is not None
             and any(e is sticky for e in self._entries)
             and sticky.key == key
-            and sticky.has_room(cap)
+            and sticky.admits(session_key, cap=cap)
             and self._alive(sticky)
         ):
             return sticky
         for entry in self._entries:
-            if entry.key == key and entry.has_room(cap) and self._alive(entry):
+            if entry.key == key and entry.admits(session_key, cap=cap) and self._alive(entry):
                 return entry
         return None
 
@@ -1217,6 +1276,84 @@ def _lease_holder(provider: object) -> object | None:
     return None
 
 
+def holds_runtime_lease(provider: object) -> bool:
+    """Whether *provider* currently holds an outstanding runtime lease.
+
+    True when the lease holder's slot carries a lease STRING. This is NOT a
+    sharing-eligibility test: a registered non-sharing chat also takes a lease at
+    registration (``acquire_session_lease``), so it answers True too. A provider
+    with no lease slot, or an empty one -- a provider before registration, a
+    non-ACP backend, a test double -- answers False. For the shared-vs-default
+    question use :func:`is_shared_chat_runtime`, which reads ``_shared_runtime``.
+    A failed-start cleanup uses THIS to tell a provider that has already taken a
+    lease (tear down through its own shutdown, which evicts its session and kills
+    only the last holder) from one that has not (keep the unconditional hard
+    kill): before registration no lease is held, so that cleanup is authorized.
+
+    Duck-typed via :func:`_lease_holder`, so a ``MagicMock`` provider (whose
+    ``_runtime_lease`` resolves to a mock, not ``None`` or a string) is NOT
+    recognised as a holder and answers False -- the non-sharing behaviour the
+    kill-path tests pin.
+    """
+    holder = _lease_holder(provider)
+    if holder is None:
+        return False
+    return isinstance(getattr(holder, "_runtime_lease", None), str)
+
+
+def is_shared_chat_runtime(provider: object) -> bool:
+    """Whether *provider* runs on a SHARED chat runtime (founder or joiner).
+
+    The discriminator for the ownerless control-frame gates in
+    ``chat_runner._run_chat``: only a chat-shared runtime fans a `/clear`,
+    agent-switch or compaction frame to a peer, so the gates that protect a
+    co-tenant must engage ONLY here. A non-sharing session -- the shipped
+    default (chat sharing off), a subagent, a cron/task session -- answers
+    False, so those branches run byte-identically to base for it.
+
+    Reads ``_shared_runtime`` (set from ``chat_share_key is not None`` when the
+    provider is built), which is the same flag ``AcpSessionProvider._chat_turn_gate``
+    uses to decide whether to serialize the turn. A runtime LEASE does NOT tell
+    the two apart: the unshared path also takes a lease at registration
+    (``acquire_session_lease``), so every registered chat holds a lease string
+    whether or not it shares -- ``holds_runtime_lease`` therefore cannot gate
+    these branches.
+
+    Duck-typed on both the provider and its ``_client`` wrapper (the inner
+    ``AcpSessionProvider`` carries the flag), and defaults to False for a shape
+    that has no such attribute -- a non-ACP provider or a test double -- so the
+    gate stays off unless a real shared-runtime provider says otherwise.
+    """
+    for candidate in (provider, getattr(provider, "_client", None)):
+        if candidate is None:
+            continue
+        if getattr(candidate, "_shared_runtime", False) is True:
+            return True
+    return False
+
+
+def chat_turn_gate_hold(provider: object) -> Any:
+    """An async context that holds *provider*'s shared chat turn gate, or a null one.
+
+    For the compaction paths, which run ``/compact`` and then may wait for the
+    deferred receipt: on a SHARED chat runtime the gate is held across both
+    (``AcpSessionProvider.hold_chat_turn_gate``). Every other provider -- the
+    preview off, a subagent, a non-ACP provider, a test double -- gets
+    ``contextlib.nullcontext()``, so those paths run exactly as before.
+    """
+    import contextlib
+
+    if not is_shared_chat_runtime(provider):
+        return contextlib.nullcontext()
+    hold = getattr(provider, "hold_chat_turn_gate", None)
+    if hold is None:
+        return contextlib.nullcontext()
+    held = hold()
+    if hasattr(held, "__aenter__") and hasattr(held, "__aexit__"):
+        return held
+    return contextlib.nullcontext()
+
+
 async def acquire_session_lease(provider: object) -> None:
     """Record a registered session's claim on its runtime. No-op for other shapes.
 
@@ -1264,6 +1401,9 @@ __all__ = [
     "authorize_runtime_kill",
     "claim_runtime_tenancy",
     "commit_runtime_teardown",
+    "holds_runtime_lease",
+    "chat_turn_gate_hold",
+    "is_shared_chat_runtime",
     "note_runtime_kill",
     "outstanding_leases",
     "release_runtime_teardown",

@@ -43,6 +43,11 @@ _BONUS_COLON_RE = re.compile(
     r"^(.+?):\s*([\d.]+)/([\d.]+)\s*\(expires\s+in\s+(\d+)\s+days?\)$",
     re.IGNORECASE,
 )
+#: The current kiro-cli line: "name: used/total credits used, expires in N days".
+_BONUS_USED_RE = re.compile(
+    r"^(.+?):\s*([\d.]+)/([\d.]+)\s+credits\s+used,\s*expires\s+in\s+(\d+)\s+days?$",
+    re.IGNORECASE,
+)
 
 
 def _safe_float(text: str) -> float | None:
@@ -115,14 +120,17 @@ def _parse_usage(raw: str) -> dict[str, object]:
                 if rate is not None:
                     result["overage_rate"] = rate
 
-    # Kiro CLI has shipped both "name: used/total (expires in N days)" and
-    # "name - used/total used (N days left)". Parse both bounded formats and
-    # retain every active grant; one malformed line must not poison the rest.
+    # Kiro CLI has shipped "name: used/total (expires in N days)",
+    # "name - used/total used (N days left)" and, today, a "Bonus credits" header
+    # with no colon over "name: used/total credits used, expires in N days". Parse
+    # every bounded format and retain every active grant; one malformed line must
+    # not poison the rest.
     bonus_credits: list[dict[str, object]] = []
     in_bonus_section = False
     for raw_line in usage_lines:
         line = raw_line.strip()
-        if "bonus credits:" in line.casefold():
+        folded = line.casefold()
+        if "bonus credits:" in folded or folded == "bonus credits":
             in_bonus_section = True
             continue
         if not in_bonus_section:
@@ -136,7 +144,7 @@ def _parse_usage(raw: str) -> dict[str, object]:
             match = _BONUS_DASH_RE.fullmatch(usage_text.strip())
             values = match.groups() if match else None
         else:
-            match = _BONUS_COLON_RE.fullmatch(line)
+            match = _BONUS_COLON_RE.fullmatch(line) or _BONUS_USED_RE.fullmatch(line)
             if match:
                 name = match.group(1)
                 values = match.group(2), match.group(3), match.group(4)
@@ -446,11 +454,12 @@ def _usage_scrape_argv(kiro_bin: str) -> list[str] | None:
     - No selector, or the probe could not run: the plain argv, as before the
       selector existed. An unknown flag would fail the whole command.
 
-    The probe runs outside the sandbox, so it runs only on the
-    :func:`pin_kiro_cli` binary, and only when that is the binary being spawned.
+    The probe runs only on the
+    :func:`pin_kiro_cli` binary, inside the sandbox, and only when that is the
+    binary being spawned.
     *kiro_bin* may come off the inherited ``PATH``, which can lead with an
     agent-writable directory; a binary from there gets the plain argv and is
-    never run unsandboxed. Blocking: the pin stats install directories, and the
+    not probed. Blocking: the pin stats install directories, and the
     probe is a bounded spawn on its first call per binary identity.
     """
     argv = [kiro_bin, "chat", "--no-interactive"]

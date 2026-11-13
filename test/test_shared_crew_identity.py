@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from aiohttp import web
+from app_token_records import mark_apps_live
 from multidict import CIMultiDict
 
 from kiro_crew.dashboard import tailnet
@@ -50,6 +51,7 @@ def _isolated(tmp_path, _floor_monkeypatch):
 
     monkeypatch = _floor_monkeypatch
     monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    mark_apps_live(monkeypatch)
     monkeypatch.setattr(rg, "_gen", 0)
     monkeypatch.setattr(ta, "_revoked_store_singleton", None)
     monkeypatch.setattr(tailnet, "IS_POSIX", True)

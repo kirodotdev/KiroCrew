@@ -256,13 +256,17 @@ features do not depend on the pod service manager.
 
 ### MCP tools not working
 
-Start at **Customize → Connections → MCP Servers**
-(`/capabilities?tab=mcp&view=mcp-servers`): it shows whether each server is on
+Start at **MCP Servers**
+(`/mcp`): it shows whether each server is on
 and answering, and it is where a server is added or turned on. Kiro Crew
 rebuilds `~/.kiro/agents/kirocrew.json` from your MCP sources on every gateway
 start, so do not add a server by editing that file. A server whose program is
 not found on this computer is dropped at the rebuild; the gateway log names it
-(`Dropping MCP server ...: command not found`).
+(`Dropping MCP server ...: command not found`). Once the program is installed
+where the gateway already searches, start a new chat: the next default-agent
+session start rebuilds the spec with the server. A program found only through the
+server's own `env.PATH`, or under a Node version installed after the gateway
+started, needs a gateway restart.
 
 `kirocrew doctor` auto-appends missing `tools` entries for managed servers and
 rewrites the file. It may also repair `allowedTools` for always-on servers, but
@@ -274,8 +278,8 @@ command path is install-specific. If tools still fail:
    `kirocrew-cron` under `mcpServers`, plus `kirocrew-computer` only when
    Computer Use is enabled and supported; check for matching `@`-prefixed
    entries under `tools`
-2. Check that your own server is listed and on under **Customize →
-   Connections → MCP Servers**, which also lists the servers in
+2. Check that your own server is listed and on under **MCP Servers**,
+   which also lists the servers in
    `~/.kiro/settings/mcp.json`
 3. Re-run `kirocrew setup --agent-only`
 
@@ -292,6 +296,42 @@ the agent spec, the global MCP settings (`~/.kiro/settings/mcp.json`), or the
 project's MCP settings. Session-scoped tools such as skill search need that
 per-session copy, so the session is refused instead of silently losing them.
 Remove the restriction the way the message names, then start a new session.
+
+### A server's tools are not there yet on a chat's first message
+
+A new chat's first message is sent as soon as Kiro Crew's own MCP servers are
+ready. It does not wait for the servers you added, so one that is slow to start
+may still be connecting while the agent works on that message. (The few servers
+Kiro Crew attaches to the session itself, a Connection's bridge for example, get
+a wait of at most 5 seconds.)
+
+The agent is told which of the chat's servers it cannot use and why: still
+starting, failed to start, waiting for a sign-in, switched off, or left out by
+your organization's MCP registry. It is told on every message while a server is
+still starting, with each such server by name (up to 256 of them), and once when
+a server settles in one of the other states. When your request needs a server
+that is still starting, the agent says so in a sentence, waits for that server
+with the `mcp_server_wait` tool (up to 90 seconds in one call), then uses its
+tool and finishes the request in the same reply. If the server is still not
+ready after that, the agent says so and you can ask again a moment later. For a
+server in any other state it does not wait: it tells you what is true of the
+server and does what it can without it.
+
+A first message that cannot carry that note still waits for your servers, for at
+most 5 seconds, as every first message did before: `kirocrew chat` in a
+terminal, a Side Chat question, a reply thread under a Bot's message, a slash
+command sent as a chat's first message, and an agent with more than 256 servers
+of its own. A server that will not start (switched off, or left out by your
+organization's registry) is never waited for.
+
+A server that failed to start usually stays failed for that chat. (One that
+failed over a missing or refused credential may be tried again.) Check its row
+and its command on the **MCP Servers** page, then start a new chat.
+
+A sub-agent and an unattended run (a schedule, a webhook) still wait briefly for
+the agent's servers before their first prompt, because such a run may have only
+one turn. On an agent harness that reports no server states, the agent is told
+nothing about them.
 
 ### MCP tools missing on an enterprise (work) account
 
@@ -317,7 +357,7 @@ needs: `docs/guides/enterprise-mcp-governance.md`.
 ### A server from your organization's MCP registry shows "Not verified"
 
 A server you installed from your organization's MCP registry (through Kiro IDE or
-the Kiro CLI) shows **Not verified** under Connections → MCP Servers, with no
+the Kiro CLI) shows **Not verified** on the **MCP Servers** page, with no
 command. That is expected. The Kiro CLI wrote it into `~/.kiro/settings/mcp.json`
 as a pointer, `{"type": "registry"}`, and loads the real server from the registry
 when a session starts. Kiro Crew cannot read the registry, so the dashboard does
@@ -330,7 +370,7 @@ tools. Sessions on the Claude or KAS backends do not load registry servers.
 ### A remote MCP server shows "Not verified"
 
 Remote MCP servers that authenticate with OAuth — Atlassian, for example — can
-show **Not verified** under Connections → MCP Servers while working perfectly in
+show **Not verified** on the **MCP Servers** page while working perfectly in
 chat. Nothing is wrong with the server. The badge describes what the dashboard
 can see, not what the server can do.
 
@@ -349,6 +389,30 @@ To find out which one you have:
 
 A server that is genuinely broken reads **Error** with the reason next to it, not
 **Not verified**.
+
+### Atlassian says "Access denied: Your organization admin"
+
+These messages come from Atlassian, not Kiro Crew: the organization's admin has
+limited Atlassian's MCP server and this install is not allowed yet. The wording
+below is quoted from Atlassian's docs; the fixes are made in Atlassian
+Administration under **Connectors → Atlassian MCP server**.
+
+- **"Access denied: Your organization admin must authorize access from
+  [redirect URI] to cloudId: [cloudId]."** The redirect address this install
+  signs in with is not on the organization's Domains list. The admin adds it
+  with **Add domain**. The Atlassian card shows the address under the warning
+  triangle beside **Connect**.
+- **"Access denied: Your organization admin has not authorized the [permission
+  name] permission."** The Read, Write or Search permission that call needs is
+  blocked for that app. The admin allows it on the **Permissions** tab; Atlassian
+  says the change applies at once, with no reconnect.
+
+The full list to hand the admin, including the IP allowlist and what the sign-in
+asks for, is the
+[Atlassian organization admin checklist](connections.md#atlassian-organization-admin-checklist).
+When the card instead says Atlassian refused the sign-in because it was either
+declined or not allowed by the organization's admin, start with the same
+checklist: Atlassian's `access_denied` answer means either.
 
 ### Dashboard not loading
 
@@ -504,16 +568,42 @@ About 700 MB of RSS is expected while the embedding model is loaded. One copy is
 shared by vector memory and the Knowledge Library. The model loads lazily on
 first use and stays resident afterwards.
 
+### A chat with many MCP servers uses several GB
+
+Each local MCP server is a process of its own, so a chat with many of them is
+large from its first reply: measured on Windows, about 0.6 GB plus 0.11 GB for
+each local server, which is 7 GB with 57 servers and 10.6 GB with 93. Linux and
+macOS count memory differently, so the same chat reads a different size there.
+
+The memory watchdog (`session.watchdog_rss_max_mb`, default 4096) recycles an
+idle chat that grows past the limit. It takes a chat's size at its second
+reading of the chat's process, about five minutes after the first. A chat that
+is above the limit then is that large by design: it is left running, with no
+notice in the chat, and recycled only once it passes twice that size. Such a
+chat can therefore hold twice its starting size before it is recycled (14 GB
+and 21 GB in the two examples). The gateway log has one `RSS footprint` WARNING
+for each chat left running this way.
+
+Once the watchdog has recycled a chat, it judges that chat by the limit alone
+for the next 24 hours: if the fresh process is over the limit again it is
+recycled again, and after three recycles in a row the watchdog stops, leaves
+the chat running, and says so in the chat with the name of the setting.
+
+To use less memory, turn off the local MCP servers the chat does not need.
+
 ### `~/.kiro/crew/scratch/` is using a lot of disk
 
 Every agent process gets a directory under `~/.kiro/crew/scratch/` for its
 temp files and its `$KIROCREW_SCRATCH` work products (clones, build logs,
 screenshots). A directory is reclaimed automatically once every process
 recorded in its `.owner` file has exited and nothing in it has been touched for
-an hour, so short-lived sessions clean up on their own. On Linux it is also kept
-while any other running process still uses it as its temp directory, as its
-working directory or through an open file, and the gateway log names it and
-that process in a WARNING line on every hourly sweep that keeps it:
+an hour, so short-lived sessions clean up on their own. A file dated more than a
+day in the future (a test fixture can set one) counts as touched when that date
+was set, not on that date, except on Windows, where it keeps the directory until
+that date. On Linux a directory is also kept while any other running process
+still uses it as its temp directory, as its working directory or through an open
+file, and the gateway log names it and that process in a WARNING line on every
+hourly sweep that keeps it:
 `agent-scratch: keeping '<name>': its owners are dead, but live pid <pid> still uses it`.
 
 A directory that holds a git repository (a clone, a workspace of checkouts, a
@@ -524,6 +614,20 @@ name>`, and deleted from there 14 days after the move (later, if something was
 written into it in the last hour). The gateway log names every move in one
 INFO line: `agent-scratch: moved <name> to <path in .quarantine> instead of
 deleting it`, with the date it will be deleted.
+
+A directory with no `.owner` file has no process to check, so it is never
+deleted in place either: once nothing in it has been written for 7 days it is
+moved into `.quarantine` the same way, and its INFO line says it has no owner
+record. This happens only in the default scratch directory, and only to a
+directory named the way Kiro Crew names one: eight hex characters, such as
+`0123abcd`, or, from older versions, a label, a dash and eight hex characters
+with at least one letter (`runtime-0123abcd`). A folder you made or cloned
+there under any other name is left alone (a dated name such as
+`backup-20261105` is not a Kiro Crew name), as is any folder with no `.owner`
+file under `KIROCREW_SCRATCH_ROOT`, which can hold folders of your own.
+On Linux such a directory is also kept while a running process still uses it,
+as above; macOS and Windows have no such check, so a process that uses one
+without writing to it for a week finds it moved.
 
 The quarantine keeps the work, not what tools rebuild from it. Each kept
 directory loses its `node_modules`, `__pycache__`, `.pytest_cache`,
@@ -543,10 +647,10 @@ session, move it back beside the others under its original name.
 One directory does not: the background runtime's tree is shared by every
 dashboard session and is handed on from one runtime to its replacement, so it
 lives as long as the gateway does and is never pruned while a session might
-still need it. It is one of the `runtime-*` directories — usually the oldest
-and largest. Other `runtime-*` directories belong to ordinary agent processes
-and are reclaimed by the normal rule above. If the shared tree grows large, the
-fix is a gateway restart (a fresh tree is
+still need it. It is usually the oldest and largest directory there, and its
+`.owner` names a process that is still running. The other directories belong to
+ordinary agent processes and are reclaimed by the normal rule above. If the
+shared tree grows large, the fix is a gateway restart (a fresh tree is
 started and the old one is reclaimed by the hourly sweep once its processes are
 gone), or deleting large work products inside it that you know are finished.
 Do not delete a directory whose `.owner` names a live process.
@@ -580,7 +684,9 @@ and macOS, where scratch stays at the default `~/.kiro/crew/scratch`. Note
 for child processes, and setting it yourself does nothing.
 
 Setting `KIROCREW_HOME` to a data drive relocates the whole data home,
-scratch included, if you want everything off `C:` rather than scratch alone.
+scratch included, if you want it off `C:` rather than scratch alone. Some
+folders stay under `~/.kiro` on `C:` whatever it is set to (see
+[Folders beside the data home](../../../docs/guides/install.md#folders-beside-the-data-home)).
 
 ### Subagent completion event seems cut off
 

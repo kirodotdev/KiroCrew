@@ -80,6 +80,7 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import time
 import urllib.parse
 import zipfile
 from collections.abc import Callable, Iterator, Mapping
@@ -115,6 +116,7 @@ __all__ = [
     "make_universal_node",
     "manifest_url_for",
     "parse_manifest",
+    "sweep_stale_staging",
     "trim_for_shipping",
 ]
 
@@ -157,6 +159,15 @@ _FILE_NAME_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,127}$")
 #: (the engine's ACP server and the Node binary) are; ``kirocrew doctor`` prints its path.
 KAS_BUNDLE_INSTALL_RECORD_NAME = "install.json"
 _STAGING_PREFIX = ".staging-"
+#: Staging trees that are not an install's, so the stale sweep never takes them: a
+#: retired tree can hold the only copy of the working engine, and lipo's is the
+#: universal-Node merge's work tree.
+_RETIRED_STAGING_PREFIX = f"{_STAGING_PREFIX}retired-"
+_LIPO_STAGING_PREFIX = f"{_STAGING_PREFIX}lipo-"
+#: An install's staging tree with nothing written for this long is taken as no live
+#: install's: above ``release_apply.ENGINE_INSTALL_TIMEOUT_SECS`` (the update's kill)
+#: and ``asset_downloader.DEFAULT_TIMEOUT_SECS`` (a download's socket timeout).
+_STALE_STAGING_SECS = 3600.0
 
 
 class KasBundleError(Exception):
@@ -380,7 +391,10 @@ def _read_json_url(url: str, opener: Any, *, sha256: str | None = None) -> Any:
     except (OSError, ValueError) as exc:
         # ValueError is urllib's answer to a url it cannot parse (an unclosed
         # IPv6 bracket in a hand-typed --url), the same refusal as an unreachable one.
-        raise KasBundleError(f"could not fetch {asset_downloader.redact_url(url)}: {exc}") from exc
+        why = asset_downloader.network_failure_cause(exc) or exc
+        raise KasBundleError(
+            f"could not download the KAS engine from {asset_downloader.redact_url(url)}: {why}"
+        ) from exc
     if len(body) > _MANIFEST_MAX_BYTES:
         raise KasBundleError(f"{asset_downloader.redact_url(url)} is too large to be a manifest")
     if sha256 is not None and hashlib.sha256(body).hexdigest() != sha256:
@@ -654,6 +668,46 @@ def _write_json(path: Path, data: Mapping[str, Any]) -> None:
     os.replace(tmp, path)
 
 
+def sweep_stale_staging(root: Path) -> None:
+    """Remove the ``.staging-<version>-*`` trees installs ended from outside left.
+
+    An install removes its own staging tree in its ``except``, but the refresh's
+    hard stop (``os._exit``) and the update's kill run no handler. A tree with an
+    entry newer than :data:`_STALE_STAGING_SECS` may be a running install's and
+    stays; a link or junction at a listed name is never followed or removed.
+    Never raises.
+    """
+    cutoff = time.time() - _STALE_STAGING_SECS
+    try:
+        candidates = [
+            p
+            for p in root.iterdir()
+            if p.name.startswith(_STAGING_PREFIX)
+            and not p.name.startswith((_RETIRED_STAGING_PREFIX, _LIPO_STAGING_PREFIX))
+        ]
+    except OSError as exc:
+        logger.warning("could not list %s for stale KAS staging trees: %s", root, exc)
+        return
+    for tree in candidates:
+        try:
+            if platform_compat.is_link_or_junction(tree):
+                continue
+            newest, size = tree.lstat().st_mtime, 0
+            for dirpath, dirnames, filenames in os.walk(tree):
+                for name in dirnames + filenames:
+                    st = os.lstat(os.path.join(dirpath, name))
+                    newest = max(newest, st.st_mtime)
+                    if stat.S_ISREG(st.st_mode):
+                        size += st.st_size
+            if newest > cutoff:
+                continue
+            shutil.rmtree(tree)
+        except OSError as exc:
+            logger.warning("could not sweep the KAS staging tree %s: %s", tree, exc)
+            continue
+        logger.info("removed the stale KAS staging tree %s (%d bytes)", tree, size)
+
+
 def install_bundle(
     manifest: KasBundleManifest,
     *,
@@ -686,6 +740,7 @@ def install_bundle(
         )
 
     root.mkdir(parents=True, exist_ok=True)
+    sweep_stale_staging(root)
     staging = Path(tempfile.mkdtemp(prefix=f"{_STAGING_PREFIX}{manifest.version}-", dir=root))
     try:
         downloads = staging / "downloads"
@@ -740,7 +795,7 @@ def install_bundle(
         # and the no-replace publish turns that into a refusal, never a swap.
         retired: Path | None = None
         if force and final.exists():
-            retired = Path(tempfile.mkdtemp(prefix=f"{_STAGING_PREFIX}retired-", dir=root))
+            retired = Path(tempfile.mkdtemp(prefix=_RETIRED_STAGING_PREFIX, dir=root))
             retired.rmdir()
             try:
                 os.rename(final, retired)
@@ -795,14 +850,21 @@ def install_pinned(
 ) -> InstalledKasBundle:
     """Install this release's pinned engine if it is not already there; return it.
 
-    The digest check runs on the manifest's bytes before anything is parsed or
-    fetched, so a host serving a different manifest under the pinned version's
-    name installs nothing.
+    A host that cannot run the engine (:class:`KasHostUnsupported`: no build for
+    its OS or architecture, or glibc below the floor) is refused before the
+    manifest is fetched, so the refusal names that cause even offline and a caller
+    that asks again costs no network round trip. The digest check runs on the
+    manifest's bytes before anything is parsed or fetched, so a host serving a
+    different manifest under the pinned version's name installs nothing.
     """
     root = root or kas_engines_root()
     present = installed_bundle(root=root, version=KAS_PIN_VERSION)
     if present is not None:
         return present
+    # The local host checks install_bundle repeats; none of them reads the network.
+    _require_loadable_glibc(None, None)
+    host_platform_key()
+    host_node_key()
     manifest, url = fetch_manifest(
         base_url, version=KAS_PIN_VERSION, sha256=KAS_PIN_MANIFEST_SHA256
     )
@@ -893,7 +955,7 @@ def make_universal_node(
     other_ref = manifest.node_for(other)
     node_bin = installed.node_bin
 
-    work = Path(tempfile.mkdtemp(prefix=f"{_STAGING_PREFIX}lipo-", dir=home.parent))
+    work = Path(tempfile.mkdtemp(prefix=_LIPO_STAGING_PREFIX, dir=home.parent))
     try:
         archive = work / other_ref.file
         _fetch_artifact(

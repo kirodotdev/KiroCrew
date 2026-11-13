@@ -1,6 +1,6 @@
 // First render-level coverage for the Connections page — the provider gallery
 // shell that owns the four card states (not-connected → waiting-for-approval →
-// connected / needs-attention), the two-tab switcher, and every write action a
+// connected / needs-attention), the links in, the Google entry, and every write action a
 // card can fire (connect, cancel, reconnect, disconnect, test, OAuth relay).
 //
 // Two things shape this file:
@@ -10,10 +10,8 @@
 //      default is false, so a test that wants the closed panel passes
 //      `servicesEnabled: false` — that flag is the module's own seam, not a hack.
 //   2. The page's only outside seams are `api` (mocked here — nothing dials the
-//      network) and the MCP Servers sub-tab, which is a whole page of its own.
-//      `McpTab` is stubbed at its module boundary with a button that fires
-//      `onManagedProviderClick`, which is the only contract this page has with
-//      it.
+//      network) and the OAuth app part a card opens, stubbed at its module
+//      boundary because it has its own tests.
 //
 // Card state comes from real data, not from prop drilling: the server list is
 // what `api.mcpServers` returns, and the OAuth banners are real `mcp_oauth`
@@ -78,16 +76,30 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-// The MCP Servers sub-tab is a page in its own right; the only contract this
-// page has with it is the managed-provider deep link back into the gallery.
-vi.mock('../pages/overview/McpTab', () => ({
-  default: ({ onManagedProviderClick }: { onManagedProviderClick: (slug: string) => void }) => (
-    <button type="button" onClick={() => onManagedProviderClick('stripe')}>deep link to stripe</button>
-  ),
-}))
+// The OAuth app part a card opens is its own unit (OAuthAppPanel.test.tsx).
+vi.mock('../pages/connections/OAuthAppPanel', async () => {
+  const React = await vi.importActual<typeof import('react')>('react')
+  const OAuthDraftsContext = React.createContext<(settingSlug: string, dirty: boolean) => void>(() => {})
+  const OAuthClientWrittenContext = React.createContext<(slugs: string[]) => void>(() => {})
+  const OAuthDraftValuesContext = React.createContext({ get: (_key: string) => undefined, set: (_key: string, _v: unknown) => {} })
+  // A stand-in form whose "type" button marks it as holding unsaved input, and
+  // whose "save" button reports the client written, as a real Save does.
+  const OAuthAppPanel = ({ settingSlug, slugs }: { settingSlug: string; slugs: string[] }) => {
+    const report = React.useContext(OAuthDraftsContext)
+    const written = React.useContext(OAuthClientWrittenContext)
+    return (
+      <div data-testid={`oauth-app-${settingSlug}`} data-slugs={slugs.join(',')}>
+        <button type="button" onClick={() => report(settingSlug, true)}>{`type into ${settingSlug}`}</button>
+        <button type="button" onClick={() => written(slugs)}>{`save ${settingSlug}`}</button>
+      </div>
+    )
+  }
+  return { OAuthAppPanel, OAuthDraftsContext, OAuthClientWrittenContext, OAuthDraftValuesContext }
+})
 
 import ConnectionsPage, { errorIndicatesProviderRejection } from '../pages/connections/ConnectionsPage'
 import { CONNECTION_PROVIDERS } from '../pages/connections/registry'
+import { isGoogleSlug } from '../pages/connections/connectionsLinks'
 import ProviderLogo, { PROVIDER_LOGO_SLUGS } from '../pages/connections/ProviderLogo'
 import { i18next } from '../i18n'
 import { ApiError } from '../api/client'
@@ -97,12 +109,24 @@ import {
   banner,
   mount,
   card,
+  openAllCards,
   deferred,
 } from './ConnectionsPage.coverageTestUtils'
 
 const STRIPE_URL = 'https://mcp.stripe.com'
 
-const cards = (): HTMLElement[] => Array.from(document.querySelectorAll('article[data-state]'))
+/** An element read as rendered, without opening it; throws until it exists. */
+const byId = (id: string, attrs = ''): HTMLElement => {
+  const el = document.querySelector<HTMLElement>(`#${id}${attrs}`)
+  if (!el) throw new Error(`no #${id}${attrs}`)
+  return el
+}
+
+const cards = (): HTMLElement[] => {
+  openAllCards()
+  // A search hides cards rather than unmounting them: count the shown ones.
+  return Array.from(document.querySelectorAll<HTMLElement>('article[data-state]')).filter(el => !el.closest('[hidden]'))
+}
 
 beforeEach(() => {
   mcpServers.mockReset().mockResolvedValue([])
@@ -149,9 +173,11 @@ describe('the opted-out gallery', () => {
   it('offers no provider, no search and no way to connect when services are disabled', async () => {
     mount({ servicesEnabled: false })
 
-    // Both tabs still render — only the OFFER is withheld.
-    expect(screen.getByRole('tab', { name: /Services/ })).toBeInTheDocument()
-    expect(await screen.findByText('No services match this search.')).toBeInTheDocument()
+    // Only the OFFER is withheld: the OAuth app parts stay, and with no search
+    // box there is no empty-search notice either.
+    await waitFor(() => expect(screen.getByTestId('connections-oauth-apps-only')).toBeInTheDocument())
+    await waitFor(() => expect(mcpServers).toHaveBeenCalled())
+    expect(screen.queryByText('No services match this search.')).not.toBeInTheDocument()
     expect(cards()).toHaveLength(0)
     expect(screen.queryByLabelText('Search services')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Connect' })).not.toBeInTheDocument()
@@ -188,7 +214,7 @@ describe('premint on mount', () => {
 
     // The gate offers no card and no Connect button, so there is nothing a warm
     // URL could serve — and warming spawns a process.
-    expect(await screen.findByText('No services match this search.')).toBeInTheDocument()
+    await waitFor(() => expect(mcpServers).toHaveBeenCalled())
     expect(connectionsPremint).not.toHaveBeenCalled()
   })
 
@@ -231,7 +257,8 @@ describe('the provider gallery', () => {
     // no exception and stays hidden.
     expect(screen.getByRole('heading', { name: 'GitHub' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Superhuman Mail' })).not.toBeInTheDocument()
-    expect(screen.getByText(`${CONNECTION_PROVIDERS.length} available`)).toBeInTheDocument()
+    // The six Google products count as their one entry.
+    expect(screen.getByText(`${CONNECTION_PROVIDERS.length - 5} available`)).toBeInTheDocument()
   })
 
   it('keeps feedback slots out of the compact gallery until feedback exists', async () => {
@@ -276,20 +303,20 @@ describe('the provider gallery', () => {
     })
     mount()
 
-    const github = await waitFor(() => card('github'))
-    await waitFor(() => expect(github).toHaveAttribute('data-state', 'needs-configuration'))
-    expect(document.querySelector('#connection-github[data-state="needs-configuration"]')).toBe(github)
+    // Read without card(): this card must start closed, its Configure showing.
+    const github = await waitFor(() => byId('connection-github', '[data-state="needs-configuration"]'))
     expect(within(github).getByText('Needs configuration')).toBeInTheDocument()
     expect(within(github).queryByRole('button', { name: /Connect/ })).not.toBeInTheDocument()
     expect(within(github).getByRole('link', { name: /Documentation/ })).toHaveAttribute('target', '_blank')
 
-    const configure = within(github).getByRole('link', { name: 'Configure OAuth app' })
-    const href = configure.getAttribute('href') ?? ''
-    expect(href.startsWith('/settings/connections')).toBe(true)
-    // The registry entry id (settingsManual.ts), which resolves to the card's
-    // data-setting-id and waits for the async panel; encodeURIComponent leaves
-    // '.' and '-' alone, so the literal is what the URL carries.
-    expect(href).toContain('highlight=connections.oauth-client-github')
+    // The missing step opens in place on this card, not on another page.
+    const configure = within(github).getByRole('button', { name: 'Set up GitHub' })
+    expect(configure).toHaveAttribute('aria-expanded', 'false')
+    expect(within(github).getByTestId('oauth-app-github')).not.toBeVisible()
+    fireEvent.click(configure)
+    // Open, the form is the next step: Configure goes, the name toggle closes.
+    expect(within(github).queryByRole('button', { name: 'Set up GitHub' })).toBeNull()
+    expect(within(github).getByTestId('oauth-app-github')).toBeVisible()
   })
 
   it('keeps the one-time-setup explanation behind the warning tip beside Configure, not in a band', async () => {
@@ -304,9 +331,8 @@ describe('the provider gallery', () => {
     })
     mount()
 
-    const github = await waitFor(() => card('github'))
-    await waitFor(() => expect(github).toHaveAttribute('data-state', 'needs-configuration'))
-    const setup = /GitHub needs a one-time setup\. Configure OAuth app opens a guided settings page/
+    const github = await waitFor(() => byId('connection-github', '[data-state="needs-configuration"]'))
+    const setup = /GitHub needs a one-time setup\. Set up GitHub opens it on this card/
 
     // Nothing but the badge, the value prop, Documentation and the action row
     // renders inline: the explanation is not in the document until asked for.
@@ -315,7 +341,7 @@ describe('the provider gallery', () => {
 
     // The tip sits in the action row, immediately before the Configure link.
     const icon = within(github).getByRole('button', { name: 'GitHub prerequisites' })
-    const configure = within(github).getByRole('link', { name: 'Configure OAuth app' })
+    const configure = within(github).getByRole('button', { name: 'Set up GitHub' })
     expect(icon.parentElement).toBe(configure.parentElement)
     expect(icon.compareDocumentPosition(configure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 
@@ -469,7 +495,7 @@ describe('the provider gallery', () => {
     await waitFor(() => expect(connectionsStatus).toHaveBeenCalled())
     expect(github).toHaveAttribute('data-state', 'not-connected')
     expect(within(github).getByRole('button', { name: /Connect/ })).toBeEnabled()
-    expect(within(github).queryByRole('link', { name: 'Configure OAuth app' })).not.toBeInTheDocument()
+    expect(within(github).queryByRole('link', { name: 'Set up GitHub' })).not.toBeInTheDocument()
   })
 
   it('lets a consent in flight outrank the needs-configuration flag', async () => {
@@ -484,7 +510,7 @@ describe('the provider gallery', () => {
 
     const github = await waitFor(() => card('github'))
     await waitFor(() => expect(github).toHaveAttribute('data-state', 'waiting-for-approval'))
-    expect(within(github).queryByRole('link', { name: 'Configure OAuth app' })).not.toBeInTheDocument()
+    expect(within(github).queryByRole('link', { name: 'Set up GitHub' })).not.toBeInTheDocument()
   })
 
   it('marks only providers with a blocking prerequisite, as an icon beside Connect', async () => {
@@ -493,7 +519,9 @@ describe('the provider gallery', () => {
     await waitFor(() => expect(cards()).toHaveLength(CONNECTION_PROVIDERS.length))
     for (const provider of CONNECTION_PROVIDERS) {
       const icon = within(card(provider.slug)).queryByRole('button', { name: `${provider.name} prerequisites` })
-      if (provider.prerequisite_copy) expect(icon).toBeInTheDocument()
+      // A Google product row carries none: the Google entry states that step
+      // once, above its rows.
+      if (provider.prerequisite_copy && !isGoogleSlug(provider.slug)) expect(icon).toBeInTheDocument()
       else expect(icon).not.toBeInTheDocument()
     }
     // The launch set's two provider-side prerequisites: GitLab (Duo/group
@@ -650,45 +678,240 @@ describe('the provider gallery', () => {
   })
 })
 
-describe('the two tabs', () => {
-  it('switches panels on click and on arrow keys', async () => {
-    mount()
-    const services = screen.getByRole('tab', { name: /Services/ })
-    const mcp = screen.getByRole('tab', { name: /MCP Servers/ })
-    expect(services).toHaveAttribute('aria-selected', 'true')
-
-    fireEvent.click(mcp)
-    expect(mcp).toHaveAttribute('aria-selected', 'true')
-    expect(await screen.findByRole('button', { name: 'deep link to stripe' })).toBeInTheDocument()
-    expect(cards()).toHaveLength(0)
-
-    // Either arrow toggles: there are only two tabs, so direction is irrelevant.
-    fireEvent.keyDown(mcp, { key: 'ArrowLeft' })
-    await waitFor(() => expect(screen.getByRole('tab', { name: /Services/ })).toHaveAttribute('aria-selected', 'true'))
-    fireEvent.keyDown(screen.getByRole('tab', { name: /Services/ }), { key: 'ArrowRight' })
-    await waitFor(() => expect(screen.getByRole('tab', { name: /MCP Servers/ })).toHaveAttribute('aria-selected', 'true'))
-  })
-
-  it('ignores keys that are not the arrows it owns', async () => {
-    mount()
-    const services = screen.getByRole('tab', { name: /Services/ })
-
-    fireEvent.keyDown(services, { key: 'ArrowDown' })
-    fireEvent.keyDown(services, { key: 'a' })
-
-    expect(services).toHaveAttribute('aria-selected', 'true')
-  })
-
-  it('deep-links from the MCP table back to the highlighted provider card', async () => {
-    mount()
-    fireEvent.click(screen.getByRole('tab', { name: /MCP Servers/ }))
-    fireEvent.click(await screen.findByRole('button', { name: 'deep link to stripe' }))
-
-    await waitFor(() => expect(screen.getByRole('tab', { name: /Services/ })).toHaveAttribute('aria-selected', 'true'))
+describe('a link in and the OAuth app part', () => {
+  it('rings the provider card a managed MCP row names, and only that one', async () => {
+    mount({ route: '/settings/connections?provider=stripe' })
     const stripe = await waitFor(() => card('stripe'))
-    expect(stripe.className).toContain('border-accent')
-    // Only the deep-linked card is highlighted.
+    await waitFor(() => expect(stripe.className).toContain('border-accent'))
     expect(card('notion').className).not.toContain('border-accent')
+  })
+
+  it('opens the named OAuth app part for a settings search hit, the Google one for a Google product', async () => {
+    mount({ route: '/settings/connections?highlight=connections.oauth-client-gmail' })
+    await waitFor(() => expect(screen.getByTestId('oauth-app-google')).toBeVisible())
+    expect(screen.getByTestId('oauth-app-github')).not.toBeVisible()
+  })
+
+  it('shows the six Google products as one entry holding their cards', async () => {
+    mount()
+    const entry = await waitFor(() => {
+      const el = document.getElementById('connection-google')
+      if (!el) throw new Error('no Google entry')
+      return el
+    })
+    for (const slug of ['gmail', 'google-drive', 'google-calendar', 'google-sheets', 'google-docs', 'google-slides']) {
+      expect(entry.contains(card(slug))).toBe(true)
+    }
+    expect(within(entry).getByRole('heading', { name: 'Google' })).toBeInTheDocument()
+  })
+
+  it('keeps Connect on a closed not-connected card, and opens the card on a click of its name', async () => {
+    mount()
+    const notion = await waitFor(() => byId('connection-notion', '[data-state="not-connected"]'))
+    const toggle = within(notion).getByRole('button', { name: 'Notion' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(within(notion).getByRole('button', { name: 'Connect' })).toBeInTheDocument()
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('hides a connected card\'s Test and Disconnect until the card is opened', async () => {
+    mcpServers.mockResolvedValue([server({ connectedSince: '2026-03-04T10:00:00Z' })])
+    mount()
+    const notion = await waitFor(() => byId('connection-notion', '[data-state="connected"]'))
+    expect(within(notion).queryByRole('button', { name: /Disconnect/ })).toBeNull()
+    fireEvent.click(within(notion).getByRole('button', { name: 'Notion' }))
+    expect(within(notion).getByRole('button', { name: /Disconnect/ })).toBeInTheDocument()
+  })
+
+  it('keeps the Google entry closed until clicked, then shows its products', async () => {
+    mount()
+    const entry = await waitFor(() => byId('connection-google'))
+    expect(byId('connection-gmail')).not.toBeVisible()
+    expect(within(entry).getByText(/Gmail · Google Drive/)).toBeInTheDocument()
+    fireEvent.click(within(entry).getByRole('button', { name: 'Google' }))
+    expect(entry.contains(document.getElementById('connection-gmail'))).toBe(true)
+    expect(byId('connection-gmail')).toBeVisible()
+    // The products and their Connect come before the shared OAuth app form.
+    expect(byId('connection-gmail').compareDocumentPosition(screen.getByTestId('oauth-app-google')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('keeps the Google OAuth app part on all six products whatever the search shows', async () => {
+    mount()
+    fireEvent.change(await screen.findByLabelText('Search services'), { target: { value: 'drive' } })
+    const entry = await waitFor(() => byId('connection-google'))
+    fireEvent.click(within(entry).getByRole('button', { name: 'Google' }))
+    const all = CONNECTION_PROVIDERS.filter(p => p.slug === 'gmail' || p.slug.startsWith('google-')).map(p => p.slug)
+    expect(all).toHaveLength(6)
+    expect(screen.getByTestId('oauth-app-google').getAttribute('data-slugs')).toBe(all.join(','))
+  })
+
+  it('drops a Connect wait once its OAuth client is saved, since the save cancels that sign-in', async () => {
+    connectionsMint.mockResolvedValue({ ok: true, slug: 'github', state: 'minting', token: 'tok1' })
+    connectionsMintState.mockResolvedValue({ slug: 'github', state: 'minting', token: 'tok1' })
+    mount()
+    const github = await waitFor(() => byId('connection-github', '[data-state="not-connected"]'))
+    fireEvent.click(within(github).getByRole('button', { name: 'Connect' }))
+    await waitFor(() => expect(github).toHaveAttribute('data-state', 'waiting-for-approval'))
+    // The backend's cancel leaves the mint poll reading idle, which settles nothing.
+    connectionsMintState.mockResolvedValue({ slug: 'github', state: 'idle' })
+    fireEvent.click(within(github).getByRole('button', { name: 'save github' }))
+    await waitFor(() => expect(github).toHaveAttribute('data-state', 'not-connected'))
+    expect(within(github).getByRole('button', { name: 'Connect' })).toBeEnabled()
+  })
+
+  it('drops a cached awaiting-consent verdict once its OAuth client is saved, and re-reads the status', async () => {
+    // The status feed cached the backend's own awaiting_consent row (a refresh mid-consent).
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'github', status: 'awaiting_consent', grantPresent: false }],
+    })
+    mount()
+    const github = await waitFor(() => byId('connection-github', '[data-state="waiting-for-approval"]'))
+    const reads = connectionsStatus.mock.calls.length
+    // The save cancels that sign-in. The re-read hangs here, so only dropping
+    // the cached verdict can bring the card back to Connect.
+    connectionsStatus.mockReturnValue(deferred<{ schema_version: number; connections: never[] }>().promise)
+    fireEvent.click(within(github).getByRole('button', { name: 'save github' }))
+    await waitFor(() => expect(github).toHaveAttribute('data-state', 'not-connected'))
+    expect(connectionsStatus.mock.calls.length).toBeGreaterThan(reads)
+  })
+
+  it('opens the Google entry by itself while a Google consent is in flight', async () => {
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'google-drive', status: 'awaiting_consent', grantPresent: false }],
+    })
+    mount()
+    await waitFor(() => expect(byId('connection-google-drive')).toBeVisible())
+    expect(byId('connection-google-drive')).toHaveAttribute('data-state', 'waiting-for-approval')
+  })
+
+  it('keeps a closed card\'s OAuth app part mounted, so closing it loses no typed draft', async () => {
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'github', status: 'not_connected', grantPresent: false, needsClientConfig: true }],
+    })
+    mount()
+    const github = await waitFor(() => byId('connection-github', '[data-state="needs-configuration"]'))
+    fireEvent.click(within(github).getByRole('button', { name: 'Set up GitHub' }))
+    const part = within(github).getByTestId('oauth-app-github')
+    expect(part).toBeVisible()
+    fireEvent.click(within(github).getByRole('button', { name: 'GitHub' }))
+    expect(within(github).getByTestId('oauth-app-github')).toBe(part)
+    expect(part).not.toBeVisible()
+  })
+
+  it('gives a Google product row no tip naming a Configure button it does not have', async () => {
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'gmail', status: 'not_connected', grantPresent: false, needsClientConfig: true }],
+    })
+    mount()
+    const gmail = await waitFor(() => byId('connection-gmail', '[data-state="needs-configuration"]'))
+    expect(within(gmail).queryByRole('button', { name: /prerequisites/ })).toBeNull()
+    expect(within(gmail).queryByRole('button', { name: 'Set up Gmail' })).toBeNull()
+  })
+
+  it('offers no chat hand-off on any card while an OAuth app form holds unsaved input', async () => {
+    mcpServers.mockResolvedValue([server({ status: 'error', error: 'invalid_grant' })])
+    mount()
+    const notion = await waitFor(() => byId('connection-notion', '[data-state="needs-attention"]'))
+    expect(within(notion).getByRole('button', { name: /Ask the agent/ })).toBeInTheDocument()
+    // Unsaved input in the shared Google form, not Notion's own card.
+    fireEvent.click(screen.getByRole('button', { name: 'type into google', hidden: true }))
+    expect(within(notion).queryByRole('button', { name: /Ask the agent/ })).toBeNull()
+  })
+
+  it('opens a broken connection by itself, and says so to a screen reader', async () => {
+    mcpServers.mockResolvedValue([server({ status: 'error', error: 'invalid_grant' })])
+    mount()
+    const notion = await waitFor(() => byId('connection-notion', '[data-state="needs-attention"]'))
+    expect(within(notion).getByRole('button', { name: /Reconnect/ })).toBeVisible()
+    expect(within(notion).getByRole('button', { name: 'Notion' })).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('keeps a hidden card\'s OAuth app part mounted through a search', async () => {
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'github', status: 'not_connected', grantPresent: false, needsClientConfig: true }],
+    })
+    mount()
+    const github = await waitFor(() => byId('connection-github', '[data-state="needs-configuration"]'))
+    const part = within(github).getByTestId('oauth-app-github')
+    const search = screen.getByLabelText('Search services')
+    fireEvent.change(search, { target: { value: 'asana' } })
+    expect(github).not.toBeVisible()
+    fireEvent.change(search, { target: { value: '' } })
+    expect(byId('connection-github').contains(part)).toBe(true)
+  })
+
+  it('gives the closed Google entry a button that opens its product list, named for that', async () => {
+    mount()
+    const entry = await waitFor(() => byId('connection-google'))
+    // Not "Connect": the button links no account, it lists the six products.
+    expect(within(entry).queryByRole('button', { name: 'Connect' })).toBeNull()
+    const choose = await within(entry).findByRole('button', { name: 'Choose Google products' })
+    fireEvent.click(choose)
+    expect(byId('connection-gmail')).toBeVisible()
+  })
+
+  it('gives the Google entry one step tip beside its own action, and no tip on the product rows', async () => {
+    mount()
+    const entry = await waitFor(() => byId('connection-google'))
+    const choose = await within(entry).findByRole('button', { name: 'Choose Google products' })
+    // Closed: the one tip sits in the action row, beside Choose Google products.
+    expect(within(choose.parentElement!).getAllByRole('button', { name: 'Google prerequisites' })).toHaveLength(1)
+    fireEvent.click(choose)
+    const tip = within(entry).getByRole('button', { name: 'Google prerequisites' })
+    expect(tip).toBeVisible()
+    expect(within(entry).getAllByRole('button', { name: /prerequisites$/ })).toHaveLength(1)
+    fireEvent.click(tip)
+    expect(screen.getByRole('tooltip')).toHaveTextContent(i18next.t('pages.connectionsPage.google_entry_step_connect'))
+    expect(within(byId('connection-gmail')).getByRole('button', { name: 'Connect' })).toBeVisible()
+  })
+
+  it('shows one status on the closed Google entry', async () => {
+    mcpServers.mockResolvedValue([server({ name: 'gmail', url: CONNECTION_PROVIDERS.find(p => p.slug === 'gmail')!.mcp_url })])
+    mount()
+    const entry = await waitFor(() => byId('connection-google'))
+    await waitFor(() => expect(within(entry.querySelector('header')!).getByText('Connected')).toBeInTheDocument())
+  })
+
+  it('scrolls a ?provider= deep link once the gallery is turned on after the list loaded', async () => {
+    const scroll = vi.fn()
+    Element.prototype.scrollIntoView = scroll
+    const { rerender } = mount({ servicesEnabled: false, route: '/settings/connections?provider=stripe' })
+    await waitFor(() => expect(mcpServers).toHaveBeenCalled())
+    await act(async () => { await new Promise(r => requestAnimationFrame(() => r(null))) })
+    expect(scroll).not.toHaveBeenCalled()
+    rerender(<ConnectionsPage servicesEnabled />)
+    await waitFor(() => expect(scroll).toHaveBeenCalledTimes(1))
+  })
+
+  it('keeps every OAuth app part on the page when the gallery is turned off', async () => {
+    mount({ servicesEnabled: false })
+    const list = await waitFor(() => screen.getByTestId('connections-oauth-apps-only'))
+    expect(within(list).getByTestId('oauth-app-github')).toBeVisible()
+    expect(within(list).getByTestId('oauth-app-google')).toBeVisible()
+    expect(document.querySelectorAll('article[data-state]')).toHaveLength(0)
+    // No search box and no search: an empty-search notice would mean nothing here.
+    await waitFor(() => expect(mcpServers).toHaveBeenCalled())
+    expect(screen.queryByText(i18next.t('pages.connectionsPage.no_matching_services'))).toBeNull()
+  })
+
+  it('scrolls a ?provider= deep link to its card once the list has loaded', async () => {
+    const list = deferred<McpServer[]>()
+    mcpServers.mockReturnValue(list.promise)
+    const scroll = vi.fn()
+    Element.prototype.scrollIntoView = scroll
+    mount({ route: '/settings/connections?provider=stripe' })
+    await act(async () => { await new Promise(r => requestAnimationFrame(() => r(null))) })
+    expect(scroll).not.toHaveBeenCalled()
+    await act(async () => { list.resolve([]) })
+    await waitFor(() => expect(scroll).toHaveBeenCalledTimes(1))
   })
 })
 

@@ -82,12 +82,14 @@ def _edit_record(edit, name=APP):
 
 
 def _grants_path(name=APP):
-    return app_dir(name) / manager_mod.APPROVED_GRANTS_FILENAME
+    """The approved set, in the gateway-only store outside the app's tree."""
+    return manager_mod._approved_grants_path(name)
 
 
 def _make_legacy(name=APP):
-    """Remove the approved set, as on an install from before it was stored."""
-    _grants_path(name).unlink()
+    """An install from before approved sets were stored, as the one-time import
+    leaves it: the store approves what the manifest declares."""
+    manager_mod._write_approve_declared(name)
     _edit_record(lambda data: data.pop("approvedGrantsStored", None), name)
 
 
@@ -206,6 +208,7 @@ def test_an_app_source_cannot_ship_its_own_approved_set(tmp_path, app_home):
     )
     assert install_app(v1).ok
     assert get_app(APP)["approvedGrants"] == {"api": [OLD_API], "events": []}
+    assert enable_app(APP).ok  # an app token's grants need the owner's enable
 
     v2 = _source(tmp_path, "v2", "2.0.0", api=[OLD_API, NEW_API])
     (v2 / manager_mod.APPROVED_GRANTS_FILENAME).write_text(
@@ -252,11 +255,11 @@ def test_a_read_during_an_update_swap_grants_nothing(tmp_path, app_home):
     assert _allowlist() == (OLD_API,)
 
 
-def test_a_pre_set_record_replaced_between_its_reads_grants_nothing(
+def test_a_pre_set_record_is_fixed_once_and_its_record_cannot_widen_it(
     tmp_path, app_home, monkeypatch
 ):
-    # Another process swaps the tree: the record read meets the old tree, the
-    # file read meets the gap. The record read again differs from the first.
+    # The first read stores what the manifest declares then; a record rewritten
+    # between reads, and a manifest widened afterwards, add nothing to it.
     _installed_v1(tmp_path)
     _make_legacy()
     real_read = manager_mod._read_installed
@@ -270,7 +273,8 @@ def test_a_pre_set_record_replaced_between_its_reads_grants_nothing(
         return meta
 
     monkeypatch.setattr(manager_mod, "_read_installed", _read_then_swap)
-    assert staged_app_grants(APP, "api", lambda: [OLD_API, NEW_API]) == []
+    assert staged_app_grants(APP, "api", lambda: [OLD_API, NEW_API]) == [OLD_API]
+    assert get_app(APP)["approvedGrants"]["api"] == [OLD_API]
 
 
 def test_entries_are_held_back_while_the_new_tree_lands(tmp_path, app_home, monkeypatch):
@@ -621,23 +625,18 @@ def test_a_stale_pre_flag_record_write_keeps_the_set_marked_stored(tmp_path, app
     assert manager_mod._read_installed(APP).approvedGrantsStored is True
 
 
-def test_a_record_without_the_flag_is_marked_before_the_tree_moves(tmp_path, app_home, monkeypatch):
-    # A record that has a stored set but predates the flag must carry the flag
-    # before the swap removes the set file, or the swap window grants the
-    # entries an earlier update held back.
+def test_the_set_stays_in_the_store_while_the_tree_moves(tmp_path, app_home, monkeypatch):
+    # The set lives outside the app's tree, so the swap never takes it away and
+    # the record's flag cannot widen it: dropping the flag changes nothing.
     _installed_v1(tmp_path)
     assert _widen(tmp_path).ok
     _edit_record(lambda data: data.pop("approvedGrantsStored", None))
-    assert manager_mod._read_installed(APP).approvedGrantsStored is False
     seen = []
     real_copy = manager_mod._copy_app_tree
 
     def _probe_then_copy(source, dest):
-        retired = next(p for p in app_dir(APP).parent.iterdir() if "-update-old-" in p.name)
-        record = manager_mod.InstalledApp.from_dict(
-            json.loads((retired / INSTALLED_META_FILENAME).read_text(encoding="utf-8"))
-        )
-        seen.append(record.approvedGrantsStored)
+        assert any("-update-old-" in p.name for p in app_dir(APP).parent.iterdir())
+        seen.append(json.loads(_grants_path().read_text(encoding="utf-8"))["api"] == [OLD_API])
         real_copy(source, dest)
 
     monkeypatch.setattr(manager_mod, "_copy_app_tree", _probe_then_copy)
@@ -688,6 +687,7 @@ def test_the_allowlist_prime_refreshes_off_the_event_loop(monkeypatch):
     import threading
 
     monkeypatch.setattr(token_auth, "_app_perms_cache", {})
+    monkeypatch.setattr("kiro_crew.apps.host_exec_grants.host_exec_granted", lambda _n: True)
     seen: list[int] = []
 
     def _fake(name):
@@ -715,6 +715,7 @@ def test_the_allowlist_prime_refreshes_an_entry_near_expiry(monkeypatch):
 
     stale = token_auth.time.time() - (token_auth._APP_PERMS_TTL - 1.0)
     monkeypatch.setattr(token_auth, "_app_perms_cache", {APP: (stale, ())})
+    monkeypatch.setattr("kiro_crew.apps.host_exec_grants.host_exec_granted", lambda _n: True)
     calls: list[str] = []
     monkeypatch.setattr(token_auth, "_app_api_allowlist", lambda name: calls.append(name) or ())
 

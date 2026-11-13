@@ -4,7 +4,7 @@ Two layers, so every ``auto`` start limit sizes from the same reading of the hos
 
 * :class:`HostCapacity` / :func:`host_capacity` -- the cores this process may use
   (affinity mask capped by a cgroup v2 ``cpu.max`` quota) and the available
-  memory, read ONCE per process and then fixed.
+  memory, read once per process; the memory figure can be raised later.
 * :func:`resolve_session_start_sizing` -- the SessionStartGate's width
   (``acp/runtime_start.py``), which bounds how many ACP ``session/new`` requests
   are outstanding at once.
@@ -16,9 +16,14 @@ and ``available_GB // 3``, whichever is smaller, clamped to ``[2, 16]``. Measure
 on a 128-vCPU host: at 2 the starts serialise to one per 1.9 s, at 8 each stays
 at its 3.8 s isolated cost.
 
-Static, not adaptive: the reading is taken once (gateway boot) and cached. The
-adaptive loops on this resource are the gatewayd spawn gate and the
-execution-cap controller; a second adapting loop would oscillate against them.
+Not adaptive: the reading is taken at gateway boot and cached, and after that
+its memory figure only ever rises (:func:`refresh_host_capacity`), so a width
+sized from it widens and never narrows. A gateway that boots while memory is
+short is therefore not held at that moment's width for its whole life, and no
+width follows memory back down: the adaptive loops on this resource are the
+gatewayd spawn gate and the execution-cap controller, and a second loop moving
+both ways would oscillate against them. Memory per start stays bounded by
+``agent.spawn_min_memory_gb``, which reads the host at each start.
 
 An explicit integer in config always wins; ``auto`` is the default.
 """
@@ -27,7 +32,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
 from kiro_crew.cpu_affinity import affinity_cpu_count
@@ -173,16 +178,53 @@ _host_cached: HostCapacity | None = None
 
 
 def host_capacity() -> HostCapacity:
-    """The process's one host reading, probed on first use and then fixed.
+    """The process's one host reading, probed on first use.
 
     Every ``auto`` start limit sizes from this one reading, so the limits a
-    gateway runs at agree with each other and with its boot log.
+    gateway runs at agree with each other and with its log. Only
+    :func:`refresh_host_capacity` replaces it, and only upward.
     """
     global _host_cached
     with _host_lock:
         if _host_cached is None:
             _host_cached = probe_host_capacity()
         return _host_cached
+
+
+def refresh_host_capacity() -> bool:
+    """Re-read available memory and raise the cached reading; True when it rose.
+
+    Disk I/O: call off the event loop. The cores stay as first read and the
+    memory figure never goes down, so every ``auto`` width sized from the cached
+    reading can only widen, and never past what the cores allow. With no reading
+    cached yet this takes the first one.
+    """
+    global _host_cached
+    with _host_lock:
+        if _host_cached is None:
+            _host_cached = probe_host_capacity()
+            return True
+    fresh = _read_available_gb()
+    with _host_lock:
+        held = _host_cached
+        if fresh is None or (held.available_gb is not None and fresh <= held.available_gb):
+            return False
+        _host_cached = replace(held, available_gb=fresh)
+        return True
+
+
+def memory_limits_auto_width() -> bool:
+    """Whether the cached reading's memory, not its cores, sets the ``auto`` width.
+
+    True while a higher memory figure could still widen it, and while nothing is
+    cached. Event-loop safe: one reference load and arithmetic.
+    """
+    host = _host_cached
+    if host is None:
+        return True
+    return size_session_start_concurrency(
+        host.cpus, host.available_gb
+    ) < size_session_start_concurrency(host.cpus, None)
 
 
 # ── agent.session_start_concurrency ───────────────────────────────────────────
@@ -256,7 +298,7 @@ def cached_session_start_concurrency(configured: object) -> int:
     An integer is returned as is. ``"auto"`` is sized from the cached host
     reading when one exists, and is :data:`AUTO_FLOOR` until then. It never
     takes ``_host_lock``: reading the module global is a single reference
-    load, and the reading is immutable once published.
+    load, and a published reading is immutable (a refresh publishes a new one).
     """
     if not is_auto(configured):
         return int(configured)  # type: ignore[call-overload]

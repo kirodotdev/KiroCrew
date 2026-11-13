@@ -443,6 +443,27 @@ class TestAgentRoutes:
             # Only the agent just enabled — the defaults are NOT re-added.
             assert (await resp.json())["agents_enabled"] == ["note-taker"]
 
+    @pytest.mark.asyncio
+    async def test_a_start_without_a_roster_runs_the_one_the_meeting_holds(
+        self, app, root, fake_sessions
+    ):
+        """An absent ``agents_enabled`` keeps the roster the meeting already holds in
+        its metadata, and the kickoff reads it from there. The outputs and the live
+        queues were built from the configured defaults instead, so a restart of a
+        meeting that had every optional agent switched off seeded their output files
+        and sent them transcript."""
+        async with client_for(app) as client:
+            await client.post(f"{BASE}/meetings/standup/init", json={})
+            first = await client.post(f"{BASE}/meetings/standup/start", json={"agents_enabled": []})
+            assert first.status == 200
+            again = await client.post(f"{BASE}/meetings/standup/start", json={"restart": True})
+            assert again.status == 200
+            live = _common.ACTIVE.get("standup")
+            assert live is not None and set(live.agents) == {k.TASK_EXTRACTOR_ID}
+        meta = store.read_meeting_meta("standup", root)
+        assert meta is not None and meta["agents_enabled"] == []
+        assert meta["outputs"] == {}
+
     def _default_output_names(self, root: Path) -> set[str]:
         """Output filenames the default roster would seed."""
         config = store.read_config(root)
@@ -775,23 +796,24 @@ class TestAgentRoutes:
                 await release_flush.wait()
 
             monkeypatch.setattr(session, "flush_all", slow_flush)
-            stop_request = asyncio.create_task(client.post(f"{BASE}/meetings/standup/stop"))
-            await await_until(flush_entered)
+            # The app's cleanup hook flushes again, so a flush left parked hangs teardown.
+            try:
+                stop_request = asyncio.create_task(client.post(f"{BASE}/meetings/standup/stop"))
+                await await_until(flush_entered)
 
-            dispatch = await await_until(
-                asyncio.ensure_future(
-                    client.post(
-                        f"{BASE}/meetings/standup/dispatch",
-                        json={"text": "too late"},
+                dispatch = await await_until(
+                    asyncio.ensure_future(
+                        client.post(
+                            f"{BASE}/meetings/standup/dispatch",
+                            json={"text": "too late"},
+                        )
                     )
-                ),
-                timeout=1,
-            )
-            assert dispatch.status == 409
-            assert (await dispatch.json())["code"] == "no_active_meeting"
-
-            release_flush.set()
-            assert (await stop_request).status == 200
+                )
+                assert dispatch.status == 409
+                assert (await dispatch.json())["code"] == "no_active_meeting"
+            finally:
+                release_flush.set()
+            assert (await await_until(stop_request)).status == 200
 
         assert _common.ACTIVE.get() is None
 

@@ -189,6 +189,22 @@ class TestFailingRun:
         assert run.status == FAILED
         assert len(run.error) == 2000
 
+    def test_a_runner_calling_sys_exit_ends_failed(self, sdk: JobSDK) -> None:
+        """SystemExit is not an Exception: it must still end the record."""
+
+        def exits(h, **kw):
+            raise SystemExit()
+
+        sdk.register("exits", exits)
+        run_id = sdk.start("exits", dedupe_key="acct")
+        try:
+            run = _wait_terminal(sdk, run_id)
+        except RuntimeError as exc:  # wait_until's timeout
+            pytest.fail(f"the record never left running: {exc}")
+        assert run.status == FAILED
+        assert run.error == "SystemExit"
+        assert sdk.list_active("exits") == []
+
 
 # 5. Cancellation
 

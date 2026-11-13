@@ -14,6 +14,7 @@ import json
 import signal
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -499,6 +500,9 @@ class TestDetachOnCancelFailure:
             supports_caller_identity = True
             control_plane = False
             quarantined = False
+            # What ``launch.bound_to_owner_port`` reads before each forward.
+            pool_key = SimpleNamespace(server_name="")
+            owner_port = 0
 
             def __init__(self) -> None:
                 self.detach_called = False

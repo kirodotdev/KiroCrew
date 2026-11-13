@@ -287,6 +287,18 @@ async def test_poll_answers_a_sign_out_during_the_login_as_the_begin_409():
     assert _body(resp)["code"] == "signed_out_during_login"
 
 
+@pytest.mark.parametrize("code", ["no_kiro_profile", "profile_lookup_failed"])
+@pytest.mark.asyncio
+async def test_poll_passes_a_profile_failure_code_through_to_the_card(code):
+    class _NoProfile(_StubService):
+        async def poll_device(self, login_id):
+            return {"status": "error", "code": code}
+
+    resp = await api_kas_login_poll(_FakeRequest(_NoProfile(), {"login_id": "lid-1"}))
+    assert resp.status == 200
+    assert _body(resp) == {"status": "error", "code": code}
+
+
 @pytest.mark.asyncio
 async def test_logout_ok_and_invalid_identity():
     resp = await api_kas_login_logout(_FakeRequest(_StubService(), {"identity": "social"}))

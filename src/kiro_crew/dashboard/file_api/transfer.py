@@ -13,17 +13,18 @@ import urllib.parse
 from typing import TYPE_CHECKING, BinaryIO, Literal
 
 from aiohttp import web
-from aiohttp.client_exceptions import ClientConnectionResetError
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.files import (
         _DOWNLOAD_CHUNK_STALL_SECS,
         _DOWNLOAD_SCAN_MAX_BYTES,
+        _FILE_BUSY_ERROR,
         _STREAM_CHUNK_BYTES,
         _STREAM_MAX_BYTES,
         _STREAM_TEXT_PROBE_BYTES,
         FILE_READ_SCHEMA,
         ValidationError,
+        _is_live_memory_store_file,
         _open_checked_file,
         _open_refusal,
         _OpenDenied,
@@ -37,6 +38,7 @@ if TYPE_CHECKING:
         _sniff_media_type,
         binary_content_is_flagged,
         logger,
+        platform_compat,
         redact,
         require_owner_dashboard_request,
         validate_tool_args,
@@ -75,6 +77,14 @@ async def api_file_watch(request: web.Request) -> web.StreamResponse:
             session_key="dashboard", tool_name="file_watch", outcome="not_found", resources=path
         )
         return web.json_response({"error": "not found"}, status=404)
+    # Refused as in the open prefix the other readers share: every poll below opens
+    # and closes the file, which would drop the memory store's locks on it.
+    try:
+        live_store_file = await _run_path_probe(_is_live_memory_store_file, path)
+    except _PathProbeBusy:
+        return _probe_busy_response(resource=path, tool_name="file_watch")
+    if live_store_file:
+        return _open_refusal(_OpenDenied("sensitive_path", path), tool_name="file_watch").response
 
     _sel().log_tool_invocation(
         session_key="dashboard", tool_name="file_watch", outcome="success", resources=path
@@ -98,7 +108,10 @@ async def api_file_watch(request: web.Request) -> web.StreamResponse:
     last_content = ""
 
     def _read_file(p: str, cap: int) -> str:
-        with open(p, "r", encoding="utf-8", errors="replace") as f:
+        # Not the builtin open: on Windows that is the CRT open, which grants no
+        # delete sharing, so it fails while Word or Excel holds the file.
+        fd = platform_compat.open_file_for_shared_read(p)
+        with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as f:
             return f.read(cap)
 
     try:
@@ -168,7 +181,7 @@ async def api_file_watch(request: web.Request) -> web.StreamResponse:
                     await resp.write(f"data: {payload}\n\n".encode("utf-8"))
 
             await asyncio.sleep(poll_interval)
-    except (ConnectionResetError, asyncio.CancelledError, ClientConnectionResetError):
+    except (ConnectionResetError, asyncio.CancelledError):
         pass
 
     return resp
@@ -427,7 +440,7 @@ async def _stream_unscanned_download(
         remaining -= len(chunk)
         try:
             await resp.write(chunk)
-        except (ConnectionResetError, ConnectionError, ClientConnectionResetError):
+        except (ConnectionResetError, ConnectionError):
             return resp  # client hung up
     with contextlib.suppress(Exception):
         await resp.write_eof()
@@ -586,7 +599,7 @@ async def api_file_stream(request: web.Request) -> web.StreamResponse:
         _, code, res = result
         if code == "not_found":
             outcome = "not_found"
-        elif code == "read_failed":
+        elif code in ("read_failed", "file_busy"):
             outcome = "failure"
         else:
             outcome = "denied"
@@ -632,6 +645,8 @@ async def api_file_stream(request: web.Request) -> web.StreamResponse:
                 {"error": "file content was redacted; stream aborted", "code": "content_redacted"},
                 status=400,
             )
+        if code == "file_busy":
+            return web.json_response({"error": _FILE_BUSY_ERROR, "code": "file_busy"}, status=503)
         return web.json_response({"error": "cannot read file", "code": "read_failed"}, status=500)
     _, f, size, content_type, path = result
 

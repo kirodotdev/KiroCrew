@@ -146,8 +146,10 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // SecurityPanel.tsx mounts as its banner. No extractable primitive; mapped so
   // the hand-written `security.config-pending` entry stays anchored to its source.
   'SecurityPanelConfigPending.tsx': 'security',
-  'ConnectionsPanel.tsx': 'connections',
+  'OAuthAppPanel.tsx': 'connections',
   'SecretsPanel.tsx': 'secrets',
+  // Draws the tab while the Secrets vault redesign preview is off.
+  'SecretsPanelLegacy.tsx': 'secrets',
   'NotificationsPanel.tsx': 'notifications',
   'ShortcutsPanel.tsx': 'shortcuts',
   // Added upstream (auto-skill generation) without a mapping here, so its two
@@ -200,11 +202,11 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'FeaturePreviewsSection.tsx': DEVELOPER_PREVIEWS,
   // The URL is offered only while its preview is enabled (settingsSearchCore).
   'SessionEnvironmentsCard.tsx': 'session-environments',
-  // The Crewmates section DeveloperPanel mounts under Feature Previews: the
-  // server-side crewmate switches (reply threads today). Same tab, so a
-  // SettingRef to `dashboard.crewmate_threads` deep-links to the row.
-  'CrewmatesSection.tsx': DEVELOPER_PREVIEWS,
-  // The default agent's opt-in MCP sets, mounted beside the Crewmates section.
+  // The Reply threads row FeaturePreviewsSection mounts in its Crew and bots
+  // group (`dashboard.crewmate_threads`). Same tab, so a SettingRef to that
+  // key deep-links to the row.
+  'ReplyThreadsRow.tsx': DEVELOPER_PREVIEWS,
+  // The default agent's opt-in MCP sets, mounted below the preview groups.
   'DefaultMcpGrantsSection.tsx': DEVELOPER_PREVIEWS,
   // The Decisions (Jev) card, which FeaturePreviewsSection mounts. Its own file
   // because it is a list and a detail rather than one row, and mapped here for the
@@ -225,10 +227,14 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'DecisionsPointPanel.tsx': DEVELOPER_PREVIEWS,
   'AboutPanel.tsx': 'about',
   // AboutPanel.tsx's owners (the in-app update step-up and request card; a gateway
-  // install's Updates card body). Mapped with it so a control either one gains stays
-  // indexed on the About tab.
+  // install's Updates card body; the desktop app's Restart gateway row; the two
+  // auto-update switches; the upcoming update notice). Mapped
+  // with it so a control any of them gains stays indexed on the About tab.
   'AboutPanelUpdateFlow.tsx': 'about',
   'AboutPanelGatewayUpdate.tsx': 'about',
+  'AboutPanelUpdateSwitches.tsx': 'about',
+  'AboutPanelUpcomingUpdate.tsx': 'about',
+  'DesktopGatewayRestartRow.tsx': 'about',
   'SttSettings.tsx': 'voice',
   // The `instances` tab mounts RemoteCrewPanel (SettingsPage.tsx), which also
   // renders InstancesPanel.tsx's AddInstanceForm — both files map to the same
@@ -268,6 +274,8 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'ChatPanelLinkPatternsEditor.tsx': { tab: 'chat', params: { sub: 'transcript' } },
   // The default-folder picker ChatPanel's Sessions page mounts.
   'DefaultSessionFolderSetting.tsx': { tab: 'chat', params: { sub: 'sessions' } },
+  // The per-creator session limit ChatPanel's Sessions page mounts.
+  'SessionsPerCreatorSetting.tsx': { tab: 'chat', params: { sub: 'sessions' } },
   // The per-app session mutes NotificationsPanel's Sources page mounts. Each row
   // is labelled with the app's own name, a dynamic label the extractor skips;
   // mapped so a static control added to it lands on the Sources deep link.
@@ -528,6 +536,8 @@ export function panelRoots(srcDir: string): ExtractRoot[] {
     { dir: path.join(srcDir, 'pages', 'developer'), file: 'KasBundleCard.tsx' },
     { dir: path.join(srcDir, 'pages', 'developer'), file: 'KiroSignInCard.tsx' },
     { dir: path.join(srcDir, 'pages', 'chat', 'command-center'), file: 'AutomaticCardSetting.tsx' },
+    // A Connections card's OAuth app part, opened in place on Settings → Connections.
+    { dir: path.join(srcDir, 'pages', 'connections'), file: 'OAuthAppPanel.tsx' },
   ]
 }
 

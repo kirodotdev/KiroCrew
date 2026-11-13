@@ -266,6 +266,22 @@ async def test_definition_run_reports_executor_rejection_instead_of_not_found() 
     }
 
 
+async def test_definition_run_answers_app_disabled_like_the_task_runner_routes() -> None:
+    service = FakeService()
+    message = "Task Runner is disabled. Enable it in Library to start tasks."
+
+    async def refuse_start(_workflow_ref, **_kwargs):
+        return {"error": message, "app_disabled": True}
+
+    service.start_definition = refuse_start  # type: ignore[method-assign]
+    async with TestClient(TestServer(_app(service))) as client:
+        response = await client.post("/api/workflows/definitions/debug/run", json={})
+        body = await response.json()
+
+    assert response.status == 409
+    assert body == {"error": message, "code": "app_disabled"}
+
+
 async def test_definition_update_passes_the_shown_id_and_refuses_a_malformed_one() -> None:
     service = FakeService()
     async with TestClient(TestServer(_app(service))) as client:

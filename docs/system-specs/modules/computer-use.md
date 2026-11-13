@@ -854,6 +854,13 @@ judged by ownership as well as mode (`_file_is_replaceable`), because a director
 can `chmod` it at will. A root-owned bundle there launches; one this user owns is still
 refused. Any other parent, or a `stat` that fails, keeps the parent probe.
 
+**The check and the launch are separate steps.** `spawn_detached` launches by the PATH
+`resolve_target` verified, so on a stock `/Applications` an admin user can rename the verified
+bundle aside and put another at the same path between the checks and LaunchServices reading
+it; nothing re-checks the bundle at the spawn. This window is accepted and recorded as a
+`shortcut:` in `spawn_detached`; closing it means launching by a file reference held from the
+check to the spawn, not adding a refusal on top of the path launch.
+
 **Every level, not just the endpoints.** Write access to any single directory on that path
 is enough to control what executes, and `Contents` is the one an endpoints-only check
 misses: its writability is independent of both neighbours, and owning it allows
@@ -2432,7 +2439,8 @@ Both halves are pinned by tests (`ComputerUsePanel.test.tsx`,
 dead button that only reproduces in a packaged build.
 
 Editor links that name a file get a fourth verdict, `confirm`:
-`vscode://file/<path>` and `vscode://vscode-remote/ssh-remote+<host>/<path>`
+`vscode://file/<path>`, `vscode://file/<drive>:/<path>` (a Windows drive letter,
+local files only) and `vscode://vscode-remote/ssh-remote+<host>/<path>`
 (and `vscode-insiders://`), with an optional `:line[:col]`. The handler shows a
 native dialog with the full URL and hands it to the OS only if the user picks
 Open, one dialog at a time. Its "Don't ask again" box skips the dialog for

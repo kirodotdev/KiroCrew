@@ -86,6 +86,10 @@ export interface Slot {
   // button. Always false while a turn runs. Read by the goal-loop subtitle so a
   // stalled loop stops pulsing as if it were working.
   interrupted?: boolean
+  // `interrupted`, but for a turn cut short longer ago than the bulk Resume
+  // offers (`is_interruption_stale`). The row and the composer still treat the
+  // session as interrupted; only the "Resume N sessions" row leaves it out.
+  interrupted_stale?: boolean
   // The slot snapshot can report live child work before the detailed activity
   // map hydrates after reconnect. Never present that gap as an idle interruption.
   subagents_running?: boolean
@@ -250,6 +254,9 @@ export interface FilterDimension {
    *  `pinnedExemptNarrowing`, so the pinned-band caption follows the same
    *  rule `filtersRow` applies instead of restating it. */
   exemptsPinned: boolean
+  /** Is this the search box rather than a filter? Read by `filtersNarrowing`,
+   *  which the search lane's "Clear filters" asks: that action keeps the query. */
+  isSearch: boolean
   /** Does this dimension hide THIS row from a reveal? `excluded` reports list
    *  membership, for dimensions (search, status) that rank against backend
    *  state a single row cannot answer for alone. Non-nullable on purpose,

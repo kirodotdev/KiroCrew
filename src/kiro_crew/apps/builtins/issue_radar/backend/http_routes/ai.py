@@ -475,6 +475,18 @@ def _pr_ai_comment_rows(timeline: list[dict]) -> list[dict]:
         and ev.get("kind") in ("comment", "review_comment", "reviewed")
         and ((ev.get("body") or "").strip() or ev.get("kind") == "reviewed")
     ]
+    # A dismissed review (GitHub's ``review_dismissed``, matched by review id) no
+    # longer stands, so it must not be summarized as a live objection or approval.
+    # Rows without an id (other providers) are never matched.
+    dismissed = {
+        ev.get("review_id")
+        for ev in timeline
+        if isinstance(ev, dict)
+        and ev.get("kind") == "review_dismissed"
+        and ev.get("review_id") is not None
+    }
+    # Select current state before folding a dismissal. If the newest verdict was
+    # dismissed, an older superseded verdict must not become current again.
     verdicts = [ev for ev in rows if ev.get("kind") == "reviewed"]
     chatter = [ev for ev in rows if ev.get("kind") != "reviewed"][-_PR_AI_MAX_COMMENTS:]
     # Verdicts are privileged, not unlimited: a bot-heavy PR can accumulate
@@ -489,7 +501,8 @@ def _pr_ai_comment_rows(timeline: list[dict]) -> list[dict]:
         if prev is None or str(ev.get("created_at") or "") >= str(prev.get("created_at") or ""):
             latest_by_reviewer[actor] = ev
     kept_verdicts = sorted(
-        latest_by_reviewer.values(), key=lambda ev: str(ev.get("created_at") or "")
+        (ev for ev in latest_by_reviewer.values() if ev.get("review_id") not in dismissed),
+        key=lambda ev: str(ev.get("created_at") or ""),
     )[-_PR_AI_MAX_VERDICTS:]
     kept = kept_verdicts + chatter
     kept.sort(key=lambda ev: str(ev.get("created_at") or ""))

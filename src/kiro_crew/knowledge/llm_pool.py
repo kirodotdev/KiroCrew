@@ -212,6 +212,17 @@ class KnowledgeHarnessUnavailable(RuntimeError):
         )
 
 
+class LLMPoolClosed(RuntimeError):
+    """A send on a shut-down pool, or one its shutdown cut short.
+
+    Not a failed item: the reply never comes, so an ingest must fail rather
+    than store the chunk with no extraction.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("the LLM pool is shut down")
+
+
 def _kiro_fallback(reason: str) -> str:
     """``ACP_BACKEND_KIRO`` as the pool's FALLBACK harness: ``oss`` only.
 
@@ -253,8 +264,8 @@ def _get_acp_backend(config: Optional[dict] = None) -> str:
     ``SessionCapabilities.honors_zero_tool_ban`` (kiro-cli/KAS natively, claude
     because a zero-tool session there mounts no tool at all, plus
     opencode/goose/deepseek/pi via ``AcpClient._deny_zero_tools``; not codex, whose
-    sessions run on ``AcpRuntime`` with no such refusal) and
-    ``.acp_client_spawnable`` (not
+    ``AcpRuntime`` sessions refuse every permission request but still run some
+    calls without asking) and ``.acp_client_spawnable`` (not
     kas/codex, which need ``AcpRuntime`` and have no arm in ``AcpClient._spawn``).
 
     The pool reads raw ``config.json``, which never passed the loader's
@@ -1134,6 +1145,18 @@ class CCWorker(Worker):
         self.calls_since_reset = 0
 
 
+async def _stop_workers(workers: list[Worker]) -> None:
+    """Shut *workers* down at the same time, logging a failure instead of raising it.
+
+    A worker's shutdown can wait on its child process (an ACP client gives the
+    agent a moment to exit once stdin is closed), so stopping them one after
+    another would make a pool's stop cost that wait once per worker.
+    """
+    for result in await asyncio.gather(*(w.shutdown() for w in workers), return_exceptions=True):
+        if isinstance(result, Exception):
+            logger.debug("Worker shutdown error", exc_info=result)
+
+
 class LLMPool:
     """Bounded pool of long-lived LLM workers.
 
@@ -1170,6 +1193,8 @@ class LLMPool:
         self._workers: list[Worker] = []
         self._available: asyncio.Queue[int] = asyncio.Queue()
         self._started = False
+        # Set by shutdown() for good: acquire() would otherwise respawn the pool.
+        self._closed = False
         self._provider_type: str = ""
         self._config: dict = {}
         self._start_lock = asyncio.Lock()
@@ -1348,9 +1373,12 @@ class LLMPool:
         """Acquire a worker from the pool. Blocks if all busy.
 
         Returns (worker_index, worker). Caller must release after use.
-        Transparently restarts the pool if the idle reaper scaled it to zero.
+        Transparently restarts the pool if the idle reaper scaled it to zero,
+        never after shutdown().
         """
         while True:
+            if self._closed:
+                raise LLMPoolClosed()
             if not self._started:
                 await self.start()
             await self._semaphore.acquire()
@@ -1470,11 +1498,7 @@ class LLMPool:
             self._reaping_workers = workers
 
         try:
-            for worker in workers:
-                try:
-                    await worker.shutdown()
-                except Exception:
-                    logger.debug("Worker shutdown error", exc_info=True)
+            await _stop_workers(workers)
         except asyncio.CancelledError:
             # shutdown() cancelled us mid-teardown; leave _reaping_workers set
             # so shutdown() drains the survivors, then finish cancelling.
@@ -1497,6 +1521,10 @@ class LLMPool:
         idx, worker = await self.acquire()
         try:
             return await worker.send_message(prompt, timeout=timeout)
+        except Exception as exc:
+            if self._closed:
+                raise LLMPoolClosed() from exc
+            raise
         finally:
             try:
                 await self._maybe_recycle(idx, worker)
@@ -1547,7 +1575,7 @@ class LLMPool:
         async def _do_one(idx: int, prompt: str) -> None:
             try:
                 results[idx] = await self.send(prompt, timeout=timeout)
-            except KnowledgeHarnessUnavailable:
+            except (KnowledgeHarnessUnavailable, LLMPoolClosed):
                 # Not a failed item: no prompt in the batch can run, and an empty
                 # reply would let the ingest commit a document with no extraction.
                 raise
@@ -1559,7 +1587,8 @@ class LLMPool:
         return results
 
     async def shutdown(self) -> None:
-        """Destroy all workers and stop the idle reaper."""
+        """Destroy all workers and stop the idle reaper; the pool stays closed."""
+        self._closed = True
         task = self._reaper_task
         self._reaper_task = None
         if task is not None:
@@ -1581,11 +1610,7 @@ class LLMPool:
             self._started = False
             self._in_use = 0
             self._idle_since = None
-        for worker in workers:
-            try:
-                await worker.shutdown()
-            except Exception:
-                logger.debug("Worker shutdown error", exc_info=True)
+        await _stop_workers(workers)
         logger.info("LLMPool: all workers shut down")
 
     async def __aenter__(self) -> "LLMPool":

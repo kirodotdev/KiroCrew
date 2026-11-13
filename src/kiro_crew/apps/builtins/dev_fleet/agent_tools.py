@@ -177,9 +177,10 @@ def _pod_start_reply(args: dict[str, Any], _pu_resp: dict[str, Any], verb: str) 
 
 
 async def pod_up(args: dict[str, Any]) -> dict[str, Any]:
-    resp = await agent_pod_api.pod_up_response(
-        {"worktree": args["worktree"], **_pod_limit_body(args)}
-    )
+    body = {"worktree": args["worktree"], **_pod_limit_body(args)}
+    if args.get("env"):
+        body["env"] = args["env"]
+    resp = await agent_pod_api.pod_up_response(body)
     return _pod_start_reply(args, _client_view(resp), "up")
 
 

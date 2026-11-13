@@ -290,6 +290,25 @@ test("a long data path never publishes a manifest the next launch cannot read", 
   assert.notDeepEqual(next, { skipped: true, reason: "manifest unavailable" });
 });
 
+test("a manifest write that fills the disk part-way leaves no temp file", () => {
+  const fs = makeFakeFs(bundleWithIcons(["16x16"]));
+  integrateLinuxDesktop(baseDeps(fs));
+  const writeFileSync = fs.writeFileSync;
+  fs.writeFileSync = (p, data, opts) => {
+    if (String(p).startsWith(`${STATE_PATH}.tmp-`)) {
+      // The file is created, then the write runs out of space.
+      writeFileSync(p, String(data).slice(0, 8), opts);
+      throw Object.assign(new Error("ENOSPC"), { code: "ENOSPC" });
+    }
+    return writeFileSync(p, data, opts);
+  };
+
+  integrateLinuxDesktop(baseDeps(fs, { env: { APPIMAGE: "/new/K.AppImage", APPDIR, HOME }, version: "0.6.0" }));
+
+  const leftovers = [...fs._files.keys()].filter((p) => p.startsWith(`${STATE_PATH}.tmp-`));
+  assert.deepEqual(leftovers, []);
+});
+
 test("a promoted interrupted update followed by a move does not orphan side files", () => {
   const fs = makeFakeFs(bundleWithIcons(["16x16"]));
   integrateLinuxDesktop(baseDeps(fs));

@@ -69,6 +69,29 @@ class TestColumns:
             assert (tmp_path / "tag_boards.json").exists()
 
     @pytest.mark.asyncio
+    async def test_a_repeated_tag_id_is_stored_once_and_ensure_finds_the_column(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "T"})).json()
+            first = await client.post(
+                "/api/chat/tag-columns",
+                json={"name": "Lane", "tag_ids": [tag["id"], tag["id"]], "ensure": True},
+            )
+            assert first.status == 201
+            col = await first.json()
+            assert col["tag_ids"] == [tag["id"]]
+            again = await client.post(
+                "/api/chat/tag-columns",
+                json={"name": "Lane", "tag_ids": [tag["id"]], "ensure": True},
+            )
+            assert (await again.json())["id"] == col["id"]
+        assert len(state._tag_boards) == 1
+
+    @pytest.mark.asyncio
     async def test_create_column_invalid_mode_rejected(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -104,6 +127,34 @@ class TestColumns:
             data = await resp.json()
             assert data["name"] == "New"
             assert data["include_untagged"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("spelled", ["false", "0", "no", "off", "False"])
+    async def test_a_spelled_false_include_untagged_is_saved_as_false(
+        self, tmp_path, monkeypatch, spelled
+    ):
+        # ``bool("false")`` is True; the folder route already reads these
+        # spellings as False and the column must agree.
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            col = await (
+                await client.post(
+                    "/api/chat/tag-columns", json={"name": "C", "include_untagged": True}
+                )
+            ).json()
+            resp = await client.patch(
+                f"/api/chat/tag-columns/{col['id']}", json={"include_untagged": spelled}
+            )
+            assert resp.status == 200
+            assert (await resp.json())["include_untagged"] is False
+            created = await (
+                await client.post(
+                    "/api/chat/tag-columns", json={"name": "D", "include_untagged": spelled}
+                )
+            ).json()
+            assert created["include_untagged"] is False
 
     @pytest.mark.asyncio
     async def test_update_column_not_found(self, tmp_path, monkeypatch):

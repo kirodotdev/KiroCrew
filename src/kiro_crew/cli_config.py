@@ -64,7 +64,7 @@ _SEALED_CONFIG_ERRNOS = frozenset({errno.EPERM, errno.EACCES, errno.EROFS, errno
 
 
 def _names_sealed_config(exc: OSError) -> bool:
-    """Whether *exc* was raised against ``config.json``, ``config.local.json`` or its record.
+    """Whether *exc* was raised against ``config.json``, ``config.local.json`` or their provenance.
 
     The publishing ``os.replace(tmp, path)`` reports the temp as ``filename`` and the
     destination as ``filename2``; an in-place ``open(path, "w")`` reports only
@@ -72,12 +72,15 @@ def _names_sealed_config(exc: OSError) -> bool:
     neither -- ``config edit``'s ``execvp`` of an editor, a temp the data home itself
     refused -- is the caller's to report as what it is.
     """
-    # The config writer records each save in the publication record first, and that
-    # record is sealed the same way, so a sandboxed save is refused there.
-    sealed = {os.path.realpath(p) for p in (config_path(), config_local_path(), record_path())}
+    # Before it publishes, the config writer stores the endorsed copy and the publication
+    # record inside the ``config-provenance`` directory, which is sealed the same way, so
+    # a sandboxed save is refused there first, against a temp file of its own.
+    sealed = {os.path.realpath(p) for p in (config_path(), config_local_path())}
+    provenance = Path(os.path.realpath(record_path().parent))
     for name in (exc.filename, exc.filename2):
         if isinstance(name, (str, bytes, os.PathLike)):
-            if os.path.realpath(os.fsdecode(name)) in sealed:
+            resolved = os.path.realpath(os.fsdecode(name))
+            if resolved in sealed or Path(resolved).is_relative_to(provenance):
                 return True
     return False
 
@@ -89,11 +92,12 @@ def _sandboxed_config_write_hint(exc: OSError) -> str | None:
     (``sandbox._CREW_READONLY_LEAVES``) because they carry the switches that loosen
     confinement. Without this the refusal surfaces as a bare errno, which reads like a
     broken install. Decided from the failure itself -- a denial errno against one of
-    the two sealed files -- and not from ``KIROCREW_SANDBOX_ACTIVE``: ``cli.main()``
-    pops that marker before dispatch so an inherited value can never buy a sandbox
-    bypass, which means it is never set by the time this runs. ``None`` for any other
-    failure, so the caller's own error path still reports a genuinely read-only or
-    full data home, or an editor the sandbox would not exec.
+    the two sealed files or a path in their sealed ``config-provenance`` directory --
+    and not from ``KIROCREW_SANDBOX_ACTIVE``: ``cli.main()`` pops that marker before
+    dispatch so an inherited value can never buy a sandbox bypass, which means it is
+    never set by the time this runs. ``None`` for any other failure, so the caller's
+    own error path still reports a genuinely read-only or full data home, or an editor
+    the sandbox would not exec.
     """
     if exc.errno not in _SEALED_CONFIG_ERRNOS:
         return None
@@ -226,7 +230,7 @@ def _warn_unapproved_share_names(key: str, parsed: object) -> None:
     for name in unapproved_share_names(parsed):
         print(
             f"⚠️  {name} has no approved launch, so the gateway will not share it until "
-            "you approve it in Customize → Connections → MCP Servers.",
+            "you approve it in MCP Servers.",
             file=sys.stderr,
         )
 
@@ -277,7 +281,18 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
         if encoded is not None and file_path:
             print("❌ --value-base64 cannot be combined with --file", file=sys.stderr)
             sys.exit(1)
+        if file_path and args.key is not None:
+            # ``--file`` replaces the whole document, so a positional key/value
+            # alongside it has nothing well-defined to apply to. Keep the
+            # ``--file`` write (the behaviour today) and say the key/value was
+            # ignored, rather than silently dropping it.
+            print(
+                f"⚠️  ignoring the key/value ({args.key}) given with --file: "
+                "--file replaces the whole document",
+                file=sys.stderr,
+            )
         if file_path:
+            use_local = getattr(args, "local", False)
             fp = Path(file_path).expanduser().resolve()
 
             try:
@@ -299,17 +314,57 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 )
                 sys.exit(1)
 
+            local_warnings: list[str] = []
+
             def _mutate_from_file(cur: dict) -> dict:
-                _refuse_missing_workspace_dirs(data, cur)
+                local_warnings.clear()
+                # Every new or changed workspace dir must exist, as on a base write.
+                # The overlay wins over config.json, so for ``--local`` an entry is
+                # "unchanged" against what is in force now: the base with this
+                # overlay over it. An overlay entry with no ``dir`` keeps the base dir.
+                if not use_local:
+                    _refuse_missing_workspace_dirs(data, cur)
+                else:
+                    try:
+                        base = json.loads(read_endorsed_config_text(config_path()))
+                    except (OSError, ValueError):
+                        base = {}
+                    if not isinstance(base, dict):
+                        base = {}
+                    base_ws = base.get("workspaces")
+                    over_ws = cur.get("workspaces")
+                    current = {
+                        "workspaces": {
+                            **(base_ws if isinstance(base_ws, dict) else {}),
+                            **(over_ws if isinstance(over_ws, dict) else {}),
+                        }
+                    }
+                    # Per workspace: an entry the base already binds to this dir
+                    # passes the base-only check, so save it and warn rather than refuse.
+                    workspaces = data.get("workspaces")
+                    entries = workspaces.items() if isinstance(workspaces, dict) else ()
+                    for name, entry in entries:
+                        one = {"workspaces": {name: entry}}
+                        try:
+                            _refuse_missing_workspace_dirs(one, current)
+                        except ConfigWriteRefused as e:
+                            _refuse_missing_workspace_dirs(one, base)
+                            local_warnings.append(str(e))
                 for key, value in data.items():
                     _ack_explicit_config_write(key, value)
                 return data
 
+            # ``--local`` writes the overlay (config.local.json), whose values win
+            # over config.json, instead of replacing the base. The overlay is a
+            # partial document and is not meta-stamped, the same as the keyed
+            # ``config set --local`` path above.
+            target = config_local_path() if use_local else config_path()
             try:
                 update_config_locked(
-                    config_path(),
+                    target,
                     mutate=_mutate_from_file,
                     on_corrupt="reset",
+                    stamp_meta=not use_local,
                 )
             except ConfigWriteRefused as e:
                 # Third writer behind the publish floor, same report as the keyed
@@ -320,12 +375,18 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 sys.exit(1)
             sel().log_api_access(
                 caller="cli",
-                operation="config_set_file",
+                operation="config_set_local_file" if use_local else "config_set_file",
                 outcome="allowed",
                 source="cli",
                 resources=str(fp),
             )
-            print(f"✅ Config loaded from {file_path}")
+            dest = "config.local.json" if use_local else file_path
+            if use_local:
+                print(f"✅ Overlay loaded from {file_path} (saved to {dest})")
+                for warning in local_warnings:
+                    print(f"⚠  {warning}", file=sys.stderr)
+            else:
+                print(f"✅ Config loaded from {file_path}")
             gateway_section = data.get("mcp_gateway")
             if isinstance(gateway_section, dict):
                 _warn_unapproved_share_names(_SHARE_LIST_KEY, gateway_section.get("stub_servers"))

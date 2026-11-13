@@ -47,7 +47,8 @@ def _managed_mcp_env() -> dict[str, str]:
     other direction.
 
     Returns ``{}`` on a default install, which keeps the emitted spec
-    byte-for-byte what it is today (``_prune_empty`` drops an empty ``env``).
+    byte-for-byte what it is today: :func:`managed_mcp_spec_entry` sets ``env`` only
+    when this is non-empty, and :func:`_enforce_managed_mcp_ownership` pops an empty one.
     That is safe only because a default-install child DERIVES the same home the
     gateway did, from an inherited ``HOME``. Preserving a user's ``env`` puts
     that inheritance in reach of a config, so the companion control lives in
@@ -233,7 +234,7 @@ def _mcp_registry_mode() -> bool:
     change exists to prevent.
     """
     try:
-        # Function-local like the model resolver a few frames up: importing the
+        # Function-local like spec_build._background_agent_model's: importing the
         # loader at module scope closes an import cycle through the config plane.
         from kiro_crew.config.loader import KiroCrewConfig
 
@@ -425,9 +426,9 @@ def managed_mcp_spec_entry(name: str, *, include_opt_in: bool = False) -> dict[s
     company there. It grants nothing on its own: neither host spec writer passes it,
     and the app-agent copier passes it only for a server the agent already names.
 
-    ``autoApprove`` is deliberately NOT carried, unlike the emit loop in
-    :func:`build_agent_config`. The flag is kiro-cli's local approval, and the
-    one caller here (the claude MCP translation, :mod:`kiro_crew.acp.session_mcp`)
+    ``autoApprove`` is deliberately NOT carried, unlike :func:`emit_managed_servers`
+    (the emit loop :func:`build_agent_config` runs). The flag is kiro-cli's local
+    approval, and one caller (the claude MCP translation, :mod:`kiro_crew.acp.session_mcp`)
     targets a backend whose nearest equivalent — a ``permissions.allow`` entry —
     means Claude never asks, so the call never reaches Crew's gate. Emitting the
     entry un-approved keeps every call gated.
@@ -722,12 +723,13 @@ def emit_managed_servers(mcp: dict, *, gated_off: frozenset[str], registry_mode:
         else:
             cmd = spec.get("command") or spec["command_fn"]()
             args = list(spec["args"])
-        # The deep merge above may have supplied user-owned options such as a
-        # timeout or extra environment variables. Keep those on a clean build,
-        # while replacing the invocation and transport fields that define our
-        # trusted managed server. Ownership of every other field is enforced
-        # by the same helper the refresh path uses (_enforce_managed_mcp_ownership),
-        # so the two loops cannot silently diverge on what counts as "ours".
+        # The user override file merged into the base may have supplied user-owned
+        # options such as a timeout or extra environment variables. Keep those on a
+        # clean build, while replacing the invocation and transport fields that
+        # define our trusted managed server. Ownership of every other field is
+        # enforced by the same helper the refresh path uses
+        # (_enforce_managed_mcp_ownership), so the two loops cannot silently diverge
+        # on what counts as "ours".
         existing = mcp.get(name)
         entry = dict(existing) if isinstance(existing, dict) else {}
         entry["command"] = cmd
@@ -832,7 +834,8 @@ def register_managed_refs(
         added_refs: list[str] = []
         # Managed servers + edition-contributed servers both get their @ref
         # registered so their tools are callable. Edition servers are injected
-        # into config['mcpServers'] via _extra_mcp_servers() above; their @ref
+        # into config['mcpServers'] by build_agent_config's _extra_mcp_servers()
+        # loop, which builds every fresh install's config; their @ref
         # must also be added to config['tools'], otherwise kiro-cli exposes the
         # server but not its tools. The public edition contributes none, so this
         # is a no-op there.

@@ -14,8 +14,10 @@ import logging
 import math
 import threading
 import time
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from typing import Iterator
 
 from kiro_crew.config.loader import read_config_text  # noqa: F401 - facade surface
 from kiro_crew.config.loader import config_local_path, config_path, read_merged_config_files
@@ -30,17 +32,50 @@ class EmbeddingWork:
 
     Queued inference is cancellable. A running native call retains its executor
     worker and admission until completion because native inference cannot stop.
+    ``phases`` stays empty unless the work's owner seeds it with a first step; then
+    each step the work enters is appended with its start time (:func:`enter_work_phase`,
+    :func:`work_phase`), so a recall that runs out of time can say where its time went.
     """
 
     deadline: float
     cancelled: threading.Event = field(default_factory=threading.Event)
     priority: int = 2
+    phases: list[tuple[str, float]] = field(default_factory=list)
 
     def expired(self) -> bool:
         return self.cancelled.is_set() or time.monotonic() >= self.deadline
 
+    def phase_report(self) -> str:
+        """``<current phase> (<phase> <seconds>s, ...)``, the time spent in each phase."""
+        marks = list(self.phases)  # a copy: a worker thread may still be appending
+        ends = [at for _, at in marks[1:]] + [time.monotonic()]
+        spent = ", ".join(f"{name} {end - at:.2f}s" for (name, at), end in zip(marks, ends))
+        return f"{marks[-1][0]} ({spent})"
+
 
 embedding_work: ContextVar[EmbeddingWork | None] = ContextVar("embedding_work", default=None)
+
+
+def enter_work_phase(phase: str) -> None:
+    """Record that the caller's :class:`EmbeddingWork` entered *phase*, if it tracks phases."""
+    work = embedding_work.get()
+    if work is not None and work.phases:
+        work.phases.append((phase, time.monotonic()))
+
+
+@contextmanager
+def work_phase(phase: str) -> Iterator[None]:
+    """Record *phase* for the block, then resume the phase it interrupted."""
+    work = embedding_work.get()
+    resumed = work.phases[-1][0] if work is not None and work.phases else None
+    enter_work_phase(phase)
+    try:
+        yield
+    finally:
+        if resumed is not None:
+            enter_work_phase(resumed)
+
+
 _EMBED_WAIT_SECS = 30.0
 
 

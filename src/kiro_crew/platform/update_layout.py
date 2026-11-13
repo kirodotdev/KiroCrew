@@ -26,26 +26,9 @@ from kiro_crew.platform.update_capability import (
     derive_capability,
 )
 
-#: Release channels the installer publishes.
+#: Release channels an oss install may follow. The LTS edition follows only its
+#: own ``lts`` channel (:func:`policy_release_channel`), never one of these.
 RELEASE_CHANNELS = ("stable", "insider", "nightly")
-
-
-def channel_is_published(channel: str) -> bool:
-    """Whether *channel* has a feed and an installer lane.
-
-    False for the LTS edition's ``lts`` (RFC D11) until the release
-    pipeline publishes it: there is then no feed to read and ``cli.sh`` refuses
-    the channel, so no surface may offer an upgrade command for it.
-    shortcut: keyed on RELEASE_CHANNELS; drop it once the release pipeline
-    publishes lts and cli.sh accepts it.
-    """
-    return channel in RELEASE_CHANNELS
-
-
-def unpublished_channel_note(channel: str) -> str:
-    """The one sentence every surface shows for a channel with no builds yet."""
-    return f"Updates follow the {channel} channel, which has no published builds yet."
-
 
 #: Distributions managed by an external updater (desktop app, container), mapped
 #: to the copy shown for them. Built from the capability module's table so the
@@ -234,8 +217,6 @@ def non_managed_pip_upgrade_command(channel: str | None = None) -> PipUpgradeHin
     """
     if channel is None:
         channel = release_channel()
-    if not channel_is_published(channel):
-        return PipUpgradeHint(command=None, note=unpublished_channel_note(channel))
     pip = _running_interpreter_pip_prefix()
     pinned = _pinned_wheel_upgrade_command(channel, pip)
     if pinned is not None:

@@ -322,6 +322,9 @@ def format_permissions_summary(manifest: AppManifest) -> str:
         lines.append("  Cron:      scheduled agent jobs")
     if perms.workerAutoApprove:
         lines.append("  Auto-approve: tool calls in its own background sessions (bounded)")
+    if perms.reachableByUserSessions:
+        verbs = " and ".join(perms.reachableByUserSessions)
+        lines.append(f"  Your chats: may {verbs} the sessions this app runs")
 
     if not lines:
         return "  No special permissions required"

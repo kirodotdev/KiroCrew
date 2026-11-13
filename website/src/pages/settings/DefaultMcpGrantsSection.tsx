@@ -79,7 +79,9 @@ function Row({ label, desc, state, testId }: { label: string; desc: string; stat
   )
 }
 
-export function DefaultMcpGrantsSection() {
+/** `boxed` draws the card as one bordered box, a hairline between its rows
+ *  (`SettingsCard boxed`), for a page that boxes its other cards too. */
+export function DefaultMcpGrantsSection({ boxed }: { boxed?: boolean } = {}) {
   const qc = useQueryClient()
   const { confirm, confirmDialog } = useConfirm()
   const [outcome, setOutcome] = useState<Outcome | null>(null)
@@ -141,7 +143,7 @@ export function DefaultMcpGrantsSection() {
           }
         />
       )}
-      <SettingsCard>
+      <SettingsCard boxed={boxed}>
         <div className="pb-2 text-[13px] text-muted">{i18nT('pages.settings.defaultMcpGrantsSection.intro')}</div>
         <Row
           label={i18nT('pages.settings.defaultMcpGrantsSection.dashboard_label')}

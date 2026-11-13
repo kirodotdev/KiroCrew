@@ -1460,3 +1460,267 @@ async def test_a_raise_after_materialise_releases_the_construction_mark(tmp_path
     assert "dashboard:markleak1" not in state._restricted_keys
     assert state.live_slot_count() == before
     assert state.get_or_create_slot("markleak1") is not None
+
+
+@pytest.mark.asyncio
+async def test_a_dashboard_resume_restores_the_channel_link_but_an_app_resume_does_not(
+    tmp_path, monkeypatch
+):
+    """A person resuming a channel conversation from the History tab keeps the
+    persisted ``linked_session_key``, so its next full save does not clear the
+    binding. An APP resume of a channel transcript it owns does NOT read the link
+    back from the line: the app token is scoped to the transcript, and binding
+    the slot to the channel session the line names would hand the app a
+    conversation whose own authorization this path never checks. Both resume the
+    same owned transcript; only the dashboard path restores the link.
+    """
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+
+    from kiro_crew.dashboard.slot_ownership import app_owns_transcript_meta
+
+    # A dashboard user (no app token) resuming a channel transcript.
+    state = _make_state(tmp_path)
+    log = state.conversation_log
+    key = "dashboard:linkrestore1"
+    log.append(key, "user", "history-1")
+    await asyncio.to_thread(log.update_metadata, key, {"linked_session_key": "slack:C1:1.2"})
+
+    async with TestClient(TestServer(_make_app(state))) as client:
+        resp = await client.post("/api/chat/slots/linkrestore1/resume", json={"key": key})
+    assert resp.status == 200, f"dashboard resume did not publish (status {resp.status})"
+    slot = state._slots.get("linkrestore1")
+    assert slot is not None and slot.linked_session_key == "slack:C1:1.2", (
+        "a person's History resume of a channel conversation did not restore the link; "
+        "the next full save would clear the persisted binding"
+    )
+
+    # An app resuming a channel transcript it OWNS: the link is not read back.
+    state2 = _make_state(tmp_path / "home2")
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path / "home2")
+    log2 = state2.conversation_log
+    akey = "dashboard:applink1"
+    log2.append(akey, "user", "history-1")
+    await asyncio.to_thread(
+        log2.update_metadata, akey, {"app": "appA", "linked_session_key": "slack:C9:9.9"}
+    )
+    assert app_owns_transcript_meta(log2.get_metadata(akey), "appA")
+
+    async with TestClient(TestServer(_app_scoped(state2, "appA"))) as client:
+        resp = await client.post("/api/chat/slots/applink1/resume", json={"key": akey})
+    assert resp.status == 200, f"app resume did not publish (status {resp.status})"
+    aslot = state2._slots.get("applink1")
+    assert aslot is not None, "the app slot was never published"
+    assert not getattr(aslot, "linked_session_key", ""), (
+        "an app resume restored the channel link from the line; the app token must not "
+        "bind its slot to a channel session the resume path never authorized"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_restored_link_carries_the_compaction_override_to_the_linked_session(
+    tmp_path, monkeypatch
+):
+    """The materialiser seeds a restored ``autocompact_pct`` under the slot's
+    effective session key BEFORE the resume core restores the channel link, and
+    the link moves that key to the linked session. The override must also be
+    seeded under the final key, or the resumed conversation compacts at the
+    linked session's inherited threshold instead of the one the user saved.
+    """
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    log = state.conversation_log
+    key = "dashboard:linkpct1"
+    log.append(key, "user", "history-1")
+    await asyncio.to_thread(
+        log.update_metadata, key, {"linked_session_key": "slack:C1:1.2", "autocompact_pct": 40}
+    )
+
+    async with TestClient(TestServer(_make_app(state))) as client:
+        resp = await client.post("/api/chat/slots/linkpct1/resume", json={"key": key})
+    assert resp.status == 200, f"dashboard resume did not publish (status {resp.status})"
+    slot = state._slots.get("linkpct1")
+    assert slot is not None and slot.linked_session_key == "slack:C1:1.2"
+    final_key = effective_session_key(slot)
+    seeded = {c.args for c in state.sessions.set_autocompact_pct.call_args_list}
+    assert (final_key, 40.0) in seeded, (
+        f"the restored 40% override was never seeded under the linked session key "
+        f"{final_key!r} (seeded: {seeded}); the next turn compacts at the inherited threshold"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_refused_revive_leaves_the_linked_sessions_compaction_override_alone(
+    tmp_path, monkeypatch
+):
+    """The linked key names ANOTHER conversation's live session. A revive whose
+    containment hook refuses the linked build discards the slot, and it must not
+    leave behind an override it wrote under that other session's key: the
+    re-seed under the linked key happens only once the resume is accepted.
+    """
+    from kiro_crew.dashboard import chat_handlers
+    from kiro_crew.dashboard.chat_api import resume as resume_mod
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    log = state.conversation_log
+    key = "dashboard:linkpctrefused1"
+    log.append(key, "user", "history-1")
+    await asyncio.to_thread(
+        log.update_metadata, key, {"linked_session_key": "slack:C7:7.7", "autocompact_pct": 40}
+    )
+    seen: dict = {}
+
+    async def _refuse(built):
+        seen["link"] = built.linked_session_key
+        return chat_handlers.ResumeRefusal("no", "linked_session_target", 403)
+
+    outcome = await resume_mod.resume_slot_from_history(
+        state, name="linkpctrefused1", history_key=key, containment=_refuse
+    )
+
+    assert outcome.refusal is not None and outcome.refusal.code == "linked_session_target"
+    assert seen == {"link": "slack:C7:7.7"}, "the hook never saw the restored link"
+    assert "linkpctrefused1" not in state._slots
+    linked_seeds = [
+        c.args
+        for c in state.sessions.set_autocompact_pct.call_args_list
+        if c.args and c.args[0] == "slack:C7:7.7"
+    ]
+    assert not linked_seeds, (
+        f"a refused revive wrote a compaction override under the linked session "
+        f"{linked_seeds}; it changes when another conversation compacts"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_history_resume_that_restores_the_link_joins_the_live_alias(tmp_path, monkeypatch):
+    """The materialiser binds the slot under its pre-link key; the resume core then
+    restores ``linked_session_key``, which moves the slot's history key onto a
+    transcript a live channel tab already holds. The resumed slot must join that
+    tab's binding, or the two hold separate project cells for one session and the
+    stale tab's next save overwrites the directory chosen in the other.
+    """
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    link = "slack:C1:1.2"
+    live = state.get_or_create_slot("livechan1", linked_session_key=link)
+    live.project = str(tmp_path / "chosen")
+    log = state.conversation_log
+    key = "dashboard:linkjoin1"
+    log.append(key, "user", "history-1")
+    await asyncio.to_thread(log.update_metadata, key, {"linked_session_key": link})
+
+    async with TestClient(TestServer(_make_app(state))) as client:
+        resp = await client.post("/api/chat/slots/linkjoin1/resume", json={"key": key})
+    assert resp.status == 200, f"dashboard resume did not publish (status {resp.status})"
+    slot = state._slots.get("linkjoin1")
+    assert slot is not None and slot.linked_session_key == link
+    assert slot._binding is live._binding, (
+        "the resumed slot kept its pre-link binding; it and the live channel tab now "
+        "hold separate project cells for one shared session"
+    )
+    assert slot.project == str(tmp_path / "chosen")
+
+
+@pytest.mark.asyncio
+async def test_a_tag_deleted_during_the_resume_tail_is_not_published(tmp_path, monkeypatch):
+    """A reserved resume holds its slot out of ``_slots`` across the tail's awaits, so
+    a tag delete landing there strips nothing on it. Publishing the tags the build
+    read before those awaits would put the deleted id back on the tab, and its next
+    save would make it durable. The delete runs inside the containment hook, one of
+    the tail's own awaits; a tag that still exists stays on the published slot."""
+    from chat_test_helpers import _make_tags_app
+
+    from kiro_crew.dashboard.chat_handlers import resume_slot_from_history
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    state.load_tags()  # as a boot does: the vocabulary is KNOWN, so it prunes
+    log = state.conversation_log
+    key = "dashboard:tagtail1"
+    log.append(key, "user", "history-1")
+    seen: list[tuple[bool, list[str], int]] = []
+    async with TestClient(TestServer(_make_tags_app(state))) as client:
+        doomed = (await (await client.post("/api/chat/tags", json={"name": "Doomed"})).json())["id"]
+        kept = (await (await client.post("/api/chat/tags", json={"name": "Kept"})).json())["id"]
+        await asyncio.to_thread(log.update_metadata, key, {"tags": [doomed, kept]})
+
+        async def _containment(slot):
+            if not seen:
+                retracted, tags = "tagtail1" not in state._slots, list(slot.tags)
+                status = (await client.delete(f"/api/chat/tags/{doomed}")).status
+                seen.append((retracted, tags, status))
+            return None
+
+        outcome = await resume_slot_from_history(
+            state, name="tagtail1", history_key=key, containment=_containment, rebind_manager=False
+        )
+
+    assert seen == [(True, [doomed, kept], 200)], f"the delete did not land in the tail: {seen}"
+    assert outcome.refusal is None, outcome
+    assert state._slots["tagtail1"].tags == [kept], "a tag deleted in the tail was published"
+
+
+@pytest.mark.asyncio
+async def test_a_tag_delete_that_fails_during_the_resume_tail_leaves_the_tag_published(
+    tmp_path, monkeypatch
+):
+    """A tag delete removes the tag from memory BEFORE its commit, so a resume that
+    publishes while that commit is pending must not strip the tag on its own: when the
+    commit then fails the tag is restored to the vocabulary, and the tab must still
+    carry it, or its next metadata save makes the loss durable."""
+    from chat_test_helpers import _make_tags_app
+
+    from kiro_crew.dashboard import chat_tags
+    from kiro_crew.dashboard.chat_handlers import resume_slot_from_history
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    state.load_tags()  # as a boot does: the vocabulary is KNOWN, so a prune would apply
+    log = state.conversation_log
+    key = "dashboard:tagfail1"
+    log.append(key, "user", "history-1")
+    parked, release = asyncio.Event(), asyncio.Event()
+
+    async def _held_then_failed_commit(*_args, **_kwargs):
+        parked.set()
+        await release.wait()
+        raise OSError("tags.json write failed")
+
+    deleting: list[asyncio.Task] = []
+    seen: list[tuple[bool, bool]] = []
+    async with TestClient(TestServer(_make_tags_app(state))) as client:
+        doomed = (await (await client.post("/api/chat/tags", json={"name": "Doomed"})).json())["id"]
+        kept = (await (await client.post("/api/chat/tags", json={"name": "Kept"})).json())["id"]
+        await asyncio.to_thread(log.update_metadata, key, {"tags": [doomed, kept]})
+        monkeypatch.setattr(chat_tags, "_commit_tags_snapshot", _held_then_failed_commit)
+
+        async def _containment(slot):
+            if not deleting:
+                deleting.append(asyncio.create_task(client.delete(f"/api/chat/tags/{doomed}")))
+                await await_until(parked, what="the delete parked in its commit")
+                removed = all(t.get("id") != doomed for t in state._tags)
+                seen.append(("tagfail1" not in state._slots, removed))
+            return None
+
+        try:
+            outcome = await resume_slot_from_history(
+                state,
+                name="tagfail1",
+                history_key=key,
+                containment=_containment,
+                rebind_manager=False,
+            )
+            published = list(state._slots["tagfail1"].tags)
+        finally:
+            release.set()
+            status = (await await_until(deleting[0], what="delete")).status if deleting else None
+
+    assert seen == [(True, True)], f"the delete was not parked in its commit in the tail: {seen}"
+    assert outcome.refusal is None, outcome
+    assert status == 500
+    assert any(t.get("id") == doomed for t in state._tags), "the failed delete kept the tag gone"
+    assert published == [doomed, kept], "the resume stripped a tag whose delete had not committed"
+    assert state._slots["tagfail1"].tags == [doomed, kept], "the failed delete stripped the tab"

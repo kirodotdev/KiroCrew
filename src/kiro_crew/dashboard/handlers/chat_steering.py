@@ -35,7 +35,7 @@ def _resolved_agent(slot: Any, session_key: str, project: str | None) -> str | N
     """The template this chat's turns run on, resolved as turn admission resolves it.
 
     ``turn_admission`` passes ``bindings.kiro_agent`` to the context builder, so the
-    Claude Code default-agent gate and the kiro-cli resources read judge that name,
+    steering load's default-agent gate and the kiro-cli resources read judge that name,
     not the slot's raw pick (an alias, or empty for the configured default).
     """
     from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_bindings
@@ -97,6 +97,7 @@ def _plan_blocking(
             native_steering=native_steering,
             project=project,
             native_launch_sources=native_launch_sources,
+            agent=agent,
         )
         collection = ctx.collect_folder_steering(
             steering_dirs,
@@ -122,7 +123,12 @@ def _plan_blocking(
     loader = [
         (_redact_meta(_display_path(path)), resolved, body is not None)
         for path, resolved, body in (
-            steering_resource_documents(project) if ctx.is_claude_code(provider_type) else ()
+            steering_resource_documents(
+                project,
+                harness_reads_agents_md=ctx.acp_driver.reads_project_agents_md(provider_type),
+            )
+            if ctx.acp_driver.crew_loads_spec_steering(provider_type)
+            else ()
         )
     ]
     return chat_steering_plan(

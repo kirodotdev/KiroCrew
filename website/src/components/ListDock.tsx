@@ -32,16 +32,23 @@ import { useMeasuredHeight } from '../hooks/useMeasuredHeight'
  * emerging from under it emerges at the glass, not from a 4px band of a third
  * tone — the first cut had one, and it read as a leftover box behind the pane.
  *
+ * The dock's TOP edge is the pane's too. The list's box starts where the dock
+ * does, so a see-through pad above the field is a strip the rows scroll
+ * through and, the dock being click-through, a strip that opens them. So the
+ * field has no top padding (`SearchFilterBar`'s default) and the gap above it
+ * is this wrapper's `mt-2`, outside the list: rows stop at the glass.
+ *
  * Pointer events follow what the eye sees. The dock wrapper is
- * `pointer-events-none`, so the transparent margin around the field (its
- * `px-2 pt-2`) passes a click to whatever is under it; the glass field itself
+ * `pointer-events-none`, so the transparent margin beside the field (its
+ * `px-2`) passes a click to whatever is under it; the glass field itself
  * and every focusable in the band (button, link, input, select, textarea, a
  * tabindex'd or role="button" element) re-arm. The SHELF re-arms as a whole:
  * it is opaque, and a click on what reads as blank panel beside a chip must
  * land inert rather than open a session the scrim hides — the first cut let
  * it through, and the blind read named that as an invisible target. The CI
- * spec `playwright/sidebar-glass-dock.spec.ts` hit-tests both: every control
- * to itself, the band beside a chip to the dock.
+ * spec `playwright/sidebar-glass-dock.spec.ts` hit-tests every control to
+ * itself, the band beside a chip to the dock, and the gap above the field to
+ * the panel.
  *
  * `z-30` puts the dock above a pinned folder header (`FOLDER_ROW_STICKY_Z`,
  * 20): a header pushed off its pin by the next folder travels up through the
@@ -60,7 +67,7 @@ export function ListDock({ field, shelf, children }: {
   const [dockRef, height] = useMeasuredHeight<HTMLDivElement>()
   return (
     <div
-      className="relative flex-1 min-h-0 flex flex-col"
+      className="relative flex-1 min-h-0 flex flex-col mt-2"
       // `--list-dock-h` is the dock plus the 4px rest gap under it; the pin
       // inset gives that gap back, so a pinned folder header (`.folder-row-sticky`,
       // index.css) sits exactly on the dock's BOTTOM edge — the pane, or a chip

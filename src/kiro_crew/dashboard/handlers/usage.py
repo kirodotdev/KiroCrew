@@ -34,6 +34,7 @@ from aiohttp import web
 from kiro_crew import _facade_mirror
 from kiro_crew.acp.types import TurnUsage
 from kiro_crew.dashboard.handlers.codex_usage import read_codex_rate_limits
+from kiro_crew.dashboard.handlers.usage_history import _parse_token_history
 from kiro_crew.dashboard.handlers.usage_sessions import _CACHE_TTL, _usage_sessions_snapshot
 from kiro_crew.dashboard.handlers.usage_store import (  # noqa: F401 - usage_series reads these per row
     _coerce_int,
@@ -223,6 +224,8 @@ def _build_token_record(
     app: str = "",
     delivered: bool | None = None,
     transcript: str = "",
+    harness: str = "",
+    acp_session_id: str = "",
 ) -> dict[str, Any]:
     """Build the JSONL token-usage record dict (no I/O).
 
@@ -261,6 +264,17 @@ def _build_token_record(
     writes under a key its name cannot reach, and this row is the one record
     that outlives the tab, so it is what names a closed tab's transcript.
     ``""`` leaves the key off the row.
+
+    ``harness`` is the effective harness of the session the turn ran on, in the
+    ``kirocrew.harness`` vocabulary (:func:`kiro_crew.metrics.harness.harness_of`):
+    the field a row needs to tell a Codex turn from a kiro-cli one, since both
+    record ``provider: acp``. ``""`` and ``unknown`` leave the key off the row,
+    as on rows written before the field existed.
+
+    ``acp_session_id`` is the ACP session the turn ran in
+    (:func:`kiro_crew.crew_log.emit_state.session_id_of` on the live provider):
+    one per conversation, where a cron job, a heartbeat or a channel thread
+    reuses one ``slot`` for every run. ``""`` leaves the key off the row.
     """
     # Usage lives on event.usage (TurnUsage). Fall back to the event itself when
     # it isn't a real TurnUsage (legacy / non-AcpEvent producers, test doubles).
@@ -314,6 +328,10 @@ def _build_token_record(
         record["delivered"] = delivered
     if transcript:
         record["transcript"] = transcript
+    if harness and harness != HARNESS_UNKNOWN:
+        record["harness"] = harness
+    if acp_session_id:
+        record["acp_session_id"] = acp_session_id
     return record
 
 
@@ -474,6 +492,10 @@ def persist_token_record(
     offloads the blocking write off the event loop.
     """
     try:
+        # Function-local: the crew log is optional and this module sits on the
+        # dashboard's boot path, which must load no kiro_crew.crew_log module.
+        from kiro_crew.crew_log.emit_state import session_id_of
+
         model = _resolve_model(model, model_source)
         now = datetime.now().astimezone()
         _write_token_record(
@@ -489,6 +511,8 @@ def persist_token_record(
                 context_window=context_window,
                 elapsed_ms=elapsed_ms,
                 app=app,
+                harness=harness_of(model_source),
+                acp_session_id=session_id_of(model_source),
             ),
             now,
         )
@@ -559,7 +583,15 @@ async def persist_token_record_async(
     unrecorded, which reads as a healthy gap rather than a missing one.
     """
     try:
+        # Function-local for the boot-path reason given in persist_token_record.
+        from kiro_crew.crew_log.emit_state import session_id_of
+
         model = _resolve_model(model, model_source)
+        # The harness is read off model_source, the live provider every surface
+        # already hands in to name the model that ran: it is the one object here
+        # that knows the session's EFFECTIVE backend, overrides included. It
+        # goes on the row and labels the turn samples, so the two agree.
+        harness = harness_of(model_source)
         now = datetime.now().astimezone()
         record = _build_token_record(
             slot_key,
@@ -575,19 +607,18 @@ async def persist_token_record_async(
             app=app,
             delivered=delivered,
             transcript=transcript,
+            harness=harness,
+            # The conversation the turn belongs to, off the same provider.
+            acp_session_id=session_id_of(model_source),
         )
         # Before the offloaded write: a file-write failure must not cost the
         # latency sample, which needs nothing from disk.
         if emit_metric:
-            # The harness is read off model_source, the live provider every
-            # surface already hands in to name the model that ran: it is the one
-            # object here that knows the session's EFFECTIVE backend, overrides
-            # included. Not written to the row; it labels the turn samples only.
             _emit_turn_histogram(
                 record,
                 slot_key,
                 event,
-                harness=harness_of(model_source),
+                harness=harness,
                 trigger=trigger,
                 origin=origin,
             )
@@ -712,6 +743,12 @@ async def api_kiro_usage(request: web.Request) -> web.Response:
             "sessions": sessions,
             "billing": billing,
             "codex": await asyncio.to_thread(read_codex_rate_limits),
+            # Every turn's tokens and dollar cost from the usage shards: what a
+            # harness that bills in dollars has instead of a credit plan.
+            "tokens": await asyncio.to_thread(_parse_token_history),
+            # The gateway's local calendar day, the key its usage rows file days
+            # under, so a browser in another zone picks today's bucket by it.
+            "local_day": datetime.now().strftime("%Y-%m-%d"),
             "refreshing": refreshing,
         }
 
@@ -781,12 +818,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _TOKEN_CACHE_TS,
         _TOKEN_CACHE_TTL,
         _TOKEN_HISTORY_DAYS,
-        _parse_token_history,
     )
     from kiro_crew.dashboard.handlers.usage_sessions import (  # noqa: F401
+        _BACKGROUND_CALL_SURFACE_PREFIX,
         _SESSIONS_CACHE,
         _SESSIONS_CACHE_LOCK,
         _SESSIONS_CACHE_TS,
+        _SHARD_COUNTED_NEEDLES,
         _TRANSCRIPT_COUNTS,
         _USAGE_SESSION_REFRESH_TASK,
         _USAGE_SESSION_WAIT_SECONDS,
@@ -797,15 +835,20 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _kas_transcripts,
         _parse_sessions,
         _pin_listing_dir,
+        _row_messages,
+        _shard_sessions,
     )
     from kiro_crew.dashboard.handlers.usage_spend import (  # noqa: F401
         _BARE_CHAT_SLOT_RE,
+        _DAILY_SPEND_FIELDS,
         _SLOT_SPEND_CACHE,
         _SLOT_SPEND_CACHE_AT,
         _SLOT_SPEND_CACHE_SIG,
         _SLOT_SPEND_TTL_S,
         TURN_USAGE_FIELDS,
+        _finite_number,
         daily_credits,
+        daily_spend,
         slot_spend,
         slot_turn_usage,
         spend_key_for_slot,
@@ -817,6 +860,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _NON_SESSION_CHANNELS,
         _SESSIONS_DIR,
         _SESSIONS_HISTORY_DAYS,
+        _SHARD_COUNTED_HARNESSES,
+        _SHARD_COUNTED_PROVIDERS,
         _TOKEN_USAGE_DIR,
         MAX_WINDOW_DAYS,
         NAVIGABLE_CATEGORY,
@@ -834,6 +879,18 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew import model_registry, platform_compat  # noqa: F401
+    from kiro_crew.agent_sdk.backends import (  # noqa: F401
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_CODEX,
+        ACP_BACKEND_COPILOT,
+        ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_GOOSE,
+        ACP_BACKEND_MIMOCODE,
+        ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_PI,
+        ACP_BACKEND_STRANDS,
+    )
+    from kiro_crew.agent_sdk.provider_identity import PROVIDER_CLAUDE_CODE  # noqa: F401
     from kiro_crew.config.paths import data_home, kiro_sessions_dir  # noqa: F401
     from kiro_crew.constants import crew_log_enabled, env_file_display  # noqa: F401
     from kiro_crew.context_blocks import USER_LABEL  # noqa: F401

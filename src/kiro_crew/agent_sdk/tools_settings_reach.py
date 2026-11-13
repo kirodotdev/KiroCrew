@@ -4,7 +4,7 @@ On a backend that is not handed ``toolsSettings`` (every one but kiro-cli and
 KAS), the field is applied nowhere with one exception:
 ``toolsSettings.subagent.availableAgents``, which Crew's own spawn gate reads
 from the parent's spec on every backend
-(:func:`kiro_crew.subagent_parts.agent_policy.spawn_allowlist`). A session-start
+(:func:`kiro_crew.subagent_parts.spawn_allowlists.spawn_allowlist`). A session-start
 notice that names ``toolsSettings`` as having no effect must leave that entry
 out, or it tells the author a restriction Crew enforces does nothing. On a backend
 in ``ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS`` Crew's gate also applies the
@@ -26,6 +26,10 @@ _SPAWN_GATE_KEY = "availableAgents"
 _SHELL_ALLOWLIST_KEYS = ("denyByDefault", "allowedCommands")
 #: The write keys Crew's gate reads as the ``fallbackAction: "deny"`` allowlist.
 _WRITE_ALLOWLIST_KEYS = ("fallbackAction", "allowedPaths")
+#: Appended to an allowlist key the session does not approve from but Crew's gate
+#: still refuses outside of, under its deny-by-default switch, so the
+#: session-start notice never says it has no effect (``spec_keys_notice``).
+GATE_READ_MARK = " (read by Crew's gate)"
 
 
 def _gate_applied_keys(tools_settings: dict[str, Any]) -> set[tuple[str, str]]:

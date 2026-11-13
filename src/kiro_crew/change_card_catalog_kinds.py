@@ -26,7 +26,12 @@ from typing import Any
 
 from kiro_crew import mate_capability_catalog as _mate_catalog
 from kiro_crew import member_goals as _goals
-from kiro_crew.config.sections import FEATURE_PREVIEW_FLAGS, MEMBER_APPROVAL_MODES
+from kiro_crew.config.sections import (
+    FEATURE_PREVIEW_FLAGS,
+    MAX_PER_CREATOR_MAX,
+    MAX_PER_CREATOR_MIN,
+    MEMBER_APPROVAL_MODES,
+)
 from kiro_crew.terminal_safe import _is_invisible
 
 KIND_SETTING_CHANGE = "setting.change"
@@ -209,6 +214,9 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     # On, a conductor may run sessions on a connected remote crew (``crew=``) and
     # this crew answers its headroom and takes bound work items.
     "work_ledger.remote_dispatch": (False, True),
+    # How many live sessions one creator may hold: a higher number lets an agent
+    # that opens sessions hold more of them without asking.
+    "session.max_per_creator": tuple(range(MAX_PER_CREATOR_MIN, MAX_PER_CREATOR_MAX + 1)),
 }
 
 #: Card-editable config paths (``_EDITABLE_CONFIG``) that no value can widen

@@ -888,6 +888,7 @@ class TestOverrideReadFailureFailsClosed:
         gh_status: int = 0,
         fail_first: int = 0,
         gh_error: str = "gh: could not reach the API",
+        rate_limit_reset: int | None = None,
     ):
         bash = _bash()
         if bash is None:
@@ -903,14 +904,20 @@ class TestOverrideReadFailureFailsClosed:
         )
         attempts = tmp_path / "gh-attempts"
         gh = tmp_path / "gh"
-        stub = f'#!/bin/sh\nprintf x >> "{attempts}"\n'
+        stub = "#!/bin/sh\n"
+        if rate_limit_reset is not None:
+            # What `gh api rate_limit --jq ...` prints: the spent core bucket's
+            # reset epoch. It is not an attempt at the comments read, and `date`
+            # is pinned below so the wait it implies is exact.
+            stub += f'if [ "$2" = "rate_limit" ]; then echo {rate_limit_reset}; exit 0; fi\n'
+        stub += f'printf x >> "{attempts}"\n'
         if gh_status:
             # Stand in for an API failure on every attempt (5xx, rate limit).
             stub += f'echo "{gh_error}" >&2\nexit {gh_status}\n'
         elif fail_first:
             stub += (
                 f'if [ "$(wc -c < "{attempts}")" -le {fail_first} ]; then\n'
-                '  echo "gh: HTTP 502" >&2\n'
+                f'  echo "{gh_error}" >&2\n'
                 "  exit 1\n"
                 "fi\n"
                 f'cat "{reply}"\n'
@@ -920,15 +927,18 @@ class TestOverrideReadFailureFailsClosed:
         gh.write_text(stub, encoding="utf-8", newline="\n")
         gh.chmod(0o755)
         # The retry backoff is real in CI but pure latency in a test; stub it
-        # to a no-op so the failure cases do not sleep through the suite.
-        sleep_stub = tmp_path / "sleep"
-        sleep_stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8", newline="\n")
-        sleep_stub.chmod(0o755)
+        # to record each wait instead, so the failure cases do not sleep
+        # through the suite. Shell functions, not PATH stubs: Git for Windows'
+        # bash puts its own /usr/bin ahead of PATH, where the real `sleep` and
+        # `date` would win.
+        stubs = 'sleep() { printf \'%s\\n\' "$1" >> "$SLEEPS"; }\n'
+        if rate_limit_reset is not None:
+            stubs += "date() { echo 1000; }\n"
         out_file = tmp_path / "record-out.txt"
         # Reproduce the runner's own prologue (`bash -e`, no pipefail -- these
         # steps declare no `set` line), then persist `$record` so the assertion
         # reads what the rest of the step would have been handed.
-        script = self._read_block(lane) + f'\nprintf \'%s\' "$record" > "{out_file}"\n'
+        script = stubs + self._read_block(lane) + f'\nprintf \'%s\' "$record" > "{out_file}"\n'
         result = subprocess.run(
             [bash, "-e", "-c", script],
             check=False,
@@ -949,6 +959,7 @@ class TestOverrideReadFailureFailsClosed:
                 "PR": "1",
                 "HEAD": self.HEAD,
                 "TMPDIR": str(tmp_path),
+                "SLEEPS": str(tmp_path / "sleeps"),
             },
             cwd=tmp_path,
         )
@@ -976,6 +987,35 @@ class TestOverrideReadFailureFailsClosed:
         assert "re-run this job" in result.stdout
         assert attempts.read_text(encoding="utf-8") == "xxx"
         assert not out_file.exists(), "a record was emitted from a failed read"
+
+    @pytest.mark.parametrize(
+        ("reset", "fail_first", "gh_status", "want_rc", "want_sleeps", "want_attempts"),
+        [
+            # The reset is 100s away: one wait to 5s past it, then the read lands.
+            (1100, 1, 0, 0, "105\n", "xx"),
+            # The reset is past the 1200s budget: no long wait, and the read
+            # still fails closed after its three quick attempts.
+            (5000, 0, 1, 1, "1\n2\n", "xxx"),
+        ],
+    )
+    def test_scope_lane_waits_out_a_spent_rate_limit(
+        self, tmp_path: Path, reset, fail_first, gh_status, want_rc, want_sleeps, want_attempts
+    ):
+        # On the same-repo scope lane a failed read here fails the run, and that
+        # failure is a prior the per-head floor then keeps for the head.
+        result, attempts, out_file, body = self._run_read(
+            tmp_path,
+            "security-scope-review.yml",
+            gh_status=gh_status,
+            fail_first=fail_first,
+            gh_error="gh: API rate limit exceeded for installation ID 1. (HTTP 403)",
+            rate_limit_reset=reset,
+        )
+        assert result.returncode == want_rc, result.stdout + result.stderr
+        assert (tmp_path / "sleeps").read_text(encoding="utf-8") == want_sleeps
+        assert attempts.read_text(encoding="utf-8") == want_attempts
+        record = out_file.read_text(encoding="utf-8") if out_file.exists() else None
+        assert record == (body if want_rc == 0 else None), "a record came from a failed read"
 
     @pytest.mark.parametrize("lane", PRIMARY_LIMIT_LANES)
     def test_primary_rate_limit_is_not_retried(self, lane: str, tmp_path: Path):

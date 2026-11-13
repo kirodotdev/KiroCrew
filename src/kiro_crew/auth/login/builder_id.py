@@ -15,7 +15,8 @@ Endpoints (all under ``https://oidc.<region>.amazonaws.com``):
 
 RegisterClient returns a client_id + client_secret; both are persisted with the token so
 refresh (a separate CreateToken call) can reuse them, with the registration's expiry so a
-refresh refused past it can be told apart from any other refusal.
+refresh refused past it can be told apart from any other refusal. The next sign-in into
+the same slot reuses that registration while it is in date (:func:`stored_client`).
 """
 
 from __future__ import annotations
@@ -41,6 +42,10 @@ logger = logging.getLogger(__name__)
 
 _HEADERS = {"Content-Type": "application/x-amz-json-1.1", "User-Agent": USER_AGENT}
 _DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
+
+# A reused registration should outlive the sign-in it starts, since every refresh
+# past its lapse is refused. One with under a week left is replaced instead.
+REUSE_MARGIN_SECS = 7 * 24 * 3600
 
 
 class BuilderIdAuthError(Exception):
@@ -77,12 +82,12 @@ def _start_url_rejection(body: str, *, start_url: str, region: str) -> StartUrlR
             "access portal URL, which looks like https://your-company.awsapps.com/start."
         )
     else:
-        # A well-formed portal looked up in the wrong region gets this bare
-        # answer, the most likely cause a user can fix; AWS does not say so.
+        # A portal that does not exist and one looked up in the wrong region get
+        # this same bare answer, so the likelier slip, the start URL, comes first.
         advice = (
-            f"AWS refused to start a sign-in for {start_url!r} in region {region}. "
-            "This usually means the region is wrong: set Region to the region your "
-            "company's Identity Center is in, and check the start URL."
+            f"AWS found no Identity Center for {start_url!r} in region {region}. "
+            "Check the start URL for a typo; if it is right, set Region to the "
+            "region your company's Identity Center is in."
         )
     return StartUrlRejectedError(
         f"{advice} (AWS: {detail or 'invalid_request'})", names_start_url=names_start_url
@@ -148,6 +153,24 @@ async def register_client(region: str, *, session: aiohttp.ClientSession) -> Reg
         client_secret=_require_str(data, "clientSecret", "RegisterClient"),
         client_secret_expires_at=expires_at if isinstance(expires_at, int) else None,
     )
+
+
+def stored_client(token: KasToken | None, region: str) -> RegisteredClient | None:
+    """The registration ``token`` carries, when a sign-in in ``region`` may reuse it.
+
+    It must be from the same region and have a known expiry more than
+    ``REUSE_MARGIN_SECS`` away. An entry stored before the expiry was kept has
+    none, so its next sign-in registers anew.
+    """
+    if token is None or token.region != region:
+        return None
+    if not (token.client_id and token.client_secret):
+        return None
+    lapses = token.client_secret_expires_at
+    now = datetime.now(timezone.utc).timestamp()
+    if not isinstance(lapses, int) or lapses <= now + REUSE_MARGIN_SECS:
+        return None
+    return RegisteredClient(token.client_id, token.client_secret, lapses)
 
 
 async def start_device_authorization(

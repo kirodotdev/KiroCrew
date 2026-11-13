@@ -30,6 +30,7 @@
  * `shoot` step in `scripts/capture-feature-previews.mjs` — the media is the
  * heaviest thing a flag ships, so it must not outlive the flag.
  */
+import { LOCKED_FEATURE_PREVIEWS, controlLocked } from './editionLocks'
 import { safeGetItem, safeSetItem } from './safeStorage'
 
 /**
@@ -77,6 +78,14 @@ export const PREVIEW_WEBHOOKS = `${PREVIEW_FLAG_PREFIX}webhooks`
  * for a surface still settling.
  */
 export const PREVIEW_ARTIFACT_DEPLOY = `${PREVIEW_FLAG_PREFIX}artifact-deploy`
+
+/**
+ * Send a pending tool approval to the notification bridge: when an approval card
+ * opens, the gateway hands the bridge one note naming the request
+ * (`notifications/bridge_approval_note.py`), so a connected chat app hears about
+ * it. The dashboard bell is not rung for it. Server-only, default OFF.
+ */
+export const PREVIEW_BRIDGE_APPROVALS = `${PREVIEW_FLAG_PREFIX}bridge-approvals`
 
 /**
  * Creating a chat that RUNS ON a connected remote crew — the "New chat on crew"
@@ -201,8 +210,9 @@ export const PREVIEW_MATE_SESSIONS = `${PREVIEW_FLAG_PREFIX}mate-sessions`
 export const PREVIEW_EXPLORE = `${PREVIEW_FLAG_PREFIX}explore`
 
 /**
- * Crew-owned GitHub sign-in: the gateway signs in to GitHub itself and serves it
- * to KAS chats (`connections/crew_oauth.py`). Server-only: the gateway reads
+ * Crew-owned MCP sign-in: the gateway signs in to MCP servers (GitHub, Asana,
+ * Google, DCR cards, owner-added servers) itself and serves them to chats on a
+ * bridged harness, never kiro-cli (`connections/crew_oauth.py`). Server-only: the gateway reads
  * `dashboard.feature_previews.crew_oauth` per call, so nothing in the dashboard
  * reads this key. Default OFF.
  */
@@ -239,6 +249,29 @@ export const PREVIEW_SESSION_HARNESS = `${PREVIEW_FLAG_PREFIX}session-harness`
 export const PREVIEW_DASHBOARD_STALE_WAKE = `${PREVIEW_FLAG_PREFIX}dashboard-stale-wake`
 
 /**
+ * Chat runtime sharing: dashboard chats on kiro-cli or KAS share one agent
+ * process (up to `agent.chat_runtime_sharing_max_sessions` each) instead of
+ * one process per chat. Server-only: the gateway reads
+ * `dashboard.feature_previews.chat_runtime_sharing` at each session start, so
+ * nothing in the dashboard reads this key. Default OFF, and OFF is one process
+ * per chat as before; a change applies to chats started after it.
+ */
+export const PREVIEW_CHAT_RUNTIME_SHARING = `${PREVIEW_FLAG_PREFIX}chat-runtime-sharing`
+
+/**
+ * The Secrets vault redesign: Settings > Secrets as a list-detail pane
+ * (`SecretsPanel.tsx`) that also stores logins and notes.
+ *
+ * Default OFF, and OFF is the single-page panel on `main`
+ * (`SecretsPanelLegacy.tsx`), with the tab hosting no sub-nav. The gateway reads
+ * the same switch (`dashboard.feature_previews.secrets_vault`) for
+ * `GET /api/secrets`: off, the listing is names only with no `items`, as before.
+ * The typed write is not gated: it is additive, so a plain `{name, value}`
+ * write keeps its old shape and the legacy panel works against it unchanged.
+ */
+export const PREVIEW_SECRETS_VAULT = `${PREVIEW_FLAG_PREFIX}secrets-vault`
+
+/**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
  * {@link previewFlagName}) is a writable `dashboard.feature_previews.<name>` path
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
@@ -260,6 +293,9 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_DASHBOARD_STALE_FIELDS,
   PREVIEW_SESSION_HARNESS,
   PREVIEW_DASHBOARD_STALE_WAKE,
+  PREVIEW_BRIDGE_APPROVALS,
+  PREVIEW_CHAT_RUNTIME_SHARING,
+  PREVIEW_SECRETS_VAULT,
 ]
 
 /**
@@ -295,9 +331,18 @@ export function setPreviewFlagPersister(next: PreviewFlagPersister | null): void
  * Read a preview flag. Absent, unparseable, or storage-denied all mean OFF —
  * the whole point of the gate is that a surface stays hidden unless someone
  * deliberately turned it on, so it fails closed.
+ *
+ * An LTS build reads every flag as OFF whatever the browser holds (RFC D12), so
+ * a key flipped through Developer > Storage or devtools turns nothing on.
  */
 export function readPreviewFlag(flag: string): boolean {
+  if (previewFlagsLocked()) return false
   return safeGetItem(flag) === '1'
+}
+
+/** Whether this build turns every Feature Preview off (the LTS edition). */
+export function previewFlagsLocked(): boolean {
+  return controlLocked(LOCKED_FEATURE_PREVIEWS)
 }
 
 /**
@@ -325,7 +370,8 @@ export function setRemoteCrewChat(on: boolean): boolean {
  * exhausted quota survives `safeSetItem`'s reclaim attempts.
  *
  * On failure the toggle simply stays where it was, which is the truthful
- * outcome: nothing was saved, and nothing is sent to the gateway.
+ * outcome: nothing was saved, and nothing is sent to the gateway. An LTS build
+ * refuses every write the same way.
  */
 export function setPreviewFlag(flag: string, on: boolean): boolean {
   if (!cachePreviewFlag(flag, on)) return false
@@ -340,6 +386,7 @@ export function setPreviewFlag(flag: string, on: boolean): boolean {
  * write landed, for the reason given there.
  */
 export function cachePreviewFlag(flag: string, on: boolean): boolean {
+  if (previewFlagsLocked()) return false
   if (!safeSetItem(flag, on ? '1' : '0')) return false
   const detail: PreviewFlagChange = { key: flag, on }
   window.dispatchEvent(new CustomEvent<PreviewFlagChange>(PREVIEW_FLAG_EVENT, { detail }))

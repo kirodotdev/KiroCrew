@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, AsyncContextManager
 from kiro_crew.acp.client import DEFAULT_MODEL, AcpClient
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_EFFORT_AT_LAUNCH
 from kiro_crew.agent_sdk.claude_transcripts import delete_claude_session_files
+from kiro_crew.agent_sdk.codex_transcripts import delete_codex_session_files, spawn_env_overrides
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.dashboard.chat_utils_awaits import drained_to_thread
 from kiro_crew.providers.acp_model_effort import launch_effort_level
@@ -65,12 +66,14 @@ async def start(self: AcpProvider) -> None:
         # dead predecessor of this data home (session_work_dir); the shutdown
         # reclaim below keys on the flag and on the mark naming this process.
         await asyncio.to_thread(mark_run_dir, Path(self._client._work_dir))
-    # Apply the overlay on every (re)start, the first spawn included, to cover
-    # resume / model swap.
+    # The workspace cli.json is read and written here and nowhere on the event
+    # loop: construction touches no file. Off the loop: the cli.json lock is
+    # shared with sibling threads and processes, and an acquire on the loop
+    # thread makes one attempt and never waits, so a brief overlap would refuse
+    # the write.
+    await self._recover_effort_overlay()
+    # Re-apply the overlay on every (re)start to cover resume / model swap.
     # (no-op for claude backend — that path applies effort live below.)
-    # Off the loop: the cli.json lock is shared with sibling threads and
-    # processes, and an acquire on the loop thread makes one attempt and
-    # never waits, so a brief overlap would refuse the write.
     await asyncio.to_thread(self._apply_effort_overlay)
     await asyncio.to_thread(self._apply_tool_search_overlay)
 
@@ -200,13 +203,19 @@ async def cleanup_session(self: AcpProvider, session_id: str) -> None:
     kiro-cli's replay log is ``<sid>.json`` + ``.jsonl`` under
     ``~/.kiro/sessions/cli``. A Claude session's record is Claude Code's own
     store instead (``agent_sdk.claude_transcripts``), spelled from the client's work
-    directory. Either is deleted off the loop, to completion even when cancelled.
+    directory, and a Codex session's is its rollout under the ``CODEX_HOME`` its
+    child ran with, the client's or runtime's ``extra_env`` over the gateway's
+    (``agent_sdk.codex_transcripts``). Each is deleted off the loop, to completion
+    even when cancelled.
     """
     if not session_id:
         return
     if self.is_claude_backend:
         work_dir = str(getattr(self._client, "_work_dir", "") or "")
         await drained_to_thread(delete_claude_session_files, session_id, work_dir)
+        return
+    if self.is_codex_backend:
+        await drained_to_thread(delete_codex_session_files, session_id, spawn_env_overrides(self))
         return
     await drained_to_thread(_delete_kiro_session_files, session_id)
 

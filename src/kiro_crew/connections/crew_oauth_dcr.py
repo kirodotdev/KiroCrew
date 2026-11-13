@@ -280,8 +280,16 @@ def _as_metadata_urls(issuer: str) -> list[str]:
     return list(dict.fromkeys(urls))
 
 
-async def _discover(provider: dict[str, Any]) -> tuple[dict[str, Any], str, str]:
-    """``(AS metadata, issuer, scope)`` for a registry card, pinned to its committed issuer."""
+async def _discover(
+    provider: dict[str, Any], *, need_dcr: bool = True
+) -> tuple[dict[str, Any], str, str]:
+    """``(AS metadata, issuer, scope)`` for a card, pinned to its committed issuer.
+
+    A provider without ``l0_expectations`` (an owner-added server) commits no
+    issuer: it follows the one its url advertises, as the harness would, because
+    the url itself is the owner's sealed record. *need_dcr* False skips the
+    ``registration_endpoint`` requirement, for a client the owner registered.
+    """
     from kiro_crew.connections.l0_probe import (
         _read_resource_metadata,
         _resource_metadata_urls,
@@ -291,7 +299,8 @@ async def _discover(provider: dict[str, Any]) -> tuple[dict[str, Any], str, str]
     from kiro_crew.mcp_oauth_discovery import _FETCH_ERRORS, _fetch_json
 
     mcp_url = str(provider["mcp_url"])
-    committed = _validate_issuer(provider["l0_expectations"]["authorization_server"])
+    expected = (provider.get("l0_expectations") or {}).get("authorization_server")
+    committed = _validate_issuer(expected) if expected else None
     initialize = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -327,7 +336,9 @@ async def _discover(provider: dict[str, Any]) -> tuple[dict[str, Any], str, str]
             continue
     if advertised is None:
         raise CrewOAuthError("discovery_failed")
-    if not same_issuer(advertised, committed):
+    if committed is None:
+        committed = advertised
+    elif not same_issuer(advertised, committed):
         # Never followed: the committed issuer moves only in a reviewed commit.
         raise CrewOAuthError("issuer_changed")
     for url in _as_metadata_urls(committed):
@@ -346,7 +357,8 @@ async def _discover(provider: dict[str, Any]) -> tuple[dict[str, Any], str, str]
     if not isinstance(methods, list) or "S256" not in methods:
         raise CrewOAuthError("no_s256")
     try:
-        _endpoint(doc, "registration_endpoint")
+        if need_dcr:
+            _endpoint(doc, "registration_endpoint")
     except ValueError:
         raise CrewOAuthError("dcr_unsupported") from None
     scopes = (
@@ -436,17 +448,43 @@ async def prepare(slug: str, store: ClientStore | None = None) -> Plan:
     except ValueError:
         raise CrewOAuthError("discovery_failed") from None
     redirect = await asyncio.to_thread(redirect_uri)
+    return await _reuse_or_register(
+        slug, dict(provider), doc, issuer, scope, endpoints, redirect, store
+    )
+
+
+async def _reuse_or_register(
+    slug: str,
+    provider: dict[str, Any],
+    doc: dict[str, Any],
+    issuer: str,
+    scope: str,
+    endpoints: dict[str, Any],
+    redirect: str,
+    store: ClientStore,
+    stage: bool = False,
+) -> Plan:
+    """Reuse *slug*'s stored registration, or register a new one.
+
+    *stage* (an owner-added server) stores nothing: the caller writes the client
+    together with the pair its code swap returns (:func:`keep_client`), so a
+    refused or abandoned sign-in leaves the working client and pair in place.
+    """
     async with _refresh_locks.setdefault(slug, asyncio.Lock()):
         held, revision = await asyncio.to_thread(store.read, slug)
         if held is not None and held.usable(issuer, time.time(), redirect):
             client = replace(held, **endpoints)
             if (
-                client != held
+                not stage
+                and client != held
                 and await asyncio.to_thread(store.commit, slug, client, revision) is None
             ):
                 raise CrewOAuthError("client_raced")
             return Plan(client, scope)
-        client = Client(**await _register(dict(provider), doc, scope, redirect), **endpoints)
+        client = Client(**await _register(provider, doc, scope, redirect), **endpoints)
+        if stage:
+            _audit("connections_crew_oauth_register", "staged", slug)
+            return Plan(client, scope)
         if await asyncio.to_thread(store.commit, slug, client, revision) is None:
             raise CrewOAuthError("client_raced")
         if held is not None or revision is not None:
@@ -454,6 +492,145 @@ async def prepare(slug: str, store: ClientStore | None = None) -> Plan:
             await asyncio.to_thread(TokenStore().delete, slug)
         _audit("connections_crew_oauth_register", "ok", slug)
         return Plan(client, scope)
+
+
+def _loopback_redirect(value: Any) -> tuple[int, str] | None:
+    """``(port, path)`` of an ``http://localhost|127.0.0.1:<port>/<path>`` redirect, else ``None``."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parts = urllib.parse.urlsplit(value)
+        port = parts.port
+    except ValueError:
+        return None
+    if (
+        parts.scheme != "http"
+        or parts.hostname not in ("localhost", "127.0.0.1")
+        or port is None
+        or not 1024 <= port <= 65535
+        or not parts.path.startswith("/")
+        or parts.query
+        or parts.fragment
+    ):
+        return None
+    return port, parts.path
+
+
+def own_listener(redirect: str) -> tuple[int, str] | None:
+    """The ``(port, path)`` a sign-in binds itself, or ``None`` for the shared listener.
+
+    The shared DCR loopback and the gateway's public route are served by
+    :func:`listen`; any other loopback redirect is an owner's own registration.
+    """
+    if redirect.startswith("https://") or redirect == (
+        f"http://127.0.0.1:{DCR_CALLBACK_PORT}{CALLBACK_PATH}"
+    ):
+        return None
+    return _loopback_redirect(redirect)
+
+
+async def prepare_custom(
+    key: str,
+    mcp_url: str,
+    oauth: Any,
+    store: ClientStore | None = None,
+    scopes: list[str] | None = None,
+) -> Plan:
+    """The client for an owner-added server, stored under *key*. Raises a coded error.
+
+    Its ``oauth`` block may name the owner's own client (``clientId``, optional
+    ``clientSecret``, ``redirectUri``); without a ``clientId`` Crew registers its
+    own by DCR, as for a card. *scopes* are the entry's own (either spelling),
+    else ``oauth.oauthScopes``. Endpoints always come from discovery from
+    *mcp_url*. A ``clientSecret`` is copied into the vault entry the refresh
+    reads; it is never sent to a harness.
+    """
+    oauth = oauth if isinstance(oauth, dict) else {}
+    from kiro_crew.mcp_oauth_discovery import _mcp_endpoint
+
+    try:
+        # Scheme, authority and path only, for discovery, ``resource`` and the
+        # audit: a query-string credential never reaches the AS or the SEL.
+        mcp_url = _mcp_endpoint(mcp_url)
+    except ValueError:
+        raise CrewOAuthError("discovery_failed") from None
+    client_id = oauth.get("clientId") if isinstance(oauth.get("clientId"), str) else ""
+    if scopes is None:
+        scopes = oauth.get("oauthScopes")
+    provider: dict[str, Any] = {
+        "slug": key,
+        "mcp_url": mcp_url,
+        "recommended_scopes": (
+            [s for s in scopes if isinstance(s, str)] if isinstance(scopes, list) else []
+        ),
+    }
+    store = store or ClientStore()
+    try:
+        doc, issuer, scope = await asyncio.wait_for(
+            _discover(provider, need_dcr=not client_id), _DISCOVERY_TIMEOUT_SECS
+        )
+        endpoints = _endpoints(doc, issuer, mcp_url)
+    except (asyncio.TimeoutError, ValueError):
+        raise CrewOAuthError("discovery_failed") from None
+    if provider["recommended_scopes"]:
+        # The owner's own scopes win over a challenge's: their app grants those.
+        asked = provider["recommended_scopes"]
+        extra = ["offline_access"] if "offline_access" in scope.split() else []
+        scope = " ".join(dict.fromkeys([*asked, *extra]))
+    given = oauth.get("redirectUri")
+    if given is not None and _loopback_redirect(given) is None:
+        # A redirect Crew cannot receive would strand the code at the vendor.
+        raise CrewOAuthError("redirect_unsupported")
+    redirect = given if isinstance(given, str) else await asyncio.to_thread(redirect_uri)
+    if not client_id:
+        return await _reuse_or_register(
+            key, provider, doc, issuer, scope, endpoints, redirect, store, stage=True
+        )
+    secret = oauth.get("clientSecret")
+    secret = secret if isinstance(secret, str) and secret else None
+    client = Client(
+        client_id=client_id,
+        client_secret=secret,
+        secret_expires_at=0.0,
+        auth_method=_secret_method(doc) if secret else "none",
+        redirect_uri=redirect,
+        **endpoints,
+    )
+    # Stored only once its code swap succeeds (:func:`keep_client`): the pair a
+    # declined consent leaves behind keeps refreshing with the client that issued it.
+    return Plan(client, scope)
+
+
+def keep_client(key: str, client: Client, tokens: Any, vault: Any | None = None) -> None:
+    """Store an owner's client and the pair it just issued in one vault write. Blocking.
+
+    The caller holds *key*'s refresh lock and has swapped a code with *client*.
+    One write, so a failure keeps both previous entries: the old pair never sits
+    beside a client that did not issue it.
+    """
+    from kiro_crew.connections.crew_oauth import token_entry_name
+
+    if vault is None:
+        vault = ClientStore()._vault
+    vault.set_many_sync(
+        {client_entry_name(key): client.to_json(), token_entry_name(key): tokens.to_json()}
+    )
+
+
+def _secret_method(doc: dict[str, Any]) -> str:
+    """How an owner's confidential client authenticates: as the AS lists, else form post.
+
+    shortcut: an AS that lists no method gets ``client_secret_post`` (GitHub
+    publishes none and reads the form), not RFC 8414's Basic default; follow
+    the default if a server is found that refuses the form.
+    """
+    listed = doc.get("token_endpoint_auth_methods_supported")
+    if not isinstance(listed, list):
+        return "client_secret_post"
+    for method in _AUTH_METHODS[1:]:
+        if method in listed:
+            return method
+    raise CrewOAuthError("auth_method_unsupported")
 
 
 async def forget_client(slug: str, store: ClientStore | None = None) -> None:
@@ -484,7 +661,12 @@ def iss_ok(client: Client, iss: str | None) -> bool:
 
     if not iss:
         return not client.iss_param
-    return same_issuer(iss, client.issuer)
+    try:
+        return same_issuer(iss, client.issuer)
+    except ValueError:
+        # The callback's ``iss`` is vendor text: one urlsplit refuses is a
+        # mismatch, never an exception whose traceback would log it.
+        return False
 
 
 # --- token endpoint ----------------------------------------------------------

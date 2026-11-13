@@ -24,6 +24,7 @@ from kiro_crew.dashboard.handlers.mcp import (
     _find_server_spec_anywhere,
     _get_mcp_lock,
     _is_valid_mcp_name,
+    _mcp_config_corrupt,
     _offload_config_write,
     _set_kirocrew_entry,
 )
@@ -502,7 +503,20 @@ async def _install_from_official(request: web.Request, server_id: str) -> web.Re
             # Fresh install: always written disabled (consent default).
             # The store write can apply a Windows owner-only DACL —
             # blocking filesystem work kept off the event loop.
-            await _offload_config_write(_set_kirocrew_entry, name, enabled=enable_now, spec=spec)
+            action = await _offload_config_write(
+                _set_kirocrew_entry, name, enabled=enable_now, spec=spec
+            )
+            if action == "corrupt":
+                # The store exists but is not a readable MCP config, so nothing
+                # was written: report that, not an install.
+                sel().log_api_access(
+                    caller="dashboard",
+                    operation="mcp_discover_install",
+                    outcome="error",
+                    source="dashboard",
+                    resources=f"official:{name} store unreadable",
+                )
+                return _mcp_config_corrupt("the Kiro Crew mcp.json")
         else:
             # Identical spec already present — a reinstall is a pure no-op:
             # the user's env values AND enabled/disabled state survive.
@@ -577,8 +591,8 @@ async def _install_via_capability(request: web.Request, server_id: str) -> web.R
             source="dashboard",
             resources=f"capability:{server_id}",
         )
-        message = (res.message or "install failed")[:500]
-        return web.json_response({"error": _redact_external(message)}, status=500)
+        message = _redact_external(res.message or "install failed")[:500]
+        return web.json_response({"error": message}, status=500)
 
     async with _get_config_lock():
         # Off the loop: _sync_mcp_to_agent takes bridges' synchronous _mcp_lock

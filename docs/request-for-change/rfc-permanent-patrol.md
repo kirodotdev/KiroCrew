@@ -84,7 +84,7 @@ A model that arms a loop today also picks when the loop dies.
 - When a conductor binds a worker and holds no active loop,
   `conductor_patrol.py` `ensure_patrol`, called from the bind route in
   `dashboard/handlers/work_ledger_conductor.py`, arms a gated
-  `watch="work-ledger"` patrol every 600 s (`PATROL_INTERVAL_SECS`,
+  `watch="work-ledger"` patrol every 300 s (`PATROL_INTERVAL_SECS`,
   `PATROL_WATCH`).
 - Restart survival: on `AutoNudgeService.start` (`autonudge.py`), active loops
   are reloaded (`autonudge_service/store_loader.py` `_load`) and their timers
@@ -142,9 +142,10 @@ A model that arms a loop today also picks when the loop dies.
 3. **The runtime defaults to the operator ceiling**, `monitoring.max_runtime_secs`
    (7 days as shipped): the one runaway backstop, kept on purpose.
 4. **Explicit values are honoured**, except on a `watch="work-ledger"` patrol,
-   which takes no bound from the model: no cycle cap and the ceiling runtime, on
-   `monitor_start`, on a `monitor_update` that adds the watch or touches a
-   bound, and on the gateway's default patrol.
+   which takes no bound from the model: the 300 s patrol interval, no cycle cap
+   and the ceiling runtime, on `monitor_start`, on a `monitor_update` that adds
+   the watch or touches a bound or the interval, and on the gateway's default
+   patrol.
 5. **The model ends the loop itself.** It checks live state (for example
    `gh pr view` for a PR watch). When the exit condition holds, it sends the user
    ONE final report (what landed, what is left, links), then, in a later step,
@@ -227,7 +228,7 @@ still ends at the 7-day ceiling, and a loop that wakes every interval keeps the
 
 - A model that never stops a finished patrol leaves it running until the 7-day
   backstop. On an idle ledger that costs one floor turn every 40 quiet ticks
-  (about 6.7 hours at the 600 s default interval).
+  (about 3.3 hours at the 300 s patrol interval).
 - The tool's directive replay reads no session log, so it cannot resolve a bare
   `PR <n>`. The implementation marks such a default cap and the applier decides
   it again with the log, so the cap follows the gate the loop actually gets.

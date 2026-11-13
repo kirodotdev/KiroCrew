@@ -14,6 +14,7 @@ runtime is a fake class, as in ``test_embeddings.py``.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import threading
@@ -40,6 +41,7 @@ from kiro_crew.embeddings import (
     start_background_model_download,
     store_embedding_space_is_stale,
 )
+from kiro_crew.testing.wait import async_wait_until
 
 _REAL_LOAD_LLAMA = embeddings_mod._load_llama_class
 
@@ -473,6 +475,36 @@ class TestDownloadSuppression:
         assert await mgr.ensure_model(attempts=1) is False
         assert mgr.status["step"] == "custom_model"
         assert not (tmp_path / "home" / "models" / "default.gguf").exists()
+
+    @pytest.mark.asyncio
+    async def test_refusal_leaves_a_running_download_status_alone(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A custom model set mid-download must not hide that download's progress."""
+        monkeypatch.delenv("KIROCREW_SKIP_MODEL_DOWNLOAD", raising=False)
+        target = tmp_path / "home" / "models" / "default.gguf"
+        mgr = ModelDownloadManager(target=target)
+        started, release = threading.Event(), threading.Event()
+
+        def _blocked_download() -> tuple[bool, str]:
+            started.set()
+            release.wait(timeout=30)
+            _write_model(target)
+            return True, ""
+
+        monkeypatch.setattr(mgr, "_download_once", _blocked_download)
+        first = asyncio.create_task(mgr.ensure_model(attempts=1))
+        try:
+            await async_wait_until(started.is_set, describe=lambda: mgr.status)
+            assert mgr.status["step"] == "downloading"
+            _write_config(tmp_path, {"embed_model_path": str(_write_model(tmp_path / "m.gguf"))})
+            assert await asyncio.wait_for(mgr.ensure_model(attempts=1), 30) is False
+            assert mgr.status["step"] == "downloading"
+        finally:
+            release.set()
+            installed = await asyncio.wait_for(first, 30)
+        assert installed is True
+        assert mgr.status["step"] == "ready"
 
     @pytest.mark.asyncio
     async def test_default_download_still_runs_without_a_custom_model(

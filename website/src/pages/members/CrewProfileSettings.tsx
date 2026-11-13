@@ -3,11 +3,10 @@ import { createPortal } from 'react-dom'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { fmtList } from '../../i18n/format'
-import { Check, Cpu, Gauge, Loader2, Lock, Puzzle, Shield, SlidersHorizontal, Sparkles, Users } from 'lucide-react'
+import { Check, Cpu, Gauge, Loader2, Puzzle, SendHorizontal, Shield, SlidersHorizontal, Sparkles, Users } from 'lucide-react'
 import { api, type MemberRosterRow } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
-import { MEMBER_DASHBOARD_QUERY_PREFIX } from '../../hooks/useWebSocket'
 import { Btn, Toggle } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { INHERIT_MODEL } from '../../components/crew/useCrewEditor'
@@ -99,11 +98,11 @@ function withCurrent(options: string[], value: string): string[] {
 
 /**
  * The crewmate's own settings on its Profile card: permission, model, effort,
- * the worker pair and the dashboard lock. One iOS-style group — each picker is
+ * the worker pair, and the preview switches. One iOS-style group — each picker is
  * a row reading its current value, and tapping it pushes a single-choice page
- * over the card (the card's own push, through `ProfilePagePushContext`); the
- * lock, a boolean, stays a switch in the group with its one line of help as the
- * group's caption. The page stays open after a pick, check mark moved and any
+ * over the card (the card's own push, through `ProfilePagePushContext`); each
+ * boolean is a switch in its own group with its one line of help as the group's
+ * caption. The page stays open after a pick, check mark moved and any
  * notice shown, until the person goes back: a save can be refused (a stale
  * permission) and a page that popped would have carried that away.
  */
@@ -214,36 +213,21 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
   // or when it cannot, the phrase "<name>'s own model" stands in.
   const ownModelNoun = ownModel || t('pages.membersPage.profile_worker_own_model_fallback', { name })
 
-  // The person's lock on the crewmate's dynamic dashboard: set HERE, on the
-  // crewmate's own card, never on the Dashboard tab (which only shows a badge).
-  // Read off the dashboard body under the tab's own query prefix, so the gateway's
-  // "dashboard moved" frame and this card's own flip refresh both surfaces at once.
-  const lockRead = useQuery({
-    queryKey: [MEMBER_DASHBOARD_QUERY_PREFIX, member.slug, member.name, 'lock'],
-    queryFn: () => api.memberDashboard(member.slug, member.name),
-    enabled: Boolean(member.slug),
-    select: (page) => Boolean(page?.structure_locked),
-  })
-  const lockFlip = useMutation({
-    mutationFn: (want: boolean) => api.memberDashboardLock(member.slug, member.name, want),
-    onSettled: () => {
-      // Return the promise so TanStack Query awaits the refetch before clearing
-      // isPending — without this, isPending goes false before lockRead is updated
-      // and displayLocked briefly shows the old position.
-      return queryClient.invalidateQueries({ queryKey: [MEMBER_DASHBOARD_QUERY_PREFIX, member.slug] })
+  // Whether a button on the crewmate's Dashboard tab may send its reply in one click.
+  // Stored on the crewmate's record and enforced by the gateway; off, a button only
+  // fills the chat box. This is a preview, off by default: absent (an older gateway,
+  // or a crewmate that never opted in) reads as off.
+  const cardSendFlip = useMutation({
+    mutationFn: (want: boolean) => api.updateKirocrewAgent(member.name, { dashboard_card_send: want }),
+    onSuccess: (_data, want) => {
+      queryClient.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, (rows) =>
+        rows?.map((r) => (r.name === member.name ? { ...r, dashboard_card_send: want } : r)))
     },
   })
-  const locked = lockRead.data === true
-  // While a flip is in flight, show the state being requested rather than the
-  // last-read state: the switch should not snap back to the old position
-  // between the mutation's onSettled firing and the refetch landing.
-  const displayLocked = lockFlip.isPending ? (lockFlip.variables ?? locked) : locked
-  // The error names the state that HELD, so the person knows what to expect.
-  const lockError = lockRead.isError
-    ? t('pages.membersPage.profile_dashboard_lock_unreadable')
-    : lockFlip.isError
-      ? t(lockFlip.variables ? 'pages.membersPage.profile_dashboard_lock_failed' : 'pages.membersPage.profile_dashboard_unlock_failed')
-      : null
+  const cardSendOn = member.dashboard_card_send === true
+  // Show the state being requested while the write is in flight, so the switch does
+  // not snap back before the roster row is updated.
+  const displayCardSend = cardSendFlip.isPending ? (cardSendFlip.variables ?? cardSendOn) : cardSendOn
 
   // Dynamic capabilities: a per-crewmate preview, off by default, stored on the
   // crewmate's own record (`kiro_crew/crewmate_dynamic_capabilities.py`). On, the
@@ -700,29 +684,36 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
   const groupBody = (
     <section className="flex flex-col gap-3 min-w-0" data-testid="crew-profile-settings">
       {waitingLine}
-      <RowGroup
-        // The lock's one line of help, as the group's caption: the row itself
-        // carries only the switch and its name.
-        caption={t('pages.membersPage.profile_dashboard_lock_hint', { name })}
-      >
+      <RowGroup>
         {pickers.map(row)}
-        <RowStatic icon={<Lock size={16} />} tone="warn" label={t('pages.membersPage.profile_dashboard_lock_switch')} testId="crew-profile-dashboard-lock">
-          {/* Hide the switch when the lock state cannot be read: showing a dim off switch
-              for an unknown state looks identical to "unlocked" and misleads the person.
-              The error notice below names the problem and the next step. */}
-          {!lockRead.isError && (
-            <Toggle
-              checked={displayLocked}
-              onChange={(v) => lockFlip.mutate(v)}
-              disabled={lockRead.data === undefined || lockFlip.isPending}
-              label={t('pages.membersPage.profile_dashboard_lock_switch')}
-            />
-          )}
+      </RowGroup>
+      {/* Its own group, so its caption (what a click on a card does) sits under it. */}
+      <RowGroup caption={t('pages.membersPage.profile_dashboard_card_send_hint', { name })}>
+        <RowStatic icon={<SendHorizontal size={16} />} tone="accent" label={t('pages.membersPage.profile_dashboard_card_send_switch')} testId="crew-profile-dashboard-card-send">
+          <Toggle
+            checked={displayCardSend}
+            onChange={(v) => cardSendFlip.mutate(v)}
+            disabled={cardSendFlip.isPending}
+            label={t('pages.membersPage.profile_dashboard_card_send_switch')}
+          />
         </RowStatic>
       </RowGroup>
-      <ErrorNotice message={lockError} testId="crew-profile-dashboard-lock-error" />
+      {/* No hand-off: the Crewmates page's composer may hold an unsent draft to
+          this crewmate, and "Ask the agent" navigates away, which would discard
+          it. This notice only reports that the switch write failed and the setting
+          is unchanged, so it needs no hand-off. */}
+      <ErrorNotice
+        // Names the state it stayed in: the write that failed was the flip TO
+        // `variables`, so the setting is still the other way.
+        message={cardSendFlip.isError
+          ? t(cardSendFlip.variables
+            ? 'pages.membersPage.profile_dashboard_card_send_failed_on'
+            : 'pages.membersPage.profile_dashboard_card_send_failed_off')
+          : null}
+        testId="crew-profile-dashboard-card-send-error"
+      />
       {/* Its own group, so its caption (what the preview lets the crewmate do)
-          sits under it rather than under the lock's. */}
+          sits under it. */}
       <RowGroup caption={t('pages.membersPage.profile_dynamic_capabilities_hint', { name })}>
         <RowStatic
           icon={<Puzzle size={16} />}

@@ -202,10 +202,10 @@ def options_card(choices: list[str], *, nonce: str) -> dict[str, Any] | None:
 
     ``None`` when there is nothing to render.
 
-    The choice text rides both the button title and its ``data``, and the press
-    handler treats the returned value as an INDEX into the choices it rendered
-    rather than as text to act on, so a crafted value cannot become an
-    instruction.
+    The choice text rides only the button title (cut to 60 characters); its
+    ``data`` carries the choice's INDEX, and the press handler maps that back
+    into the choices it rendered rather than acting on text, so a crafted value
+    cannot become an instruction.
     """
     usable = usable_choices(choices)
     if not usable:

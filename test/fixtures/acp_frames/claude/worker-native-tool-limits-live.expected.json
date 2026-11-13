@@ -1,0 +1,568 @@
+[
+  {
+    "agent_capabilities": {
+      "_meta": {
+        "authStatus": {},
+        "claudeCode": {
+          "promptQueueing": true
+        }
+      },
+      "auth": {
+        "logout": {}
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "providers": {},
+      "sessionCapabilities": {
+        "additionalDirectories": {},
+        "close": {},
+        "delete": {},
+        "fork": {},
+        "list": {},
+        "resume": {},
+        "systemPrompt": {
+          "mode": {
+            "override": {}
+          }
+        }
+      }
+    },
+    "agent_version": "0.94.0",
+    "frame": "response",
+    "id": 0,
+    "protocol_version": 1
+  },
+  {
+    "action": "skip",
+    "frame": "_auth/status_update",
+    "params": {
+      "authStatus": {
+        "kind": "external",
+        "label": "AWS Bedrock"
+      }
+    }
+  },
+  {
+    "config_options": [],
+    "frame": "response",
+    "id": 1,
+    "modes": {
+      "advertised": true,
+      "current": "default",
+      "ids": [
+        "default",
+        "acceptEdits",
+        "plan",
+        "auto"
+      ]
+    },
+    "session_id": "claude-session-1"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "Read File",
+        "tool_call_id": "toolu-1",
+        "tool_kind": "read",
+        "wire_title": "Read File"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "file_path": "/work/seed.txt"
+        },
+        "title": "Read /work/seed.txt",
+        "tool_call_id": "toolu-1",
+        "tool_input": "{\n  \"file_path\": \"/work/seed.txt\"\n}",
+        "wire_title": "Read /work/seed.txt"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu-1",
+        "tool_final": true,
+        "tool_output": "```\n1\tseed\n```",
+        "tool_output_bytes": 14,
+        "tool_output_digest": "8bcb65246a87e012546adddb45ce6da6e461951cf141762e23c113b084753a4d",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "grep",
+        "tool_call_id": "toolu-2",
+        "tool_kind": "search",
+        "wire_title": "grep"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "pattern": "^"
+        },
+        "title": "grep \"^\"",
+        "tool_call_id": "toolu-2",
+        "tool_input": "{\n  \"pattern\": \"^\"\n}",
+        "wire_title": "grep \"^\""
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "glob": "*.txt",
+          "pattern": "^"
+        },
+        "title": "grep --include=\"*.txt\" \"^\"",
+        "tool_call_id": "toolu-2",
+        "tool_input": "{\n  \"pattern\": \"^\",\n  \"glob\": \"*.txt\"\n}",
+        "wire_title": "grep --include=\"*.txt\" \"^\""
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "glob": "*.txt",
+          "output_mode": "files_with_matches",
+          "pattern": "^"
+        },
+        "title": "grep -l --include=\"*.txt\" \"^\"",
+        "tool_call_id": "toolu-2",
+        "tool_input": "{\n  \"pattern\": \"^\",\n  \"glob\": \"*.txt\",\n  \"output_mode\": \"files_with_matches\"\n}",
+        "wire_title": "grep -l --include=\"*.txt\" \"^\""
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu-2",
+        "tool_final": true,
+        "tool_output": "Found 1 file\nseed.txt",
+        "tool_output_bytes": 21,
+        "tool_output_digest": "ea6cd709a2e8bba3772fee5e79f3bf546e78ac167d0a6ac6281ee8f5851c8a4d",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "ToolSearch",
+        "tool_call_id": "toolu-3",
+        "tool_kind": "other",
+        "wire_title": "ToolSearch"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "query": "select:mcp__native-probe__probe_echo"
+        },
+        "tool_call_id": "toolu-3",
+        "tool_input": "{\n  \"query\": \"select:mcp__native-probe__probe_echo\"\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "max_results": 1,
+          "query": "select:mcp__native-probe__probe_echo"
+        },
+        "tool_call_id": "toolu-3",
+        "tool_input": "{\n  \"query\": \"select:mcp__native-probe__probe_echo\",\n  \"max_results\": 1\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu-3",
+        "tool_final": true,
+        "tool_output": "Tool: mcp__native-probe__probe_echo",
+        "tool_output_bytes": 35,
+        "tool_output_digest": "06db433e5770dc09850e59b1d6a40802f93a9916f9c2c3ec3c25eee9a0b198ba",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "mcp__native-probe__probe_echo",
+        "tool_call_id": "toolu-4",
+        "tool_kind": "other",
+        "wire_title": "mcp__native-probe__probe_echo"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "text": "hello"
+        },
+        "tool_call_id": "toolu-4",
+        "tool_input": "{\n  \"text\": \"hello\"\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow-once",
+            "label": "Yes"
+          },
+          {
+            "id": "allow-with-updates",
+            "label": "Yes, and don't ask again for Probe Echo commands"
+          },
+          {
+            "id": "reject",
+            "label": "No"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "text": "hello"
+        },
+        "shell_classified": true,
+        "title": "mcp__native-probe__probe_echo",
+        "tool_call_id": "toolu-4",
+        "tool_input": "{\n  \"text\": \"hello\"\n}",
+        "tool_kind": "other"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow-with-updates",
+      "once": "allow-once",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu-4",
+        "tool_final": true,
+        "tool_output": "PROBE:hello",
+        "tool_output_bytes": 11,
+        "tool_output_digest": "a9c90d66365c277e32922d4197732c6c660c4c2f0e4dbf4e8fcd893e2f231804",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "Task",
+        "tool_call_id": "toolu-5",
+        "tool_kind": "think",
+        "wire_title": "Task"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "description": "Subagent tool availability probe"
+        },
+        "title": "Subagent tool availability probe",
+        "tool_call_id": "toolu-5",
+        "tool_input": "{\n  \"description\": \"Subagent tool availability probe\"\n}",
+        "wire_title": "Subagent tool availability probe"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "description": "Subagent tool availability probe",
+          "subagent_type": "general-purpose"
+        },
+        "title": "Subagent tool availability probe",
+        "tool_call_id": "toolu-5",
+        "tool_input": "{\n  \"description\": \"Subagent tool availability probe\",\n  \"subagent_type\": \"general-purpose\"\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "description": "Subagent tool availability probe",
+          "prompt": "List the exact names of every tool you have. Then use the Bash tool to run: echo sub > sub-bash-ran.txt. Then use the Write tool to create sub-write-ran.txt containing sub. Report exactly what happened for each step, including any error text.",
+          "subagent_type": "general-purpose"
+        },
+        "title": "Subagent tool availability probe",
+        "tool_call_id": "toolu-5",
+        "tool_input": "{\n  \"description\": \"Subagent tool availability probe\",\n  \"subagent_type\": \"general-purpose\",\n  \"prompt\": \"List the exact names of every tool you have. Then use the Bash tool to run: echo sub > sub-bash-ran.txt. Then use the Write tool to create sub-write-ran.txt containing sub. Report exactly what happened for each step, including any error text.\"\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu-5",
+        "tool_output": "List the exact names of every tool you have. Then use the Bash tool to run: echo sub > sub-bash-ran.txt. Then use the Write tool to create sub-write-ran.txt containing sub. Report exactly what happened for each step, including any error text.",
+        "tool_output_bytes": 242,
+        "tool_output_digest": "7831fa8d30a517a4b965c5a457405588c92cfb89317436a2e0912be907bbded0"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "description": "Subagent tool availability probe",
+          "prompt": "List the exact names of every tool you have. Then use the Bash tool to run: echo sub > sub-bash-ran.txt. Then use the Write tool to create sub-write-ran.txt containing sub. Report exactly what happened for each step, including any error text.",
+          "run_in_background": false,
+          "subagent_type": "general-purpose"
+        },
+        "title": "Subagent tool availability probe",
+        "tool_call_id": "toolu-5",
+        "tool_input": "{\n  \"description\": \"Subagent tool availability probe\",\n  \"subagent_type\": \"general-purpose\",\n  \"prompt\": \"List the exact names of every tool you have. Then use the Bash tool to run: echo sub > sub-bash-ran.txt. Then use the Write tool to create sub-write-ran.txt containing sub. Report exactly what happened for each step, including any error text.\",\n  \"run_in_background\": false\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "max_results": 5,
+          "query": "select:Bash,Write"
+        },
+        "title": "ToolSearch",
+        "tool_call_id": "toolu-6",
+        "tool_input": "{\n  \"query\": \"select:Bash,Write\",\n  \"max_results\": 5\n}",
+        "tool_kind": "other",
+        "wire_title": "ToolSearch"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu-6",
+        "tool_final": true,
+        "tool_output": "No matching deferred tools found",
+        "tool_output_bytes": 32,
+        "tool_output_digest": "65af72988bcd2ddba8c22b18e06fe4ca060ccb1ebbfc38dda63b73780511dfe2",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "path": "/work",
+          "pattern": "sub-*-ran.txt"
+        },
+        "title": "Find `/work` `sub-*-ran.txt`",
+        "tool_call_id": "toolu-7",
+        "tool_input": "{\n  \"pattern\": \"sub-*-ran.txt\",\n  \"path\": \"/work\"\n}",
+        "tool_kind": "search",
+        "wire_title": "Find `/work` `sub-*-ran.txt`"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu-7",
+        "tool_final": true,
+        "tool_output": "No files found",
+        "tool_output_bytes": 14,
+        "tool_output_digest": "949d59b7ee8dabf8c14f26bb88463d19a331f38aa2542534727cb77fc3b94338",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu-5",
+        "tool_final": true,
+        "tool_output": "I couldn't do steps 2 or 3: this agent has no Bash or Write tool, and neither file was created. I tried to load one with `ToolSearch` using `select:Bash,Write`, and it returned exactly: `No matching deferred tools found`.",
+        "tool_output_bytes": 221,
+        "tool_output_digest": "4f00a7b8107dc2086285dd940c47b08170bafea27577332eca640c658e31ef86",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "stop_reason": "end_turn"
+  }
+]

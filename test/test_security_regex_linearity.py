@@ -219,10 +219,10 @@ def test_credential_pattern_module_still_compiles_one_alternation() -> None:
 
     assert isinstance(security_mod._CREDENTIAL_PATTERNS, re.Pattern)
     # `redact_credentials` is a wrapper over the one plan both redactors share;
-    # the scan lives in that plan.
+    # the scan lives in that plan's pass 1.
     from kiro_crew.security import redaction as redaction_mod
 
-    body = inspect_source(redaction_mod._credential_redaction_plan)
+    body = inspect_source(redaction_mod._pattern_pass)
     assert "_credential_matches(text)" in body
     assert "_credential_search(text, pos, starts)" in inspect_source(
         redaction_mod._credential_matches

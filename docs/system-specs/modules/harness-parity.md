@@ -4,16 +4,16 @@ A *harness* is the agent process Kiro Crew drives over ACP. Kiro Crew has one
 first-class harness — `kiro-cli` (`ACP_BACKEND_KIRO`, spelled `""`) — and a
 growing set of adapted ones: Claude Code (`ACP_BACKEND_CLAUDE`), `KAS`
 (`ACP_BACKEND_KAS`), Codex (`ACP_BACKEND_CODEX`), OpenCode
-(`ACP_BACKEND_OPENCODE`), Pi (`ACP_BACKEND_PI`), goose (`ACP_BACKEND_GOOSE`),
-DeepSeek Harness (`ACP_BACKEND_DEEPSEEK`), GitHub Copilot CLI
+(`ACP_BACKEND_OPENCODE`), MiMo Code (`ACP_BACKEND_MIMOCODE`), Pi (`ACP_BACKEND_PI`),
+goose (`ACP_BACKEND_GOOSE`), DeepSeek Harness (`ACP_BACKEND_DEEPSEEK`), GitHub Copilot CLI
 (`ACP_BACKEND_COPILOT`) and Strands (`ACP_BACKEND_STRANDS`), plus whatever a bring-your-own
 (BYO) adapter registers next. Adding a harness requires reviewing
 `session_pid_orphan_scan.py::_BROWSER_PLAUSIBLE_OWNER_NAMES` as a separate
 touchpoint, because an unreadable environment on a recognizable harness process
 must keep its browser daemon alive.
 
-Kiro, Claude Code, KAS, Strands, Codex, OpenCode, Pi, goose, DeepSeek and Copilot are selectable on a
-plain public build. Claude Code in particular is a shipped harness and not a dormant seam: `acp/harness/claude.py` owns the
+Kiro, Claude Code, KAS, Strands, Codex, OpenCode, MiMo Code, Pi, goose, DeepSeek and Copilot
+are selectable on a plain public build. Claude Code in particular is a shipped harness and not a dormant seam: `acp/harness/claude.py` owns the
 whole Claude launch and the adapter is a public npm package, so an earlier
 revision that left it out of the baseline removed only the switch, never a
 capability. Whether the binaries are INSTALLED on a given machine is a different
@@ -39,9 +39,9 @@ set once both halves landed — `backend_install.py` gained its probe, so the in
 names the missing component and its command instead of reading `unknown`, and
 `acp_tool_gate` established that its tool calls reach the PreToolUse gate.
 
-Read the invariants below against that tree: ten harnesses can serve a real
+Read the invariants below against that tree: eleven harnesses can serve a real
 session today, so a site that spells "kiro" by exclusion is already wrong on
-nine of them.
+ten of them.
 
 *Parity* here does not mean equal treatment. It means the opposite, stated
 precisely: **an added harness may only adapt itself to the seams the Kiro
@@ -87,7 +87,7 @@ and Kiro stops being the guaranteed path.
 
 | Id | Guarantees | Pinned by | Constrains |
 |---|---|---|---|
-| H1 | An `agent.acp_backend` that is absent or `""` holds no choice and defaults to `ACP_BACKEND_KAS`. `ACP_BACKEND_KIRO` remains the selectable floor in an `oss` build; in an LTS build the floor is `ACP_BACKEND_KAS` (`governance_floor_backend()`, read from the build-time `kiro_crew.edition` only, RFC `rfc-crew-lts-edition.md` D6), so there the Kiro CLI harness is selectable only when the remote policy allows it. A manual choice is stored; Kiro CLI is stored as `"kiro"` (`STORED_BACKEND_KIRO`, the policy id) and mapped to the runtime id `""` at the config boundary only (`backend_from_stored` / `backend_to_stored`). An explicit Kiro CLI pick runs on `KIRO_SELECTION_BACKEND` (KAS) once this process confirmed the host's kiro-cli offers its v3 engine (`confirm_kiro_cli_offers_kas`, positive evidence only) and while KAS is selectable, because kiro-cli serves `acp` on v3 and only the KAS path drives it; the stored pick is read as KAS at config load (`_read_backend_choice` → `kiro_cli_pick_backend`), never at the gate, so every capability set reads KAS's membership, no call site tests "picked Kiro", and a Kiro CLI id the gate already answered (a degraded member floor) is never moved again. The gateway's KAS floor confirms the evidence at boot and reloads the live config so the provider factory follows the verdict; a non-gateway process that spawns an ACP agent (`kirocrew chat`, the eval runner, the task runner, history consolidation) confirms it the same way before its config load, via `ensure_kiro_cli_kas_verdict`, which runs the one bounded probe only for a stored Kiro CLI pick off the bundle route (`docs/decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md`). Without that confirmation (an unknown probe, a kiro-cli without v3, the bundle route, a policy that denies KAS) the pick keeps the v2 Kiro CLI launch, and a pick that resolves to Kiro CLI never refuses a session. In an LTS build a Kiro CLI pick the remote policy does not allow resolves to the KAS floor (H3) and is then judged as a KAS session. The floor a degraded value takes (H3) is not a pick and stays the Kiro CLI launch. | `test_harness_parity.py::test_kas_is_the_default_backend`, `::test_kiro_is_always_selectable`, `test_acp_backend_kas.py::TestAKiroCliPickRunsOnKasOnceV3IsConfirmed`, `test_acp_backend_kas.py::TestAProcessOutsideTheGatewayReachesTheSameVerdict`, `test_cli_chat.py::test_a_stored_kiro_pick_runs_on_kas_in_cli_chat`, `test_kas_cli_floor.py::TestDefaultNoticeWording::test_a_v3_kiro_cli_moves_the_pick_onto_kas`, `::test_no_positive_verdict_keeps_the_pick_on_kiro_cli` | `config/sections_agent.py` (`AgentConfig.acp_backend`), `agent_sdk/backends.py` (`DEFAULT_ACP_BACKEND`, `KIRO_SELECTION_BACKEND`, `GOVERNANCE_FLOOR_BACKEND`, `LTS_GOVERNANCE_FLOOR_BACKEND`, `governance_floor_backend`, `resolve_selected_backend`, `ensure_kiro_cli_kas_verdict`) |
+| H1 | An `agent.acp_backend` that is absent or `""` holds no choice and defaults to `ACP_BACKEND_KAS`. `ACP_BACKEND_KIRO` remains the selectable floor in an `oss` build; in an LTS build the floor is `ACP_BACKEND_KAS` (`governance_floor_backend()`, read from the build-time `kiro_crew.edition` only, RFC `rfc-crew-lts-edition.md` D6), so there the Kiro CLI harness is selectable only when the remote policy allows it. A manual choice is stored; Kiro CLI is stored as `"kiro"` (`STORED_BACKEND_KIRO`, the policy id) and mapped to the runtime id `""` at the config boundary only (`backend_from_stored` / `backend_to_stored`). An explicit Kiro CLI pick runs on `KIRO_SELECTION_BACKEND` (KAS) once this process confirmed the host's kiro-cli offers its v3 engine (`confirm_kiro_cli_offers_kas`, positive evidence only: for a stored pick, help that lists v3 AND one v3 start kiro-cli did not refuse, `kas_engine_start_verdict`, run on the pinned install only, so a kiro-cli reached only through `PATH` keeps its help verdict unless a refusal is on record for it; a KAS start that kiro-cli later refuses withdraws it, `revoke_kiro_cli_offers_kas`) and while KAS is selectable, because kiro-cli serves `acp` on v3 and only the KAS path drives it; the stored pick is read as KAS at config load (`_read_backend_choice` → `kiro_cli_pick_backend`), never at the gate, so every capability set reads KAS's membership, no call site tests "picked Kiro", and a Kiro CLI id the gate already answered (a degraded member floor) is never moved again. The gateway's KAS floor confirms the evidence at boot and reloads the live config so the provider factory follows the verdict; a non-gateway process that spawns an ACP agent (`kirocrew chat`, the eval runner, the task runner, history consolidation) confirms it the same way before its config load, via `ensure_kiro_cli_kas_verdict`, which runs the one bounded probe only for a stored Kiro CLI pick off the bundle route (`docs/decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md`). On a defaulted or chosen KAS off the bundle route (`acp_backend_stored_runs_kas`) it starts nothing and reads the data home's v3 start record instead (`kas_engine_start_verdict(start=False)`), as the gateway floor does when no pick is at stake: a refusal an earlier process met marks KAS unservable (not where KAS is the governance floor, nor where the next KAS spawn takes the bundle route automatically, `agent_sdk.kas_bundle.kas_route`, asked only once a refusal is on record) and logs the floor's notice, so the load runs Kiro CLI rather than the relay kiro-cli refused. Without that confirmation (an unknown probe, a kiro-cli without v3, the bundle route, a policy that denies KAS) the pick keeps the v2 Kiro CLI launch, and a pick that resolves to Kiro CLI never refuses a session. In an LTS build a Kiro CLI pick the remote policy does not allow resolves to the KAS floor (H3) and is then judged as a KAS session. The floor a degraded value takes (H3) is not a pick and stays the Kiro CLI launch. | `test_harness_parity.py::test_kas_is_the_default_backend`, `::test_kiro_is_always_selectable`, `test_acp_backend_kas.py::TestAKiroCliPickRunsOnKasOnceV3IsConfirmed`, `test_acp_backend_kas.py::TestAProcessOutsideTheGatewayReachesTheSameVerdict`, `test_cli_chat.py::test_a_stored_kiro_pick_runs_on_kas_in_cli_chat`, `::test_a_refusal_on_record_moves_cli_chat_off_kas`, `test_kas_cli_floor.py::TestDefaultNoticeWording::test_a_v3_kiro_cli_moves_the_pick_onto_kas`, `::test_no_positive_verdict_keeps_the_pick_on_kiro_cli`, `::test_a_v3_kiro_cli_that_refuses_the_engine_keeps_the_pick_on_v2`, `test_kas_engine_refusal.py::test_the_refusal_moves_new_sessions_off_kas` | `config/sections_agent.py` (`AgentConfig.acp_backend`), `agent_sdk/backends.py` (`DEFAULT_ACP_BACKEND`, `KIRO_SELECTION_BACKEND`, `GOVERNANCE_FLOOR_BACKEND`, `LTS_GOVERNANCE_FLOOR_BACKEND`, `governance_floor_backend`, `resolve_selected_backend`, `ensure_kiro_cli_kas_verdict`) |
 | H2 | A harness is chosen at `agent.acp_backend`. `agent.provider` stays `enum=["acp"]`: there is one provider and it is never the harness selector, because a second provider value would route around every invariant below. | `test_harness_parity.py::test_provider_enum_is_acp_only` | `config/loader.py` (`AgentConfig.provider`, `build_provider_factory`) |
 | H3 | An unknown or unselectable explicit backend degrades to the build's floor (`governance_floor_backend()`: Kiro CLI in `oss`, KAS in LTS, D6) with a logged reason. Only "no choice" (absent or `""`) selects KAS, and it selects the floor silently when KAS is unavailable. It never raises and never survives — including the non-string shapes a hand-edited `config.json` can hold. There is exactly ONE resolution gate, and it reads `selectable_backends()` per call, so registering a backend is what makes a persisted value survive. It must never read the platform context because that would re-enter config loading. A Bot's own harness pin is the one value checked before this gate and refused there, never here (H17). In an LTS build a gateway session whose RESOLVED backend is KAS is refused after this gate and before any process exists when the gateway's boot proved KAS cannot start on the route it would take, on the relay or the engine bundle (the record is made only by the gateway, so another process that spawns an ACP agent is not refused this way and its spawn's own error names the cause; `lts_boot.refuse_unstartable_kas`, called from `create_provider_factory` only when the backend is KAS, same refusal code as H17); a session whose resolved backend is Kiro CLI is never refused or altered by it, and the gateway start is refused only when the main backend runs KAS (`lts_boot.require_kas_harness`). | `test_harness_parity.py::test_unselectable_backend_degrades_to_default`, `::test_registering_a_backend_makes_it_survive_load`, `::test_config_load_never_reads_the_platform_context`, `test_lts_harness_floor.py` (the LTS floor, the start refusal and the per-session KAS refusal) | `agent_sdk/backends.py` (`resolve_selected_backend`), `config/loader.py` (`_normalize_acp_backend`), `config/validation.py` (`validate_config_data`) |
 | H4 | Selectability has exactly ONE gate, and it logs. `AgentConfig.acp_backend` carries no static `enum`: a literal was frozen at import, before an edition registers a backend, and `validate_config_data` *deletes* an out-of-enum value before the loader sees it — so a registered preview harness was stripped from `config.json` with no degrade log at all. `resolve_selected_backend` is the gate; `GET /api/config/schema` supplies the live values the dashboard renders. | `test_harness_parity.py::test_selectability_has_one_logged_gate` | `config/loader.py` (`AgentConfig.acp_backend` metadata), `config/validation.py` (`validate_config_data`), `dashboard/handlers/agents.py` (`_supply_live_enum`) |
@@ -185,15 +185,26 @@ outside `ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS`
 own because the worker's limits travel differently from a member chat's: the
 worker spec rewrites every switched-off tool into `excludedTools`, which KAS
 projects, so KAS (the default backend) honours them and is in the set. claude
-honours only their MCP half, so it is in `ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS`
-(KAS, claude) and not in the whole set: a `disabledTools` entry, an
+honours their MCP half and the native tools its table maps, not all of them, so it
+is in `ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS` (KAS, claude) and not in the whole
+set: a `disabledTools` entry, an
 `@server/tool` and a whole `@server` become `permissions.deny` rules derived from
 the worker's own spec, keyed by the session
 (`acp.session_mcp_crewmate.crewmate_worker_deny_rules`, the read its array is
-built from), while a native-tool exclude (`@builtin` included), a wildcard, or a `disabledTools` that is
-not a list of tool names (`mate_worker.uncarried_tool_limits_of`) is still refused. The capture is
-`claude/worker-tool-limits-live.jsonl`: each of the three limits kept its tools out
-of the model's list while their siblings asked and ran. codex is in neither set:
+built from). claude is also in `ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS` (KAS,
+claude): a native-tool exclude its built-in table covers (`shell`, `fs_write`,
+`@builtin/<tool>`, a tag such as `write`;
+`agent_sdk.claude_worker_tools.CLAUDE_WORKER_BUILTINS_BY_KIRO_TOOL`) rides the session's
+`tools` option as an allow-list of the built-ins of the native tools the worker
+keeps (`claude_worker_builtin_tools`, carried on `SessionProjection.builtin_tools`),
+so a built-in the table does not list is withheld too, and no settings file can
+add one back. Any other native entry (`use_aws`, a bare `@builtin`), a wildcard, or a
+`disabledTools` that is not a list of tool names (`mate_worker.uncarried_tool_limits_of`)
+is still refused. The captures are `claude/worker-tool-limits-live.jsonl`, where each of the
+three MCP limits kept its tools out of the model's list while their siblings asked
+and ran, and `claude/worker-native-tool-limits-live.jsonl`, where a worker excluding
+`shell` and `fs_write` was offered no command-running or file-writing built-in, its
+deferred MCP tool still loaded and ran, and a subagent it started had the same tools. codex is in none of the three sets:
 its worker capture shows no single-tool limit held. codex is in the kit set on its own live capture
 (`codex/worker-kit-live.jsonl`): its mirror hands the session key to the
 projection, so the worker's array carried the Bot's server and the worker
@@ -229,6 +240,20 @@ per-tool mounts, hooks, toolsSettings, excludedTools and auto-approval shortcuts
 sessions start but remain unverified rather than claiming full-spec parity. Pinned by `test_harness_parity.py::test_member_capabilities_are_opt_in`
 and `test_session_capabilities.py::test_real_session_provider_member_support_is_explicit`.
 
+`ACP_BACKENDS_COMPACTION_REPORTED` is the H6 opt-in for anything Kiro Crew sends
+once per engine conversation and sends again when the conversation may have lost it. It is
+`ACP_BACKENDS_SENT_IMAGE_RECORD` under the name of what it means (one list, defined
+from it in `agent_sdk/backends_turns.py`): the harnesses whose compaction, started
+by Kiro Crew or by the harness itself, sends a frame this client reads (kiro, kas,
+codex, claude). Its reader is the reply-format rules block: the context builder
+asks the turn's provider (`LLMProvider.reports_compaction`, False on the base
+class) and binds the block as the provider's delivery envelope only on a True.
+A harness outside the set, a provider that does not say, and a turn with no
+provider all get the rules on every message, so a harness that has not been shown
+to report its compaction never inherits the saving
+(`test_reply_format_once.py::TestEveryMessageWhereTheBlockCannotBeTakenOut`, a
+table over every selectable harness).
+
 `ACP_BACKENDS_NATIVE_TODOS` is the H6 opt-in for the harness-native `/todos`
 command. Only Claude belongs today. Before acquisition, the dashboard asks a
 positively live provider's `SessionCapabilities.supports_native_todos` field;
@@ -261,17 +286,29 @@ live Slack OPTIONS and the context owed by a first claim, including speculative
 resume, while completing that claim's session-start bookkeeping. The sibling
 `/compact` gate may refuse before acquisition; when no positively alive provider
 exists, it uses the factory's member-aware `select_provider_backend` authority.
-`GET /api/slash-commands` has no session key, so it lists `/todos` from the
-default `agent.acp_backend` capability only; a member session routed to a
-different harness is still judged by the gate above when the command is sent.
-The same default decides the rest of the list on a harness in
+`GET /api/slash-commands` lists for the chat the composer names (`?slot=`): its
+backend comes from the same `_slash_command_backend` the gate uses
+(`agents_session_commands.menu_backend`), so a member or crewmate session routed
+to a different harness gets that harness's list. A request with no slot, or with a
+slot an app caller may not read as its own session, gets the default
+`agent.acp_backend`. That backend decides whether the list keeps `/todos`, and it
+decides the rest of the list on a harness in
 `ACP_BACKENDS_LOCAL_HARNESS_COMMANDS` (KAS, Strands): the list keeps only the
 commands the dashboard serves there (`/agent`, `/clear`, `/compact`, `/goal`,
 `/prompts`, `/side`, `/workflow`, plus `/code`, `/context`, `/help`, `/hooks`,
 `/mcp`, `/model`, `/tools` and `/usage` on KAS alone;
 `kas_local_commands.local_harness_menu`), because the slash
 gate reads the same set and answers every other harness command with a notice
-naming the harness. On KAS, `/model`, `/tools`, `/mcp`, `/context`, `/usage`,
+naming the harness. A harness with a row in `ACP_BACKEND_PROMPT_HANDLER_COMMANDS`
+gets the same rule, except for the harness commands in its row. Those reach the
+harness as typed. Codex has the one row, `/compact` and `/mcp`, because codex-acp's
+`classifyPrompt` runs only those of Crew's harness commands and sends any other name
+to the model. On Codex the list is `/agent`, `/clear`, `/compact`, `/goal`, `/mcp`,
+`/prompts`, `/side` and `/workflow`. A `/help`, `/context`, `/tools` or other
+kiro-cli word typed on Codex gets the "doesn't work with OpenAI Codex. It was not
+sent to the agent." notice. Codex's own built-ins (`/status`, `/review` and the
+others) are not Crew harness commands, so they are not listed and stay prompt text.
+On KAS, `/model`, `/tools`, `/mcp`, `/context`, `/usage`,
 `/help` and `/agent` (bare or `list`) are answered by
 `dashboard/kas_local_commands.py` from state
 the dashboard already holds, never by the model and without a turn: `/model`
@@ -324,7 +361,9 @@ put the relay route (kiro-cli present, catalog printable) and the bundle route
 would change the Kiro path's own machinery (Group C). What is per HARNESS stays in
 a set: the fact that KAS's `model` select is its catalog is recorded on positive
 KAS identity in `agent_sdk/kas_model_catalog.py`, whichever route the session runs
-on; only the bundle route's picker reads the recording.
+on; the bundle route's picker reads the recording, and so does a KAS relay started
+on Crew's sign-in alone, but only where kiro-cli's gate has already refused, behind
+`backend == "kas"`, so the Kiro path answers as before.
 
 ### Where the vocabulary is defined
 
@@ -472,10 +511,13 @@ stamp (`_meta.claudeCode.toolName`) for two things only: the name a hook matcher
 session, and the read-only proof, on a Side Chat session only (`claude-code-provider.md`,
 "A Side Chat session"); that key is not a row of `_MCP_IDENTITY_META_CHANNELS`.
 opencode sends `kind="other"` and no identity (`acp/_dispatch_parts/tool_call_identity.py`,
-`classify_tool_call`). On opencode, and for those claude calls, every heartbeat tool
-call is denied and audited `reason=no_trusted_identity`, with one gateway warning per
-denied call naming the backend condition, so an opencode heartbeat runs as a
-text-only poller. The signal is
+`classify_tool_call`), and so does MiMo Code, its fork. On opencode and MiMo Code, and
+for those claude calls, every heartbeat tool call that asks is denied and audited
+`reason=no_trusted_identity`, with one gateway warning per denied call naming the
+backend condition, so an opencode or MiMo Code heartbeat runs as a text-only poller.
+MiMo Code's `memory`, `history` and `task` tools never ask
+(`ACP_BACKENDS_UNASKED_NATIVE_TOOLS`), so a heartbeat turn there can still run those
+three; nothing else. The signal is
 per call on purpose: each row is derived from the event itself, so it cannot drift
 from what the gate decided, and the positive set a start-time warning would key on
 (`ACP_BACKENDS_META_IDENTITY`) deliberately omits kiro-cli -- its live corpus records

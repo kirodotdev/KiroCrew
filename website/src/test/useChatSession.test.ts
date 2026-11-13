@@ -200,6 +200,59 @@ describe('useChatSession', () => {
       }))
     })
 
+    // A lookup that never lists the created key must not leave the hook loading.
+    it('is ready from the created slot when the lookup never lists it', async () => {
+      mockGet.mockResolvedValue([])
+
+      const { result } = renderHook(() => useChatSession(defaultOpts), { wrapper: createWrapper() })
+      await waitFor(() => {
+        expect(result.current.status).toBe('no-session')
+      })
+
+      mockPost.mockImplementation((path: string) => {
+        if (path === '/api/chat/slots') return Promise.resolve({ key: expectedSlotName })
+        if (path === '/api/chat/folders') return Promise.resolve({ id: 'f1', name: 'Workbench' })
+        return Promise.resolve({})
+      })
+      mockPatch.mockResolvedValue({})
+
+      await act(async () => {
+        await result.current.createSession()
+      })
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready')
+      })
+      expect(result.current.slotKey).toBe(expectedSlotName)
+      expect(result.current.error).toBeNull()
+    })
+
+    it('transitions to error when the create returns no slot key', async () => {
+      mockGet.mockResolvedValue([])
+
+      const { result } = renderHook(() => useChatSession(defaultOpts), { wrapper: createWrapper() })
+      await waitFor(() => {
+        expect(result.current.status).toBe('no-session')
+      })
+
+      mockPost.mockResolvedValue({})
+
+      await act(async () => {
+        try {
+          await result.current.createSession()
+        } catch {
+          // mutateAsync throws on rejection — expected
+        }
+      })
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('error')
+      })
+      expect(result.current.error).toBeTruthy()
+      expect(result.current.slotKey).toBeNull()
+      expect(mockPost).not.toHaveBeenCalledWith('/api/chat?ws=1', expect.anything())
+    })
+
     it('transitions to error on create failure', async () => {
       mockGet.mockResolvedValue([])
 
@@ -270,7 +323,8 @@ describe('useChatSession', () => {
   })
 
   describe('openChat', () => {
-    it('navigates to / then to /chat?sid= after 50ms', async () => {
+    // One host navigation, so one history entry: a single Back returns to the app.
+    it('navigates once, straight to /chat?sid=', async () => {
       mockGet.mockResolvedValue([])
 
       const { result } = renderHook(() => useChatSession(defaultOpts), { wrapper: createWrapper() })
@@ -279,20 +333,18 @@ describe('useChatSession', () => {
       })
 
       vi.useFakeTimers()
+      mockNavigate.mockClear()
 
       act(() => {
         result.current.openChat()
       })
-
-      expect(mockNavigate).toHaveBeenCalledWith('/')
-
       act(() => {
-        vi.advanceTimersByTime(50)
+        vi.runAllTimers()
       })
 
-      expect(mockNavigate).toHaveBeenCalledWith(
-        '/chat?sid=' + encodeURIComponent(expectedSlotName)
-      )
+      expect(mockNavigate.mock.calls).toEqual([
+        ['/chat?sid=' + encodeURIComponent(expectedSlotName)],
+      ])
 
       vi.useRealTimers()
     })

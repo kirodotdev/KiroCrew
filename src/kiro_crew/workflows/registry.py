@@ -22,7 +22,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
-from kiro_crew.strict_json import json_portable
+from kiro_crew.strict_json import json_plain, json_portable
 
 from . import WorkflowEvent
 
@@ -70,6 +70,13 @@ async def _await_owned(task: "asyncio.Task[Any]") -> Any:
     if cancelled:
         raise asyncio.CancelledError
     return result
+
+
+def _stored_limit(value: Any) -> Optional[int]:
+    """A stored run limit, or None when absent or not a non-negative int (old records)."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
 
 
 def _int_key(k: Any) -> Any:
@@ -120,6 +127,9 @@ class RunHandle:
     # the fallback slot under it only when that folder still exists.
     fallback_title: str = ""
     fallback_folder_id: str = ""
+    # The limits the run was launched with, kept so a rerun runs under them too.
+    timeout_secs: Optional[int] = None
+    budget_total: Optional[int] = None
     agent_results: dict = field(default_factory=dict)  # call_index → result (resume cache)
     # call_index → bounded reason that call failed. Kept next to agent_results so a
     # missing payload always comes with an explanation instead of a bare ok=False.
@@ -326,6 +336,8 @@ class RunHandle:
             "completion_injection": self.completion_injection,
             "fallback_title": self.fallback_title,
             "fallback_folder_id": self.fallback_folder_id,
+            "timeout_secs": self.timeout_secs,
+            "budget_total": self.budget_total,
             "workflow_id": self.workflow_id,
             "workflow_slug": self.workflow_slug,
             "workflow_revision": self.workflow_revision,
@@ -382,6 +394,8 @@ class RunHandle:
             completion_injection=obj.get("completion_injection", True) is True,
             fallback_title=obj.get("fallback_title", ""),
             fallback_folder_id=obj.get("fallback_folder_id", ""),
+            timeout_secs=_stored_limit(obj.get("timeout_secs")),
+            budget_total=_stored_limit(obj.get("budget_total")),
             workflow_id=obj.get("workflow_id", ""),
             workflow_slug=obj.get("workflow_slug", ""),
             workflow_revision=int(obj.get("workflow_revision") or 0),
@@ -577,7 +591,7 @@ class RunRegistry:
         if h is None or h.status not in ACTIVE_STATUSES:
             return None  # idempotent: only the first terminal transition counts
         h.status = status
-        h.result = json_portable(result)
+        h.result = json_plain(result)
         h.error = error
         return h
 
@@ -879,6 +893,8 @@ async def start_background_run(
     fallback_title: str = "",
     fallback_folder_id: str = "",
     admission_closed: Optional[Callable[[], bool]] = None,
+    timeout_secs: Optional[int] = None,
+    budget_total: Optional[int] = None,
 ) -> str:
     """Schedule a workflow run on the loop, register a handle, return its run_id.
 
@@ -907,6 +923,8 @@ async def start_background_run(
         derived_from_revision=derived_from_revision,
         fallback_title=fallback_title,
         fallback_folder_id=fallback_folder_id,
+        timeout_secs=timeout_secs,
+        budget_total=budget_total,
     )
     await registry.register_async(handle)
     if admission_closed is not None and admission_closed():
@@ -929,8 +947,15 @@ async def start_background_run(
         except asyncio.CancelledError:
             await registry.mark_terminal_async(run_id, STATUS_CANCELLED, error="cancelled")
             raise
-        except Exception as exc:  # noqa: BLE001 - capture, never crash the loop
+        except BaseException as exc:  # noqa: BLE001 - capture, never crash the loop
+            # Never leave the run "running" with a dead driver: Cancel would then
+            # report success on a task that is already gone. A closing coroutine
+            # must not await; an interrupt or exit is marked, then goes on up.
+            if isinstance(exc, GeneratorExit):
+                raise
             await registry.mark_terminal_async(run_id, STATUS_FAILED, error=repr(exc))
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
         else:
             # The runner has already selected its outcome. Cancellation while
             # flushing must drain that outcome, not reinterpret success as cancel.

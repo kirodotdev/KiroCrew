@@ -162,12 +162,13 @@ export function readPublishOutcome(
   return null
 }
 
-/** The three catalog keys a render site offers for a publish notice: the
- *  existing rolling-out line, the disabled-distribution remedy, and the neutral
- *  fallback that promises no time. */
+/** The four catalog keys a render site offers for a publish notice: the
+ *  existing rolling-out line, the disabled-distribution remedy, the
+ *  origin-mismatch remedy, and the neutral fallback that promises no time. */
 export interface PublishNoticeKeys {
   rolling_out: string
   distribution_disabled: string
+  origin_mismatch: string
   notice_generic: string
 }
 
@@ -189,6 +190,8 @@ export function publishNoticeKey(keys: PublishNoticeKeys, noticeCode: string | u
       return keys.rolling_out
     case 'distribution_disabled':
       return keys.distribution_disabled
+    case 'origin_mismatch':
+      return keys.origin_mismatch
     default:
       // 'unknown', empty, or any value a newer backend introduces.
       return keys.notice_generic
@@ -198,14 +201,61 @@ export function publishNoticeKey(keys: PublishNoticeKeys, noticeCode: string | u
 export const TTL_72 = '72 hours (requires reaper)'
 
 /**
- * Whether a TTL may be chosen for this row at all.
+ * Whether the deploy TTL ("Persistent" / "72 hours") may be chosen for this row.
  *
- * A core destination declaring no expiration support gets no TTL control: the core
- * publish route carries no TTL, so offering "72 hours" would hand back a persistent
- * public link while the user believed the exposure was time-boxed.
+ * Never for a core row: the core publish route carries no `ttl_hours`, so offering
+ * "72 hours" would hand back a link whose lifetime the destination decides while the
+ * user believed the exposure was time-boxed. A core row offers its own periods
+ * instead (`expiryOptionsFor`).
  */
 export function ttlSelectableFor(selected: UnifiedProvider | undefined): boolean {
-  return !(selected?.core && !selected.core.sharing_model.supports_expiration)
+  return !selected?.core
+}
+
+/** A destination-declared expiry: whole days, or `null` for "no expiry". */
+export type ExpiryChoice = number | null
+
+/**
+ * The expiry periods the panel offers for this row, or `[]` when there is nothing to
+ * choose. Only a core row declares them, and only a FIRST publish gets the choice: the
+ * destination sets the lifetime when the page is created.
+ */
+export function expiryOptionsFor(
+  selected: UnifiedProvider | undefined,
+  alreadyPublished: boolean,
+): ExpiryChoice[] {
+  if (alreadyPublished) return []
+  const sm = selected?.core?.sharing_model
+  const days = sm?.expiration_choices_days ?? []
+  if (days.length === 0) return []
+  return sm?.allows_no_expiration ? [...days, null] : [...days]
+}
+
+/**
+ * The expiry the publish request carries, or `undefined` to leave it out.
+ *
+ * Derived like the visibility: the choice is one piece of state shared by every row, so
+ * a period picked on one row must not ride along onto a row that does not offer it.
+ * Anything the row cannot honour reads as the row's own default.
+ */
+export function effectiveExpiry(
+  choice: ExpiryChoice | undefined,
+  selected: UnifiedProvider | undefined,
+  alreadyPublished: boolean,
+): ExpiryChoice | undefined {
+  const options = expiryOptionsFor(selected, alreadyPublished)
+  if (options.length === 0) return undefined
+  if (choice !== undefined && options.includes(choice)) return choice
+  const fallback = selected?.core?.sharing_model.default_expiration_days
+  return fallback !== undefined && options.includes(fallback) ? fallback : options[0]
+}
+
+const NO_EXPIRY = 'never'
+
+function expiryLabel(v: ExpiryChoice): string {
+  return v === null
+    ? i18nT('components.publishHub.expiry_never')
+    : i18nT('components.publishHub.expiry_after_days', { count: v })
 }
 
 /**
@@ -475,6 +525,9 @@ export function PublishHub({
   const alreadyPublished = existingVisibility != null
   const visibilityOptions = visibilityOptionsFor(selected, alreadyPublished)
   const selectedVisibility = effectiveVisibility(visibilityChoice, selected, existingVisibility)
+  const [expiryChoice, setExpiryChoice] = useState<ExpiryChoice | undefined>(undefined)
+  const expiryOptions = expiryOptionsFor(selected, alreadyPublished)
+  const selectedExpiry = effectiveExpiry(expiryChoice, selected, alreadyPublished)
   // The exposure warning and the acknowledgment describe a public link, so both need a
   // destination that serves without login AND a request that asks for public.
   const exposesPublicly = selected?.publicReachable !== false
@@ -567,6 +620,7 @@ export function PublishHub({
           selected.id,
           selectedVisibility,
           selectedVisibility === 'SHARED' ? (artifact.publication?.shared_with ?? []) : [],
+          selectedExpiry,
         )
         const outcome = readPublishOutcome(resp)
         if (!outcome) {
@@ -806,12 +860,18 @@ export function PublishHub({
             {updatingLiveSite
               ? <p className="text-text">{i18nT('components.publishHub.update_replaces_published_page')}</p>
               : typeof preview.message === 'string' && <p>{preview.message}</p>}
-            {typeof preview.bytes === 'number' && <p>{i18nT('components.publishHub.size')} {(preview.bytes / 1024).toFixed(1)} {i18nT('components.publishHub.kb')}</p>}
+            {typeof preview.bytes === 'number' && <p>{i18nT('components.publishHub.size_kb', { size: (preview.bytes / 1024).toFixed(1) })}</p>}
             {typeof preview.scan === 'string' && <p>{i18nT('components.publishHub.scan')} {preview.scan}</p>}
             {selected.core && (visibilityOptions.length > 0 || alreadyPublished) && selectedVisibility !== 'SHARED' && (
               <p>
                 {i18nT('components.publishHub.visibility')}:{' '}
                 <span className="font-semibold text-text">{visibilityLabel(selectedVisibility)}</span>
+              </p>
+            )}
+            {selectedExpiry !== undefined && (
+              <p>
+                {i18nT('components.publishHub.expiry')}:{' '}
+                <span className="font-semibold text-text">{expiryLabel(selectedExpiry)}</span>
               </p>
             )}
           </div>
@@ -905,11 +965,11 @@ export function PublishHub({
             </>
           ) : (
             <>
-          {/* A core destination declaring no expiration support gets no TTL control at all.
-              Offering it would be a lie: the core publish route carries no TTL, so choosing
-              "72 hours" would hand back a persistent public link while the user believed the
-              exposure was time-boxed. Same `ttlSelectable` the value derives from, so a
-              hidden control can never leave a live choice behind it. */}
+          {/* A core row offers only the expiry periods its destination declares, on a
+              first publish; the deploy TTL control is for the other rows, because the core
+              publish route carries no `ttl_hours`. Both controls render from the same
+              predicates their values derive from, so a hidden control can never leave a
+              live choice behind it. */}
           {visibilityOptions.length > 0 && (
           <fieldset>
             <legend className="text-[11px] text-muted mb-1">{i18nT('components.publishHub.visibility')}</legend>
@@ -932,6 +992,18 @@ export function PublishHub({
               })}
             </div>
           </fieldset>
+          )}
+          {expiryOptions.length > 0 && (
+          <div>
+            <label className="text-[11px] text-muted block mb-1">{i18nT('components.publishHub.expiry')}</label>
+            <SimpleSelect
+              options={expiryOptions.map(v => (v === null ? NO_EXPIRY : String(v)))}
+              optionLabels={expiryOptions.map(expiryLabel)}
+              value={selectedExpiry === null ? NO_EXPIRY : String(selectedExpiry ?? '')}
+              onChange={v => setExpiryChoice(v === NO_EXPIRY ? null : Number(v))}
+              aria-label={i18nT('components.publishHub.expiry')}
+            />
+          </div>
           )}
           {ttlSelectable && (
           <div>
@@ -994,6 +1066,7 @@ export function PublishHub({
                   <span>{i18nT(publishNoticeKey({
                     rolling_out: 'components.publishHub.published_still_rolling_out',
                     distribution_disabled: 'components.publishHub.published_distribution_disabled',
+                    origin_mismatch: 'components.publishHub.published_origin_mismatch',
                     notice_generic: 'components.publishHub.published_notice_generic',
                   }, result.notice_code))}</span>
                 </div>
@@ -1017,9 +1090,11 @@ export function PublishHub({
         // actions. A core destination has neither, so it would be telling the user their
         // way out is something that does not exist. Say what actually ends the exposure.
         persistentExposureNote={
-          selected?.core
-            ? i18nT('components.publicPublishAckModal.exposure_window_persistent_withdrawable')
-            : undefined
+          !selected?.core
+            ? undefined
+            : typeof selectedExpiry === 'number'
+              ? i18nT('components.publicPublishAckModal.exposure_window_provider_expiry', { count: selectedExpiry })
+              : i18nT('components.publicPublishAckModal.exposure_window_persistent_withdrawable')
         }
         busy={busy}
         onCancel={() => setAck(null)}

@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 from kiro_crew import _facade_mirror
 from kiro_crew.context_blocks import attributable_user_chars
-from kiro_crew.dashboard.chat_utils_display import redact_display_content
+from kiro_crew.dashboard.chat_utils_display import _carry_row_mid, redact_display_content
 from kiro_crew.dashboard.state import (
     DashboardState,
     _ChatSlot,
@@ -57,15 +57,24 @@ logger = logging.getLogger("kiro_crew.dashboard.chat_utils")
 #: these values against the frontend table.
 TRANSIENT_NOTICE_META_KEY = "notice"
 TRANSIENT_NOTICE_RETRYING = "transient_retrying"
+#: The same pending link when the provider answered with a throttle: the
+#: network is fine, so the row names the throttle instead of the connection.
+TRANSIENT_NOTICE_THROTTLE_RETRYING = "transient_throttle_retrying"
 TRANSIENT_NOTICE_RESUMING = "transient_resuming"
+TRANSIENT_NOTICE_THROTTLE_RESUMING = "transient_throttle_resuming"
 TRANSIENT_NOTICE_GIVE_UP = "transient_give_up"
+#: The terminal row of a throttle ladder that ends without a re-send.
+TRANSIENT_NOTICE_THROTTLE_GIVE_UP = "transient_throttle_give_up"
 
 #: English fallback text for the rows above. Plain language on purpose: the
 #: failure is an upstream model-backend 5xx the gateway is already retrying
 #: against, and neither "backend" nor "hiccup" tells a reader that.
 TRANSIENT_RETRYING_TEXT = "⟳ Connection unstable — retrying…"
+TRANSIENT_THROTTLE_RETRYING_TEXT = "⟳ The model provider is throttling requests — retrying…"
 TRANSIENT_RESUMING_TEXT = "⟳ Connection unstable — resuming…"
+TRANSIENT_THROTTLE_RESUMING_TEXT = "⟳ The model provider is throttling requests — resuming…"
 TRANSIENT_GIVE_UP_TEXT = "⟳ Connection unstable — please try again."
+TRANSIENT_THROTTLE_GIVE_UP_TEXT = "⟳ The model provider is throttling requests — please try again."
 
 
 # Per-turn compaction-failure backoff. See
@@ -164,6 +173,8 @@ def _build_stream_chunk(msg: dict) -> str:
     except Exception:
         logger.warning("Failed to parse cls meta for permission message", exc_info=True)
         meta = None
+    if meta is not None:
+        meta = _carry_row_mid(meta, msg)
     if meta:
         meta = _redact_deep(meta)
     # One shared guard for content: redact recursively and hold the
@@ -661,6 +672,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _clear_display_redaction_cache,
         _collapse_wire_rows,
         _cut_preview,
+        _display_cache_epoch,
         _display_clean_add,
         _display_clean_old,
         _display_clean_seen,
@@ -681,6 +693,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _DisplayRedactionKey,
         _expire_dead_child_oauth_meta,
         _live_child_instance,
+        _oauth_banner_row_key,
+        _open_oauth_banner_rows,
         _prepare_messages,
         _prepare_messages_scoped,
         _redact_for_display,
@@ -695,6 +709,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _same_preview_context,
         _variant_for_emit,
         adopt_variant_text,
+        display_redaction_stamp,
         drop_records_without_placeholders,
         serialize_wire_content,
         variant_from_row,
@@ -723,11 +738,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         CRON_NOTIFICATION_KIND,
         EMPTY_TURN_NOTICE_KIND,
         FALSE_TOOL_BLOCKER_REPLAY_KIND,
+        GATEWAY_PROMPT_INJECT_KINDS,
+        HEARTBEAT_PROMPT_KIND,
         IMAGE_REPAIR_KIND,
         KIRO_CLI_MISSING_KIND,
         MCP_APP_MESSAGE_KIND,
+        MCP_SIGN_IN_UNSUPPORTED_NOTICE_KIND,
         MODEL_UNAVAILABLE_KIND,
         MODEL_UNENTITLED_KIND,
+        REQUEUED_STEER_ROW_MID_META,
         SEED_DECLINED_NOTICE_KIND,
         SESSION_START_FAILED_KIND,
         SPEC_HOOKS_NOTICE_KIND,
@@ -744,7 +763,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _dequeue_next_message,
         _dequeue_next_system_message,
         _edit_queued_by_id,
+        _queued_row_id,
         _remove_queued_by_id,
+        _reorder_queued_rows,
         _stamped_turn_actor,
         app_inject_row,
         carries_attachments,
@@ -776,11 +797,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         slack_options_slot,
     )
     from kiro_crew.dashboard.chat_utils_slots import (  # noqa: F401
+        _CRON_SLOT_PREFIX,
         _INCOGNITO_PREFIX,
+        _JOB_ID_HEX,
         _PUBLISHED_SLOT_KEYS_LOCK,
         _TEMPORARY_PREFIX,
         ReplacementTightening,
         _apply_incognito_prefix,
+        _cron_job_id,
         _history_key_for,
         _installed_theme_persona,
         _maybe_consolidate,
@@ -791,6 +815,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _resettle_restricted_key,
         _sync_dashboard_slots,
         apply_pending_slot_memory_mode,
+        crew_log_slots_for,
         cron_tab_name,
         dashboard_slot_key,
         effective_session_key,
@@ -907,6 +932,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         transcript_lock_stems,
         transcript_sort_key,
         transcript_stems,
+    )
+    from kiro_crew.history_files import (  # noqa: F401
+        transcript_stem,
     )
     from kiro_crew.hooks import (  # noqa: F401
         _HOST_READ_ONLY_BUILTIN_TOOLS,

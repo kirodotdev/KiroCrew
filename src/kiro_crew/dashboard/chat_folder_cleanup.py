@@ -66,7 +66,7 @@ from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.mate_folders import mate_home_subtree_ids
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import MEMBER_CHAT_PRINCIPAL_KEY
-from kiro_crew.executors import subprocess_executor
+from kiro_crew.executors import discovery_executor
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -456,7 +456,7 @@ async def api_chat_folders_cleanup(request: web.Request) -> web.Response:
         # The archive scan is a synchronous walk of the session store; keep it
         # off the loop like the folder list read does.
         loop = asyncio.get_running_loop()
-        history = await loop.run_in_executor(subprocess_executor(), _folder_history_counts, state)
+        history = await loop.run_in_executor(discovery_executor(), _folder_history_counts, state)
         # Read committed folder state under the store lock: an unlocked read
         # could see a mutation whose write is about to be rolled back.
         # A root preview shows the tree once its sessions are closed.

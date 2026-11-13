@@ -9,6 +9,7 @@ import and patch; this module never imports it."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -61,12 +62,59 @@ def _advertised_evidence_provider(
         if not callable(getter):
             continue
         try:
-            ids = advertised_model_ids(getter())
+            ids = advertised_model_ids(getter()) or _kas_select_ids(request, pb)
         except Exception:
             continue
         if ids:
             return provider, ids
     return None
+
+
+#: Request key for the vault identity a pin save read off the loop
+#: (:func:`_read_kas_vault_identity`) before the synchronous validator runs.
+_KAS_VAULT_IDENTITY_KEY = "kirocrew.kas_vault_identity"
+
+
+def _kas_select_ids(request: web.Request, backend: str | None) -> list[str]:
+    """The ids the signed-in account's KAS ``model`` select lists, for judging a saved pin.
+
+    KAS sends no ``models`` object, so ``available_models()`` is empty on a KAS
+    session. Its served list is the ``model`` select, which every KAS session
+    records as the account's catalog (``agent_sdk/kas_model_catalog.py``); an id
+    outside it fails each prompt with ``InvalidModelError``. Read through
+    ``recorded_catalog_snapshot`` with the vault identity this request read, so a
+    select recorded for another account is no evidence, as on the bundle picker.
+    ``[]`` (unknown) when the request read no identity. Read here only to refuse a
+    SAVE; the session's own advertised list and the picker do not change.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+    from kiro_crew.agent_sdk.kas_model_catalog import recorded_catalog_snapshot
+
+    if backend == ACP_BACKEND_KAS:
+        try:
+            identity = request.get(_KAS_VAULT_IDENTITY_KEY, "")
+        except AttributeError:
+            identity = ""
+        rows = recorded_catalog_snapshot(identity) if isinstance(identity, str) else None
+        return [row["model_id"] for row in rows or []]
+    return []
+
+
+async def _read_kas_vault_identity(request: web.Request) -> None:
+    """Record on *request* which account the vault names, when a live KAS session exists.
+
+    The vault read is blocking, and the validator that uses it runs synchronously,
+    so the awaited revalidation step reads it here, off the loop, once per request.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+    from kiro_crew.agent_sdk.kas_model_catalog import vault_identity
+
+    try:
+        providers = list(request.app["state"].sessions.active_providers())
+    except (KeyError, AttributeError):
+        return
+    if any(_provider_backend(p) == ACP_BACKEND_KAS for p in providers):
+        request[_KAS_VAULT_IDENTITY_KEY] = await asyncio.to_thread(vault_identity)
 
 
 def _active_advertised_ids(request: web.Request, *, backend: str | None = None) -> list[str] | None:
@@ -125,6 +173,8 @@ async def _revalidate_role_pin_evidence(
     if not value or value == "auto":
         return None
     from kiro_crew.agent_sdk.drivers.acp import EntitlementRevalidating
+
+    await _read_kas_vault_identity(request)
 
     # Reselect the newest evidence provider after each refresh: a newer
     # startup-race session can register DURING the await, and the validator that

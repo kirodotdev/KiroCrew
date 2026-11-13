@@ -15,7 +15,8 @@ import time
 
 from aiohttp import web
 
-from kiro_crew.dashboard.handlers.updates_apply import _restart_gateway
+from kiro_crew import __version__ as _running_version
+from kiro_crew import update_next_start, update_restart_ready
 from kiro_crew.dashboard.handlers.updates_check import _do_update_check
 from kiro_crew.dashboard.handlers.updates_verdict import (
     _display_local_version,
@@ -423,6 +424,13 @@ async def api_update_arm_status(request: web.Request) -> web.Response:
     requests = get_app_update_requests()
     req = await asyncio.to_thread(requests.current)
     if req is None:
+        next_start = await asyncio.to_thread(update_next_start.read)
+        if next_start.armed:
+            # An approval that armed the next start consumed its request; say so
+            # rather than reading as an expired one.
+            return web.json_response(
+                {"armed": False, "next_start_armed": True, "version": next_start.armed_version}
+            )
         return web.json_response({"armed": False})
     # Policy is re-checked at PUBLISH, not only at arm. The record lives in a
     # file an agent can write, so a request that would have been refused at arm
@@ -488,8 +496,9 @@ async def api_update_approve(request: web.Request) -> web.Response:
     nonce from the data home. On success the apply runs as a background task
     through :func:`kiro_crew.platform.wheel_apply.run_wheel_apply`, the path the
     gateway's unattended apply runs too: shadow build + verify + promote (all
-    off-loop), then the shared gateway restart, with progress on the same SSE
-    feed the git apply uses. A shutdown or an exec restart stops it first.
+    off-loop), then STAGES the promoted tree ("update ready, restart to use it"):
+    it never restarts the gateway. Progress goes on the update SSE feed. A
+    shutdown or an exec restart stops it first.
     """
     if not _loopback_peer(request):
         return web.json_response(
@@ -514,7 +523,6 @@ async def api_update_approve(request: web.Request) -> web.Response:
         check_release_version,
         hold_update_lock,
         release_update_lock,
-        respawn_executable,
     )
 
     # A policy-defined command provider OWNS updates on this host, and its
@@ -662,6 +670,39 @@ async def api_update_approve(request: web.Request) -> web.Response:
             )
         )
 
+    if await asyncio.to_thread(wheel_apply.relaunch_before_apply):
+        # This gateway loads its code through the stable link: promoting under it
+        # would mix the new version's modules into a process that keeps serving,
+        # and a clicked update never restarts one. The approval arms the update
+        # instead, and the boot-time apply promotes before the listeners bind.
+        if _is_newer(pending.version, _running_version) is not True:
+            # The boot-time `kirocrew update` installs the newest release and
+            # finds nothing newer than this one, so an arm for a channel move or
+            # a downgrade would be cleared as applied. Say so rather than arm it.
+            error = (
+                "this gateway runs from the stable link; restart the gateway, "
+                "then approve the update again"
+            )
+            await _audit("denied", error=error, resources=f"v{pending.version}")
+            return await _refuse(
+                web.json_response({"error": error, "code": "restart_first"}, status=409)
+            )
+        await asyncio.to_thread(update_next_start.arm, pending.version)
+        await _audit("success", resources=f"v{pending.version} armed for the next start")
+        # The terminal frame the approval consumers render: the panel shows it as
+        # staged, and the CLI prints it, instead of waiting on an install that
+        # will not start in this process.
+        state.push_update_progress(
+            "done", f"v{pending.version} is armed. It installs at the next start."
+        )
+        state.push_refresh("update_available")
+        return await _refuse(
+            web.json_response(
+                {"ok": True, "status": "armed", "armed": True, "version": pending.version},
+                status=202,
+            )
+        )
+
     # Asked before the promotion moves the launcher it compares against.
     reattach = await asyncio.to_thread(wheel_apply.userns_reattach_needed, pending.version)
 
@@ -691,8 +732,17 @@ async def api_update_approve(request: web.Request) -> web.Response:
                 state.push_update_progress("failed", remedy)
                 state.push_refresh("update_failed")
                 return
-            logger.info("In-app wheel update to v%s promoted; restarting", pending.version)
-            await _restart_gateway(state, resolver=respawn_executable)
+            # Promoted and approved by a person on the host, and STAGED only: a
+            # running gateway is never restarted for an update (decision entry
+            # "updates never restart a running gateway"). The new version starts at
+            # the next stop or restart a person chooses.
+            logger.info(
+                "In-app wheel update to v%s promoted; it starts at the next restart",
+                pending.version,
+            )
+            update_restart_ready.mark(update_restart_ready.REASON_STAGED, version=pending.version)
+            state.push_update_progress("done", f"v{pending.version} installed. Restart to use it.")
+            state.push_refresh("update_available")
             return
         if outcome.status == "cancelled":
             # A deliberate stop (a shutdown, an exec), not a failed install: no

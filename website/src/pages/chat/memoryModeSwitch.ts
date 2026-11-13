@@ -82,6 +82,7 @@ export async function runMemorySwitch(
     color_index: old?.color_index ?? null,
     color_hex: old?.color_hex ?? null,
     project: old?.project ?? null,
+    projectFromSlot: from,
   }
   // Created in the background so the unsent draft can move to the new slot
   // BEFORE it activates: the slot-change effect restores the incoming slot's

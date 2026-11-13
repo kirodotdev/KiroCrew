@@ -2,8 +2,9 @@
 
 Pins that a bridged answer resolves the live decision future once, only for the
 verified owner, only with an offered choice and only before its deadline; that a
-forged, stale or post-restart token resolves nothing; and that the module is
-reachable from no transport.
+forged, stale or post-restart token resolves nothing; that only the approval note
+and the Slack sink and press handler reach it; and that it follows the
+``bridge_approvals`` preview, failing closed.
 """
 
 from __future__ import annotations
@@ -262,8 +263,12 @@ async def test_a_restart_leaves_no_decision_to_resolve(clock):
 
 
 @pytest.mark.asyncio
-async def test_a_posted_message_names_its_decision_until_the_binding_is_gone(registry, clock):
-    decision = asyncio.get_running_loop().create_future()
+async def test_a_posted_message_names_its_decision_while_the_registry_remembers_it(
+    registry, clock, monkeypatch
+):
+    monkeypatch.setattr(actions_mod, "EXPIRED_MEMORY", 1)
+    loop = asyncio.get_running_loop()
+    decision = loop.create_future()
     token = registry.bind(
         "dashboard:s1", 7, decision, choices=_CHOICES, **_DEADLINE
     )  # flake-ok: a deadline on the fake clock, nothing waits
@@ -271,13 +276,14 @@ async def test_a_posted_message_names_its_decision_until_the_binding_is_gone(reg
     assert registry.token_for_message("slack", "D1:1700000000.0001") == token
     assert registry.token_for_message("discord", "D1:1700000000.0001") == ""
     clock.now += _TTL_S + 1
-    registry.bind(
-        "dashboard:s1",
-        8,
-        asyncio.get_running_loop().create_future(),
-        choices=_CHOICES,
-        **_DEADLINE,
-    )
+    # Pruned past its deadline, the link still names the decision, so a late reply
+    # is resolved and audited as expired rather than read as an ordinary message.
+    registry.bind("dashboard:s1", 8, loop.create_future(), choices=_CHOICES, **_DEADLINE)
+    assert registry.token_for_message("slack", "D1:1700000000.0001") == token
+    assert registry.resolve(token, "approve", from_owner=True) is ActionOutcome.EXPIRED
+    # Once the registry forgets the expired binding, the link goes with it.
+    clock.now += _TTL_S + 1
+    registry.bind("dashboard:s1", 9, loop.create_future(), choices=_CHOICES, **_DEADLINE)
     assert registry.token_for_message("slack", "D1:1700000000.0001") == ""
 
 
@@ -292,29 +298,78 @@ async def test_bind_refuses_no_choices_and_a_resolved_decision(registry):
         registry.bind("dashboard:s1", 7, done, choices=_CHOICES, **_DEADLINE)
 
 
-#: The B4 modules, which may import each other; nothing else may import them yet.
-_B4_MODULES = frozenset({"bridge_actions.py", "bridge_action_audit.py"})
+#: The modules that may reach the B4 registry: its own two, the gateway state that
+#: holds it, the pending-approval note that binds it, the Slack and reply-transport
+#: sinks that post and link its affordances, and the Slack press handler and the
+#: shared reply reader every reply transport hands to (behind ``actions_enabled``).
+_B4_READERS = frozenset(
+    {
+        "notifications/bridge_actions.py",
+        "notifications/bridge_action_audit.py",
+        "notifications/bridge_approval_note.py",
+        "notifications/bridge_reply.py",
+        "notifications/bridge_slack.py",
+        "notifications/bridge_transport.py",
+        "dashboard/state_parts/dashboard_state.py",
+        "slack/interactions.py",
+        "slack/interactions_approvals.py",
+    }
+)
 _B4_NAMES = ("bridge_actions", "bridge_action_audit")
 
 
-def test_no_transport_or_gateway_module_reaches_the_binding():
-    """B4 is inert: only its own modules import it until a later phase wires a reader."""
+def test_only_the_approval_note_slack_and_telegram_reach_the_registry():
+    """Nothing else imports B4, and nothing outside its readers binds a decision."""
     from pathlib import Path
 
     import kiro_crew
 
     root = Path(inspect.getfile(kiro_crew)).parent
     importers = []
+    binders = []
     for path in root.rglob("*.py"):
-        if path.name in _B4_MODULES:
+        rel = path.relative_to(root).as_posix()
+        if rel in _B4_READERS:
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
+        source = path.read_text(encoding="utf-8")
+        if "bridge_actions.bind(" in source or ".link_message(" in source:
+            binders.append(rel)
+        for node in ast.walk(ast.parse(source)):
             if not isinstance(node, (ast.Import, ast.ImportFrom)):
                 continue
             module = getattr(node, "module", None) or ""
             names = [alias.name for alias in node.names]
             if any(m in module or any(m in n for n in names) for m in _B4_NAMES):
-                importers.append(str(path.relative_to(root)))
+                importers.append(rel)
     assert importers == []
+    assert binders == []
     assert actions_mod.BridgeActionRegistry is BridgeActionRegistry
+
+
+def _cfg(previews):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(dashboard=SimpleNamespace(feature_previews=previews))
+
+
+@pytest.mark.parametrize(
+    ("previews", "expected"),
+    [
+        ({}, False),
+        ({"bridge_approvals": False}, False),
+        ({"bridge_approvals": "yes"}, False),
+        ({"bridge_approvals": True}, True),
+    ],
+)
+def test_actions_follow_the_bridge_approvals_preview(previews, expected):
+    assert actions_mod.actions_enabled(_cfg(previews)) is expected
+
+
+def test_actions_fail_closed_when_the_preview_cannot_be_read(monkeypatch):
+    from kiro_crew.notifications import bridge_approval_note
+
+    def _boom(cfg):
+        raise RuntimeError("unreadable")
+
+    monkeypatch.setattr(bridge_approval_note, "enabled", _boom)
+    assert actions_mod.actions_enabled(_cfg({"bridge_approvals": True})) is False

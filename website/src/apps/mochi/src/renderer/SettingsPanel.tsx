@@ -47,7 +47,7 @@ import { api } from '../mochiApi'
 import { i18nT } from '../../../../i18n/t'
 import ErrorNotice from '../../../../components/ErrorNotice'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../../../components/ui/tabs'
-import { capabilitiesVars } from '../../../../components/destinationVars'
+import { mcpServersVars } from '../../../../components/destinationVars'
 import { SUPPORTED_LANGUAGES } from '../../../../i18n/languages'
 import { moodLabel } from '../../i18nKeys'
 import { fmtNumber, fmtPercent } from '../../../../i18n/format'
@@ -853,9 +853,9 @@ const MCP_ERROR_KEY_FALLBACK = 'apps.mochi.settingsPanel.mcp_error_generic'
 function mcpErrorText(code: string): string {
   const key =
     (MCP_ERROR_KEYS as Record<string, string>)[code] ?? MCP_ERROR_KEY_FALLBACK
-  // The disabled / probe-failed sentences name the Connections tab; the vars
+  // The disabled / probe-failed sentences name the MCP Servers page; the vars
   // are harmless for the keys that do not interpolate them.
-  return i18nT(key, capabilitiesVars('connections'))
+  return i18nT(key, mcpServersVars())
 }
 
 function moodColor(mood: string): string {
@@ -1084,7 +1084,7 @@ export const McpSection: React.FC<{
         <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
           {loading
             ? i18nT('apps.mochi.settingsPanel.mcp_loading')
-            : i18nT('apps.mochi.settingsPanel.mcp_empty', capabilitiesVars('connections'))}
+            : i18nT('apps.mochi.settingsPanel.mcp_empty', mcpServersVars())}
         </div>
       </Section>
     )

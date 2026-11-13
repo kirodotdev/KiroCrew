@@ -43,6 +43,7 @@ import type { ChatMessage, ChatSlot } from '../../../types'
 import { capsRetryInterval, closeCrewWindow, crewVersionMismatchText, markCrewWindowShown, readCrewDraft, subscribeCrewDraft, writeCrewDraft, type CrewWindowTarget } from './crewWindowStore'
 import { coverSiblings } from '../../../utils/coverSiblings'
 import { createCrewWindowRenderers, crewWindowSlot } from './crewWindowRenderers'
+import { authRequiredIsNewest } from '../transcriptRenderers'
 import { useCrewWindowModelPicker, type PeerModelFields } from './crewWindowModelPicker'
 import { useCrewWindowAgentMode, type PeerAgentModeFields } from './crewWindowAgentMode'
 import { mergeRecoveredDraft } from '../../../utils/chatDrafts'
@@ -51,6 +52,7 @@ import { isHiddenInvisibleAssistantRow, isRetractedSteerRow } from '../../../uti
 import { isSystemNoticeRow } from '../CompactionCard'
 import { useMessageQuote } from '../../../chat-core/composer/useMessageQuote'
 import type { MessageQuote } from '../../../chat-core/composer/messageQuote'
+import { clearDictated, isDictated, markDictated, noteComposerEdit, takeDictated, wantsDictationNote, withDictationNote } from '../../../chat-core/composer/dictationProvenance'
 import { loadChatConfig } from '../ChatSettings'
 
 interface PeerApproval { origin?: string; request_id?: string; request_mid?: string }
@@ -191,6 +193,10 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
   // Quote, as in the local chat: a staged whole message rides the next send
   // as its block plus `meta.quote`. Text only, so it works on the peer.
   const messageQuote = useMessageQuote({ slot: crewWindowSlot(instanceId, key) })
+  // The two editors' voice keys, as the Composer below names them, so the
+  // dictation record (`dictationProvenance`) follows the box it was spoken into.
+  const draftVoiceKey = crewWindowSlot(instanceId, key)
+  const rewindVoiceKey = draftVoiceKey + ':rewind'
   // A rewind's edit is held beside the draft, never in it, so the session's
   // own unsent text survives a close or a rejected rewind untouched.
   const [rewindText, setRewindText] = useState('')
@@ -222,7 +228,10 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     void queryClient.invalidateQueries({ queryKey: detailKeyQ })
   }, [queryClient, slotKeyQ, detailKeyQ])
   const action = useMutation({
-    mutationFn: ({ path, body }: { path: string; body?: object; message?: string; rewindTs?: string | null; typed?: string; quote?: MessageQuote | null }) =>
+    // `bare` is `message` before the dictation note went on, and `dictated` the
+    // composer provenance the send took; a refusal restores the one and puts
+    // the other back.
+    mutationFn: ({ path, body }: { path: string; body?: object; message?: string; rewindTs?: string | null; typed?: string; quote?: MessageQuote | null; bare?: string; dictated?: boolean }) =>
       api.crewPeerPost(instanceId, path, body),
     onSettled: settle,
     // Mutation-level, not per-call: it still runs when the window closed or
@@ -235,16 +244,21 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
       // row's text.
       // Only an open window can hold the rewind; after close the edit goes
       // to the saved draft below instead of into unmounted state.
+      const handBack = vars.bare ?? vars.message
       if (vars.rewindTs && mounted.current && !heldRewind.current.ts) {
-        heldRewind.current = { ts: vars.rewindTs, text: vars.message }
+        heldRewind.current = { ts: vars.rewindTs, text: handBack }
+        if (vars.dictated) markDictated(rewindVoiceKey)
         setRewindTs(vars.rewindTs)
-        setRewindText(vars.message)
+        setRewindText(handBack)
         return
       }
       // A refused quoted send puts the quote back on the stage (or, when a
       // newer one is staged, its block into the draft), never a raw block alone.
-      const text = vars.quote ? messageQuote.recoverInto(vars.typed ?? '', vars.quote, mounted.current) : vars.message
-      if (text.trim()) recoverIntoDraft(text)
+      const text = vars.quote ? messageQuote.recoverInto(vars.typed ?? '', vars.quote, mounted.current) : handBack
+      if (text.trim()) {
+        if (vars.dictated) markDictated(draftVoiceKey)
+        recoverIntoDraft(text)
+      }
     },
   })
   const composerRef = useRef<ComposerHandle>(null)
@@ -258,7 +272,12 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     // A send ends live streaming dictation before the box is cleared, or the
     // next partial rebuilds the sent text (see useComposerVoice.disarmForSend).
     composerRef.current?.voice()?.disarmForSend()
-    const { quote, text: message } = rewindTs ? { quote: null, text: typed } : messageQuote.consume(typed)
+    const { quote, text: bare } = rewindTs ? { quote: null, text: typed } : messageQuote.consume(typed)
+    // The dictation note, decided by THIS machine's setting, as the dictation
+    // itself is. `bare` is what a refusal hands back, so the note is never
+    // left in the box as text the user did not write.
+    const dictated = takeDictated(rewindTs ? rewindVoiceKey : draftVoiceKey)
+    const message = wantsDictationNote(dictated, bare) ? withDictationNote(bare) : bare
     const req = rewindTs
       ? { path: slotPath + '/rewind', body: { ts: rewindTs, content: message } }
       : { path: 'api/chat?ws=1', body: { message, slot: key, ...(steer ? { steer: true } : {}), ...(quote ? { meta: { quote } } : {}) } }
@@ -267,7 +286,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     if (rewindTs) setRewindText('')
     else setDraft('')
     setRewindTs(null)
-    action.mutate({ ...req, message, rewindTs, typed, quote })
+    action.mutate({ ...req, message, rewindTs, typed, quote, bare, dictated })
   }
   // Dictation runs on THIS machine (mic + STT); only the text goes to the
   // peer, through the same send as a typed message. An auto-submit (endpoint
@@ -275,6 +294,10 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
   // busy-send choice. It reads the latest `send` and run state through a ref.
   const autoSubmitRef = useRef<() => void>(() => {})
   const voiceOptions = useMemo<ComposerVoiceOptions>(() => ({ onAutoSubmit: () => autoSubmitRef.current() }), [])
+  // Each box's edits: an emptied box holds no dictated words, so its next
+  // message starts unmarked.
+  const editDraft = useCallback((value: string) => { noteComposerEdit(draftVoiceKey, value); setDraft(value) }, [draftVoiceKey, setDraft])
+  const editRewind = useCallback((value: string) => { noteComposerEdit(rewindVoiceKey, value); setRewindText(value) }, [rewindVoiceKey])
 
   const running = slotQ.data?.running ?? detailQ.data?.running ?? false
   // When the crew cannot be reached, its last-known running state is stale:
@@ -305,6 +328,9 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     const mid = typeof m.meta?.mid === 'string' ? m.meta.mid : ''
     return { ...m, meta: { ...m.meta, approval_id: JSON.stringify([aid, mid]) } }
   }), [detailQ.data?.messages])
+  // A sign-in error keeps Resume; the composer's hint names the sign-in first.
+  // Memoised: the window re-renders per keystroke.
+  const resumeAfterSignIn = useMemo(() => authRequiredIsNewest(messages), [messages])
   // Sends the peer holds behind its running turn, from the same slot detail,
   // through the hydration and split the local panes use (a sub-agent delivery
   // shows as the progress line, not a user card). Read-only: cancel and edit
@@ -377,8 +403,14 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
       if (!gate.connected || gate.running || gate.actionPending) return false
       // A refused edit this one replaces is kept in the ordinary draft.
       const held = heldRewind.current
-      if (held.ts && held.text.trim()) recoverIntoDraft(held.text)
+      // Its dictation record moves with it: a refused dictated rewind is still
+      // dictated once it lands in the draft.
+      if (held.ts && held.text.trim()) {
+        if (isDictated(crewWindowSlot(instanceId, key) + ':rewind')) markDictated(crewWindowSlot(instanceId, key))
+        recoverIntoDraft(held.text)
+      }
       heldRewind.current = { ts: null, text: '' }
+      clearDictated(crewWindowSlot(instanceId, key) + ':rewind')
       setRewindTs(null)
       setRewindText('')
       mutate({ path: slotPath + '/rewind', body: { ts, content: message }, message, rewindTs: ts })
@@ -412,7 +444,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     [!!rewindTs, (
       <div key="rewind" className="flex items-center gap-2 text-muted">
         {i18nT('pages.chat.crewWindow.rewinding')}
-        <Btn onClick={() => { setRewindTs(null); setRewindText('') }}>{i18nT('pages.chat.crewWindow.cancel_rewind')}</Btn>
+        <Btn onClick={() => { clearDictated(rewindVoiceKey); setRewindTs(null); setRewindText('') }}>{i18nT('pages.chat.crewWindow.cancel_rewind')}</Btn>
       </div>
     )],
   ]
@@ -574,14 +606,14 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
             dictation instead of writing its words into this one. */}
         <Composer
           ref={composerRef}
-          slotKey={crewWindowSlot(instanceId, key) + (rewindTs ? ':rewind' : '')}
+          slotKey={rewindTs ? rewindVoiceKey : draftVoiceKey}
           value={rewindTs ? rewindText : draft}
-          onChange={rewindTs ? setRewindText : setDraft}
+          onChange={rewindTs ? editRewind : editDraft}
           voice={voiceOptions}
         >
           <ChatInput
             value={rewindTs ? rewindText : draft}
-            onChange={rewindTs ? setRewindText : setDraft}
+            onChange={rewindTs ? editRewind : editDraft}
             onSend={() => send()}
             onStop={() => action.mutate({ path: slotPath + '/stop' })}
             isRunning={running}
@@ -594,6 +626,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
             compacting={!!slotQ.data?.compacting}
             continuable={continuable}
             continueIsRecovery
+            resumeAfterSignIn={resumeAfterSignIn}
             continuing={continuing}
             onContinue={() => { if (continuable && !action.isPending) action.mutate({ path: slotPath + '/continue' }) }}
             contextPct={detailQ.data?.context_pct}

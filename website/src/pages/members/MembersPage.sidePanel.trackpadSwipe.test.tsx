@@ -283,7 +283,7 @@ vi.mock('react-router-dom', async (importOriginal) => {
 })
 
 import { resetDashboardOnLoad } from './dashboardOnLoad'
-import { swipeTiming, SWIPE_GESTURE_IDLE_MS } from '../../hooks/useTrackpadSwipe'
+import { swipeTiming, SWIPE_GESTURE_IDLE_MS, SWIPE_THRESHOLD_PX } from '../../hooks/useTrackpadSwipe'
 import { MotionGlobalConfig, frame, frameData } from 'framer-motion'
 /** The event time `swipe()` stamps on every event (see there). */
 const SWIPE_AT = 1
@@ -375,7 +375,9 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       localStorage.setItem(PANEL_OPEN_KEY, '0')
       const chat = await openOncall()
       expect(screen.queryByTestId('member-side-panel')).toBeNull()
-      // Fingers moving left: a trackpad reports a positive deltaX.
+      // Fingers moving left: a trackpad reports a positive deltaX. The first
+      // 80px take the run past the start distance.
+      swipe(chat, 20, 4)
       expect(swipe(chat, 20, 5)).toBe(5)
       // Mid-drag: the sheet is out, and sits as far in as the fingers took it.
       expect(sliding()).toBe(true)
@@ -401,6 +403,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       localStorage.setItem(PANEL_OPEN_KEY, '0')
       const chat = await openOncall()
       expect(spacerW()).toBeNull()
+      swipe(chat, 20, 4)
       swipe(chat, 20, 5)
       await waitFor(() => expect(spacerW()).toBeCloseTo(100, 0))
       swipe(chat, 20, 5)
@@ -448,7 +451,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       let t = performance.now()
       // 400px in, slowly (no speed commit), then the fingers lift: past the
       // share, so it settles open.
-      wheelSeq(chat, steps(20, 20, t, 80))
+      wheelSeq(chat, [...leadIn(20, t, 80), ...steps(20, 20, t, 80)])
       t += 20 * 80
       await paint()
       lift()
@@ -556,6 +559,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     it('a short leftward run lets the panel fall back out', async () => {
       localStorage.setItem(PANEL_OPEN_KEY, '0')
       const chat = await openOncall()
+      swipe(chat, 4, 20)
       swipe(chat, 4, 3)
       expect(sliding()).toBe(true)
       await waitFor(() => expect(screen.queryByTestId('member-side-panel')).toBeNull(), { timeout: 3000 })
@@ -618,6 +622,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       window.getSelection()?.removeAllRanges()
       window.getSelection()?.addRange(range)
       expect(window.getSelection()?.isCollapsed).toBe(false)
+      swipe(chat, 20, 4)
       swipe(chat, 20, 5)
       expect(sliding()).toBe(true)
       await waitFor(() => expect(slideX()).toBeCloseTo(window.innerWidth - 100, 0))
@@ -654,6 +659,16 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     /** `n` steps of `dx`, `gap` ms apart, from `t0`. */
     const steps = (dx: number, n: number, t0: number, gap = 16): Array<[number, number]> =>
       Array.from({ length: n }, (_, i) => [dx, t0 + i * gap])
+    /** A hidden panel moves only once a leftward run has gone
+     *  SWIPE_THRESHOLD_PX: exactly that far in steps of `dx` (the first takes
+     *  the remainder), ending just before `t0`, so the steps from `t0` move it
+     *  from its closed edge. */
+    const leadIn = (dx: number, t0: number, gap = 16) => {
+      const n = Math.ceil(SWIPE_THRESHOLD_PX / dx)
+      const lead = steps(dx, n, t0 - n * gap, gap)
+      lead[0][0] = SWIPE_THRESHOLD_PX - (n - 1) * dx
+      return lead
+    }
     /** A trackpad momentum tail: `n` steps decaying by `ratio`, 16ms apart. */
     const tailSteps = (dx: number, n: number, t0: number, ratio = 0.85): Array<[number, number]> =>
       Array.from({ length: n }, (_, i) => [dx * ratio ** (i + 1), t0 + (i + 1) * 16])
@@ -673,11 +688,12 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       })
     }
 
-    it('rule C: a fast drag commits before any lift-off and settles open within 150ms', async () => {
+    it('rule C: a fast drag past the start distance commits before any lift-off and settles open within 150ms', async () => {
       localStorage.setItem(PANEL_OPEN_KEY, '0')
       const chat = await openOncall()
       const paint = manualClocks()
-      wheelSeq(chat, steps(10, 4, performance.now()))
+      const t0 = performance.now()
+      wheelSeq(chat, [...leadIn(10, t0), ...steps(10, 4, t0)])
       let frames = 0
       while (sliding() && frames < 60) { await paint(1000 / 60); frames += 1 }
       expect(frames).toBeLessThanOrEqual(10)
@@ -689,7 +705,9 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       const chat = await openOncall()
       const paint = manualClocks()
       const t0 = performance.now()
+      // A slow lead-in, so the fast open commits with the panel partly in.
       wheelSeq(chat, [
+        ...leadIn(10, t0, 80),
         ...steps(10, 4, t0),
         ...tailSteps(10, 4, t0 + 3 * 16),
         ...steps(-10, 4, t0 + 8 * 16),
@@ -710,6 +728,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       const tail = tailSteps(10, 4, t0 + 3 * 16)
       const last = tail[tail.length - 1][1]
       wheelSeq(chat, [
+        ...leadIn(10, t0),
         ...steps(10, 4, t0),
         ...tail,
         [7, last + 60], [10, last + 120], [14, last + 180],
@@ -729,7 +748,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       const paint = manualClocks()
       const t0 = performance.now()
       const n = Math.round((travel * 0.3) / 3)
-      wheelSeq(chat, steps(3, n, t0))
+      wheelSeq(chat, [...leadIn(3, t0), ...steps(3, n, t0)])
       await paint()
       expect(sliding()).toBe(true)
       expect(slideX()).toBeCloseTo(travel - 3 * n, 0)
@@ -765,7 +784,8 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
         await new Promise<void>((resolve) => { frame.postRender(() => resolve()) })
       })
       const n = Math.round((travel * 0.3) / 3)
-      wheelSeq(chat, steps(3, n, performance.now()))
+      const t0 = performance.now()
+      wheelSeq(chat, [...leadIn(3, t0), ...steps(3, n, t0)])
       await paint()
       act(() => {
         vi.advanceTimersByTime(swipeTiming.idleMs)
@@ -785,7 +805,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       const travel = window.innerWidth
       const n = Math.round((travel * 0.15) / 3)
       const t0 = performance.now()
-      wheelSeq(chat, steps(3, n, t0))
+      wheelSeq(chat, [...leadIn(3, t0), ...steps(3, n, t0)])
       // It follows the fingers 1:1 and holds there.
       await waitFor(() => expect(slideX()).toBeCloseTo(travel - 3 * n, 0))
       expect(spacerW()).toBeCloseTo(3 * n, 0)
@@ -799,23 +819,47 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       const chat = await openOncall()
       const travel = window.innerWidth
       const t0 = performance.now()
-      wheelSeq(chat, steps(3, 20, t0))
+      wheelSeq(chat, [...leadIn(3, t0), ...steps(3, 20, t0)])
       await waitFor(() => expect(slideX()).toBeCloseTo(travel - 60, 0))
       wheelSeq(chat, steps(3, 20, t0 + 19 * 16 + 60))
       expect(sliding()).toBe(true)
       await waitFor(() => expect(slideX()).toBeCloseTo(travel - 120, 0))
     })
 
-    it('a fast 10% flick with a momentum tail opens the panel', async () => {
+    it('a fast 10% flick past the start distance, with a momentum tail, opens the panel', async () => {
       localStorage.setItem(PANEL_OPEN_KEY, '0')
       const chat = await openOncall()
       const travel = window.innerWidth
       const per = Math.round((travel * 0.1) / 4)
       const t0 = performance.now()
-      wheelSeq(chat, [...steps(per, 4, t0), ...tailSteps(per, 12, t0 + 3 * 16)])
+      wheelSeq(chat, [...leadIn(per, t0), ...steps(per, 4, t0), ...tailSteps(per, 12, t0 + 3 * 16)])
       await waitFor(() => expect(sliding()).toBe(false), { timeout: 3000 })
       expect(screen.getByTestId('member-side-panel')).toHaveAttribute('data-placement', 'docked')
       expect(localStorage.getItem(PANEL_OPEN_KEY)).toBe('1')
+    })
+
+    it('a quick flick that only just passes the start distance opens the hidden panel: its speed before 80px counts', async () => {
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      const chat = await openOncall()
+      const t0 = performance.now()
+      // About 2px/ms, crossing 80px on its last step (90px), then momentum.
+      wheelSeq(chat, [[5, t0], [15, t0 + 16], [30, t0 + 32], [40, t0 + 48], ...tailSteps(40, 12, t0 + 48)])
+      expect(sliding()).toBe(true)
+      await waitFor(() => expect(sliding()).toBe(false), { timeout: 3000 })
+      expect(screen.getByTestId('member-side-panel')).toHaveAttribute('data-placement', 'docked')
+      expect(localStorage.getItem(PANEL_OPEN_KEY)).toBe('1')
+    })
+
+    it("a mouse thumb wheel's stray creep never slides the hidden panel out", async () => {
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      const chat = await openOncall()
+      // The reporter's capture: 1-2px leftward steps, about 28px in all.
+      const creep = [1.67, 0.83, 1.67, 6.67, 1.67, 1.67, 1.67, ...Array<number>(15).fill(0.83)]
+      const t0 = performance.now()
+      wheelSeq(chat, creep.map((dx, i) => [dx, t0 + i * 45] as [number, number]))
+      expect(sliding()).toBe(false)
+      expect(screen.queryByTestId('member-side-panel')).toBeNull()
+      expect(localStorage.getItem(PANEL_OPEN_KEY)).toBe('0')
     })
 
     /** A trackpad turning back: the fingers go one way, then come back with
@@ -826,7 +870,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       localStorage.setItem(PANEL_OPEN_KEY, '0')
       const chat = await openOncall()
       const t0 = performance.now()
-      wheelSeq(chat, REVERSAL.map((dx, i) => [dx, t0 + i * 80] as [number, number]))
+      wheelSeq(chat, [...leadIn(20, t0, 80), ...REVERSAL.map((dx, i) => [dx, t0 + i * 80] as [number, number])])
       // Read as a tail, the turn was dropped and the drag released on the way
       // in, at the opening speed: it settled open.
       await waitFor(() => expect(screen.queryByTestId('member-side-panel')).toBeNull(), { timeout: 3000 })

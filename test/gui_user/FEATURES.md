@@ -189,8 +189,8 @@ Priorities: P0 10 · P1 37 · P2 162 · P3 63. Deduped from 387 raw records.
 
 | Priority | Id | User story | Start URL | Seed | Runnable | Steps |
 |---|---|---|---|---|---|---|
-| P1 | `capabilities-connections` | As an operator, I want to install, enable and scope MCP servers, so that agents get exactly the tools they need. | `/capabilities` | connections-two | smoke | 3 |
-| P2 | `connections-mcp-management` | As a user, I want to see each MCP server's state, opt servers in to stubbing and read the sharing assessment, so that I can manage MCP connections and diagnose tool outages. | `/capabilities` | connections-two | nightly | 3 |
+| P1 | `capabilities-connections` | As an operator, I want to install, enable and scope MCP servers, so that agents get exactly the tools they need. | `/mcp` | connections-two | smoke | 3 |
+| P2 | `connections-mcp-management` | As a user, I want to see each MCP server's state, opt servers in to stubbing and read the sharing assessment, so that I can manage MCP connections and diagnose tool outages. | `/mcp` | connections-two | nightly | 3 |
 
 ## Memory, lessons & usage (`memory`)
 

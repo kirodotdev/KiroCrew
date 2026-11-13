@@ -638,7 +638,13 @@ async def test_repeated_registry_cancel_preserves_ordinary_cleanup(timeout, phas
         assert handle.events[-1].type == terminal
         assert sum(e.type == terminal for e in handle.events) == 1
         assert handle.status == (STATUS_FAILED if timeout else STATUS_CANCELLED)
-        assert handle.error == ("timeout" if timeout else "cancelled")
+        if timeout:
+            # The ceiling forwards the enriched text (stalled agent + silence) to
+            # the registry, not a bare "timeout".
+            assert handle.error is not None and handle.error.startswith("run exceeded ")
+            assert "still running" in handle.error
+        else:
+            assert handle.error == "cancelled"
         assert any(
             e.type == "log" and e.data.get("message") == "cleanup finished" for e in handle.events
         )

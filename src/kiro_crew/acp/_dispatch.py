@@ -25,6 +25,7 @@ from kiro_crew.acp.elicitation import is_elicitation_request
 from kiro_crew.acp.engine_fallback import is_v2_model_fallback
 from kiro_crew.acp.harness_tool_names import (  # noqa: F401
     CLAUDE_READ_ONLY_BUILTINS,
+    CODEX_TOOL_IDS_BY_KIRO_TOOL,
     GOOSE_READ_ONLY_BUILTINS,
     MAX_HARNESS_TOOL_NAME_LEN,
     qualified_harness_tool_id,
@@ -70,6 +71,7 @@ from kiro_crew.acp.types import (  # noqa: F401
 )
 from kiro_crew.acp_backends import (  # noqa: F401
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_PI,
@@ -637,13 +639,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         GATE_ENVELOPE_MARKER,
         STRANDS_BUILTIN_TOOL_KINDS,
         STRANDS_SIDE_READ_ONLY_REFUSAL,
-        UNREADABLE_IDENTITY_REASONS,
         StrandsCallIdentity,
         _anchored_in_workspace,
         _envelope_mcp_owner,
         _is_kas_remote_builtin,
         _pi_connection_identity,
         _workspace_call_arguments,
+        bridged_title_identity,
         build_permission_event,
         claude_mcp_identity,
         gate_envelope,
@@ -685,6 +687,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.acp._dispatch_parts.tool_call_identity import (  # noqa: F401
         _ACP_SHELL_KIND,
         _CODEX_MCP_TOOL_CALL_MARKER,
+        _CODEX_WEB_SEARCH_INPUT_TYPE,
         _HARNESS_TOOL_ID_RE,
         _MAX_HARNESS_TOOL_ID_LEN,
         _MCP_IDENTITY_META_CHANNELS,
@@ -698,10 +701,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _permission_tool_id,
         _str_field,
         classify_tool_call,
+        codex_tool_name,
         harness_tool_name,
         is_shell_kind,
         meta_builtin_server_names,
         meta_builtin_shell,
+        stated_harness_tool_name,
     )
     from kiro_crew.acp._dispatch_parts.tool_call_provenance import (  # noqa: F401
         LIVENESS_DIGEST_PREFIX,
@@ -803,7 +808,13 @@ def parse_usage_update(update: dict[str, Any]) -> tuple[int | float | None, int 
                 used = nested.get("used")
             if size is None:
                 size = nested.get("size")
-    return _token_count(used), _token_count(size)
+    used, size = _token_count(used), _token_count(size)
+    # A negative count is no reading: it would make context_pct negative, which
+    # every metadata path clamps out, and a reader keyed on the 0-100 range
+    # (Telegram's context gauge) has no bucket for it.
+    if used is not None and used < 0:
+        used = None
+    return used, size
 
 
 def parse_usage_cost(update: dict[str, Any]) -> float | None:

@@ -26,6 +26,10 @@ from kiro_crew.knowledge.store_parts.item_ownership import _DOC_STATE_TABLES
 if TYPE_CHECKING:
     from kiro_crew.knowledge.store import KnowledgeStore
 
+# IN-list chunk size for deleting a source's items. Kept under the oldest
+# SQLite's SQLITE_MAX_VARIABLE_NUMBER of 999 so no statement trips the limit.
+_DELETE_IN_CHUNK = 900
+
 
 def find_doc_by_content_hash(
     self: KnowledgeStore, content_hash: str, exclude_source_id: str | None = None
@@ -288,23 +292,24 @@ def delete_source_cascade(self: KnowledgeStore, source_id):
         # item survived under a new owner or is about to be deleted.
         self.db.execute("DELETE FROM source_locations WHERE source_id = ?", (source_id,))
 
-        if doomed:
-            q = ",".join("?" for _ in doomed)
+        for start in range(0, len(doomed), _DELETE_IN_CHUNK):
+            chunk = doomed[start : start + _DELETE_IN_CHUNK]
+            q = ",".join("?" for _ in chunk)
             # FTS is external-content, so the old column values must be handed to
             # the 'delete' command BEFORE the rows go -- and only for the rows going.
             for row in self.db.execute(
                 f"SELECT rowid, title, content, tags FROM items WHERE id IN ({q})",  # noqa: S608
-                doomed,
+                chunk,
             ).fetchall():
                 self._fts_unindex(row["rowid"], row["title"], row["content"], row["tags"])
             self.db.execute(
-                f"DELETE FROM source_locations WHERE item_id IN ({q})", doomed
+                f"DELETE FROM source_locations WHERE item_id IN ({q})", chunk
             )  # noqa: S608
-            self.db.execute(f"DELETE FROM mentions WHERE item_id IN ({q})", doomed)  # noqa: S608
+            self.db.execute(f"DELETE FROM mentions WHERE item_id IN ({q})", chunk)  # noqa: S608
             self.db.execute(
-                f"DELETE FROM entity_relations WHERE source_item_id IN ({q})", doomed
+                f"DELETE FROM entity_relations WHERE source_item_id IN ({q})", chunk
             )  # noqa: S608
-            self.db.execute(f"DELETE FROM items WHERE id IN ({q})", doomed)  # noqa: S608
+            self.db.execute(f"DELETE FROM items WHERE id IN ({q})", chunk)  # noqa: S608
 
         # Documents that deferred to this source need their marker cleared, or the
         # collapse outlives its reason and they stay stranded. But HOW they are

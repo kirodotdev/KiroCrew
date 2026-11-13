@@ -144,9 +144,12 @@ def _register_mcp_routes(app: web.Application) -> None:
     """Register API routes used by MCP tools (spawn, lessons, crons, etc.)."""
     # Both entrypoints register this table, so both start reading the Ultra Mode
     # pause file off-loop at startup; the hook returns at once.
-    from kiro_crew import crew_pause
+    from kiro_crew import crew_pause, mcp_listing_gateway
 
     app.on_startup.append(crew_pause.startup_preload)
+    # The same shape: the listing relay's code stamp is read off-loop at startup, and
+    # until it is in, a server that asks builds its own list.
+    app.on_startup.append(mcp_listing_gateway.startup_stamp)
     app.router.add_post("/api/spawn", handlers.api_spawn)
     app.router.add_post("/api/spawn/lost", handlers.api_spawn_lost)
     app.router.add_post("/api/spawn/mark-collected", handlers.api_spawn_mark_collected)
@@ -180,6 +183,9 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/work-ledger", _deferred_work_ledger("api_work_ledger_get"))
     app.router.add_post("/api/work-ledger/record", _deferred_work_ledger("api_work_ledger_record"))
     app.router.add_get("/api/work-ledger/brief", _deferred_work_ledger("api_work_brief"))
+    app.router.add_get(
+        "/api/work-ledger/accept-eval", _deferred_work_ledger("api_work_ledger_accept_eval")
+    )
     app.router.add_post("/api/work-ledger/report", _deferred_work_ledger("api_work_report"))
     app.router.add_post(
         "/api/work-ledger/rebuild", _deferred_work_ledger("api_work_ledger_rebuild")
@@ -285,10 +291,6 @@ def _register_mcp_routes(app: web.Application) -> None:
     # other.
     app.router.add_get(
         "/api/members/{slug}/dashboard", _deferred("member_dashboard", "api_member_dashboard")
-    )
-    app.router.add_post(
-        "/api/members/{slug}/dashboard/lock",
-        _deferred("member_dashboard", "api_member_dashboard_lock"),
     )
     # The gap refetch: a page that cannot place a patch in order asks for the whole
     # read. A strict suffix of the ``/dashboard`` read path, separated by METHOD, so
@@ -548,6 +550,10 @@ def _register_mcp_routes(app: web.Application) -> None:
         _deferred("session_control", "api_session_control_set_color"),
     )
     app.router.add_post(
+        "/api/session-control/set-note",
+        _deferred("session_control", "api_session_control_set_note"),
+    )
+    app.router.add_post(
         "/api/session-control/reload",
         _deferred("session_control", "api_session_control_reload"),
     )
@@ -608,6 +614,9 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/crew-sessions/search", _deferred_instances("api_crew_sessions_search"))
     app.router.add_get("/api/crew-sessions/list", _deferred_instances("api_crew_sessions_list"))
     app.router.add_get("/api/crew-sessions/read", _deferred_instances("api_crew_sessions_read"))
+    app.router.add_post(
+        "/api/session-control/queue", _deferred("session_control", "api_session_control_queue")
+    )
     # Settings -> Browser on Browser Harness (handlers/browser_harness_status.py):
     # the engine's install state and connection, the install job, a bounded
     # connect test and a disconnect. Owner cookie/token only; every one of them
@@ -654,6 +663,13 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/session-tool-policy", handlers.api_session_tool_policy)
     app.router.add_post("/api/slack-profile", handlers.api_slack_profile)
     app.router.add_post("/api/slack-history", handlers.api_slack_history)
+    # Slack code channels: the gateway leg of the code_channel_* MCP tools. STRICT
+    # (``_STRICT_INTERNAL_API_PATHS``); the handler refuses unless the transport
+    # attests the caller's session, and acts only on that session's own channel.
+    app.router.add_post(
+        "/api/slack/code-channel/tool",
+        _deferred("slack_code_channel_tools", "api_code_channel_tool"),
+    )
     app.router.add_get("/api/notifications", handlers.api_notifications)
     app.router.add_post("/api/notifications/push", handlers.api_push_notification)
     # An app's own notes, for its backend (both entrypoints) and its page; the

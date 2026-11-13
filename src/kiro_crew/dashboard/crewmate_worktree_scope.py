@@ -51,10 +51,11 @@ def resolve_worker_project(config: Any, name: str, project: str, message: str) -
         return None
     slug = member_slug(name, config)
     ws_dir = str(workspace_dir_for(getattr(record, "workspace", "") or None))
+    prefix = config.agent.member_branch_prefix
     candidates = [*cw.paths_in(message), *([project] if project else [])]
     for candidate in candidates:
         try:
-            found = cw.ensure(slug, ws_dir, candidate)
+            found = cw.ensure(slug, ws_dir, candidate, prefix)
         except cw.WorktreeRefused as exc:
             logger.warning("Bot %s: no worktree for %s: %s", name, candidate, exc)
             continue

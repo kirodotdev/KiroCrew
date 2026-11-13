@@ -28,6 +28,7 @@ import reducer, {
   setSlotStatusDetail,
   clearMessages,
   sseChatMessage,
+  selectPendingTurn,
 } from '../store/chatSlice'
 import './mockApiClient'
 
@@ -122,7 +123,10 @@ describe('chatSlice reducers', () => {
       let state = active('chat-1')
       state = reducer(state, startLocalTurn('chat-2'))
       expect(state.slotRunning).toBe(false)
-      expect(state.pendingTurnSlot).toBe('chat-2')
+      // The mark is chat-2's own, kept on its run entry: the active slot's
+      // guard is not where it lands.
+      expect(state.pendingTurnSlot).toBeNull()
+      expect(selectPendingTurn({ chat: state } as never, 'chat-2')).toBe(true)
     })
 
     it('endLocalTurn is the slot-keyed inverse: a failed send for the active slot clears its footer and pending mark', () => {
@@ -143,13 +147,14 @@ describe('chatSlice reducers', () => {
       expect(state.slotRunning).toBe(true)
       // chat-1's pending mark is gone; nothing else changed.
       expect(state.pendingTurnSlot).toBeNull()
+      expect(selectPendingTurn({ chat: state } as never, 'chat-1')).toBe(false)
     })
 
     it('endLocalTurn leaves another slot\'s pending mark alone', () => {
       let state = active('chat-1')
       state = reducer(state, startLocalTurn('chat-2'))
       state = reducer(state, endLocalTurn('chat-1'))
-      expect(state.pendingTurnSlot).toBe('chat-2')
+      expect(selectPendingTurn({ chat: state } as never, 'chat-2')).toBe(true)
     })
 
     it('a stale slots snapshot (running=false) does NOT clobber an optimistic local turn', () => {
@@ -203,11 +208,16 @@ describe('chatSlice reducers', () => {
       expect(state.pendingTurnSlot).toBeNull()
     })
 
-    it('switching active slot clears a stale pending guard', () => {
+    it('switching active slot takes the pending guard with the slot it belongs to', () => {
       let state = active('chat-1')
       state = reducer(state, startLocalTurn('chat-1'))
       state = reducer(state, setActiveSlot('chat-2'))
+      // chat-2's guard is not chat-1's send...
       expect(state.pendingTurnSlot).toBeNull()
+      expect(selectPendingTurn({ chat: state } as never, 'chat-1')).toBe(true)
+      // ...and chat-1 gets it back on return.
+      state = reducer(state, setActiveSlot('chat-1'))
+      expect(state.pendingTurnSlot).toBe('chat-1')
     })
 
     it('syncSlotRunningFromServer leaves the active mirror alone for a non-active slot', () => {
@@ -312,6 +322,21 @@ describe('chatSlice reducers', () => {
       expect(state.messages.at(-1)?.role).toBe('assistant')
     })
 
+    it('a "not running" Stop answer and an idle snapshot leave the transcript `_done` leaves, a "…" row included (#34426)', () => {
+      let state = active('chat-1')
+      for (const slot of ['chat-1', 'chat-2']) {
+        state = reducer(state, sseChatMessage({ slot, role: 'chunk', content: '…', seq: 1 }))
+      }
+      const end = (s: typeof state, slot: string) => reducer(s, sseChatMessage({ slot, role: '_done', content: '' }))
+      const viaDone = end(end(state, 'chat-1'), 'chat-2')
+      const viaStop = reducer(reducer(state, settleStopNotRunning({ slot: 'chat-1' })), settleStopNotRunning({ slot: 'chat-2' }))
+      const viaSnapshot = reducer(state, syncSlotRunningFromServer({ slot: 'chat-2', running: false, stopping: false }))
+      expect(viaDone.messages.at(-1)).toMatchObject({ role: 'assistant', content: '…' })
+      expect(viaStop.messages).toEqual(viaDone.messages)
+      expect(viaStop.slotMessages['chat-2']).toEqual(viaDone.slotMessages['chat-2'])
+      expect(viaSnapshot.slotMessages['chat-2']).toEqual(viaDone.slotMessages['chat-2'])
+    })
+
     it('settleStopNotRunning does not settle the active slot while a local turn is pending', () => {
       // Send → Stop before the backend registered the turn → "not running".
       // Settling here would reopen the composer mid-send and invite a
@@ -367,6 +392,24 @@ describe('switchSlot.pending', () => {
     expect(state.slotMessages['old']).toHaveLength(1)
     expect(state.messages).toEqual([])
     expect(state.slotLoading).toBe(true)
+  })
+
+  it('records only switches that ask to leave Split View', () => {
+    let state = reducer(initial, {
+      type: 'chat/switchSlot/pending',
+      meta: { arg: { key: 'new', leaveSplit: true }, requestId: 'r1', requestStatus: 'pending' },
+    })
+    expect(state.leaveSplitSeq).toBe(1)
+    state = reducer(state, {
+      type: 'chat/switchSlot/pending',
+      meta: { arg: { key: 'other' }, requestId: 'r2', requestStatus: 'pending' },
+    })
+    expect(state.leaveSplitSeq).toBe(1)
+    const ordinary = reducer(initial, {
+      type: 'chat/switchSlot/pending',
+      meta: { arg: 'other', requestId: 'r3', requestStatus: 'pending' },
+    })
+    expect(ordinary.leaveSplitSeq).toBeUndefined()
   })
 
   it('gates sseChatMessage from old slot after pending', () => {

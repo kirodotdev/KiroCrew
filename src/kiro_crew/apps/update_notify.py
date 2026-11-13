@@ -13,15 +13,16 @@ announced per app, and only a DIFFERENT version announces again.
 A first observation adopts instead of announcing. With no ledger yet, every
 pending update looks new, and a user who installed this with five updates
 waiting would get five notes about versions that have been out for weeks. The
-badge already states that standing backlog; the bell is for what changes from
-here. Same choice ``issue_radar``'s watcher makes for a repository's
+Discover Updates list already shows that standing backlog; the bell is for what
+changes from here. Same choice ``issue_radar``'s watcher makes for a repository's
 pre-existing issue backlog, for the same reason.
 
 Persist before you publish. The ledger is written BEFORE any note is built for
 delivery, and a ledger that cannot be written produces no note at all: the
 next listing would read the same stale ledger and announce again, on every
 dashboard load, for as long as the write keeps failing. One missed note is the
-cost of the other ordering, and the note is redundant with the badge anyway.
+cost of the other ordering, and the note is redundant with the Updates list
+anyway.
 
 Split in two halves because they run in different places. ``prepare`` reads and
 writes the ledger, so the route runs it off the loop. ``deliver`` calls
@@ -121,11 +122,11 @@ def _write_ledger(versions: dict[str, str]) -> bool:
 def _updatable(row: dict[str, Any]) -> bool:
     """Whether the store could actually update this listing row.
 
-    The same three conditions the Discover badge counts (``countUpdatables`` in
-    ``useAppsData.ts``), so the note and the badge can never disagree about what
-    is pending. ``lifecycle`` matters most: an ``app``- or ``locked``-lifecycle
-    app updates itself, so announcing one would point the user at an Update
-    button the store cannot press.
+    The same three conditions the Discover Updates list applies
+    (``useAppsData.ts``), so the note and that list agree about what is pending;
+    the rail badge counts only the list's enabled apps. ``lifecycle`` matters
+    most: an ``app``- or ``locked``-lifecycle app updates itself, so announcing
+    one would point the user at an Update button the store cannot press.
     """
     return bool(
         row.get("installed") and row.get("updateAvailable") and row.get("lifecycle") == "gateway"

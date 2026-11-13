@@ -14,7 +14,7 @@ sessions.
 |---|---|
 | Your login (`kiro-cli login`) | Used as is. On the default harness you can instead sign in to Kiro from **Settings → Agent Harness**, and Crew then holds that sign-in itself. |
 | Agents in `~/.kiro/agents/` and a project's `.kiro/agents/` | Switch a chat to one with `/agent <name>`; agents in `~/.kiro/agents/` are also offered by the agent chip under the message box. A project agent needs the chat to have that project as its folder. A JSON agent runs on both Kiro harnesses; a markdown agent needs the default one ([Agents](agents.md#markdown-agents)). |
-| MCP servers in `~/.kiro/settings/mcp.json` | Merged into the default `kirocrew` agent. A custom agent keeps its own `mcpServers`; on the Kiro CLI harness it also loads `~/.kiro/settings/mcp.json` unless it sets `"includeMcpJson": false`. On the default harness it loads `~/.kiro/settings/mcp.json` and the workspace `.kiro/settings/mcp.json` only when it sets `"includeMcpJson": true` (or `useLegacyMcpJson`). An agent file you already had when this rule reached KAS, and that sets neither key, keeps loading those servers on KAS. Add more under **Customize → Connections** ([Connections](connections.md)). |
+| MCP servers in `~/.kiro/settings/mcp.json` | Merged into the default `kirocrew` agent. A custom agent keeps its own `mcpServers`; on the Kiro CLI harness it also loads `~/.kiro/settings/mcp.json` unless it sets `"includeMcpJson": false`. On the default harness it loads `~/.kiro/settings/mcp.json` and the workspace `.kiro/settings/mcp.json` only when it sets `"includeMcpJson": true` (or `useLegacyMcpJson`). An agent file you already had when this rule reached KAS, and that sets neither key, keeps loading those servers on KAS. Add more on the **MCP Servers** page (`/mcp`, see [Connections](connections.md)). |
 | Steering in `~/.kiro/steering/` and `<project>/.kiro/steering/` | Loaded by kiro-cli, as in the terminal. Project steering needs the chat to have that project as its folder (see below). |
 | Skills in `~/.kiro/skills/` | Not read by the default agent, whose skills live in `~/.kiro/crew/skills/`. Add `~/.kiro/skills` under **Settings → Skills → Extra skill paths** to use them there. A custom agent on the Kiro CLI harness still inherits `~/.kiro/skills`, as in the terminal ([Skills](skills.md)). |
 | Slash commands | `/agent <name>`, `/compact` and `/clear` work in the chat box on both Kiro harnesses, as do Crew's own `/goal`, `/prompts`, `/side` and `/workflow`; in the dashboard's Chat page, `/fork <prompt>` forks the session and sends the prompt to the fork. kiro-cli's other commands (`/context`, `/mcp`, `/model`, `/tools`, `/usage` and the rest) run only on the **Kiro CLI** harness; the default harness answers that the command doesn't work there. Terminal-only ones such as `/quit`, `/chat`, `/paste`, `/editor` and `/tangent` are refused everywhere. |
@@ -64,7 +64,11 @@ To work with a CLI-style agent instead:
 On any agent, Crew still adds memory, learned corrections and the dashboard
 reply rules. A custom agent in `~/.kiro/agents/` can set
 `"includeCrewContext": false` to drop Crew's block of dashboard rules and its
-dashboard-tool reminders; some reply-format guidance still comes with each turn.
+dashboard-tool reminders; some reply-format guidance still comes. On kiro-cli,
+KAS, Codex and Claude Code it is sent with the first message of a conversation,
+and again after anything that empties or restarts it (a compaction, `/clear`, a
+stopped turn, a restart) or when that guidance changes. On every other harness,
+and in a chat with a crew member, it is sent with each message.
 To leave memory out of one chat, pick
 **Temporary** in the memory mode button above the message box before the first
 message ([Memory modes](memory-and-learning.md#memory-modes)).

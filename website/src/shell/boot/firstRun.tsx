@@ -13,6 +13,8 @@ interface FirstRunFlags {
   /** Server-only; `null` until theme boot answers (see `useTheme`). */
   privacyAckVersion?: number | null
   themeBootReady: boolean
+  /** The host's first-run state could not be read; nothing may open from this browser's flags. */
+  hostStateUnread?: boolean
   markOnboarded: () => void
 }
 
@@ -21,7 +23,7 @@ interface FirstRunFlags {
  * Customize tour. Derived from the completion flags on every
  * change, so the hand-offs below and the derive effect cannot disagree.
  */
-export function useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, privacyAckVersion = null, themeBootReady, markOnboarded }: FirstRunFlags) {
+export function useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, privacyAckVersion = null, themeBootReady, hostStateUnread = false, markOnboarded }: FirstRunFlags) {
   // The E2E Playwright suite depends on this onboarding gate: playwright/auth.setup.ts
   // seeds localStorage['mc-onboarded']='1' so the first-run "Choose your look" modal
   // never overlays the shell and intercepts every spec's interactions. If this flag is
@@ -45,6 +47,13 @@ export function useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, 
   const [showOnboarding, setShowOnboarding] = useState(
     () => locallyImportOnboarded && locallyPrivacyAcked && !localStorage.getItem('mc-onboarded'),
   )
+  // Read by the derive effect without being one of its inputs: closing the
+  // importer must not re-run the derive (its onComplete/onSkipAll already set
+  // the next chapter, and a re-derive would close a tour `/onboarding` asked
+  // for). Mirrored in an effect declared before the derive, so the derive in the
+  // same commit reads the current value.
+  const agentImportOpen = useRef(false)
+  useEffect(() => { agentImportOpen.current = showAgentImport }, [showAgentImport])
   const continueTourAfterImport = useRef(false)
   // Where the mandatory Privacy chapter leads. 'customize' hands off to the
   // onboarding tour (the normal chapter order); 'finish' ends first run right
@@ -77,11 +86,11 @@ export function useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, 
       return
     }
     if (usage.status === 'loading') return
-    // A failed status read shows the notice too, in its neutral "what can be
-    // collected" form with the read error on screen: failing quietly would hide
-    // both the notice and the failure. Its Continue records no notice version,
-    // so a working read on a later load still decides properly.
-    if (usage.status === 'error' || (usage.status === 'ready' && usage.recordingOn)) {
+    // Only a read that answered opens the notice. A failed read says nothing
+    // about what is on, and this user has already passed the chapter, so a
+    // failure (the first load after the sign-in runs out is one) must not put it
+    // back on screen. Nothing is stored either, so the next load decides again.
+    if (usage.status === 'ready' && usage.recordingOn) {
       privacyExit.current = 'close'
       setNotice('show')
     } else {
@@ -108,6 +117,10 @@ export function useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, 
   // Dismiss onboarding when server reports user is already onboarded
   // (handles the race: boot fetch completes after useState initializer ran).
   useEffect(() => { if (onboarded) setShowOnboarding(false) }, [onboarded])
+  // The tour's seed above reads this browser's flags before the host answers;
+  // when the host cannot be read those flags are all there is, so the seeded
+  // tour closes rather than finish first run from them.
+  useEffect(() => { if (hostStateUnread) setShowOnboarding(false) }, [hostStateUnread])
   // Seeds — and re-derives — which first-run chapter is open from the three
   // completion flags. Chapter order is Import setup → Privacy → Customize/tour,
   // so each chapter opens only once its predecessor is marked done. Runs on
@@ -126,9 +139,19 @@ export function useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, 
     // for every case except the one it broke. Same split as the `onboarded`
     // effect above, which only ever closes the tour.
     if (!importOnboarded) setShowAgentImport(true)
-    setShowPrivacy((importOnboarded && !privacyAcked) || notice === 'show')
+    // One chapter at a time. A replayed importer is open while the flags still
+    // say a later chapter is due; deriving that chapter now would stack it on
+    // the importer. The importer's own exits open whatever comes next.
+    if (agentImportOpen.current) return
     setShowOnboarding(importOnboarded && privacyAcked && !onboarded)
-  }, [importOnboarded, privacyAcked, onboarded, themeBootReady, notice])
+  }, [importOnboarded, privacyAcked, onboarded, themeBootReady])
+  // The Privacy half of the derive, kept apart so the changed notice is not a
+  // tour input: Privacy's Continue ends the notice in the same step as it opens
+  // a tour `/onboarding` asked for, and re-deriving the tour then would close it.
+  useEffect(() => {
+    if (!themeBootReady || agentImportOpen.current) return
+    setShowPrivacy((importOnboarded && !privacyAcked) || notice === 'show')
+  }, [importOnboarded, privacyAcked, themeBootReady, notice])
   useEffect(() => {
     const replay = (event: Event) => {
       continueTourAfterImport.current =
@@ -144,9 +167,12 @@ export function useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, 
   }, [])
   // Closing the changed-notice chapter ends it for this page load.
   const finishNotice = useCallback(() => setNotice(prev => (prev === 'show' ? 'done' : prev)), [])
+  // The changed notice came due while the importer was open; the derive left it
+  // for the importer's exits to open.
+  const noticeDue = notice === 'show'
   return {
     showAgentImport, setShowAgentImport, keepEmptyImport, showPrivacy, setShowPrivacy, showOnboarding, setShowOnboarding,
-    continueTourAfterImport, privacyExit, endFirstRun, finishNotice,
+    continueTourAfterImport, privacyExit, endFirstRun, finishNotice, noticeDue,
   }
 }
 
@@ -161,7 +187,7 @@ export function FirstRunChapters({ firstRun, onboarded, privacyAcked, markOnboar
 }) {
   const {
     showAgentImport, setShowAgentImport, keepEmptyImport, showPrivacy, setShowPrivacy, showOnboarding, setShowOnboarding,
-    continueTourAfterImport, privacyExit, endFirstRun, finishNotice,
+    continueTourAfterImport, privacyExit, endFirstRun, finishNotice, noticeDue,
   } = firstRun
   return (
     <>
@@ -187,6 +213,11 @@ export function FirstRunChapters({ firstRun, onboarded, privacyAcked, markOnboar
             setShowPrivacy(true)
             return
           }
+          if (noticeDue) {
+            privacyExit.current = wantsTour ? 'customize' : 'close'
+            setShowPrivacy(true)
+            return
+          }
           if (wantsTour) setShowOnboarding(true)
         }}
         onSkipAll={() => {
@@ -198,6 +229,11 @@ export function FirstRunChapters({ firstRun, onboarded, privacyAcked, markOnboar
           continueTourAfterImport.current = false
           if (!privacyAcked) {
             privacyExit.current = 'finish'
+            setShowPrivacy(true)
+            return
+          }
+          if (noticeDue) {
+            privacyExit.current = 'close'
             setShowPrivacy(true)
             return
           }
@@ -217,13 +253,17 @@ export function FirstRunChapters({ firstRun, onboarded, privacyAcked, markOnboar
           // its error instead of closing on a choice that was never stored.
           await markPrivacyAcked(ack)
           setShowPrivacy(false)
-          if (privacyExit.current === 'close') finishNotice()
-          else if (privacyExit.current === 'finish') markOnboarded()
-          else setShowOnboarding(true)
+          // Passing Privacy by any exit answers a changed notice that is due.
+          finishNotice()
+          if (privacyExit.current === 'finish') markOnboarded()
+          else if (privacyExit.current === 'customize') setShowOnboarding(true)
         }}
         // Hidden, not acknowledged: privacyAcked stays false, so the chapter
         // opens again at the next load.
         onAskAgent={() => setShowPrivacy(false)}
+        // Off by the user's own setting: Continue's ack is recorded without the
+        // screen, and onContinue above moves on as it would.
+        passWhenOff
       />
 
       {/* First-run chapter 3 — Customize + feature tour (theme → about you →

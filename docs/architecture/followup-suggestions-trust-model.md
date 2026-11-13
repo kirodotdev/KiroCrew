@@ -112,13 +112,42 @@ with no app identity to check.
   as in use.
 - Sensitive paths are refused, and the destination directory is derived
   server-side (never supplied by the caller) and must not already exist.
+- **A refusal says why git refused.** A `repo` git cannot open as a work tree
+  is a 400 whose `code` names git's reason (`not_a_git_repository`,
+  `broken_gitfile` for a `.git` file naming a missing or invalid git directory,
+  `git_dubious_ownership`, `git_permission_denied`, else `git_probe_failed`)
+  and whose `detail` is git's own line for it, redacted, because the `gitdir:`
+  path git echoes is file content whoever can write the folder chose. The probe
+  runs in the C locale and reads every stderr line, skipping the sandbox
+  launcher's `sandbox: WARNING` advisories, so an advisory printed before git
+  runs never stands in for git's reason. The refusal is audited `denied`; a
+  probe that cannot spawn git is audited `error`.
 
 If the new session cannot be scoped to the worktree, the frontend deletes the
 session it just created rather than leaving an unscoped one behind; the worktree
 survives and the create endpoint is idempotent for it, so pressing the button
-again reuses it. On success the new session is explicitly activated before its
-composer is pre-filled, so a session switch during creation cannot land the
-prompt in an unrelated session.
+again reuses it. On success, by default, the new session is explicitly
+activated before its composer is pre-filled, so a session switch during creation
+cannot land the prompt in an unrelated session, and nothing runs until the
+person presses send.
+
+With **Send follow-ups with one click** on (the browser-local key
+`mc-followup-start-sends`, off unless it holds `'1'`; it is kept out of the uiPrefs
+host backup, which lives in the agent-writable data home, and out of reach of
+agent change cards, as `mc-yolo-ack` is), Start sends the prompt to the new session by its key instead, before any
+switch, so a session switch during creation cannot land it in an unrelated
+session, and no composer is read or written. The item leaves the card once the
+send is accepted, so its Start button cannot run the prompt twice. It also
+leaves, with a page notice instead of a retry, when delivery is unconfirmed or a
+refused send leaves its session open.
+
+One-click send runs agent-authored text on one click, which is why it is the
+person's own opt-in. The control that offsets it is on the card in both modes:
+each item shows the first three lines of the exact prompt, rendered as plain
+text, and a **Show prompt** toggle expands the rest of a longer prompt. The card
+reads the setting once per render and passes the same value to the footer, the
+send glyph and the Start call, so the footer says what a press does. The
+decision is recorded in `docs/request-for-change/rfc-followup-start-sends.md`.
 
 Both endpoints emit SEL audit records.
 

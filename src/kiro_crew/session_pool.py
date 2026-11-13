@@ -21,7 +21,8 @@ from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
-from kiro_crew.agent_sdk.kas_floor_wait import await_kas_floor_verdict
+from kiro_crew import kiro_cli
+from kiro_crew.agent_sdk.kas_floor_wait import await_kas_floor_verdict, kas_extract_held
 from kiro_crew.config.loader import resolve_agent_identity
 from kiro_crew.kiro_prerequisite import pre_spawn_identity, spawn_pid, stamp_spawn_identity
 
@@ -438,6 +439,12 @@ class WarmSessionPool:
                         agent=self._pool_agent or None,
                         cwd=self._pool_cwd or None,
                     )
+                # A recorded broken kiro-cli KAS extract fails every KAS relay spawn
+                # the same way until it is moved, so a KAS pool stops here instead of
+                # respawning each sweep. Other backends never read that extract.
+                if await kas_extract_held(provider):
+                    provider = None  # built, never started: nothing to discard
+                    break
                 async with self._owner._start_sem:
                     # Age includes startup time. Startup takes seconds, while
                     # the warm-pool TTL is 1800 seconds; more importantly, a
@@ -653,6 +660,18 @@ class WarmSessionPool:
                 )
                 discarded = True
                 await self._owner._discard_pool_provider(provider, "Warm pool identity discard")
+                claimed = self._owner._claim_from_pool(agent)
+                continue
+
+            if kiro_cli.spawned_before_tools_list_refusal(spawn_time):
+                # It read its never-defer list before a request was refused for a
+                # changed tools list, so it may still defer Kiro Crew's own tools
+                # and hand its claimant the refusal a rebuild is escaping.
+                self._deps.logger.warning(
+                    "Warm pool: claimed provider predates a tools-list refusal, discarding"
+                )
+                discarded = True
+                await self._owner._discard_pool_provider(provider, "Warm pool deferral discard")
                 claimed = self._owner._claim_from_pool(agent)
                 continue
 

@@ -31,7 +31,11 @@ from kiro_crew.mcp_gateway.spill import (
 class TestUnderThresholdPassthrough:
     def test_small_response_unchanged(self):
         """A response under the spill threshold is returned unchanged."""
-        msg = {"jsonrpc": "2.0", "id": "req-1", "result": {"content": [{"type": "text", "text": "hello"}]}}
+        msg = {
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "result": {"content": [{"type": "text", "text": "hello"}]},
+        }
         line = json.dumps(msg, separators=(",", ":")).encode("utf-8") + b"\n"
         result = maybe_spill_response(line, "test-server", 1024 * 1024)
         assert result == line
@@ -222,7 +226,11 @@ class TestNonToolResultPassthrough:
 
     def test_notification_passes_through(self, tmp_path):
         """Notifications (no id, has method) pass through."""
-        msg = {"jsonrpc": "2.0", "method": "notifications/progress", "params": {"data": "x" * 300_000}}
+        msg = {
+            "jsonrpc": "2.0",
+            "method": "notifications/progress",
+            "params": {"data": "x" * 300_000},
+        }
         line = json.dumps(msg, separators=(",", ":")).encode("utf-8") + b"\n"
 
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
@@ -252,16 +260,16 @@ class TestConfigOverrides:
     def test_read_limit_env_override(self):
         """KIROCREW_MCP_READ_LIMIT env var overrides the default."""
         from kiro_crew.mcp_gateway import pool
+
         with patch.dict(os.environ, {"KIROCREW_MCP_READ_LIMIT": "8388608"}):
             val = pool._resolve_read_buffer_limit()
         assert val == 8388608
 
-    @pytest.mark.parametrize(
-        "raw", ["not_a_number", "100"], ids=["invalid", "below-1024"]
-    )
+    @pytest.mark.parametrize("raw", ["not_a_number", "100"], ids=["invalid", "below-1024"])
     def test_read_limit_env_unusable_uses_default(self, raw):
         """An unparseable or below-1024 KIROCREW_MCP_READ_LIMIT falls back to default."""
         from kiro_crew.mcp_gateway import pool
+
         with patch.dict(os.environ, {"KIROCREW_MCP_READ_LIMIT": raw}):
             val = pool._resolve_read_buffer_limit()
         assert val == pool._DEFAULT_READ_BUFFER_LIMIT
@@ -272,6 +280,7 @@ class TestConfigOverrides:
     def test_spill_threshold_env_is_honoured(self, raw, expected):
         """KIROCREW_MCP_SPILL_THRESHOLD overrides the default; 0 disables spilling."""
         from kiro_crew.mcp_gateway import pool
+
         with patch.dict(os.environ, {"KIROCREW_MCP_SPILL_THRESHOLD": raw}):
             val = pool._resolve_spill_threshold()
         assert val == expected
@@ -321,6 +330,74 @@ class TestConfigOverrides:
 
 
 # --- (h) Startup cleanup removes >24h spill files, keeps fresh ---
+
+
+class TestCeilingsResolvedAtImport:
+    """``pool`` resolves both ceilings once, while it is imported."""
+
+    _PROBE = (
+        "import json\n"
+        "from kiro_crew.mcp_gateway import pool\n"
+        "from kiro_crew.config import paths\n"
+        "print(json.dumps([pool.READ_BUFFER_LIMIT_BYTES, pool.RESPONSE_SPILL_THRESHOLD_BYTES,\n"
+        "                  pool._DEFAULT_READ_BUFFER_LIMIT, pool._DEFAULT_SPILL_THRESHOLD,\n"
+        "                  paths.peek_data_home().exists()]))\n"
+    )
+
+    def _import_pool(self, tmp_path, **extra_env):
+        import subprocess
+        import sys
+
+        import kiro_crew
+        from kiro_crew.subprocess_utf8 import UTF8_TEXT
+        from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
+
+        dropped = {"KIROCREW_HOME", "KIROCREW_MCP_READ_LIMIT", "KIROCREW_MCP_SPILL_THRESHOLD"}
+        env = {k: v for k, v in os.environ.items() if k not in dropped}
+        env["PYTHONPATH"] = os.path.dirname(os.path.dirname(os.path.abspath(kiro_crew.__file__)))
+        env.update(extra_env)
+        done = subprocess.run(
+            [sys.executable, "-B", "-c", self._PROBE],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            timeout=FALLBACK_TIMEOUT_SECS,
+            check=False,
+            **UTF8_TEXT,
+        )
+        assert done.returncode == 0, done.stderr[-2000:]
+        return json.loads(done.stdout.strip().splitlines()[-1])
+
+    def test_with_no_data_home_they_default_and_nothing_is_created(self, tmp_path):
+        """No home means no config to read, and resolving the config path would create
+        the home: importing the gateway must create nothing."""
+        home = tmp_path / "home"
+        home.mkdir()
+        read, spill, default_read, default_spill, home_exists = self._import_pool(
+            tmp_path, HOME=str(home), USERPROFILE=str(home)
+        )
+        assert (read, spill) == (default_read, default_spill)
+        assert home_exists is False
+        assert not (home / ".kiro").exists()
+
+    def test_a_configured_ceiling_is_the_one_in_force(self, tmp_path):
+        data_home = tmp_path / "crew-home"
+        data_home.mkdir()
+        (data_home / "config.json").write_text(
+            json.dumps(
+                {
+                    "mcp_gateway": {
+                        "read_buffer_limit_bytes": 2097152,
+                        "response_spill_threshold_bytes": 1048576,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        read, spill, _default_read, _default_spill, _exists = self._import_pool(
+            tmp_path, KIROCREW_HOME=str(data_home)
+        )
+        assert (read, spill) == (2097152, 1048576)
 
 
 class TestSpillCleanup:

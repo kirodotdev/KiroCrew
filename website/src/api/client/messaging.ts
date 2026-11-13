@@ -39,6 +39,17 @@ export interface SlackConfigData extends SlackCodeSwitchFields {
   session_folder?: string
   /** Open a Slack thread in the owner's bot DM for every new dashboard session on its first message. */
   auto_link_sessions?: boolean
+  /** `slack.code_channel_dispatch`: let a code channel's conductor hand work to
+   *  worker sessions. Its own opt-in under Code channels; off by default. */
+  code_channel_dispatch?: boolean
+  /** `config.local.json` sets `slack.code_channel_dispatch`, so a save here cannot
+   *  change it (the server refuses one with 409). */
+  code_channel_dispatch_overlay?: boolean
+  /** `pinned`: the value shown is the one `config.local.json` sets; `unreadable`:
+   *  the file cannot be read, so what it sets is unknown; `absent`: not set there. */
+  code_channel_dispatch_overlay_state?: 'pinned' | 'unreadable' | 'absent'
+  /** Where `config.local.json` is, home shown as `~` (for the notes that name it). */
+  code_channel_dispatch_overlay_path?: string
   /** What a new code-channel session starts with (null = not set here). */
   code_channel_defaults?: SlackCodeChannelDefaults
   /** How a new code-channel session resolves right now, from the saved defaults. */
@@ -76,6 +87,8 @@ export interface SlackCodeChannelDefaults {
   agent: string | null
   model: string | null
   reasoning_effort: string | null
+  /** "trust_reads" | "trust"; null is "ask" (Normal). */
+  approval_mode?: string | null
 }
 
 /** The effective start state of a new code-channel session. */
@@ -89,6 +102,8 @@ export interface SlackCodeChannelEffective {
   project_dir: string | null
   /** "folder" | "origin" | "" */
   project_source: string
+  /** "ask" | "trust_reads" | "trust": the approval mode the session is created in. */
+  approval_mode?: string
   /** The agent Slack uses when nothing else names one. */
   slack_agent: string
   /** The folder's path; the auto folder's name when no folder is set. */
@@ -145,6 +160,8 @@ export interface SlackConfigSave extends Partial<Record<SlackCodeSwitchKey, bool
   session_folder?: string
   /** Open a Slack thread in the owner's bot DM for every new dashboard session on its first message. */
   auto_link_sessions?: boolean
+  /** Sent only when changed; turning Code channels on never sends it. */
+  code_channel_dispatch?: boolean
   /** Keys sent replace the stored value (null clears); omitted keys are kept. */
   code_channel_defaults?: Partial<SlackCodeChannelDefaults>
 }
@@ -536,7 +553,9 @@ export function createMessagingEndpoints({ get, post, put, j }: ClientTransport)
     getSlackManifestStatus: (refresh = false) => get(`/api/slack/manifest/status${refresh ? '?refresh=1' : ''}`).then(j) as Promise<SlackManifestStatus>,
     /** The agents a defaults save accepts with default folder *folder* ('' = the auto folder). */
     getSlackCodeChannelAgents: (folder: string) => get(`/api/slack/code-channel-agents?folder=${encodeURIComponent(folder)}`).then(j) as Promise<{ agents: string[] | null }>,
-    saveSlackConfig: (body: Partial<SlackConfigSave>) => put('/api/slack/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
+    saveSlackConfig: (body: Partial<SlackConfigSave>) => put('/api/slack/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; reconnect_required?: boolean; verify_warning: string }>,
+    /** Re-run the Slack handshake from the saved credentials, without a gateway restart. */
+    reconnectSlack: () => post('/api/slack/reconnect', {}).then(j) as Promise<{ connected: boolean; connect_error: string }>,
     // Discord integration config
     getDiscordConfig: () => get('/api/discord/config').then(j) as Promise<DiscordConfigData>,
     saveDiscordConfig: (body: Partial<DiscordConfigSave>) => put('/api/discord/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,

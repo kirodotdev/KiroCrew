@@ -8,12 +8,13 @@ Each function here whose first parameter is ``self`` is an ``AcpClient`` method:
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_capability_projection_gaps``, ``_copilot_mcp_config_path``,
-``_crew_bridge_snapshots``, ``_loaded_capability_template``, ``_mcp_mount_opened_at``, ``_mcp_mount_servers``,
+Instance fields written: ``_capability_projection_gaps``, ``_claude_worker_builtin_tools``,
+``_copilot_mcp_config_path``, ``_crew_bridge_snapshots``, ``_loaded_capability_template``,
+``_mcp_mount_opened_at``, ``_mcp_mount_servers``,
 ``_mcp_pruned``, ``_mcp_pruned_names``,
 ``_mcp_pruned_omitted``, ``_mcp_report_frame_floor``, ``_member_dispatch_mounted``,
-``_member_stub_allowlist``, ``_pending_oauth_requests``, ``_pi_mcp_handoff``,
-``_session_agent_spec``,
+``_member_stub_allowlist``, ``_mimocode_disabled_servers``, ``_pending_oauth_requests``,
+``_pi_mcp_handoff``, ``_session_agent_spec``,
 ``_session_harness_deny_rules``, ``_session_mcp_cache``,
 ``_session_mcp_excludes_local``, ``_session_mcp_inline_settings``,
 ``_session_mcp_snapshot``, ``_session_mcp_unhonoured``, ``_spec_denied_tools``,
@@ -23,7 +24,8 @@ Instance fields written: ``_capability_projection_gaps``, ``_copilot_mcp_config_
 Instance fields read: ``_agent``, ``_channel_id``, ``_child_env_names``,
 ``_claude_inline_settings``, ``_claude_local_settings_excluded``, ``_mcp_gateway_overlay``,
 ``_mcp_gateway_socket``, ``_mcp_notifications``,
-``_mcp_json_names``, ``_mcp_ref_spec``, ``_mcp_report``, ``_native_skill_projection``,
+``_mcp_json_names``, ``_mcp_ref_spec``, ``_mcp_report``, ``_mimocode_config_mcp_servers``,
+``_mimocode_denies_in_force``, ``_native_skill_projection``,
 ``_opencode_config_mcp_servers``, ``_opencode_denies_in_force``, ``_pi_gate_nonce``,
 ``_pi_mcp_server_names``, ``_session_id``, ``_session_key``, ``_side_read_only``,
 ``_spawn_work_dir``, ``_stub_session_token``, ``_work_dir``, ``member_context``.
@@ -62,6 +64,7 @@ from kiro_crew.acp.spec_tools_allowlists import (
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_MEMBER_PANEL,
@@ -106,8 +109,9 @@ def spec_is_toolless(spec: object) -> bool:
     ``includeMcpJson`` is exactly ``False`` (kiro-cli defaults it to True and would
     then start every server in the user-level ``mcp.json``). An empty ``tools``
     alone is not enough: a server listed under ``mcpServers`` is still started, a
-    hook still runs a command, and either include flag widens the visible tools
-    (``acp.kas_agents`` forwards both), in a turn that must run none.
+    hook still runs a command, and either include flag widens what the turn can
+    reach (``acp.kas_agents`` forwards ``includePowers``, and the ``includeMcpJson``
+    opt-in decides which ``mcp.json`` servers KAS starts), in a turn that must run none.
 
     Fails closed: a non-dict and any key of the wrong type answer False.
     """
@@ -374,9 +378,14 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
         # identity through the signed mapping rather than through an env key
         # a warm-pool rekey can leave stale.
         session_token=self._stub_session_token,
-        # The deny rules the opencode read-back found in force (None before any
-        # were seeded), so a later re-parse withholds a server whose rule is not.
-        harness_denies_in_force=getattr(self, "_opencode_denies_in_force", None),
+        # The deny rules the opencode or MiMo Code read-back found in force (None
+        # before any were seeded), so a later re-parse withholds a server whose rule
+        # is not. Each harness's launch records its own.
+        harness_denies_in_force=(
+            getattr(self, "_mimocode_denies_in_force", None)
+            if self.backend == ACP_BACKEND_MIMOCODE
+            else getattr(self, "_opencode_denies_in_force", None)
+        ),
     )
     self._spec_denied_tools = projection.denied_tools
     if self.backend in ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS:
@@ -393,8 +402,13 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
         self._spec_write_allowlist = spec_write_globs(allowlist_spec, cwd)
         self._spec_write_cwd = cwd
     self._session_mcp_unhonoured = projection.unhonoured_servers
+    if self.backend == ACP_BACKEND_MIMOCODE:
+        # MiMo Code also mounts servers of its own config, which withholding an
+        # element cannot reach, so its read-back refuses one switched off whole.
+        self._mimocode_disabled_servers = projection.disabled_servers
     self._session_harness_deny_rules = projection.harness_deny_rules
     self._spec_zero_tools = projection.zero_tools
+    self._claude_worker_builtin_tools = projection.builtin_tools
     # Kept beside the array it describes, so the post-consume check judges the
     # generation these elements were built from and not a later read of the file.
     self._session_mcp_snapshot = projection.derived_spec_snapshot
@@ -630,13 +644,12 @@ def _with_crew_connections(
     receipt names ``mcp_json``), as for every other server Crew hands pi.
     """
     from kiro_crew.acp import kas_env_launch
-    from kiro_crew.connections.crew_oauth import SUPPORTED_SLUGS
 
     narrowed = {server for server, _tool in projection.disabled_tools}
+    # Every remote element is offered: bridge_array keeps only those Crew owns
+    # (a registry card, or an owner-added server whose grant Crew holds).
     wanted = [
-        e
-        for e in projection.servers
-        if isinstance(e, dict) and e.get("name") in SUPPORTED_SLUGS and e["name"] not in narrowed
+        e for e in projection.servers if isinstance(e, dict) and e.get("name") not in narrowed
     ]
     if not wanted:
         return out
@@ -1197,6 +1210,20 @@ def _opencode_session_mcp_servers(self: AcpClient) -> list:
     return self._session_mcp_servers()
 
 
+def _mimocode_session_mcp_servers(self: AcpClient) -> list:
+    """MCP server array passed to a MiMo Code ``session/new`` / ``session/load``.
+
+    The MiMo Code twin of :meth:`_opencode_session_mcp_servers`, on the same
+    grounds and measured rather than inherited: ``mimo acp`` reads no agent spec of
+    Crew's, and driven on 0.1.15 it mounted the element
+    ``acp.session_mcp.acp_server_element`` emits, listed its tools and completed a
+    call to one (``test/fixtures/acp_frames/mimocode/mcp-stdio-mount-live.jsonl``).
+    Kept as its own seam for the reason the opencode one is: an edition may
+    override it.
+    """
+    return self._session_mcp_servers()
+
+
 def _deepseek_session_mcp_servers(self: AcpClient) -> list:
     """MCP server array passed to a deepseek ``session/new`` / ``session/load``.
 
@@ -1606,11 +1633,15 @@ def _placed_mcp_server_names(self: AcpClient) -> tuple[str, ...]:
 def _harness_mcp_server_names(self: AcpClient) -> tuple[str, ...]:
     """Every MCP server name this session's harness may state a tool of.
 
-    The servers Crew placed, then those the opencode read-back found in the
-    harness's own config, then every server the pi MCP handoff carried -- on pi
-    the pooled stubs are not in the placed array, and pi spells each of their
+    The servers Crew placed, then those the opencode or MiMo Code read-back found
+    in the harness's own config, then every server the pi MCP handoff carried --
+    on pi the pooled stubs are not in the placed array, and pi spells each of their
     tools after its name. An instance built without ``__init__`` has none.
     """
-    found = getattr(self, "_opencode_config_mcp_servers", ())
+    found = (
+        getattr(self, "_mimocode_config_mcp_servers", ())
+        if self.backend == ACP_BACKEND_MIMOCODE
+        else getattr(self, "_opencode_config_mcp_servers", ())
+    )
     handed_off = getattr(self, "_pi_mcp_server_names", ())
     return tuple(dict.fromkeys([*self._placed_mcp_server_names(), *found, *handed_off]))

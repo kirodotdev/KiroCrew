@@ -50,12 +50,13 @@ import json  # noqa: F401 -- historical module export
 import os
 import re
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, urlparse  # noqa: F401 -- historical module export
 
 from kiro_crew.apps.registry import minimal_env
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.github_runner import apply_session_bus_address
+from kiro_crew.github_runner import PROVIDER_WINGET_ID, apply_session_bus_address
 from kiro_crew.sel import sel
 
 from . import comment_batch
@@ -204,11 +205,14 @@ def _glab_bin() -> str:
             continue  # untrusted provenance — skip
 
     detail = f" (last check: {last_error})" if last_error else ""
+    if sys.platform == "win32":
+        install = f"`winget install --id {PROVIDER_WINGET_ID['glab']}`"
+    else:
+        install = "`brew install glab` or your distro's package manager"
     raise ProviderSetupError(
-        "the `glab` CLI was not found on this host"
-        f"{detail} — install it (`brew install glab` or your distro's package "
-        "manager) and run `glab auth login`, or set KIROCREW_ISSUE_RADAR_GLAB to "
-        "an absolute glab path",
+        f"the `glab` CLI was not found on this host{detail} — install it "
+        f"({install}) and run `glab auth login`, or set KIROCREW_ISSUE_RADAR_GLAB "
+        "to an absolute glab path",
         reason="not_installed",
     )
 
@@ -1971,3 +1975,12 @@ def rerun_workflow_run(
         method="POST",
     )
     return {"run_id": int(run_id), "rerun": True, "failed_only": True}
+
+
+# The crew wake sweep's GitLab reads live in a sibling module (file line cap); bound
+# here so ``gitlab_client.list_thread_comments`` stays the import path. Imported last:
+# the sibling reads this module's helpers at call time.
+from .gitlab_client_crew_reads import (  # noqa: E402,F401 # isort: skip
+    list_thread_comments,
+    list_threads_updated_since,
+)

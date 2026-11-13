@@ -213,7 +213,12 @@ cross-home flake three tests later.
 
 3. **Waited for** by ``_teardown_boot``: the memory-preparation worker is a
    THREAD behind a process-wide fence (``kiro_crew.memory_startup``) that
-   ``_shutdown()`` cannot join, so teardown polls until the fence drops.
+   ``_shutdown()`` cannot join, so teardown polls until the fence drops. Each
+   MCP probe runs on a pooled ``mc-mcpprobe`` thread too, which outlives the
+   reap's cancel until the server it spawned has exited. That server got this
+   home as its ``KIROCREW_HOME`` and creates the directory as it starts, so
+   one still starting would put ``<tmp_path>/home`` back after the test
+   removed it; after the reap, teardown shuts that pool down and joins it.
 
 4. **Reaped** by ``_teardown_boot``: every asyncio task the boot created that
    ``_shutdown()`` did not end. Production never needs to -- ``os._exit``
@@ -285,6 +290,7 @@ from kiro_crew import (
     autonudge,
     crash_guard,
     embeddings,
+    executors,
     github_runner,
     memory_startup,
     onboarding_sources,
@@ -292,6 +298,7 @@ from kiro_crew import (
     safety_override,
     sandbox,
     shutdown_event,
+    update_next_start,
 )
 from kiro_crew.acp import client as acp_client
 from kiro_crew.agent_sdk import host_auth
@@ -792,6 +799,7 @@ def _reset_home_bound_globals() -> None:
     token_auth._revoked_store_singleton = None
     token_auth._state.clear_all()
     token_auth._app_perms_cache.clear()
+    token_auth._app_perms_denied.clear()
     revocation_gen._gen = None
     crash_guard._CRASH_LOG = None
     config_live.reset_for_tests()
@@ -825,6 +833,7 @@ def _reset_home_bound_globals() -> None:
     dashboard_updates._auto_effect = None
     dashboard_updates._auto_effect_task = None
     dashboard_updates._shape_effect = None
+    update_next_start._differs_memo = None
     # Cleared in place, never rebound: the security facade re-exports
     # ``_path_resolve_degraded`` by identity, and the second-boot witness
     # compares each container's identity.
@@ -940,6 +949,20 @@ async def _drain_memory_fence() -> None:
         ) from exc
 
 
+async def _drain_mcp_probes() -> None:
+    """Shut the MCP probe pool down and join its threads (docstring, item 3).
+
+    The next boot's first probe creates a fresh pool.
+    """
+    with executors._lock:
+        pool, executors._mcp_probe_pool = executors._mcp_probe_pool, None
+    if pool is not None:
+        await finished(
+            asyncio.to_thread(pool.shutdown, wait=True, cancel_futures=True),
+            "the MCP probe threads",
+        )
+
+
 def _live_tasks() -> set["asyncio.Task[Any]"]:
     return {t for t in asyncio.all_tasks() if not t.done()}
 
@@ -1031,6 +1054,10 @@ async def _teardown_boot(
         failure = failure or exc
     try:
         await _reap_boot_tasks(tasks_before)
+    except BaseException as exc:  # noqa: BLE001 -- re-raised below, after the reset
+        failure = failure or exc
+    try:
+        await _drain_mcp_probes()
     except BaseException as exc:  # noqa: BLE001 -- re-raised below, after the reset
         failure = failure or exc
     _reset_home_bound_globals()

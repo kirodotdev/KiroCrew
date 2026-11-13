@@ -55,7 +55,7 @@ def home(tmp_path, monkeypatch):
 
 def _verdict(**overrides):
     kwargs = dict(
-        provider_type="codex",
+        provider_type="opencode",
         native_steering=False,
         project=None,
         agent=None,
@@ -91,6 +91,14 @@ def _verdict(**overrides):
                 "agent": "my-custom-agent",
                 "loaded": plan.LOADER_KEPT,
             },
+            (plan.REACHES_NO, plan.REASON_CUSTOM_AGENT),
+        ),
+        (
+            {"provider_type": "codex", "loaded": plan.LOADER_KEPT},
+            (plan.REACHES_YES, ""),
+        ),
+        (
+            {"provider_type": "codex", "agent": "my-custom-agent", "loaded": plan.LOADER_KEPT},
             (plan.REACHES_NO, plan.REASON_CUSTOM_AGENT),
         ),
         (
@@ -136,6 +144,17 @@ def test_kiro_cli_without_inheritance_still_loads_what_the_agent_declares(
     by_name = {row["name"]: (row["reaches"], row["reason"]) for row in rows}
     assert by_name["team.md"] == (plan.REACHES_HARNESS, plan.REASON_AGENT_RESOURCES)
     assert by_name["always.md"] == (plan.REACHES_NO, plan.REASON_INHERITANCE_OFF)
+
+
+def test_a_file_uri_spelled_absolute_resource_is_a_declared_target(home, tmp_path):
+    """``file:///C:/...``, what ``Path.as_uri()`` writes on Windows, names its own folder."""
+    rule = _write(tmp_path / "abs-rules" / "abs.md", "# Abs\n")
+    glob = "file:///" + (tmp_path / "abs-rules").as_posix().lstrip("/") + "/*.md"
+    _write(
+        home / ".kiro" / "agents" / "kirocrew.json",
+        json.dumps({"name": "kirocrew", "resources": [glob]}),
+    )
+    assert plan.declared_steering_targets("kirocrew", None) == frozenset({rule.resolve()})
 
 
 def test_a_project_agent_spec_makes_kiro_cli_verdicts_unknown(home, tmp_path, monkeypatch):
@@ -231,7 +250,7 @@ def test_a_folder_document_is_listed_once_as_delivered():
     rows = plan.chat_steering_plan(
         listed=listed,
         folder_documents=("~/.kiro/steering/style.md", "~/standards/own.md"),
-        provider_type="codex",
+        provider_type="opencode",
         native_steering=False,
         project=None,
         agent=None,
@@ -329,7 +348,7 @@ def test_a_tree_file_the_folder_cap_cuts_says_so():
         listed=listed,
         folder_documents=(),
         folder_cut=("~/.kiro/steering/style.md",),
-        provider_type="codex",
+        provider_type="opencode",
         native_steering=False,
         project=None,
         agent=None,
@@ -384,12 +403,19 @@ async def _get(state: DashboardState, slot: str, app_name: str = "") -> tuple[in
 
 
 @pytest.mark.asyncio
-async def test_a_codex_chat_lists_global_steering_as_not_reaching_it(home, monkeypatch):
-    """The route answers for a cold chat on the harness it would start on."""
-    _config(monkeypatch, "codex")
+@pytest.mark.parametrize(
+    ("backend", "reaches", "reason"),
+    [("codex", "yes", ""), ("opencode", "no", "harness_has_no_path")],
+)
+async def test_a_cold_chat_lists_global_steering_as_its_harness_receives_it(
+    home, monkeypatch, backend, reaches, reason
+):
+    """The route answers for a cold chat on the harness it would start on: Crew's
+    steering load reaches Codex, and OpenCode has no path for the trees."""
+    _config(monkeypatch, backend)
     status, data = await _get(_state(_ChatSlot("main")), "main")
     assert status == 200
-    assert data["provider"] == "codex"
+    assert data["provider"] == backend
     row = next(r for r in data["files"] if r["name"] == "always.md")
     # The display path uses the host's own separator.
     assert Path(row.pop("path")) == Path("~/.kiro/steering/always.md")
@@ -397,9 +423,25 @@ async def test_a_codex_chat_lists_global_steering_as_not_reaching_it(home, monke
         "name": "always.md",
         "source": "global",
         "applies": "always",
-        "reaches": "no",
-        "reason": "harness_has_no_path",
+        "reaches": reaches,
+        "reason": reason,
     }
+
+
+@pytest.mark.asyncio
+async def test_a_codex_chat_does_not_list_the_project_agents_md(home, tmp_path, monkeypatch):
+    """Codex reads the project's ``AGENTS.md`` itself, so Crew's load and the list
+    leave it out; on Claude Code the load sends it and the list names it."""
+    project = tmp_path / "project"
+    _write(project / "AGENTS.md", "# Agents\n")
+    for backend, listed in (("codex", False), ("claude", True)):
+        _config(monkeypatch, backend)
+        slot = _ChatSlot("main")
+        slot.project = str(project)
+        status, data = await _get(_state(slot), "main")
+        assert status == 200
+        names = {r["name"] for r in data["files"] if r["source"] == "agent"}
+        assert ("AGENTS.md" in names) is listed, backend
 
 
 @pytest.mark.asyncio

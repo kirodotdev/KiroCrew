@@ -24,6 +24,7 @@ const ROOT = path.join(__dirname, "..");
  *  string literal from reading as the start of a line comment. */
 function code(file) {
   return fs.readFileSync(path.join(ROOT, file), "utf8")
+    .replace(/\r\n/g, "\n")
     .replace(/\/\*[\s\S]*?\*\//g, " ")
     .replace(/(^|[^:])\/\/.*$/gm, "$1");
 }
@@ -84,13 +85,23 @@ const OCCUPANCY_SITES = [
     times: 1,
   },
   {
-    what: "stuck-gateway stop: the port emptied on its own, so spawn instead of adopting nothing",
+    what: "stuck-gateway and orphan stops: the port emptied on its own, so spawn instead of adopting nothing",
     code: 'const portNowFree = async () => (await probeGatewayPortBinding(PORT)) === "free";',
     times: 1,
   },
   {
     what: "unresponsive holder: nothing holds the port, so spawn as before",
     code: 'if ((await probeGatewayPortBinding(PORT)) !== "bound") return "spawn";',
+    times: 1,
+  },
+  {
+    what: "client-only launch fallback: open the app's own forward only on a port nothing listens on",
+    code: 'if ((await probeGatewayPortBinding(PORT)) !== "free") return;',
+    times: 1,
+  },
+  {
+    what: "the exported primary-port probe hands the occupancy reading to the IPC gate",
+    code: 'probePrimaryPortBinding: () => probeGatewayPortBinding(PORT),',
     times: 1,
   },
 ];
@@ -130,8 +141,8 @@ const IDENTITY_SITES = [
     times: 1,
   },
   {
-    what: "boot: probe the holder, unless a configured remote host makes it a tunnel",
-    code: 'const localOwner = remoteHost ? "foreign" : await probeGatewayPortOwner(PORT);',
+    what: "boot: probe the holder, unless a configured remote host makes it a tunnel; a refusal names what it found",
+    code: 'const localOwner = remoteHost ? "foreign" : await probeGatewayPortOwner(PORT, { holders });',
     times: 1,
   },
   {
@@ -145,13 +156,8 @@ const IDENTITY_SITES = [
     times: 1,
   },
   {
-    what: "stale dialog: only a service owner is re-checked against launchd's job list",
-    code: 'if (localOwner !== "service" || !launchdJobPids) return localOwner;',
-    times: 1,
-  },
-  {
-    what: "stale dialog: a launchd-parented orphan is described as a plain local gateway",
-    code: 'const ORPHAN_DIALOG_OWNER = "kirocrew";',
+    what: "boot: a Windows gateway proven by this home's lock is adopted as a plain local one",
+    code: 'const PROVEN_HOME_OWNER = "kirocrew";',
     times: 1,
   },
   {
@@ -207,6 +213,11 @@ const NON_PORT_SITES = [
   {
     what: "the HTTP readiness probe's own timeout result",
     code: 'req.on("timeout", () => { req.destroy(); resolve("unknown"); });',
+    times: 1,
+  },
+  {
+    what: "the HTTP readiness probe's result for a body cut off mid-read",
+    code: 'res.on("error", () => resolve("unknown"));',
     times: 1,
   },
   {

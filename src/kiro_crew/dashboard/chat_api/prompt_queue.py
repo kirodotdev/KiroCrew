@@ -3,7 +3,6 @@ back a steer the running turn has not read yet."""
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
@@ -13,6 +12,7 @@ if TYPE_CHECKING:
         DashboardState,
         _edit_queued_by_id,
         _remove_queued_by_id,
+        _reorder_queued_rows,
         attachment_meta,
         deny_app_slot_access,
         queue_entry_is_user_origin,
@@ -164,6 +164,9 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
     _edit_attachments = attachment_meta(entry.get("meta")) if entry is not None else {}
     if _edit_attachments:
         frame["meta"] = _edit_attachments
+    edit_rev = entry.get("edit_rev") if entry is not None else None
+    if isinstance(edit_rev, int):
+        frame["editRev"] = edit_rev
     state.broadcast_ws("queue_edit", frame)
     # The edit is stored, so the hold its open editor placed can go: a turn
     # that ended while the person typed starts now, with these words.
@@ -216,18 +219,7 @@ async def api_chat_slot_queue_reorder(request: web.Request) -> web.Response:
     remaining = [item for item in slot._queue if item["id"] not in set(order)]
     slot._queue[:] = reordered + remaining
     # Reorder the queued messages in the messages list to match
-    queued_msgs = [m for m in slot.messages if m.get("role") == "queued"]
-    other_msgs = [m for m in slot.messages if m.get("role") != "queued"]
-    queued_by_id: dict[str | None, dict] = {}
-    for m in queued_msgs:
-        try:
-            cls = json.loads(m.get("cls", "{}"))
-            queued_by_id[cls.get("queue_id")] = m
-        except (json.JSONDecodeError, TypeError):
-            pass
-    reordered_msgs = [queued_by_id[qid] for qid in order if qid in queued_by_id]
-    remaining_msgs = [m for m in queued_msgs if m not in reordered_msgs]
-    slot.messages[:] = other_msgs + reordered_msgs + remaining_msgs
+    _reorder_queued_rows(slot.messages, order)
     slot.invalidate_source_links()
     state.broadcast_ws(
         "queue_reorder", {"slot": name, "order": [item["id"] for item in slot._queue]}

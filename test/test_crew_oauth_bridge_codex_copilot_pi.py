@@ -25,6 +25,8 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
+    ACP_BACKEND_DEEPSEEK,
+    ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
@@ -84,6 +86,8 @@ def test_the_bridge_set_is_pinned_and_never_holds_kiro_cli():
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_PI,
         ACP_BACKEND_STRANDS,
+        ACP_BACKEND_GOOSE,
+        ACP_BACKEND_DEEPSEEK,
     }
 
 

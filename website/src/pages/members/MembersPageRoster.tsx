@@ -698,7 +698,6 @@ export function MembersPageRosterColumn({
               // Menu rows keep the menu open (preventDefault) so several can be
               // toggled in one visit, as the sidebar's do.
             <SearchFilterBar
-              className="px-2"
               placeholder={t('pages.membersPage.search_members')}
               clearLabel={t('pages.chatSidebar.clear_search')}
               value={filter}
@@ -883,7 +882,12 @@ export function MembersPageRosterColumn({
                   />
                   {/* The plain retry first: a failed read is usually transient,
                       and "ask about it" alone reads as the only way out. */}
-                  <Btn onClick={() => void rosterQuery.refetch()} data-testid="member-roster-retry">
+                  <Btn
+                    onClick={() => { if (!rosterQuery.isFetching) void rosterQuery.refetch() }}
+                    aria-disabled={rosterQuery.isFetching || undefined}
+                    className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed"
+                    data-testid="member-roster-retry"
+                  >
                     {t('pages.membersPage.roster_load_retry')}
                   </Btn>
                 </li>

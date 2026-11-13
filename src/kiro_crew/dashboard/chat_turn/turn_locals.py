@@ -89,7 +89,8 @@ class _ChatTurn:
     _directive_loop_id: "str"
     _directive_loop_gen: "int"
     # The loop whose own cycle this turn is, for its fault counts: the delivered
-    # wake's, or the one a recovery entry carried (``_recovered_wake``).
+    # wake's, the one a recovery or requeued wake entry carried
+    # (``_recovered_wake``), or a steered wake's this turn took (``steer_queue``).
     _wake_cycle: "tuple[str, int] | None"
     _skill_trigger_text: "str | None"
     _directive_channel_origin: "bool"
@@ -97,6 +98,8 @@ class _ChatTurn:
     _directive_owner_origin: "bool"
     _commands_off: "bool"
     _recovery_echo_owed: "bool"
+    _card_origin: "bool"
+    _prompt_on_channel: "bool"
     _turn_actor: "str"
     regenerate_hint: "str"
     _on_consumed: "Callable[[bool], None] | None"
@@ -277,6 +280,7 @@ class _ChatTurn:
     _ttft_t0: "float | None"
     _ttft_visible: "_FirstVisibleClock"
     _turn_billed: "bool"
+    _turn_cache_rewrite: "bool"
     _turn_boundary_set: "bool"
     _turn_cost_usd: "float"
     _turn_credits: "float"
@@ -377,6 +381,8 @@ class _ChatTurn:
         _directive_source_channels: "tuple[str, ...]" = (),
         _commands_off: "bool",
         _recovery_echo_owed: "bool",
+        _card_origin: "bool",
+        _prompt_on_channel: "bool" = False,
         _turn_actor: "str",
         regenerate_hint: "str",
         _on_consumed: "Callable[[bool], None] | None",
@@ -414,6 +420,8 @@ class _ChatTurn:
         self._directive_owner_origin = _directive_owner_origin
         self._commands_off = _commands_off
         self._recovery_echo_owed = _recovery_echo_owed
+        self._card_origin = _card_origin
+        self._prompt_on_channel = _prompt_on_channel
         self._turn_actor = _turn_actor
         self.regenerate_hint = regenerate_hint
         self._on_consumed = _on_consumed

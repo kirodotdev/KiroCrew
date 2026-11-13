@@ -394,12 +394,15 @@ TRANSLATION_TAG = hashlib.sha256(
 REFRESH_INTERVAL_SECS = 300
 
 #: The boot controls of every translated document. The enterprise policy has no rule for
-#: them, so they hold the enterprise defaults: the terminal off, a failed policy load
-#: refuses to start, and no boot-time sandbox requirement. The sandbox level itself is
+#: them, so they hold the enterprise defaults: a failed policy load refuses to start, and
+#: no boot-time sandbox requirement. ``allow_terminal`` is left out, so a translated
+#: policy has no opinion on the dashboard terminal. The sandbox level itself is
 #: the ``sandbox.min_level`` floor :func:`sandbox_floor` sets (RFC D7).
-BOOT: Mapping[str, bool] = MappingProxyType(
-    {"require_sandbox": False, "allow_terminal": False, "fail_closed": True}
-)
+#: A change here bumps ``enterprise_policy_fetch.TRANSLATION_REVISION``, so the first
+#: refresh after an upgrade fetches a full reply instead of keeping an older build's
+#: document. TRANSLATION_TAG is left alone: changing it would refuse that cached copy
+#: outright and stop an offline host from booting.
+BOOT: Mapping[str, bool] = MappingProxyType({"require_sandbox": False, "fail_closed": True})
 
 _DENY_EFFECTS = ("deny", "ask")
 _EFFECTS = ("allow",) + _DENY_EFFECTS

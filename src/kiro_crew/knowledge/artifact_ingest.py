@@ -56,7 +56,12 @@ from kiro_crew.artifacts import ArtifactNotFoundError, ArtifactStore
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 
-from .ingestion import DUPLICATE_JOB_STATUS, IngestionPipeline, run_to_completion
+from .ingestion import (
+    DUPLICATE_JOB_STATUS,
+    FileTooLargeError,
+    IngestionPipeline,
+    run_to_completion,
+)
 from .store import KnowledgeStore
 
 logger = logging.getLogger(__name__)
@@ -534,9 +539,12 @@ async def ingest_artifact(
             # Recorded inside the gate's own hop: by the time it reports a refusal
             # it has already committed the delete and the location claim, and a
             # cancellation between here and a post-hoc write would leave both
-            # durable with nothing naming them.
-            on_duplicate=lambda _text_hash: _record_deduped_state(
-                kstore, source_id, slug, content_hash, title, art.kind),
+            # durable with nothing naming them. The row records the gate's
+            # ``text_hash``, the hash the claimed items carry: for html it differs
+            # from ``content_hash`` (the raw markup), and the claim helpers and
+            # ``_adopt_reassigned_item`` match the row against the items' hash.
+            on_duplicate=lambda text_hash: _record_deduped_state(
+                kstore, source_id, slug, text_hash, title, art.kind),
         )
     finally:
         if tmp_path:
@@ -687,6 +695,7 @@ async def reconcile_artifacts(
     kinds: set[str],
     *,
     budget: int = RECONCILE_INGEST_BUDGET,
+    stop: asyncio.Event | None = None,
 ) -> tuple[int, int, int]:
     """Bring the aggregate source back in line with the artifact store.
 
@@ -702,6 +711,11 @@ async def reconcile_artifacts(
     a tracked artifact whose kind became structurally unsupported loses its
     stale chunks, and every tracked artifact's group label is refreshed to its
     current (redacted) name.
+
+    ``stop``, once set, defers every artifact the ingest loop has not started:
+    the pass ends between two ingests, never inside one, because a cancel
+    landing mid-ingest skips the pipeline's finalize and ownership write and
+    strands committed chunks that no artifact owns.
     """
     # art_store.list walks the artifact directory and reads every metadata file;
     # the state read is SQLite. Offload both so a large store cannot freeze chat
@@ -852,7 +866,7 @@ async def reconcile_artifacts(
             # An artifact dropped above has nothing left to ingest: its body is
             # blank, so re-reading it would only repeat the same decision.
             continue
-        if ingested >= budget:
+        if ingested >= budget or (stop is not None and stop.is_set()):
             deferred += 1
             continue
         if art.slug in drifted:
@@ -895,8 +909,9 @@ async def reconcile_artifacts(
             if status == DUPLICATE_JOB_STATUS:
                 continue
             ingested += 1
-        except Exception:
-            logger.exception("artifact KB reconcile: failed to ingest %s", art.slug)
+        except Exception as exc:
+            if not isinstance(exc, FileTooLargeError):  # the pipeline already warned
+                logger.exception("artifact KB reconcile: failed to ingest %s", art.slug)
     return ingested, removed, deferred
 
 
@@ -922,6 +937,7 @@ class ArtifactKnowledgeSync:
         self._loop = loop
         self._lock = asyncio.Lock()
         self._reconcile_task: asyncio.Task | None = None
+        self._stop_requested = asyncio.Event()
         # Ingest/remove tasks ``_schedule`` starts, held until each finishes: the
         # loop keeps only a weak reference to a task.
         self._tasks: set[asyncio.Task] = set()
@@ -953,7 +969,7 @@ class ArtifactKnowledgeSync:
         if task.cancelled():
             return
         exc = task.exception()
-        if exc is not None:
+        if exc is not None and not isinstance(exc, FileTooLargeError):  # already warned
             logger.error("artifact KB sync task failed: %s", exc, exc_info=exc)
 
     async def _handle(self, action: str, slug: str) -> None:
@@ -1052,6 +1068,22 @@ class ArtifactKnowledgeSync:
         )
         self._reconcile_task = asyncio.create_task(self._run_reconcile(source_id))
 
+    def stop(self) -> None:
+        """Ask the start-time reconcile pass to end at its next artifact boundary.
+
+        The pass can walk the whole artifact store, so a teardown that only
+        detached the listener left it running against a pipeline the gateway is
+        shutting down, or beside a fresh sync a re-enable starts. Setting the
+        stop event makes it finish the artifact in hand and defer the rest to
+        the next start, which skips unchanged content.
+
+        Nothing here waits or cancels. A cancel landing mid-ingest skips
+        finalize and strands committed chunks that no artifact owns, and a
+        wait would hold the caller (the live-config applier, the 10 s
+        graceful shutdown) for an LLM-backed ingest.
+        """
+        self._stop_requested.set()
+
     async def _run_reconcile(self, source_id: str) -> None:
         try:
             await self.reconcile_now(source_id)
@@ -1070,7 +1102,8 @@ class ArtifactKnowledgeSync:
         """
         async with self._lock:
             ingested, removed, deferred = await reconcile_artifacts(
-                self.pipeline, self.art_store, source_id, self.kinds
+                self.pipeline, self.art_store, source_id, self.kinds,
+                stop=self._stop_requested,
             )
         self._log_reconcile(ingested, removed, deferred)
 

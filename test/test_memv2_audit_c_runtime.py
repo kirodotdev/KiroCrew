@@ -1,6 +1,7 @@
 """Regression tests for memory runtime identity, alignment and admission."""
 
 import asyncio
+import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -434,6 +435,83 @@ async def test_http_deadline_wraps_real_recall_handler(
         task.cancel()
         release.set()
         assert await asyncio.to_thread(finished.wait, 2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("held", ["embed", "store_lock"])
+async def test_expired_recall_logs_the_phase_its_time_went_to(
+    tmp_path, monkeypatch, caplog, expire_recall_deadline, held
+):
+    """A 504 recall names where the time went: a query embed, or a store lock, never freed."""
+    from kiro_crew.dashboard.handlers import memory, memory_member
+
+    entered, release, finished, locked = (threading.Event() for _ in range(4))
+    seen = []
+    store = VectorMemoryStore(db_path=tmp_path / "memory.db", embedding_dim=2)
+    await asyncio.to_thread(store.init)
+
+    def embed(text):
+        if held == "embed":
+            entered.set()
+            assert release.wait(5)
+        return None
+
+    def hold_lock():
+        with store._db_lock:
+            locked.set()
+            assert release.wait(5)
+
+    def recall(*args, **kwargs):
+        try:
+            return store.recall(*args, **kwargs)
+        finally:
+            finished.set()
+
+    async def resolve(*args):
+        return "default", None
+
+    async def tier(*args):
+        seen.append(emb.embedding_work.get())
+        return SimpleNamespace(recall=recall, algorithm_version="v2")
+
+    store.embed_fn = embed
+    monkeypatch.setattr(memory_member, "resolve_requested_memory_store", resolve)
+    monkeypatch.setattr(memory_member, "vector_memory_for_store", tier)
+    monkeypatch.setattr(memory_member, "requesting_slot_project", lambda *args: None)
+    request = SimpleNamespace(
+        app={"state": object()}, query={"q": "query", "store": "default"}, headers={}
+    )
+    holder = threading.Thread(target=hold_lock, daemon=True)
+    if held == "store_lock":
+        holder.start()
+        await async_wait_until(locked.is_set)
+    caplog.set_level(logging.WARNING, logger=pools.logger.name)
+    # Wrapped once more, as above: the inner deadline inherits the outer one, so it
+    # neither restarts the phases nor logs a second time.
+    task = asyncio.ensure_future(
+        memory.memory_recall_deadline(memory_member.api_memory_recall)(request)
+    )
+    try:
+        if held == "embed":
+            await async_wait_until(entered.is_set)
+        else:
+            await async_wait_until(lambda: bool(seen) and seen[0].phases[-1][0] == "store_lock")
+        expire_recall_deadline()
+        response = await await_until(task, what="the recall handler's 504 response")
+        assert response.status == 504
+        warnings = [r.getMessage() for r in caplog.records if r.name == pools.logger.name]
+        assert len(warnings) == 1, warnings
+        report = warnings[0].removeprefix("Memory recall timed out in ")
+        current, _, spent = report.partition(" (")
+        assert current == held, warnings
+        steps = [step.split()[0] for step in spent.rstrip(")").split(", ")]
+        assert steps == ["authorize", "store_open", "admission", "search", held], warnings
+    finally:
+        task.cancel()
+        release.set()
+        await async_wait_until(finished.is_set)
+        await async_wait_until(lambda: not holder.is_alive())
+        await asyncio.to_thread(store.close)
 
 
 def test_embedding_signature_preserves_existing_encoding():

@@ -830,7 +830,9 @@ class TestChatProviderShutdown:
         # A real gate, as production always builds one: _chat hands its hooks
         # to the context builder before the backend starts.
         monkeypatch.setattr(
-            cli_chat, "_build_tool_gate", lambda agent: cli_chat._ToolGate(hooks=HookManager())
+            cli_chat,
+            "_build_tool_gate",
+            lambda agent, kiro_agent="": cli_chat._ToolGate(hooks=HookManager()),
         )
 
     @pytest.mark.asyncio

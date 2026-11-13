@@ -74,11 +74,13 @@ import errno
 import logging
 import os
 import stat
+import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import IO, Any, cast
 
 from kiro_crew import platform_compat
+from kiro_crew.bounded_read import bounded_read
 
 logger = logging.getLogger(__name__)
 
@@ -617,6 +619,11 @@ def strict_records(handle: IO[bytes], path: Path, *, cap: int = RECORD_CAP) -> I
             raise UndecodableRecord(f"record is not valid UTF-8 in {path!r}") from exc
 
 
+#: Fewest seconds between two WARNINGs for one path whose rename keeps being refused.
+ROTATE_REFUSED_WARN_INTERVAL_SECS = 3600.0
+_rotate_refused_warned_at: dict[Path, float] = {}
+
+
 def rotate_jsonl_at(path: Path, max_bytes: int) -> None:
     """Rotate ``path`` aside to ``<name>.1`` once it reaches ``max_bytes``.
 
@@ -642,6 +649,13 @@ def rotate_jsonl_at(path: Path, max_bytes: int) -> None:
     caller's append still runs. Fd/disk exhaustion is a leading cause of
     the very incidents these logs diagnose, so a rotation failure must
     never cost the record; only a failure of the caller's own append may.
+
+    A refused rename leaves the log growing past its bound with nothing
+    else to show for it, so it is logged at WARNING with the path and the
+    error class, at most once per :data:`ROTATE_REFUSED_WARN_INTERVAL_SECS`
+    per path in each process: the caller retries on every append, and a
+    holder such as a child that inherited the log's handle keeps refusing
+    until it exits.
     """
     try:
         lock_fd = platform_compat.open_create_or_existing(
@@ -651,7 +665,20 @@ def rotate_jsonl_at(path: Path, max_bytes: int) -> None:
             locked = platform_compat.try_acquire_lock(lock_fd, exclusive=True)
             try:
                 if locked and path.stat().st_size >= max_bytes:
-                    os.replace(path, path.with_name(path.name + ".1"))
+                    try:
+                        os.replace(path, path.with_name(path.name + ".1"))
+                    except OSError as exc:
+                        now = time.monotonic()
+                        last = _rotate_refused_warned_at.get(path)
+                        if last is None or now - last >= ROTATE_REFUSED_WARN_INTERVAL_SECS:
+                            _rotate_refused_warned_at[path] = now
+                            logger.warning(
+                                "could not rotate %s (%s); it grows past its %d-byte cap "
+                                "until a rename succeeds",
+                                path,
+                                type(exc).__name__,
+                                max_bytes,
+                            )
             finally:
                 if locked:
                     platform_compat.release_lock(lock_fd)
@@ -693,7 +720,9 @@ class _CappedReader:
         return self._remaining + 1 if size is None or size < 0 else min(size, self._remaining + 1)
 
     def read(self, size: int = -1) -> bytes:
-        chunk = self._handle.read(self._budget(size))
+        # The budget is the ceiling's remainder, not what the file holds, so it is never the
+        # size of one request: a small file under a large ceiling costs what the file costs.
+        chunk = bounded_read(self._handle, self._budget(size))
         self._charge(len(chunk))
         return chunk
 

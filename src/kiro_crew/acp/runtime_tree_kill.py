@@ -8,12 +8,14 @@ Each function here whose first parameter is ``self`` is an ``AcpRuntime`` method
 binds it by name, so it reads and writes the runtime's own state on the instance, and a patch
 of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_bound_workspace_fd``, ``_child_pids``, ``_process``,
-``_process_instance``, ``_process_tree_confirmed_dead``, ``_scope_unit``,
+Instance fields written: ``_bound_workspace_fd``, ``_child_pids``, ``_descendant_rescan_task``,
+``_process``, ``_process_instance``, ``_process_tree_confirmed_dead``, ``_scope_unit``,
 ``_spawn_work_dir``.
 
 Instance fields read: ``_close_remote_workspace``, ``_descendant_scan_lock``,
-``_exit_watch_task``, ``_pid``, ``_reader_task``, ``_spawn_start_token``, ``_start_time``, ``_stderr_task``, ``_work_dir``.
+``_exit_watch_task``, ``_native_skill_projection``, ``_pid``, ``_reader_task``,
+``_rescan_descendants_later``, ``_spawn_skill_projection``, ``_spawn_start_token``,
+``_start_time``, ``_stderr_task``, ``_work_dir``.
 """
 
 from __future__ import annotations
@@ -271,11 +273,19 @@ async def _snapshot_descendants(self: AcpRuntime, *, retry_when_empty: bool = Fa
     is deliberately NOT swallowed: it reaches the caller's cleanup guard,
     which owns the half-built runtime or session it must tear down.
 
-    POSIX-shaped: ``_get_child_pids`` short-circuits on Windows, where the
-    tree kill walks descendants itself through ``taskkill /T``.
+    Never waits for a tree to appear. *retry_when_empty* asks for one more
+    look when this pass sees no descendant, and that look runs as a task of
+    its own after ``_DESCENDANT_RESCAN_DELAY``, so the caller -- the spawn a
+    user is waiting on -- returns at once. The spawn asks because its root
+    has only just answered ``initialize`` and may fork a moment later; every
+    session start scans again, so one retry is enough.
+
+    A no-op where the walk cannot see a descendant
+    (``runtime_process_tree.walk_observes_descendants``): nothing would be
+    recorded, so nothing is read, and no retry is scheduled.
     """
     pid = self._pid
-    if pid is None:
+    if pid is None or not runtime_process_tree.walk_observes_descendants():
         return
     try:
         async with self._descendant_scan_lock:
@@ -297,8 +307,14 @@ async def _snapshot_descendants(self: AcpRuntime, *, retry_when_empty: bool = Fa
                 root_holds=self._root_identity_holds,
                 replace=True,
                 keep_unwalked=_escapee_is_still_ours,
-                retry_delay=self._DESCENDANT_RESCAN_DELAY if retry_when_empty else None,
             )
+            if result.outcome == "empty" and retry_when_empty:
+                pending = getattr(self, "_descendant_rescan_task", None)
+                if pending is None or pending.done():
+                    self._descendant_rescan_task = asyncio.ensure_future(
+                        self._rescan_descendants_later()
+                    )
+                return
             if result.outcome == "write_failed":
                 logger.warning(
                     "AcpRuntime: could not write the descendant PIDs of root %d -- "
@@ -322,6 +338,18 @@ async def _snapshot_descendants(self: AcpRuntime, *, retry_when_empty: bool = Fa
             pid,
             exc_info=True,
         )
+
+
+async def _rescan_descendants_later(self: AcpRuntime) -> None:
+    """The one more look a spawn asked for after its scan saw no descendant.
+
+    Runs as a task of its own, so nobody waits on the delay. It is an ordinary
+    pass once it wakes: serialized with the session-start scans, bracketed by
+    the root's identity (a root that died or was replaced meanwhile records
+    nothing), and silent on failure. ``_kill_inner`` cancels it.
+    """
+    if await runtime_process_tree.wait_for_descendants(self._DESCENDANT_RESCAN_DELAY):
+        await self._snapshot_descendants()
 
 
 async def _signal_tree(
@@ -504,6 +532,21 @@ async def kill(self: AcpRuntime, *, expected: bool = False, reason: str = "") ->
     self._process_tree_confirmed_dead = False
     try:
         await self._kill_inner(expected=expected, reason=reason)
+        # The skill views the process ran on are its resources too: released
+        # once it is gone, like the direct client's, so this home's unused
+        # views are pruned now rather than at a next boot that a stopped and
+        # deleted home never has. Not after a raised kill (a Windows tree still
+        # draining keeps them). The objects stay: a frame still being drained
+        # may name one of their aliases.
+        for projection in (
+            getattr(self, "_spawn_skill_projection", None),
+            getattr(self, "_native_skill_projection", None),
+        ):
+            if projection is not None:
+                try:
+                    projection.release()
+                except Exception:
+                    logger.debug("skill projection release failed", exc_info=True)
     finally:
         self._discard_sandbox_cleanup()
         await self._discard_bound_workspace()
@@ -546,6 +589,18 @@ async def _kill_inner(self: AcpRuntime, *, expected: bool = False, reason: str =
         self._stderr_task.cancel()
         try:
             await self._stderr_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    # A deferred descendant scan must not change this runtime's record under the
+    # kill. A file write it already handed to the executor still lands, as one
+    # from a cancelled session-start scan does: those lines stay for the orphan
+    # sweep, which acts on each by its recorded identity.
+    rescan_task = getattr(self, "_descendant_rescan_task", None)
+    if rescan_task is not None and not rescan_task.done():
+        rescan_task.cancel()
+        try:
+            await rescan_task
         except (asyncio.CancelledError, Exception):
             pass
 

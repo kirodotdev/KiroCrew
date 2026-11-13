@@ -238,6 +238,26 @@ def test_pipe_refusals(tmp_path):
     assert code == client_mod.EXIT_LOST
 
 
+def test_pipe_names_a_refused_relay_in_plain_words(capsys):
+    with socket.create_server(("127.0.0.1", 0)) as srv:
+        port = srv.getsockname()[1]
+    code = asyncio.run(client_mod.pipe("127.0.0.1", port, b"t", io.BytesIO().read, print))
+    assert code == client_mod.EXIT_LOST
+    err = capsys.readouterr().err
+    assert "crew-remote: relay unreachable: connection refused" in err
+    assert "Errno" not in err
+
+
+def test_pipe_keeps_the_text_of_an_unnamed_dial_failure(monkeypatch, capsys):
+    async def refuse(*_args, **_kwargs):
+        raise OSError("no route out of the box")
+
+    monkeypatch.setattr(client_mod.asyncio, "open_connection", refuse)
+    code = asyncio.run(client_mod.pipe("127.0.0.1", 1, b"t", io.BytesIO().read, print))
+    assert code == client_mod.EXIT_LOST
+    assert "relay unreachable: no route out of the box" in capsys.readouterr().err
+
+
 def test_command_dial_needs_a_command():
     with pytest.raises(ValueError):
         client_mod.command_dial([])

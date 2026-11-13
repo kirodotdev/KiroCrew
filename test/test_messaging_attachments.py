@@ -37,6 +37,7 @@ from kiro_crew.messaging.attachments import (
     safe_suffix,
     sniff_image_mime,
 )
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 _JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 32
@@ -313,7 +314,166 @@ class TestIngestAttachments:
             source="test",
             limits=IngestLimits(max_text_inject=100),
         )
+        cleanup(result.temp_paths)
         assert "truncated" in result.text_blocks[0]
+
+    @pytest.mark.parametrize(
+        "name,mimetype",
+        [("n.csv", "text/csv"), ("r.pdf", "application/pdf")],
+        ids=["text", "document"],
+    )
+    async def test_a_cut_attachment_hands_over_its_whole_redacted_text(
+        self, monkeypatch, name, mimetype
+    ):
+        """The prompt keeps the first 100 characters, as before, and says how many
+        there were; the agent's tools get ALL of them -- redacted, never the raw
+        download -- in a .txt that the caller deletes with the turn's temp paths."""
+        secret = "ghp_" + "a" * 36
+        text = "x" * 150 + f"\ntoken={secret}\n" + "tail " * 400
+        monkeypatch.setattr(attachments, "extract_text", lambda path, **_: text)
+        dests: list[str] = []
+        write = _writer(text.encode())
+
+        async def _download(url: str, dest: str) -> None:
+            dests.append(dest)
+            await write(url, dest)
+
+        result = await ingest_attachments(
+            [Attachment(name=name, mimetype=mimetype, size=len(text), url="u")],
+            download=_download,
+            source="test",
+            limits=IngestLimits(max_text_inject=100),
+        )
+        try:
+            assert not os.path.lexists(dests[0])
+            [kept] = result.file_paths
+            with open(kept, encoding="utf-8") as fh:
+                whole = fh.read()
+            block = result.text_blocks[0]
+            assert kept.endswith(".txt") and kept in result.temp_paths
+            assert whole.endswith("tail " * 400) and secret not in whole
+            assert (
+                f"\n{whole[:100]}\n[… truncated: 100 of {len(whole)} characters of text shown]\n"
+                in block
+            )
+            assert f"[Its whole text is in {kept} until this turn ends]" in block
+        finally:
+            cleanup(result.temp_paths)
+
+    async def test_a_copy_that_cannot_be_stored_leaves_the_marker_alone(self, monkeypatch):
+        """The copy is extra: failing to make it never costs the inline part."""
+        dests: list[str] = []
+
+        async def _download(url: str, dest: str) -> None:
+            dests.append(dest)
+            with open(dest, "w", encoding="utf-8") as fh:
+                fh.write("z" * 500)
+
+        def _fail(text: str) -> str:
+            raise UnicodeEncodeError("utf-8", "\ud800", 0, 1, "surrogate")
+
+        monkeypatch.setattr(attachments, "_write_whole_text", _fail)
+        result = await ingest_attachments(
+            [Attachment(name="n.txt", mimetype="text/plain", size=500, url="u")],
+            download=_download,
+            source="test",
+            limits=IngestLimits(max_text_inject=100),
+        )
+        assert result.rejections == [] and result.file_paths == []
+        assert result.text_blocks == [
+            "[File: n.txt]\n" + "z" * 100 + "\n[… truncated: 100 of 500 characters of text shown]"
+            "\n[End of file]"
+        ]
+        assert not os.path.exists(dests[0])
+
+    async def test_a_link_planted_at_the_download_after_it_is_read_is_never_written_through(
+        self, monkeypatch, tmp_path
+    ):
+        """An agent can reach the download's path, so a link swapped in for it
+        between the read and the hand-over must not steer the gateway's write."""
+        try:
+            os.symlink(tmp_path / "probe-target", tmp_path / "probe-link")
+        except OSError as exc:
+            pytest.skip(f"this host cannot create a symlink: {exc}")
+        target = tmp_path / "protected.json"
+        target.write_bytes(b'{"enabled": false}\n')
+        downloads: list[str] = []
+        real_reader = attachments._read_text_file
+
+        def _read_then_plant(path: str, limit: int) -> tuple[str, str]:
+            read = real_reader(path, limit)
+            downloads.append(path)
+            os.unlink(path)
+            os.symlink(target, path)
+            return read
+
+        monkeypatch.setattr(attachments, "_read_text_file", _read_then_plant)
+        result = await ingest_attachments(
+            [Attachment(name="n.txt", mimetype="text/plain", size=500, url="u")],
+            download=_writer(b"w" * 500),
+            source="test",
+            limits=IngestLimits(max_text_inject=100),
+        )
+        try:
+            assert target.read_bytes() == b'{"enabled": false}\n'
+            [kept] = result.file_paths
+            assert kept.endswith(".txt") and not os.path.islink(kept)
+            assert os.path.isfile(kept)
+            with open(kept, encoding="utf-8") as fh:
+                assert fh.read() == "w" * 500
+            assert not os.path.lexists(downloads[0])
+        finally:
+            cleanup(result.temp_paths)
+
+    async def test_a_cancel_while_the_copy_is_written_leaves_no_copy_behind(
+        self, monkeypatch, tmp_path
+    ):
+        """The worker writing the copy cannot be stopped, so a turn cancelled
+        meanwhile must still delete the copy it goes on to make."""
+        import tempfile
+
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+        started, release, deleted = threading.Event(), threading.Event(), threading.Event()
+        real_write, real_cleanup = attachments._write_whole_text, attachments.cleanup
+
+        def _held_write(text: str) -> str:
+            started.set()
+            assert release.wait(30), "the test never released the write"
+            return real_write(text)
+
+        def _cleanup(paths: list[str]) -> None:
+            real_cleanup(paths)
+            deleted.set()
+
+        monkeypatch.setattr(attachments, "_write_whole_text", _held_write)
+        monkeypatch.setattr(attachments, "cleanup", _cleanup)
+        task = asyncio.ensure_future(
+            ingest_attachments(
+                [Attachment(name="n.txt", mimetype="text/plain", size=500, url="u")],
+                download=_writer(b"c" * 500),
+                source="test",
+                limits=IngestLimits(max_text_inject=100),
+            )
+        )
+        try:
+            await async_wait_until(started.is_set, describe=lambda: "the copy was never started")
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await await_until(task, what="the cancelled ingest")
+        finally:
+            release.set()
+        await async_wait_until(deleted.is_set, describe=lambda: "the copy was never deleted")
+        assert list(tmp_path.iterdir()) == []
+
+    async def test_an_attachment_that_fits_is_inlined_whole_and_nothing_is_kept(self):
+        result = await ingest_attachments(
+            [Attachment(name="n.txt", mimetype="text/plain", size=100, url="u")],
+            download=_writer(b"y" * 100),
+            source="test",
+            limits=IngestLimits(max_text_inject=100),
+        )
+        assert result.text_blocks == ["[File: n.txt]\n" + "y" * 100 + "\n[End of file]"]
+        assert result.temp_paths == []
 
     @pytest.mark.parametrize(
         "name,mimetype,suffix,payload",
@@ -652,7 +812,7 @@ class TestBlockingWorkLeavesTheEventLoop:
         observed: list[int] = []
         real_reader = attachments._read_text_file
 
-        def _spy(path: str, limit: int) -> str:
+        def _spy(path: str, limit: int) -> tuple[str, str]:
             observed.append(threading.get_ident())
             return real_reader(path, limit)
 
@@ -697,7 +857,7 @@ class TestBlockingWorkLeavesTheEventLoop:
         """
         real_reader = attachments._read_text_file
 
-        def _slow_read(path: str, limit: int) -> str:
+        def _slow_read(path: str, limit: int) -> tuple[str, str]:
             time.sleep(0.15)  # blocking, as a large/slow filesystem read would be
             return real_reader(path, limit)
 

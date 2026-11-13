@@ -308,7 +308,13 @@ def _collapse_home_prefixes(text: str) -> tuple[str, int]:
     """
     count = 0
     for prefix in _home_prefixes():
-        pattern = re.compile(re.escape(prefix) + _PREFIX_BOUNDARY, re.IGNORECASE)
+        # Between segments any run of separators matches, so every escaping depth
+        # collapses. A leading root stays one separator: a run there would swallow
+        # ``file://`` and rescan every position of a long run.
+        first, *rest = re.split(r"[\\/]+", prefix.rstrip("\\/"))
+        body = r"[\\/]+".join(re.escape(s) for s in rest)
+        lead = (re.escape(first) + r"[\\/]+" if rest else re.escape(first)) if first else r"[\\/]"
+        pattern = re.compile(lead + body + _PREFIX_BOUNDARY, re.IGNORECASE)
         text, n = pattern.subn("~", text)
         count += n
     return text, count

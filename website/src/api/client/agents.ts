@@ -33,6 +33,7 @@ export interface CrewmateExportPreview {
   filename: string
   description: string
   model: string
+  reasoning_effort: string
   /** A `builtin:` template id, or '' (left_out says when a custom page stays home). */
   dashboard: string
   avatar: '' | 'image' | 'ghost'
@@ -105,6 +106,10 @@ export interface MemberRosterRow {
    *  placed yet (sorts last). Written by dragging a dock row. Absent on an
    *  older gateway. */
   star_order?: number
+  /** Preview, off by default: whether a Dashboard-tab button may send its reply
+   *  in one click. Absent on an older gateway, which has no such switch, or when
+   *  the crewmate never opted in: read it as off. */
+  dashboard_card_send?: boolean
   /** The person created this crewmate (the Crewmates page's create, or an
    *  approved `crewmate.create` / `crewmate.import` card): `source` is
    *  `kirocrew` AND the record carries a member id. Never true for the reserved
@@ -316,8 +321,6 @@ export interface DashboardRead {
    *  to a different package. Absent where no package is bound, which is every root
    *  session today: only a crewmate carries a binding. */
   dashboard?: string
-  /** The person's layout lock: while true the crewmate cannot apply or roll back a page. */
-  structure_locked?: boolean
   /** Set on a `preview` read: this body is the staged page, not the record. */
   preview?: boolean
   /** Set on a `preview` read: which staged page this is. Keep sends it back. */
@@ -507,7 +510,7 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, jMembe
       ).then(j) as Promise<DashboardRead | null>,
     // The person's Keep: install exactly the staged page the preview read named by
     // `staged_ms`. Owner-only, refused to an agent's internal-secret caller, 409
-    // `preview_changed` when another page was staged since, 423 `dashboard_locked`.
+    // `preview_changed` when another page was staged since.
     memberDashboardPreviewApply: (slug: string, member: string, stagedMs: number) =>
       post('/api/members/' + encodeURIComponent(slug) + '/dashboard/preview/apply?member=' + encodeURIComponent(member), { staged_ms: stagedMs })
         .then(j) as Promise<{ ok: boolean; instance_version: number; template_id: string }>,
@@ -517,11 +520,6 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, jMembe
     memberDashboardPreviewDiscard: (slug: string, member: string, stagedMs: number) =>
       post('/api/members/' + encodeURIComponent(slug) + '/dashboard/preview/discard?member=' + encodeURIComponent(member), { staged_ms: stagedMs })
         .then(j) as Promise<{ ok: boolean }>,
-    // Set or clear that lock. Owner-only on the gateway, and refused to an agent's
-    // internal-secret caller: only the person, from the crewmate's Profile card, can move it.
-    memberDashboardLock: (slug: string, member: string, locked: boolean) =>
-      post('/api/members/' + encodeURIComponent(slug) + '/dashboard/lock?member=' + encodeURIComponent(member), { locked })
-        .then(j) as Promise<{ ok: boolean; structure_locked: boolean }>,
     // A ROOT session's own dynamic dashboard, the same body as `memberDashboard`.
     // Keyed by the slot: the gateway reads every field from that session's own work
     // ledger and crew log, and answers 404 `not_root_session` for a dispatched or

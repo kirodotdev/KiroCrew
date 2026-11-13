@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useId, useState, type ReactNode } from 'react'
 import { Handshake, Shield, ShieldPlus, ShieldCheck, BookOpen, ChevronDown, Clock } from 'lucide-react'
 import { Trans } from 'react-i18next'
 import {
@@ -281,5 +281,24 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
         </DropdownMenuContent>
       </DropdownMenu>
     </GuideTrustRootProvider>
+  )
+}
+
+/** Trust's place on an approval bar whose request takes no standing grant: the
+    menu's own trigger, disabled and just as wide, so Allow once and Reject sit
+    where they do beside the Trust menu and a reflex click there never lands on a
+    grant. Native `disabled` keeps it out of the tab order and the approve chord's
+    probe. The reason is a `title` on the wrapper, since a disabled button gets no
+    pointer events, rather than an InfoTip, which would add a control to the row. */
+export function TrustUnavailable({ className }: { className?: string }) {
+  const reasonId = useId()
+  const reason = i18nT('components.trustDropdown.trust_unavailable')
+  return (
+    <span title={reason} className="inline-flex cursor-not-allowed">
+      <button disabled aria-describedby={reasonId} className={`${className ?? ''} pointer-events-none`}>
+        <Handshake size={12} className="shrink-0" />{i18nT('components.trustDropdown.trust')}<ChevronDown size={10} className="shrink-0 opacity-70" />
+      </button>
+      <span id={reasonId} hidden>{reason}</span>
+    </span>
   )
 }

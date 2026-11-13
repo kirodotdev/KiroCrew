@@ -108,7 +108,8 @@ const LAST_STEP = 5
  * resumes it. `mc-onboarded` is written only when the tour ends, so without
  * this a reload anywhere in steps 2-5 reopened the flow at step 1 and the user
  * met "Pick your look" again on every reload until they reached "Done".
- * Removed when the flow ends; ignored once `mc-onboarded` is set, so a
+ * Removed when the flow ends and whenever the user becomes onboarded by any
+ * path; ignored once `mc-onboarded` is set, so a
  * `/onboarding` replay never resumes a stale step.
  */
 const TOUR_STEP_KEY = 'mc-onboarding-step'
@@ -237,6 +238,7 @@ export default function OnboardingFlow({
     allThemes,
     preference: modePref,
     setTheme: setModePref,
+    onboarded,
   } = useTheme()
   const [open, setOpen] = useState(initialOpen)
   const [step, setStep] = useState(() => (initialOpen ? resumedStep() : 1))
@@ -377,6 +379,13 @@ export default function OnboardingFlow({
       setOpen(false)
     }
   }, [initialOpen])
+
+  // Once the user is onboarded by any path (this flow's finish, the Privacy
+  // chapter's "Skip all", or the server saying so on this or another machine),
+  // the first run is over: a saved step must not resume a later first run.
+  useEffect(() => {
+    if (onboarded) safeRemoveItem(TOUR_STEP_KEY)
+  }, [onboarded])
 
   // Remember the first-run step so a reload resumes it (see TOUR_STEP_KEY).
   useEffect(() => {

@@ -615,6 +615,9 @@ def lessons_args(
     hard_cap: int,
     directive_budget: int,
     experience_budget: int,
+    authority_order: str = "off",
+    lesson_fold: str = "off",
+    relevance_rule: str = "off",
 ) -> dict[str, Any]:
     """Job arguments for a lessons read.
 
@@ -647,6 +650,9 @@ def lessons_args(
         "hard_cap": hard_cap,
         "directive_budget": directive_budget,
         "experience_budget": experience_budget,
+        "authority_order": authority_order,
+        "lesson_fold": lesson_fold,
+        "relevance_rule": relevance_rule,
     }
 
 
@@ -732,6 +738,7 @@ def _read(state: _ChildState, job: dict[str, Any]) -> dict[str, Any]:
                 args.get("query_text", ""),
                 args.get("cap", 1500),
                 facts_only=bool(args.get("facts_only")),
+                relevance_rule=args.get("relevance_rule", "off"),
             )
         elif kind == "episodic":
             text = store.get_episodic_context(
@@ -753,6 +760,9 @@ def _read(state: _ChildState, job: dict[str, Any]) -> dict[str, Any]:
                 hard_cap=args.get("hard_cap", 0),
                 directive_budget=args.get("directive_budget", 0),
                 experience_budget=args.get("experience_budget", 0),
+                authority_order=args.get("authority_order", "off"),
+                lesson_fold=args.get("lesson_fold", "off"),
+                relevance_rule=args.get("relevance_rule", "off"),
             )
         else:
             return {"ok": False, "message": f"unknown job kind {kind!r}"}

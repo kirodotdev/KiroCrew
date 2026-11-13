@@ -124,6 +124,16 @@ describe('detectBrowserLanguage — exact vs loose precedence', () => {
     withLanguages(['zh-HK', 'en'], () => expect(detectBrowserLanguage()).toBe('en'))
   })
 
+  it('treats a Simplified-script tag as an exact match for zh-CN', () => {
+    withLanguages(['zh', 'en-US'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
+    withLanguages(['zh-Hans', 'en'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
+    withLanguages(['zh-Hans-CN', 'en'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
+    withLanguages(['zh-SG', 'en'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
+    withLanguages(['zh-SG-u-nu-latn', 'en'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
+    withLanguages(['en', 'zh-Hans'], () => expect(detectBrowserLanguage()).toBe('en'))
+    withLanguages(['zh-Hant-TW', 'en'], () => expect(detectBrowserLanguage()).toBe('en'))
+  })
+
   it('still honours the highest-ranked tag when both match exactly', () => {
     withLanguages(['zh-CN', 'en'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
     withLanguages(['en', 'zh-CN'], () => expect(detectBrowserLanguage()).toBe('en'))

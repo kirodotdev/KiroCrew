@@ -356,6 +356,9 @@ export interface SidebarRows {
    *  the list right now? Then a visible pinned row may be there only because it is
    *  pinned, which the pinned-band caption says. */
   pinnedExemptNarrowing: boolean
+  /** Is a dimension OTHER than the search box narrowing the list right now? Then a
+   *  search may be missing hits these filters hide. */
+  filtersNarrowing: boolean
   /** One entry per dimension, in declaration order: does it hide THIS row, and how to
    *  drop it. The reveal effect walks this instead of naming the dimensions. */
   revealBlockingFilters: RevealBlockingFilter[]
@@ -516,7 +519,14 @@ function makeLaneOrder(
     return (key !== null && searchRanks ? searchRanks.get(key) : undefined) ?? Infinity
   }
   return (a, b) => {
-    if (searchRanks) return rank(a) - rank(b)
+    // Ranked rows first, best first. Two rows the server did not rank (a folder-name
+    // match, a title or PR-chip match it did not return, a peer row) subtract to
+    // NaN, which `sort` reads as a tie of unspecified order; they take the browsing
+    // order below instead.
+    if (searchRanks) {
+      const d = rank(a) - rank(b)
+      if (d) return d
+    }
     // The pinned SECTION is decided here, per origin; the pinned ORDER inside it
     // still has exactly one implementation, delegated to below.
     const aPinned = isPinned(a)
@@ -621,6 +631,7 @@ function makeDimensions(
       filtersRow: slot => tags.resolved.size === 0 || pinnedBypass(slot) || (slot.tags ?? []).some(id => tags.resolved.has(id)),
       narrows: () => tags.resolved.size > 0,
       exemptsPinned: true,
+      isSearch: false,
       // The pinned exemption is restated here because this predicate does not go
       // through `excluded`: a reveal of a pinned row must not clear a tag filter that
       // was never hiding it.
@@ -654,6 +665,7 @@ function makeDimensions(
       },
       narrows: () => Boolean(search.text),
       exemptsPinned: false,
+      isSearch: true,
       hides: (slot, excluded) => Boolean(search.text) && excluded(slot),
       clear: () => clears.search(),
     },
@@ -666,6 +678,7 @@ function makeDimensions(
       filtersRow: slot => activeStatus.length === 0 || pinnedBypass(slot) || activeStatus.some(key => matches[key](slot)),
       narrows: () => activeStatus.length > 0,
       exemptsPinned: true,
+      isSearch: false,
       hides: (slot, excluded) => activeStatus.length > 0 && !pinnedBypass(slot) && excluded(slot),
       clear: () => clears.status(),
     },
@@ -675,6 +688,7 @@ function makeDimensions(
       filtersRow: null,
       narrows: null,
       exemptsPinned: false,
+      isSearch: false,
       hides: slot => {
         const folderId = folderOf(slot)
         return !!folderId && folderFilter.hiddenSubtree.has(folderId)
@@ -690,6 +704,7 @@ function makeDimensions(
       filtersRow: slot => !isRowStatusHidden(slot),
       narrows: () => status.hidden.size > 0,
       exemptsPinned: false,
+      isSearch: false,
       // Unlike search and the include chips, a hide CAN answer for one row on its
       // own: it hides exactly the rows its predicates match. Asking list membership
       // instead would let a row the search dropped clear every hide on reveal, even
@@ -707,6 +722,7 @@ function makeDimensions(
       filtersRow: models.passes,
       narrows: () => models.active,
       exemptsPinned: false,
+      isSearch: false,
       hides: slot => !models.passes(slot),
       clear: () => clears.models(),
     },
@@ -886,6 +902,7 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
     frozenList ?? filterRows(rows, dimensions.value, laneOrder.value))
   const listNarrowed = dimensions.value.some(d => d.narrows !== null && d.narrows())
   const pinnedExemptNarrowing = dimensions.value.some(d => d.exemptsPinned && d.narrows !== null && d.narrows())
+  const filtersNarrowing = dimensions.value.some(d => !d.isSearch && d.narrows !== null && d.narrows())
   const revealBlockingFilters = reuse(prev?.revealBlockingFilters, [dimensions.value, filteredSlots.value], () =>
     makeRevealRegistry(dimensions.value, filteredSlots.value))
 
@@ -918,6 +935,7 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
     filteredSlots: filteredSlots.value,
     listNarrowed,
     pinnedExemptNarrowing,
+    filtersNarrowing,
     revealBlockingFilters: revealBlockingFilters.value,
     statusCounts: statusCounts.value,
     laneOrder: laneOrder.value,

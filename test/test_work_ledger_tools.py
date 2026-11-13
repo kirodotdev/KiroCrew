@@ -447,6 +447,11 @@ async def test_already_bound_is_409():
 @pytest.mark.asyncio
 async def test_item_closed_is_409_for_both_halves():
     ids = await two_by_two()
+    assert (
+        await _record(
+            CONDUCTOR_A, {"action": "verdict", "item_id": ids["item_a"], "verdict": "pass"}
+        )
+    )[0] == 200
     status, _ = await _record(
         CONDUCTOR_A, {"action": "close", "item_id": ids["item_a"], "state": "accepted"}
     )
@@ -517,6 +522,9 @@ async def test_goal_concurrency_cap_reached_is_409_and_concurrency_cap_raises_it
         CONDUCTOR_A, {"action": "create", "title": "d", "acceptance": acceptance}
     )
     assert (status, body["code"]) == (409, wl.CODE_GOAL_CONCURRENCY_CAP_REACHED)
+    assert (
+        await _record(CONDUCTOR_A, {"action": "verdict", "item_id": second, "verdict": "pass"})
+    )[0] == 200
     status, _ = await _record(
         CONDUCTOR_A, {"action": "close", "item_id": second, "state": "accepted"}
     )
@@ -657,6 +665,26 @@ async def test_invalid_action_is_400():
     status, body = await _record(CONDUCTOR_A, {"action": "delete"})
     assert status == 400
     assert body["code"] == wl.CODE_INVALID_ACTION
+
+
+@pytest.mark.asyncio
+async def test_an_unbound_session_is_told_what_not_bound_means():
+    """A bound worker reads its item; any other session gets ``not_bound`` with what
+    to do next in the refusal itself, so the caller has nothing to work out."""
+    ids = await two_by_two()
+    status, body = await _brief(WORKER_A)
+    assert status == 200, body
+    assert body["brief"]["item_id"] == ids["item_a"]
+
+    status, body = await _brief("chat-nobody-bound")
+    assert (status, body["code"]) == (403, "not_bound")
+    assert "the message you were given is your whole task" in body["error"]
+
+    # A refused report may come from a worker whose item moved on: it gets the
+    # code and no task.
+    status, body = await _report("chat-nobody-bound", {"status": "progress", "summary": "s"})
+    assert (status, body["code"]) == (403, "not_bound")
+    assert "whole task" not in body["error"]
 
 
 @pytest.mark.asyncio
@@ -1591,6 +1619,9 @@ async def test_read_filters_by_item_id(monkeypatch):
 @pytest.mark.asyncio
 async def test_read_filters_by_state(monkeypatch):
     ids = await _three_dated_items(monkeypatch)
+    assert (
+        await _record(CONDUCTOR_A, {"action": "verdict", "item_id": ids[0], "verdict": "pass"})
+    )[0] == 200
     status, body = await _record(
         CONDUCTOR_A, {"action": "close", "item_id": ids[0], "state": "accepted", "decision": "ok"}
     )

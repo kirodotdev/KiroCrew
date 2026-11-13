@@ -189,6 +189,7 @@ def test_an_open_item_wins_over_a_closed_one_for_the_same_member():
         )["item"].item_id
         ids.append(item_id)
     wl.apply_conductor_action(CONDUCTOR, "bind", item_id=ids[1], worker_session_key=WORKER)
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=ids[1], verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=ids[1], state="accepted")
     wl.apply_conductor_action(CONDUCTOR, "bind", item_id=ids[0], worker_session_key=WORKER)
     items = crew_workers._ledger_items(CONDUCTOR)
@@ -205,6 +206,7 @@ def test_a_grandchilds_item_is_read_from_the_sub_conductor_that_bound_it():
         sub, "create", title="nested", acceptance={"kind": "human_approval"}
     )["item"].item_id
     wl.apply_conductor_action(sub, "bind", item_id=item_id, worker_session_key=grandchild)
+    wl.apply_conductor_action(sub, "verdict", item_id=item_id, verdict="pass")
     wl.apply_conductor_action(sub, "close", item_id=item_id, state="accepted")
     # The root's own ledger never names the grandchild.
     assert grandchild not in crew_workers._ledger_items(CONDUCTOR)

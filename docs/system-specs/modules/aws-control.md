@@ -166,7 +166,8 @@ canonical path. Missing, uncheckable, or refused fallback directories stay off
 the child `PATH`. This lets the CLI find a bare `credential_process` helper by
 name when a desktop-launched gateway's minimal `PATH` holds neither fallback.
 Per-user dirs such as `~/.local/bin` are reached only through the inherited
-`PATH`.
+`PATH`. The child gets none of the gateway's Python interpreter settings
+(`sandbox.without_python_env`), because aws-cli v1 is a Python program.
 
 ## Drive and destructive operations
 

@@ -63,6 +63,13 @@ const SILENCED: Record<string, string> = {
   setAutoCompactError: 'components/chat-input/ContextShelf.tsx',
 }
 
+/** The second kind of pairing: a silenced notice whose twin is a `role="status"` live region in
+ *  the same file rendering the same value, not the toast. Each entry is the file and that value. */
+const SIBLING_LIVE: Record<string, string> = {
+  // The top bar's offline notice; the connection dot's sr-only status span announces the cause.
+  'shell/topbar/shellHeader.tsx': 'gatewayStatusMsg',
+}
+
 describe('nothing sets a silenced in-place error except through the helper', () => {
   it('is rendered by exactly the call sites this file pins', () => {
     // `.tsx` only: the prop is JSX, which TypeScript does not allow in a `.ts`
@@ -74,8 +81,20 @@ describe('nothing sets a silenced in-place error except through the helper', () 
     // A new consumer must be added here deliberately, and must report through
     // reportSlotWriteFailure. Silencing a notice with no floating twin would
     // leave the failure unannounced.
-    expect(found).toEqual(Object.values(SILENCED).sort())
+    expect(found).toEqual([...Object.values(SILENCED), ...Object.keys(SIBLING_LIVE)].sort())
   })
+
+  for (const [file, value] of Object.entries(SIBLING_LIVE)) {
+    it(`${file} silences only a notice whose ${value} a role="status" span already announces`, () => {
+      const text = readFileSync(join(SRC, file), 'utf8')
+      expect(text, `${file} lost the live region that announces ${value}`).toMatch(
+        new RegExp(`<span role="status"[^>]*>\\{${value}\\}</span>`),
+      )
+      const silenced = [...text.matchAll(/<ErrorNotice\b[\s\S]*?\/>/g)].map(m => m[0]).filter(b => b.includes('announce={false}'))
+      expect(silenced.length, `${file} has no silenced notice, so drop it from SIBLING_LIVE`).toBeGreaterThan(0)
+      for (const block of silenced) expect(block, `a silenced notice in ${file} shows something its twin does not announce`).toContain(`message={${value}}`)
+    })
+  }
 
   for (const [setter, callSite] of Object.entries(SILENCED)) {
     it(`${setter} is only ever invoked to clear, never with a message`, () => {

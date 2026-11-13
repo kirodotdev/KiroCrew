@@ -535,6 +535,18 @@ describe('the Kiro sign-in entry follows the selected harness', () => {
     const { result } = await renderWithConfig(undefined)
     expect(offersSignIn(result.current)).toBe(true)
   })
+
+  // The gateway's `kas_in_use` covers Bots: a Kiro CLI or Claude main harness
+  // whose Bots run on KAS (an unset or KAS Bot harness, or a Bot pinned to KAS).
+  it.each(['kiro', 'claude'])('offers it on the %s harness when Bots run on KAS', async backend => {
+    const { result } = await renderWithConfig({ ...harness(backend), kas_in_use: true })
+    await waitFor(() => expect(offersSignIn(result.current)).toBe(true))
+  })
+
+  it('withholds it on a KAS-named main harness the gateway says nothing runs on', async () => {
+    const { result } = await renderWithConfig({ ...harness('kas'), kas_in_use: false })
+    await waitFor(() => expect(offersSignIn(result.current)).toBe(false))
+  })
 })
 
 describe('the Instances rows follow whether remote crews are on', () => {

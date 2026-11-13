@@ -279,6 +279,20 @@ class KeystoneFileBackend:
             return {}
         return self._coerce(raw)
 
+    def unreadable(self) -> bool:
+        """True when a store exists but a lookup could not read it as an object.
+
+        ``_read`` answers ``{}`` for that, the same as for no store at all, so a
+        caller that must tell "not configured" from "cannot tell" asks here.
+        """
+        try:
+            raw = json.loads(self._path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return False
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return True
+        return not isinstance(raw, dict)
+
     def _read_for_update(self) -> dict[str, dict[str, str]]:
         """The store a read-modify-write is allowed to publish over.
 
@@ -451,6 +465,17 @@ def delete_secret(provider_id: str) -> bool:
 def configured_fields(provider_id: str) -> frozenset[str]:
     """Which secret fields are set for a provider — names only, never values."""
     return _backend.configured_fields(provider_id)
+
+
+def store_unreadable() -> bool:
+    """True when the secret store exists but cannot be read.
+
+    Lookups answer "not configured" in that case, which is right for polling and
+    wrong for arming: it would pause a live shift over a transient read error.
+    A backend without an ``unreadable`` probe reports False.
+    """
+    probe = getattr(_backend, "unreadable", None)
+    return bool(probe()) if callable(probe) else False
 
 
 def has_secrets(provider_id: str, required: tuple[str, ...]) -> bool:

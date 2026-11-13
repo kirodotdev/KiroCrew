@@ -46,7 +46,9 @@ Both documents follow one rule: a click sends text with the authority of typed t
 
 ## Decision
 
-1. **Start sends.** "Start in new worktree" and "Start in new chat" create and scope the new session as today. They then send the item's prompt to that session by its key, as its first message, before the switch.
+> **Amended 2026-11-05, before anything shipped.** In review of #25926 the maintainer bolichen97 asked that the default not change, because a Start that sends changes consent, not only the UX ([review](https://github.com/kirodotdev/KiroCrew/pull/25926#pullrequestreview-5782364095)). So Start keeps pre-filling by default, as it does on main. Sending on Start is an opt-in: the setting **Send follow-ups with one click** (Settings → Chat → Composer), off by default. It is stored only in the browser (`mc-followup-start-sends`), outside the settings backup in the agent-writable data home, so neither an agent's change card nor an edit to that backup can turn it on. The card footer describes whichever behaviour is active, and the card passes the same value to the Start call, so a press does what the footer said. The worktree button is renamed "Start in a separate copy", with the term "worktree" in its tooltip. With the setting on, the buttons read "Run in a separate copy" and "Run in new chat", so a press that runs the prompt never looks like one that only pre-fills. Decisions 1, 5 and 6 and the failure table below describe Start with that setting on. Decision 3's prompt preview shows in both modes. The refused-send cleanup uses the discard endpoint from #32350, which re-checks on the server that the session is still empty, so a turn another window starts in the same request is no longer closed (the third item under Risks). What is left of that item is a send from another window that recreates the session while the server saves the discarded one: the discard still answers 200, and the card offers a retry that the worktree route refuses as in use.
+
+1. **Start sends.** "Start in new worktree" and "Start in new chat" create and scope the new session as today. They then send the item's prompt to that session by its key, as its first message. The person stays on the session they are in: the new one runs in the background, and a notice names it with an Open session button (card-3).
 2. **Only Start changes.** Every other surface in the table keeps its current behaviour. "Add to this session" keeps pre-filling. Widget actions keep pre-filling, because their trust problem is the script, not the click. No other card gains one-click sending through this document.
 3. **The person can read what will run before the click.** Each item shows the first three lines of its exact prompt as plain text, under the title and description, with no toggle needed. A "Show prompt" toggle expands the rest when the prompt is longer. The title and description are labels the agent chose; the prompt is what runs, so its opening lines are on the card at every Start and the rest is one toggle away. The card footer says that Start sends the prompt and Add only pre-fills it.
 4. **Editing and cancelling.**
@@ -67,7 +69,7 @@ The card shows every failure on the item it came from, unless that card is gone,
 | Refused, but the new session is no longer untouched (another window opened it and started a turn) | Kept, because closing it would end that turn | Not sent, with a pointer to that session in the sidebar. No retry is offered, because on the worktree route the kept session holds the worktree and a retry gets a 409 |
 | Refused, and closing the untouched session fails | Left as it is | Same as the row above: point to the session, no retry offer |
 | No answer (a transport error or a late response): the turn may already be running | Kept | The item leaves the card, the first message carries the pending-delivery mark, and a page notice says to open that session and check it. No retry is offered, because it could run the prompt twice |
-| Accepted, but the switch to the new session fails, or the person opened another session meanwhile | Running | The item leaves the card. A page notice names the new session in the sidebar, and the person stays where they are |
+| Accepted | Running | The item leaves the card. The person stays where they are, and a notice names the new session with an Open session button |
 
 The second and third rows are what #25926 does not yet do. Today the delete after a refused send ignores its own failure, and the card still offers a retry that gets a 409. Those two rows are a condition of this document.
 
@@ -89,7 +91,7 @@ The new session is scoped to its worktree before it can receive a turn, so the p
 - **Expand the whole prompt by default.** Rejected: a prompt can be 8000 characters, and three of them make the card taller than the transcript it sits on.
 - **Collapse the prompt entirely behind Show prompt.** This is what #25926 first built. Rejected in review: most people would press Start without opening the toggle, so most starts would run text nobody read. Three lines show the task's opening, which is where an agent states what the prompt does.
 - **A Start-then-edit button that opens the new worktree session with the prompt pre-filled.** That is today's Start. Keeping it beside a sending Start puts two near-identical buttons on every item, and the card already has three.
-- **Run the start in the background without switching.** This is a separate change (card-3). It builds on this one and does not change the consent question.
+- **Run the start in the background without switching.** Adopted as a separate change (card-3), built on this one. It does not change the consent question.
 
 ## Risks
 

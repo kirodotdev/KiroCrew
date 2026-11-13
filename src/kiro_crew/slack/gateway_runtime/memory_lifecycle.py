@@ -35,8 +35,13 @@ if TYPE_CHECKING:
     )
 
 
-def _initialize_memory_worker(self: GatewayOrchestrator) -> bool:
-    """Restore and open the already-wired memory objects after readiness."""
+def _initialize_memory_worker(self: GatewayOrchestrator, dashboard_state: Any = None) -> bool:
+    """Restore and open the already-wired memory objects after readiness.
+
+    *dashboard_state* is the dashboard the worker was scheduled for. The
+    dashboard starts this worker before it returns its state to the gateway, so
+    ``self.dashboard_state`` can still be unset when the prefetch reads it.
+    """
     from kiro_crew.config.loader import data_home
     from kiro_crew.context import reset_memory_caches
     from kiro_crew.cron_service.identity import (
@@ -113,7 +118,10 @@ def _initialize_memory_worker(self: GatewayOrchestrator) -> bool:
                 try:
                     from kiro_crew.page_cache import prefetch as _prefetch_pages
 
-                    _knowledge = getattr(self.dashboard_state, "_knowledge_store", None)
+                    _state = (
+                        dashboard_state if dashboard_state is not None else self.dashboard_state
+                    )
+                    _knowledge = getattr(_state, "_knowledge_store", None)
                     _prefetch_pages(
                         (
                             getattr(self.vector_memory, "_db_path", None),
@@ -196,8 +204,16 @@ def _start_memory_after_ready(self: GatewayOrchestrator) -> None:
         self._memory_repair_task.add_done_callback(self._background_tasks.discard)
 
 
-def _schedule_memory_preparation(self: GatewayOrchestrator) -> "asyncio.Task[None] | None":
-    """Publish the one restore/open task without yielding to its worker."""
+def _schedule_memory_preparation(
+    self: GatewayOrchestrator, dashboard_state: Any = None
+) -> "asyncio.Task[None] | None":
+    """Publish the one restore/open task without yielding to its worker.
+
+    The dashboard passes its own *dashboard_state*: it schedules this before it
+    returns that state to the gateway, so ``self.dashboard_state`` is unset then.
+    """
+    if dashboard_state is None:
+        dashboard_state = self.dashboard_state
     if self._memory_startup is None:
         return None
     if self._memory_startup_task is None:
@@ -215,7 +231,7 @@ def _schedule_memory_preparation(self: GatewayOrchestrator) -> "asyncio.Task[Non
             run = contextvars.copy_context().run
             try:
                 await asyncio.get_running_loop().run_in_executor(
-                    pool, run, self._initialize_memory_worker
+                    pool, run, self._initialize_memory_worker, dashboard_state
                 )
             except asyncio.CancelledError:
                 await asyncio.to_thread(self._stop_memory_startup)
@@ -229,7 +245,6 @@ def _schedule_memory_preparation(self: GatewayOrchestrator) -> "asyncio.Task[Non
         self._memory_startup_task = task
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
-    dashboard_state = self.dashboard_state
     if dashboard_state is not None:
         dashboard_state.memory_startup_task = self._memory_startup_task
     return self._memory_startup_task
@@ -321,11 +336,7 @@ def _repair_member_memory_once(self: GatewayOrchestrator) -> None:
     from kiro_crew.context import cached_vector_store_entries
     from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE, require_memory_store
 
-    if (
-        self._memory_repair_stop.is_set()
-        or reembed_progress().is_active()
-        or peek_ready_shared_embedder() is None
-    ):
+    if self._memory_repair_stop.is_set() or reembed_progress().is_active():
         return
     entries_by_name = dict(cached_vector_store_entries())
     global_store = getattr(self, "vector_memory", None)
@@ -353,6 +364,12 @@ def _repair_member_memory_once(self: GatewayOrchestrator) -> None:
             return
     if self._memory_repair_stop.is_set():
         return
+    if peek_ready_shared_embedder() is None:
+        # No model yet: only the model-free lesson-dedup rollback can run.
+        from kiro_crew.memory_lesson_dedup import rollback_if_off
+
+        rollback_if_off(store)
+        return
     reconcile_store_embedding_space(store)
     if not store.has_pending_embeddings() and not store_embedding_space_is_stale(store):
         return
@@ -364,7 +381,12 @@ def _repair_member_memory_once(self: GatewayOrchestrator) -> None:
 
 
 async def _repair_member_memory(self: GatewayOrchestrator) -> None:
-    """Run one paced repair loop across already-open V1 and V2 stores."""
+    """Run one paced repair loop across already-open V1 and V2 stores.
+
+    Each visit also gives Dreaming (``memory.dream``) its turn; with the flag off
+    that reads the flag and nothing else.
+    """
+    from kiro_crew import memory_dream
     from kiro_crew.executors import memory_background_executor
 
     loop = asyncio.get_running_loop()
@@ -379,6 +401,13 @@ async def _repair_member_memory(self: GatewayOrchestrator) -> None:
         except Exception:
             if not self._memory_repair_stop.is_set():
                 logger.warning("Memory embedding repair deferred", exc_info=True)
+        try:
+            await memory_dream.gateway_visit(self)
+        except asyncio.CancelledError:
+            self._memory_repair_stop.set()
+            raise
+        except Exception:
+            logger.warning("Dreaming visit deferred", exc_info=True)
         await asyncio.sleep(30)
 
 
@@ -489,7 +518,16 @@ async def _auto_migrate_memory(self: GatewayOrchestrator) -> None:
                 f"skipped={counts['skipped']}"
             )
             try:
-                store._log_event("migration", "system", "auto_migrate", None, summary, "auto")
+                await loop.run_in_executor(
+                    maintenance_executor(),
+                    store._log_event,
+                    "migration",
+                    "system",
+                    "auto_migrate",
+                    None,
+                    summary,
+                    "auto",
+                )
             except Exception:
                 logger.debug("auto-migrate audit log failed", exc_info=True)
             logger.info("Auto-migrated legacy memory: %s", summary)

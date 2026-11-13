@@ -25,19 +25,18 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_crew.code_fingerprint import code_fingerprint as _real_code_fingerprint
+from kiro_crew import code_fingerprint as _cf
 from kiro_crew.mcp_gateway import gatewayd as gw
 from kiro_crew.mcp_gateway import manager as mgr
 from kiro_crew.mcp_gateway import transport
 from kiro_crew.mcp_gateway.gatewayd import resolvable_target_stems
 from kiro_crew.testing.wait import async_wait_until, await_until, finished
 
-#: The fingerprint every fake pong in this module carries. The REAL one, because
-#: the end-to-end test spawns a real daemon from this same checkout and the
-#: manager compares against its own process; a fake constant would make every
-#: fit incumbent read as running different code, which is a separate concern
-#: pinned in test_mcp_gateway_daemon_lifecycle.py.
-_FP = _real_code_fingerprint()
+
+def _fp() -> str:
+    """A fake pong's fingerprint, read per call: another module can refill the cache."""
+    return _cf.code_fingerprint()
+
 
 _POSIX_ONLY = pytest.mark.skipif(
     sys.platform == "win32", reason="observes a socket file and lock being released"
@@ -425,7 +424,7 @@ class TestAdoptedDriftRecheck:
         monkeypatch.setattr(manager, "_repair_or_adopt", asked)
         assert (
             await manager._reconcile_adopted(
-                {"type": "pong", "targets": ["CORE"], "fingerprint": _FP}
+                {"type": "pong", "targets": ["CORE"], "fingerprint": _fp()}
             )
             is False
         )
@@ -448,7 +447,7 @@ class TestAdoptedDriftRecheck:
         manager = _manager(tmp_path, {"KIROCREW_MCP_TARGET_CORE": "run core"})
         asked = AsyncMock(return_value=mgr._ADOPT)
         monkeypatch.setattr(manager, "_repair_or_adopt", asked)
-        pong = {"type": "pong", "targets": [], "fingerprint": _FP}
+        pong = {"type": "pong", "targets": [], "fingerprint": _fp()}
 
         assert await manager._reconcile_adopted(pong) is False
         assert asked.await_count == 1, "the first call assesses"
@@ -475,11 +474,11 @@ class TestAdoptedDriftRecheck:
 
         async def _spawned() -> dict:
             manager._process = ours
-            return {"type": "pong", "targets": ["CORE"], "fingerprint": _FP}
+            return {"type": "pong", "targets": ["CORE"], "fingerprint": _fp()}
 
         monkeypatch.setattr(manager, "_spawn_and_confirm", AsyncMock(side_effect=_spawned))
         assert (
-            await manager._reconcile_adopted({"type": "pong", "targets": [], "fingerprint": _FP})
+            await manager._reconcile_adopted({"type": "pong", "targets": [], "fingerprint": _fp()})
             is True
         )
         assert manager._adopted is False, "we own the daemon now"
@@ -504,7 +503,7 @@ class TestAdoptedDriftRecheck:
         spawn = AsyncMock()
         monkeypatch.setattr(manager, "_spawn_and_confirm", spawn)
         assert (
-            await manager._reconcile_adopted({"type": "pong", "targets": [], "fingerprint": _FP})
+            await manager._reconcile_adopted({"type": "pong", "targets": [], "fingerprint": _fp()})
             is False
         )
         assert manager._adopted is True
@@ -531,7 +530,7 @@ class TestAdoptedDriftRecheck:
         reply = (
             None
             if outcome == "nothing_serves"
-            else {"type": "pong", "targets": ["CORE"], "fingerprint": _FP}
+            else {"type": "pong", "targets": ["CORE"], "fingerprint": _fp()}
         )
         monkeypatch.setattr(manager, "_spawn_and_confirm", AsyncMock(return_value=reply))
         watchdogs: list[object] = []
@@ -540,7 +539,7 @@ class TestAdoptedDriftRecheck:
         )
 
         assert (
-            await manager._reconcile_adopted({"type": "pong", "targets": [], "fingerprint": _FP})
+            await manager._reconcile_adopted({"type": "pong", "targets": [], "fingerprint": _fp()})
             is True
         )
         assert manager._adopted is True, "must return to the adopted branch"
@@ -570,7 +569,7 @@ class TestAdoptedDriftRecheck:
         asked = AsyncMock(return_value=mgr._SPAWN)
         monkeypatch.setattr(manager, "_repair_or_adopt", asked)
         assert (
-            await manager._reconcile_adopted({"type": "pong", "targets": [], "fingerprint": _FP})
+            await manager._reconcile_adopted({"type": "pong", "targets": [], "fingerprint": _fp()})
             is False
         )
         asked.assert_not_awaited()
@@ -587,7 +586,7 @@ class TestAdoptedDriftRecheck:
         manager = _manager(tmp_path, {"KIROCREW_MCP_TARGET_CORE": "run core"})
         manager._adopted = True
         manager._process = None
-        pong = {"type": "pong", "targets": [], "fingerprint": _FP}
+        pong = {"type": "pong", "targets": [], "fingerprint": _fp()}
         pings = 0
 
         async def _ping() -> dict:
@@ -649,7 +648,7 @@ class TestAdoptedDriftRecheck:
         monkeypatch.setattr(
             manager,
             "_ping_payload",
-            AsyncMock(return_value={"type": "pong", "targets": ["CORE"], "fingerprint": _FP}),
+            AsyncMock(return_value={"type": "pong", "targets": ["CORE"], "fingerprint": _fp()}),
         )
         seen: list[float] = []
 
@@ -707,7 +706,7 @@ class TestAdoptedDriftRecheck:
         manager = _manager(tmp_path, {"KIROCREW_MCP_TARGET_CORE": "run core"})
         manager._adopted = True
         manager._process = None
-        pong = {"type": "pong", "targets": [], "fingerprint": _FP}
+        pong = {"type": "pong", "targets": [], "fingerprint": _fp()}
         monkeypatch.setattr(manager, "_ping_payload", AsyncMock(return_value=pong))
         monkeypatch.setattr(
             manager,
@@ -747,7 +746,7 @@ class TestElection:
         monkeypatch.setattr(
             manager,
             "_ping_payload",
-            AsyncMock(return_value={"type": "pong", "targets": ["PDF"], "fingerprint": _FP}),
+            AsyncMock(return_value={"type": "pong", "targets": ["PDF"], "fingerprint": _fp()}),
         )
         asked = AsyncMock(return_value=mgr._RELEASED)
         monkeypatch.setattr(manager, "_request_stand_down", asked)
@@ -770,7 +769,7 @@ class TestElection:
         monkeypatch.setattr(
             manager,
             "_ping_payload",
-            AsyncMock(return_value={"type": "pong", "targets": ["PDF"], "fingerprint": _FP}),
+            AsyncMock(return_value={"type": "pong", "targets": ["PDF"], "fingerprint": _fp()}),
         )
         monkeypatch.setattr(manager, "_request_stand_down", AsyncMock(return_value=mgr._RELEASED))
         proc = MagicMock()
@@ -779,7 +778,7 @@ class TestElection:
 
         async def _spawn() -> dict[str, Any]:
             manager._process = proc
-            return {"type": "pong", "targets": ["CORE"], "fingerprint": _FP}
+            return {"type": "pong", "targets": ["CORE"], "fingerprint": _fp()}
 
         monkeypatch.setattr(manager, "_spawn_and_confirm", _spawn)
         try:
@@ -799,7 +798,9 @@ class TestElection:
         monkeypatch.setattr(
             manager,
             "_ping_payload",
-            AsyncMock(side_effect=[None, {"type": "pong", "targets": ["PDF"], "fingerprint": _FP}]),
+            AsyncMock(
+                side_effect=[None, {"type": "pong", "targets": ["PDF"], "fingerprint": _fp()}]
+            ),
         )
         stood_down = AsyncMock(return_value=mgr._RELEASED)
         monkeypatch.setattr(manager, "_request_stand_down", stood_down)
@@ -811,9 +812,9 @@ class TestElection:
         async def _spawn() -> dict[str, Any]:
             rounds.append(1)
             if len(rounds) == 1:
-                return {"type": "pong", "targets": ["PDF"], "fingerprint": _FP}  # lost the flock
+                return {"type": "pong", "targets": ["PDF"], "fingerprint": _fp()}  # lost the flock
             manager._process = proc
-            return {"type": "pong", "targets": ["CORE"], "fingerprint": _FP}
+            return {"type": "pong", "targets": ["CORE"], "fingerprint": _fp()}
 
         monkeypatch.setattr(manager, "_spawn_and_confirm", _spawn)
         try:
@@ -833,10 +834,10 @@ class TestElection:
         monkeypatch.setattr(
             manager,
             "_ping_payload",
-            AsyncMock(return_value={"type": "pong", "targets": ["PDF"], "fingerprint": _FP}),
+            AsyncMock(return_value={"type": "pong", "targets": ["PDF"], "fingerprint": _fp()}),
         )
         monkeypatch.setattr(manager, "_request_stand_down", AsyncMock(return_value=mgr._RELEASED))
-        spawn = AsyncMock(return_value={"type": "pong", "targets": ["PDF"], "fingerprint": _FP})
+        spawn = AsyncMock(return_value={"type": "pong", "targets": ["PDF"], "fingerprint": _fp()})
         monkeypatch.setattr(manager, "_spawn_and_confirm", spawn)
 
         with caplog.at_level(logging.ERROR, logger=mgr.logger.name):
@@ -857,7 +858,7 @@ class TestElection:
         monkeypatch.setattr(
             manager,
             "_ping_payload",
-            AsyncMock(return_value={"type": "pong", "targets": ["PDF"], "fingerprint": _FP}),
+            AsyncMock(return_value={"type": "pong", "targets": ["PDF"], "fingerprint": _fp()}),
         )
         monkeypatch.setattr(manager, "_request_stand_down", AsyncMock(return_value=mgr._DRAINING))
         spawned = AsyncMock(side_effect=RuntimeError("must not spawn into a held lock"))
@@ -995,6 +996,19 @@ async def test_a_stale_survivor_is_repaired_end_to_end(
     home = tmp_path / "home"
     run_dir = _isolate(monkeypatch, home)
     sock = short_sock_dir / "gw.sock"
+
+    # The manager rejects a daemon whose reported code_fingerprint differs from
+    # its own, and code_fingerprint() caches ONE value per worker process --
+    # seeded by its first read, often long before this test runs. When that
+    # single cached read took the mtime fallback (the git probe timed out or
+    # failed once under a loaded run) while the real daemon subprocesses this
+    # test spawns resolve the git revision live, the two schemes never compare
+    # equal, every daemon reads as stale code, the election exhausts its rounds
+    # and start() returns False. Pin the manager to a fingerprint resolved the
+    # same way, from the same tree, as the daemons it is comparing against, so
+    # code drift reflects only real code differences -- which this test plants
+    # none of; the drift it does exercise is the target-map drift below.
+    monkeypatch.setattr(mgr, "code_fingerprint", lambda: _cf.fingerprint_of(_cf._PACKAGE_ROOT))
 
     stale_env = {
         **{

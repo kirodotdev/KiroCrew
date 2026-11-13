@@ -7,6 +7,7 @@ import { pickerQueryKey, type PickerWorkflow, type SlashCommand } from '../chat-
 import { SLASH_MENU_QUERY, WORKFLOW_PICK_QUERY } from '../chat-core/composer/slashQuery'
 import { i18nT } from '../i18n/t'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
+import { useAnchorTracking } from '../hooks/useAnchorTracking'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
 import type { SendMode } from '../pages/chat/ChatSettings'
 
@@ -121,6 +122,8 @@ interface Props {
   sendOnEnter?: SendMode
   /** Commands the host refuses; left out of the list. */
   hidden?: readonly string[]
+  /** The chat the menu is for: its own session's advertised commands join the list. */
+  slotId?: string | null
 }
 
 /**
@@ -167,12 +170,13 @@ const rowInsert = (r: Row) => rowKey(r) + ' '
 /** Saved workflows are re-read at most this often while the menu is in use. */
 const WORKFLOWS_STALE_MS = 30_000
 
-export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, open = true, sendOnEnter = 'enter', hidden }: Props) {
+export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, open = true, sendOnEnter = 'enter', hidden, slotId }: Props) {
   const source = usePickerSource()
   const load = source.slashCommands
   const { data: apiCommands = FALLBACK_COMMANDS, isFetching, isError, isRefetchError, refetch } = useQuery<SlashCommand[]>({
-    queryKey: pickerQueryKey(source, ['slash-commands']),
-    queryFn: ({ signal }) => load!(signal),
+    // Per chat when the chat is known, so one chat's commands never show in another.
+    queryKey: pickerQueryKey(source, slotId ? ['slash-commands', slotId] : ['slash-commands']),
+    queryFn: ({ signal }) => load!(signal, slotId ?? undefined),
     enabled: typeof load === 'function',
   })
   const allCommands = useMemo(() => {
@@ -320,6 +324,8 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
     if (!visible) return
     itemRefs.current[selectedRef.current]?.scrollIntoView({ block: 'nearest' })
   }, [displayed, visible, itemRefs, selectedRef])
+
+  useAnchorTracking(visible, anchorRef)
 
   if (!visible || !anchorRef.current) return null
   // Rows are ordered by an effect, so a matching list is briefly empty here.

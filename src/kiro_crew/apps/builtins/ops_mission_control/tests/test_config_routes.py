@@ -712,17 +712,27 @@ class TestManifestCrons(unittest.TestCase):
             if not cron.enabled:
                 continue
             with self.subTest(cron=cron.name):
-                self.assertIn("configured=true", cron.message)
+                # Two cheap exits qualify: stop on an unconfigured app, or hand the
+                # decision to the arm route, which keeps the gated tier paused with no
+                # signal source and is the only thing that pauses it once armed.
+                self.assertTrue(
+                    "configured=true" in cron.message or "/rotation/arm" in cron.message,
+                    f"{cron.name!r} has no cheap exit for an unconfigured install",
+                )
                 self.assertIn("NO output", cron.message)
 
     def test_rotation_check_exits_cheaply_when_unconfigured(self):
         """Enabled means it runs every 5 minutes on installs that are not set up.
 
-        Its prompt must tell the agent to check for a configured provider FIRST and
-        stop, or a fresh install burns an agent turn every five minutes forever.
+        A `configured=true` early stop cannot work here: the built-in rotation and action
+        fallbacks always report configured, and stopping before the arm route would leave
+        an armed `dispatch` running after the last signal source is removed. So the prompt
+        always calls the route, which keeps `dispatch` paused without a signal source, and
+        stays silent when nothing changed.
         """
         rotation_check = [c for c in self._manifest().crons if c.name == "rotation-check"][0]
-        self.assertIn("configured=true", rotation_check.message)
+        self.assertNotIn("configured=true", rotation_check.message)
+        self.assertIn("rotation/arm", rotation_check.message)
         self.assertIn("NO output", rotation_check.message)
 
     def test_crons_are_silent_and_stateless(self):

@@ -7,7 +7,6 @@ import { apiErrorCode } from '../api/apiError'
 import { useDocumentImeLatch } from '../hooks/useImeGuard'
 import { useLocalCrewHidden } from './overlayRoot'
 import OnboardingChapterShell, { OnboardingShellContext } from './OnboardingChapterShell'
-import { setupChapterAside } from './AgentImportFlow'
 import { PrivacyCommandList, PrivacyDisclosureSections } from './PrivacyDisclosure'
 import { useUsageDataState, type UsageOffReason } from './privacyNotice'
 import type { BeaconStatus } from './PrivacyDisclosure'
@@ -92,6 +91,7 @@ export default function PrivacyChapter({
   open,
   onContinue,
   onAskAgent,
+  passWhenOff,
 }: {
   open: boolean
   /**
@@ -105,6 +105,13 @@ export default function PrivacyChapter({
    * recorded too. Rejects when the write fails; the chapter then stays open.
    */
   onContinue: (ack: { noticeVersion: boolean }) => Promise<void> | void
+  /**
+   * First run only: when usage data is off by the user's own setting, record the
+   * ack through `onContinue` without showing the screen (there is nothing to
+   * ask). Off by an env var, `DO_NOT_TRACK`, a policy or a `config.local.json`
+   * entry still shows the off form. Unset, the off form always shows.
+   */
+  passWhenOff?: boolean
 }) {
   const qc = useQueryClient()
   const usage = useUsageDataState(open)
@@ -243,14 +250,34 @@ export default function PrivacyChapter({
     // open, so re-run once the slot exists to install the trap + initial focus.
   }, [open, dialogRef, shellHost?.sectionSlot, imeLatch])
 
+  // Off by the user's own setting: nothing to ask, so record the ack once per
+  // opening without showing the screen. A pin or a config.local.json entry keeps
+  // the off form: the heartbeat's first send waits for an ack the user gives on
+  // a screen. A failed write shows the off form with its error from then on.
+  const passesOff = !!passWhenOff && open && showOff && usage.offReason === 'config' && !usage.overlayOff
+  const passAttempted = useRef(false)
+  const [passFailed, setPassFailed] = useState(false)
+  useEffect(() => {
+    if (!open) passAttempted.current = false
+    if (!passesOff || passAttempted.current) return
+    passAttempted.current = true
+    void choose('keep')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, passesOff])
+  useEffect(() => { if (failure && passesOff) setPassFailed(true) }, [failure, passesOff])
+
   if (!open) return null
+  if (passesOff && !passFailed) return null
 
   const reasonKey = usage.offReason ? OFF_REASON_KEY[usage.offReason] : null
   const handoff = onAskAgent ? ({ askAgent: true, onHandoff: onAskAgent } as const) : {}
 
   return (
     <OnboardingChapterShell
-      {...setupChapterAside(i18nT('components.privacyChapter.title'))}
+      ariaLabel={i18nT('components.privacyChapter.title')}
+      panelHeadline={i18nT('components.privacyChapter.panelHeadline')}
+      panelBody={i18nT('components.privacyChapter.panelBody')}
+      panelFootnote={i18nT('components.privacyChapter.panelFootnote')}
       eyebrow={i18nT('components.privacyChapter.eyebrow')}
       dialogRef={dialogRef}
       header={

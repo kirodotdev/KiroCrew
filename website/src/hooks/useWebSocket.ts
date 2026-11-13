@@ -6,7 +6,7 @@ import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, trigge
 import { addNotification, ackNotificationByTs, unackNotificationByTs, applyNotificationDismiss, clearAllNotifications } from '../store/notificationsSlice'
 import { dispatchMcNotification, dispatchLiveNotification } from './notificationEvent'
 import {
-  fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, retireSwappedRows, warmSlotCache, sseContextUsage, clearMessages, clearSlotCache, resolveByApprovalId, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, subagentReplayDone, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, sideClose, sideClosedElsewhere, queueEntryAttachments, isTerminalWorkflowStatus,
+  fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, retireSwappedRows, warmSlotCache, sseContextUsage, clearMessages, clearSlotCache, resolveElicitationRow, sseSubagentPending, setSubagentApprovalTarget, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, subagentReplayDone, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, sideClose, sideClosedElsewhere, queueEntryAttachments, isTerminalWorkflowStatus,
   forgetSideSteerSubmittedText, noteSideQueueDroppedByClose, readSideSteerSubmittedText,
   takeSideQueueEditForClose,
 } from '../store/chatSlice'
@@ -71,10 +71,11 @@ import { useChatStream } from './websocket/chatStream'
 import { useTurnCompletion } from './websocket/turnCompletion'
 import { attachFocusRelay, focusedSlotForCurrentSurface } from './websocket/attention'
 import { emitAppReload, emitChannelEvent, emitComputerUseFrame, emitCronHistory, emitResumeAllDone } from './websocket/browserEvents'
-import { runFirstConnect, runReconnectCatchUp } from './websocket/reconnectCatchUp'
+import { createReconnectSnapshotWait, runFirstConnect, runReconnectCatchUp, type ReconnectSnapshotWait } from './websocket/reconnectCatchUp'
 import { browserLiveStore } from './useBrowserLive'
 import { applySharedCrewFrame, onSharedCrewSocketOpen, setSharedCrewSender } from './sharedCrew/sharedCrewSocket'
 import { batchedUnlessOpen } from '../lib/streamBatch'
+import { noteCrewSteerReceipt } from '../lib/crewSteerNotice'
 
 /* The dashboard's single multiplexed WebSocket. `useWebSocket` composes the
    owners under ./websocket — connection, stream buffers, voice, approvals,
@@ -122,6 +123,8 @@ export {
 } from './websocket/slotProjection'
 
 export { ROW_STALL_MS, ROW_STALL_TICK_MS } from './websocket/rowDeliveryWatchdog'
+export { RECONNECT_HEALTHY_MS } from '../utils/reconnectBackoff'
+export { RECONNECT_SNAPSHOT_WAIT_MS } from './websocket/reconnectCatchUp'
 
 // The silence-watchdog timing constants are owned by the shared helper so the
 // dashboard socket and the two app sockets cannot drift. Re-exported here
@@ -150,6 +153,12 @@ export function useWebSocket() {
       onDead: () => silenceHostRef.current.onDead(),
     })
   }
+  // The reconnect catch-up window, closed by the new socket's connect snapshot.
+  const reconnectSnapshotRef = useRef<ReconnectSnapshotWait | null>(null)
+  if (reconnectSnapshotRef.current === null) {
+    reconnectSnapshotRef.current = createReconnectSnapshotWait(dispatch, reconnectingRef)
+  }
+  const reconnectSnapshot = reconnectSnapshotRef.current
   const voice = useVoicePlayback(dispatch)
   const automations = useAutomationSeed(dispatch, queryClient)
   // Prefer the gateway's runtime monitor kind list over the bundled snapshot so
@@ -184,13 +193,13 @@ export function useWebSocket() {
    *  non-English locale shows. */
   const syncPendingApprovals = useCallback(async () => {
     try {
-      await approvals.reconcilePending((a, slot) => {
+      await approvals.reconcilePending((a, slot, target) => {
         if (slot) {
           dispatch(sseChatMessage({
             slot, role: 'permission',
             content: `[${a.source || 'agent'}] ${a.tool || 'Unknown'}`,
             ts: String(a.ts || Date.now() / 1000),
-            meta: { tool_input: a.tool_input || '', approval_id: a.id, source: a.source, registry: 'coordinator', ...(a.tool_call_id ? { tool_call_id: a.tool_call_id } : {}) },
+            meta: { tool_input: a.tool_input || '', approval_id: a.id, source: a.source, registry: 'coordinator', approval_target: target, ...(a.tool_call_id ? { tool_call_id: a.tool_call_id } : {}) },
           }))
         }
       })
@@ -202,7 +211,9 @@ export function useWebSocket() {
     if (!ws) return
 
     ws.onopen = () => {
-      socket.resetBackoff()
+      // Not a backoff reset: a socket that drops before it proves healthy keeps
+      // the backoff growing (see `RECONNECT_HEALTHY_MS`).
+      socket.noteOpen()
       silenceRef.current?.markOpen()
       slotList.resetForConnection()
       // A new socket starts unwatched; the gateway's hello re-sends the set.
@@ -240,6 +251,7 @@ export function useWebSocket() {
         syncPendingQuestions: cards.syncPendingQuestions,
         syncWorkflowRuns,
         focusedSlot: focusedSlotForCurrentSurface,
+        reconnectSnapshot,
       }
       if (socket.wasConnectedRef.current) {
         // No frame could arrive while the socket was down (a gateway restart is
@@ -290,6 +302,7 @@ export function useWebSocket() {
             break
           case 'slots':
             slotList.onSlots(msg, data, e.data as string)
+            if (socket.wsRef.current === ws) reconnectSnapshot.onSlots(data)
             break
           case 'shared_crew.presence':
           case 'shared_crew.work':
@@ -396,6 +409,16 @@ export function useWebSocket() {
             if (slotKey) invalidateChatPins(queryClient, slotKey)
             break
           }
+          case 'crew_steer_unrecorded': {
+            // Owner-only frame: a steer into a Crew Mode worker was delivered but
+            // its background ledger record failed. Same note a receipt's
+            // `ledger_error` sets under the worker's composer.
+            const { slot, reason } = data as { slot?: unknown; reason?: unknown }
+            if (typeof slot === 'string' && typeof reason === 'string') {
+              noteCrewSteerReceipt(slot, { ledger_error: reason })
+            }
+            break
+          }
           case 'artifact_update':
             handleArtifactUpdate(queryClient, data)
             break
@@ -474,7 +497,7 @@ export function useWebSocket() {
             // which the command center reads too.
             // The registry, the chime, the feed note and the live banner; the
             // owning slot comes back ('' for an unowned approval).
-            const targetSlot = approvals.onApprovalFrame(data, reconnectingRef.current)
+            const { slot: targetSlot, target } = approvals.onApprovalFrame(data, reconnectingRef.current)
             // Inject inline in the OWNING chat only. An approval with no
             // explicit slot has no owning conversation (an unowned cron /
             // taskrunner command): falling back to activeSlot planted the card
@@ -483,13 +506,15 @@ export function useWebSocket() {
             // 404'd as soon as the short background window elapsed. Unowned
             // approvals live on the global surface (notification feed) only —
             // the feed note above already delivered it there.
-            if (targetSlot) {
+            // A frame that names no request (no instance) raises nothing to
+            // decide: every control below is bound to the target.
+            if (targetSlot && target) {
               dispatch(sseChatMessage({
                 slot: targetSlot,
                 role: 'permission',
                 content: `[${data.source || 'agent'}] ${data.tool || 'Unknown'}`,
                 ts: String(data.ts || Date.now() / 1000),
-                meta: { tool_input: data.tool_input || '', approval_id: data.id, source: data.source, registry: 'coordinator', ...(data.tool_call_id ? { tool_call_id: data.tool_call_id } : {}) },
+                meta: { tool_input: data.tool_input || '', approval_id: data.id, source: data.source, registry: 'coordinator', approval_target: target, ...(data.tool_call_id ? { tool_call_id: data.tool_call_id } : {}) },
               }))
               // For spawn approvals, create a pending subagent entry instead of a toolLog approval.
               // Require an explicit slot from the event: falling back to activeSlot would
@@ -500,9 +525,10 @@ export function useWebSocket() {
                 if (data.slot) {
                   const agentId = rid.replace('spawn:', '')
                   dispatch(sseSubagentPending({ slot: data.slot, id: agentId, task: (data.tool as string || '').replace('spawn_run(', '').replace(/\)$/, ''), approval_id: rid }))
+                  if (target) dispatch(setSubagentApprovalTarget({ slot: data.slot, id: agentId, approval_target: target }))
                 }
               } else if (data.source !== 'subagent') {
-                dispatch(sseActivityEvent({ slot: targetSlot, kind: 'approval', text: data.tool || i18nT('hooks.useWebSocket.unknown'), approval_id: data.id, approval_type: 'chat' }))
+                dispatch(sseActivityEvent({ slot: targetSlot, kind: 'approval', text: data.tool || i18nT('hooks.useWebSocket.unknown'), approval_id: data.id, approval_type: 'chat', approval_target: target }))
               }
             }
             break
@@ -515,9 +541,10 @@ export function useWebSocket() {
           case 'elicitation_resolved':
             // An MCP server's question was answered (by the person, or cancelled
             // when its window ran out): stamp the card's row so it stops offering
-            // buttons. Same row-by-approval_id write the permission rows take.
+            // buttons. Only an elicitation row: the one the frame's mid names
+            // when it names one.
             if (typeof data.id === 'string' && typeof data.slot === 'string') {
-              dispatch(resolveByApprovalId({
+              dispatch(resolveElicitationRow({
                 id: data.id,
                 slot: data.slot,
                 decision: String(data.action || 'cancel'),
@@ -1144,10 +1171,13 @@ export function useWebSocket() {
       } catch { /* ignore malformed */ }
     }
 
-    ws.onclose = () => socket.handleClose(ws, dispatch, voice.releaseVoiceOnSocketLoss, connect)
+    ws.onclose = (ev) => {
+      if (socket.wsRef.current === ws) reconnectSnapshot.disarm()
+      socket.handleClose(ws, dispatch, voice.releaseVoiceOnSocketLoss, connect, ev?.code)
+    }
 
     ws.onerror = () => { /* onclose will fire */ }
-  }, [dispatch, queryClient, socket, reconnectingRef, voice, automations, approvals, cards, syncWorkflowRuns, buffers, slotList, bundle, chatStream, turnCompletion, syncPendingApprovals])
+  }, [dispatch, queryClient, socket, reconnectingRef, reconnectSnapshot, voice, automations, approvals, cards, syncWorkflowRuns, buffers, slotList, bundle, chatStream, turnCompletion, syncPendingApprovals])
 
   /** Replace the socket now (see `SocketConnection.forceReconnect`): the
    *  health probe's recovery path and the silence watchdog's remedy. */
@@ -1210,6 +1240,7 @@ export function useWebSocket() {
     })
     return () => {
       socket.beginClosing()
+      reconnectSnapshot.disarm()
       buffers.flushForUnmount()
       socket.closeForUnmount()
       voice.dispose()
@@ -1224,7 +1255,7 @@ export function useWebSocket() {
       chunkWatch.dispose()
       if (chunkWatchRef.current === chunkWatch) chunkWatchRef.current = null
     }
-  }, [socket, connect, voice, buffers, cards, queryClient])
+  }, [socket, connect, voice, buffers, cards, queryClient, reconnectSnapshot])
 
   return { subscribeLogs: socket.subscribeLogs, subscribeSubagents: socket.subscribeSubagents, forceReconnect }
 }

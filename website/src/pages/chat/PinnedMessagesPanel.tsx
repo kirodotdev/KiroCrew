@@ -1,12 +1,13 @@
 import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
-import { PinOff, Copy, Link2, Check, X } from 'lucide-react'
+import { PinOff, Copy, Link2, Check, X, CornerDownLeft } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
 import { fmtDateTime } from '../../i18n/format'
 import { copyToClipboard } from '../../utils/clipboard'
 import { copySessionLink } from '../../utils/shareUrl'
-import { HOVER_NONE_ACTIONS_ROW_CLS } from '../../utils/touchActions'
+import { HOVER_NONE_ACTIONS_ROW_CLS, HOVER_NONE_ACTION_BTN_CLS } from '../../utils/touchActions'
 import Clickable from '../../components/Clickable'
 import ErrorNotice from '../../components/ErrorNotice'
+import { Btn } from '../../components/ui'
 import type { ChatPin } from '../../api/pins'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 
@@ -17,6 +18,8 @@ interface PinnedMessagesPanelProps {
   slotTitle?: string
   mode?: string
   onJumpToMessage: (messageTs: string, mid?: string) => void
+  /** Put a pinned USER message back in the composer (never sent). Absent: no such button. */
+  onPutInComposer?: (messageTs: string, mid?: string) => void
   onUnpin: (id: string) => void
 }
 
@@ -73,7 +76,7 @@ function pinEntryName(pin: ChatPin): string {
  * make Pins the only one that does, against the menu's return-focus contract.
  */
 const PinnedMessagesPanel = memo(function PinnedMessagesPanel({
-  pins, loading, slotKey, slotTitle, mode, onJumpToMessage, onUnpin,
+  pins, loading, slotKey, slotTitle, mode, onJumpToMessage, onPutInComposer, onUnpin,
 }: PinnedMessagesPanelProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [now, setNow] = useState(() => Date.now())
@@ -179,6 +182,19 @@ const PinnedMessagesPanel = memo(function PinnedMessagesPanel({
             <div className="text-sm text-text line-clamp-2 leading-snug">
               {pin.preview}
             </div>
+            {/* Its own row, outside the hover row below, so that row does not grow. */}
+            {pin.role === 'user' && onPutInComposer && (
+              <div className="flex">
+                <Btn
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); onPutInComposer(pin.message_ts, pin.mid) }}
+                  className={HOVER_NONE_ACTION_BTN_CLS}
+                >
+                  <CornerDownLeft size={14} aria-hidden="true" />
+                  {i18nT('pages.chat.pins.put_in_composer')}
+                </Btn>
+              </div>
+            )}
             {/* Hover actions — forced visible + 40px targets where the pointer cannot hover */}
             <div data-testid="pin-actions" className={`flex items-center gap-1 mt-0.5 opacity-0 group-hover/pin:opacity-100 focus-within:opacity-100 transition-opacity ${HOVER_NONE_ACTIONS_ROW_CLS}`}>
               <button

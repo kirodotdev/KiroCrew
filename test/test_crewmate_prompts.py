@@ -145,7 +145,7 @@ def test_no_sentence_of_a_piece_is_left_as_a_literal(rel: str) -> None:
 
 #: The server modules whose tools only a crewmate is given.
 _CREWMATE_SERVERS: tuple[str, ...] = (
-    "mcp_mate.py",
+    "mcp_mate_tool_list.py",
     "mcp_panel.py",
     "mcp_crew_log.py",
     "mcp_work.py",
@@ -324,7 +324,7 @@ def test_the_worker_hands_a_blocked_command_back_for_the_user() -> None:
 #: What the patrol text must name, and what a render without the ledger must not.
 _PATROL_MARKS = (
     'watch="work-ledger"',
-    "300..900",
+    "every 300 seconds",
     "7-day runaway backstop",
     "ONE final report",
 )
@@ -368,7 +368,7 @@ def test_both_conductors_send_one_final_report_before_they_stop_the_patrol() -> 
         stop = text.index("Then, in a later step, stop the loop with `autonudge_stop`")
         assert report < stop
         assert "The final report is your last message to the user." in text
-        assert "Pass no `max_cycles` and no `max_runtime_secs`" in text
+        assert "Pass no `interval_secs`, no `max_cycles` and no `max_runtime_secs`" in text
         assert "mode=renew" not in text
     assert "stop the loop with monitor_stop" not in bot
 

@@ -615,7 +615,9 @@ describe('ChatSidebar – what a crew group header says needs you', () => {
     expect(attentionOf()).toHaveAccessibleName(nameOf(S.crew_attention_go_approval, counts(approvals(1), questions(1), working(1))))
 
     fireEvent.change(screen.getByPlaceholderText(S.search_sessions), { target: { value: 'GAMMA' } })
-    await waitFor(() => expect(rowIn(group, 'ALPHA chat')).toBeNull())
+    // Read the group afresh: a query draws the search lane, which mounts its own copy.
+    await waitFor(() => expect(rowIn(screen.getByTestId('crew-group-inst-a'), 'ALPHA chat')).toBeNull())
+    expect(rowIn(screen.getByTestId('crew-group-inst-a'), 'GAMMA chat')).not.toBeNull()
     expect(screen.getByTestId('crew-group-count-inst-a')).toHaveTextContent(chats(1))
     expect(attentionOf()).toHaveAccessibleName(nameOf(S.crew_attention_go_working, counts(working(1))))
     expect(targetOf()).toBe(S.crew_attention_go_working)

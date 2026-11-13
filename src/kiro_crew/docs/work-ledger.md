@@ -127,7 +127,7 @@ With the crew log on, a write can still be refused. Each answer carries a `code`
 
 | Code | What happened | What to do |
 |---|---|---|
-| `503 crew_log_unrecorded` | The store took the write but the crew log did not confirm it, so the write is undone and counts as not done. If the undo itself fails, the board turns `cache_dirty`. | Retry the write. For a `create` whose answer carries an `item_id`, do not repeat the `create`; read the board first. |
+| `503 crew_log_unrecorded` | The store took the write but the crew log did not confirm it, so the write is undone and counts as not done. If the undo itself fails, the board turns `cache_dirty`. | When the message says the write has been undone, retry it; that holds for a `create` too, whose item was removed. When it says the write could not be undone, read the board before retrying (a `cache_dirty` refusal: see the next row). |
 | `409 cache_dirty` | An undo failed, so the board's files may not match the record. Reads and writes of the board (`work_ledger_read`, `work_ledger_record`, `work_brief`, `work_report`) are refused until it is repaired. | Run `work_ledger_rebuild`. To keep the files as they stand instead, remove the marker file the message names. |
 | `400 work_entry_too_large` | The write does not fit one crew-log line. | Shorten the fields you sent. |
 | `400 work_item_too_large` | The item predates the record and, written whole, does not fit one line; usually its acceptance is too large. | The conductor shrinks it with `work_ledger_record action=accept` and a smaller acceptance. |
@@ -156,7 +156,12 @@ returns is state. It does not return the conductor's goal or any sibling item: a
 worker has neither.
 
 A session that is not a dispatched worker gets `not_bound`, which is also how a
-root conductor learns it has no parent.
+root conductor learns it has no parent, and how a `kirocrew-worker` started with
+`spawn_run` learns that its task message is the whole task. A worker calls
+`work_brief` first whatever its first message says, so it never works out for
+itself whether it is bound, and one that is bound cannot skip its brief. Only
+`work_brief`'s refusal names the message as the task: a refused `work_report`
+may come from a worker whose item moved to another session.
 
 ## `work_report` — what a worker writes
 
@@ -191,7 +196,10 @@ the conductor's own writes do not.
 
 **`wake_at` says a `progress` report is a wait until a known time.** The item is
 not flagged `stale` before that time, so the Ultra Mode sidebar does not call the
-worker stalled; once it passes, the staleness window runs from it. A `wake_at`
+worker stalled; once it passes, the staleness window runs from it. The exception is
+a worker whose own loop is active but cannot fire (held on an unanswered approval,
+or past its budget or cycle cap): its `wake_at` is ignored and the normal window
+runs, because the wait it declared leans on a loop that wakes nobody. A `wake_at`
 that does not parse with a zone, is in the past or is more than a day ahead is
 refused (`wake_at_invalid`, `wake_at_in_past`, `wake_at_too_far`), and so is one
 on any other status (`wake_at_requires_progress`): a longer wait is a `blocked`
@@ -256,11 +264,22 @@ crew member, which calls it, lands with the Crew panel.
 
 ## Why `done` is a claim
 
-A worker's `done` never closes an item. The conductor reads its whole ledger
-with `work_ledger_read` — every item, its own derived staleness flags, and a
-ready-to-evaluate batch — runs the acceptance evaluator against the item's own
-condition, and records the answer with `work_ledger_record` as a `verdict`.
-The evaluator is the `accept_eval` tool on `kirocrew-work`. It runs the
+A worker's `done` never closes an item. The conductor runs the acceptance
+evaluator against the item's own condition and records the answer with
+`work_ledger_record` as a `verdict`.
+The evaluator is the `accept_eval` tool on `kirocrew-work`. Called with no
+arguments it reads the stored condition of every item whose worker reported
+`done` from the conductor's own ledger, so the conductor reads nothing first and
+copies no document; an item that is not `done` is never evaluated. Each answer
+carries what the worker reported (`reported`: its summary and claimed `pr`), the
+`fails` so far and the worker's session key; an item that has read `pending` past
+its budget also carries `pending_overdue`, the conductor's last `decision` and its
+stored `acceptance`, and a bar that is not concrete yet comes back with its stored
+`acceptance` too. A reply too large for the tool-result limit leaves those fields
+out, stored bars first, and says so (`truncated`); if it is still too large it
+names the last items under `omitted` for a call of their own. A `pass` is
+then recorded and closed by one write, a `close` that carries the `verdict`.
+The tool runs the
 goal-conductor skill's bundled script in-process with typed arguments, takes no
 command or path to run, and is auto-approved for the conductor and the team
 lead, so an unattended verify cycle waits on no click. The script still runs by
@@ -280,6 +299,11 @@ shell for an older spec. The verdicts are:
   names a command to run lands here too, and so does an `edition_check` whose
   check says a person must decide.
 - `error` — a broken condition or environment, including a bar still set to `TBD`.
+
+Only a `pass` lets an item close `accepted`. A `close` with `state: accepted` on
+an item with no verdict, or whose latest verdict is anything else, is refused
+(`invalid_value` on `state`) and the item stays open; close it `rejected` or
+`abandoned` instead. A `human_approval` item gets its `pass` from your answer.
 
 So the strongest true thing a worker can say is that it believes the bar is met.
 The conductor's own read is also filtered: only items currently reporting `done`

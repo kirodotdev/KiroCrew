@@ -5,7 +5,7 @@
  * app's path and nothing else.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 vi.mock('../../api/client', () => ({
@@ -53,6 +53,37 @@ describe('AppSessionMuteSection', () => {
     await waitFor(() => expect(api.patchConfig).toHaveBeenCalledWith('apps.alpha-app.mute_sessions', true))
     expect(api.patchConfig).toHaveBeenCalledTimes(1)
     await waitFor(() => expect(alpha).toHaveAttribute('aria-checked', 'true'))
+  })
+
+  it('a second quick click on one switch waits for the first save, so the later click is stored', async () => {
+    const resolvers: Array<() => void> = []
+    vi.mocked(api.patchConfig).mockImplementation((path: string, value: unknown) => new Promise(resolve => {
+      resolvers.push(() => {
+        const [, name] = path.split('.')
+        serverCfg.apps = { ...serverCfg.apps, [name]: { mute_sessions: value } }
+        resolve({ ok: true })
+      })
+    }))
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+    render(<QueryClientProvider client={qc}><AppSessionMuteSection /></QueryClientProvider>)
+    const alpha = await screen.findByRole('switch', { name: i18nT('pages.settings.appSessionMutes.row_label', { app: 'Alpha' }) })
+    const zeta = screen.getByRole('switch', { name: i18nT('pages.settings.appSessionMutes.row_label', { app: 'Zeta' }) })
+    await waitFor(() => expect(zeta).toHaveAttribute('aria-checked', 'true'))
+
+    fireEvent.click(alpha)
+    await waitFor(() => expect(alpha).toHaveAttribute('aria-checked', 'true'))
+    fireEvent.click(alpha)
+    await waitFor(() => expect(alpha).toHaveAttribute('aria-checked', 'false'))
+    await act(async () => {})
+    // Answer the newest request first, the order that stores the first click
+    // when both are in flight; a queued second save only starts afterwards.
+    resolvers.pop()?.()
+    resolvers.pop()?.()
+    await waitFor(() => expect(api.patchConfig).toHaveBeenCalledTimes(2))
+    resolvers.pop()?.()
+    expect(vi.mocked(api.patchConfig).mock.calls.map(call => call[1])).toEqual([true, false])
+    await waitFor(() => expect(serverCfg.apps?.['alpha-app']?.mute_sessions).toBe(false))
+    await waitFor(() => expect(alpha).toHaveAttribute('aria-checked', 'false'))
   })
 
   it('a failed app list load offers the agent hand-off', async () => {

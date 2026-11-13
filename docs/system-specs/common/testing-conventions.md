@@ -686,7 +686,9 @@ an invalid member-to-global binding or disable private-file validation.
 
 Before triggering a broadcast, a WebSocket test waits for each connection's
 initial `slots` frame. `ws_connect()` completes the HTTP upgrade, while `api_ws`
-can still be awaiting allowlist and app-scope loading before `register_ws()`.
+can still be awaiting allowlist and app-scope loading before `register_ws()`, and
+a registered socket can still be waiting for its slot list, its frames held until
+the snapshot is queued (`ws_snapshot_hold.HELD_FRAMES_KEY` is `None` once it is).
 For SSE, the initial `dashboard` frame proves registration. A delivery fence
 orders events within registered queues; it cannot establish that a connection
 joined before an earlier event. Use bounded frame receives to establish readiness.
@@ -1141,7 +1143,12 @@ exit; a **wait** for the memory-preparation worker thread to drop its
 process-wide fence (`MemoryStartup`), because cancelling its awaiter does not
 stop the thread and a second boot on the same home would otherwise be refused
 with "Another gateway is still preparing memory" (a fence still held at the
-deadline fails the test by name); and a **reap** of every
+deadline fails the test by name), and for the MCP probe pool, shut down and
+joined after the reap below (the next boot builds a fresh one), because a
+cancelled probe's thread runs on until its server has exited and that server
+creates the boot's home as it starts, so one still starting would put
+`tmp_path / "home"` back after the test removed it (an overrun fails the test
+by name); and a **reap** of every
 asyncio task the boot added that `_shutdown()` left running (production leaves
 those to `os._exit`), failing the test by name if one ignores cancellation.
 The lists are kept honest by
@@ -1200,10 +1207,13 @@ measures, never above.
 ## Rules
 
 - Remote Crew chaining cases using a real `HopPortGuard` obtain a kernel-selected
-  loopback port with `bind(("127.0.0.1", 0))`; fake-only cases retain inert guards
-  and their fake port band. The released port is only a hint: tests still exercise
-  the production handoff, assert real ownership and cross-process bind refusal,
-  and close real guards in `finally`.
+  loopback port with `bind(("127.0.0.1", 0))` and keep that socket bound until the
+  guard's first hold of the port, which closes it just before binding: the fake
+  forwarder binds nothing, so a port released at once is free through the whole
+  connect and mint, and another worker can be handed it first. Fake-only cases
+  retain inert guards and their fake port band. The port is only a hint: tests
+  still exercise the production handoff, assert real ownership and cross-process
+  bind refusal, and close real guards in `finally`.
 
 - **Host-floor patches use `_floor_monkeypatch`, never the test's shared
   `monkeypatch`.** The rootdir fixtures keep path redirects, service guards,
@@ -5884,10 +5894,12 @@ regenerate it when the Linux shards' `Run tests` times drift apart again. Window
 macOS, release and the reduced and leaf scopes keep pure hash ownership.
 
 macOS assigns whole files like the other platforms, in eight shards. The shard
-count is the knob to reach for there rather than the 40-minute cap, because that
-cap is a spend guard as much as a hang guard on a lane billed at ten times Linux:
-a higher cap bounds a runaway more loosely, while a higher count is what divides
-the work. The macOS shards run an explicit `-n 2` (`platform-tests.yml`), which
+count is the knob to reach for when the suite grows, not the 60-minute cap,
+because that cap is a spend guard as much as a hang guard on a lane billed at ten
+times Linux: a higher cap bounds a runaway more loosely, while a higher count is
+what divides the work. The cap sits at 60 rather than at the shards' usual 20-30
+minutes because a macOS arm64 runner that is slow or short of capacity can push a
+shard past 40 minutes with no failing test. The macOS shards run an explicit `-n 2` (`platform-tests.yml`), which
 bypasses the xdist memory budget behind `-n auto`. `test-durations.yml` still
 invokes pytest-split to RECORD `.test_durations`, and three tests load its plugin
 directly, but no sharding lane reads that file, so the recording balances

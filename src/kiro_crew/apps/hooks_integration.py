@@ -18,6 +18,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.apps import protected_app_state
 from kiro_crew.apps.backend import spawned_backend_names, stop_app_backend
 from kiro_crew.apps.bridges import (
     deregister_app_crons_reporting_failures,
@@ -38,6 +39,7 @@ from kiro_crew.apps.manager import app_dir, approved_manifest_permissions, list_
 from kiro_crew.apps.module_loader import clear_all_shutdown_callables
 from kiro_crew.apps.route_registry import RouteRegistry
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
+from kiro_crew.dashboard.token_auth import replace_legacy_app_secret
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.sel import sel
 
@@ -80,7 +82,7 @@ def hook_signature(app_info: dict[str, Any]) -> tuple[Any, ...]:
 
     Folds ONLY hook-relevant inputs so a metadata write that does not touch hook
     code never forces a reload: the app version, a digest of the declared hook
-    source files' (path, mtime, size), the ``.app_secret`` mtime (a reinstall
+    source files' (path, mtime, size), the stored app secret's mtime (a reinstall
     rotates it, and the live module must pick up the new secret), and the
     approved events in ``approvedGrants`` (approving them changes what the hook context's
     event bus may publish, and the bus is built once per load). Deliberately
@@ -98,7 +100,7 @@ def hook_signature(app_info: dict[str, Any]) -> tuple[Any, ...]:
       no-op it was promised. The signature answers "did the hook CODE change",
       not "is the app on".
 
-    Blocking: it ``stat``s the declared hook files and ``.app_secret``. On the
+    Blocking: it ``stat``s the declared hook files and the stored secret. On the
     gateway event loop (the dashboard enable/disable handlers, the boot pass) it
     must be reached via :func:`compute_hook_signature`, which offloads it; the
     reconcile loop runs it inside its own ``to_thread`` step. Kept here, beside
@@ -127,8 +129,8 @@ def hook_signature(app_info: dict[str, Any]) -> tuple[Any, ...]:
         except OSError:
             digest ^= hash((rel, 0, 0)) & mask
     try:
-        secret_mtime = (root / ".app_secret").stat().st_mtime_ns
-    except OSError:
+        secret_mtime = protected_app_state.secret_path(name).stat().st_mtime_ns
+    except (OSError, ValueError):
         secret_mtime = 0
     return (
         str(app_info.get("version", "")),
@@ -385,19 +387,31 @@ def _build_app_context_from_info(
     return ctx
 
 
+def _prepare_hook_load(app_name: str) -> None:
+    """The blocking setup a hook load needs: the app's data dir, and its secret moved.
+
+    An app installed before the secret left its folder still has the old file there,
+    and only a backend spawn moved it. An app whose backend runs only in this process
+    never spawns one, so its load moves it: the gateway stores a new secret and removes
+    the file, as the spawn does. The hooks need no secret (``AppContext.app_token``),
+    and the old value is refused already.
+    """
+    (app_dir(app_name) / "data").mkdir(parents=True, exist_ok=True)
+    replace_legacy_app_secret(app_name)
+
+
 async def _prepare_app_context_from_info(
     app_info: dict[str, Any],
     cron_service: Any = None,
     broadcast_fn: Any = None,
     spawn_impl: Any = None,
 ) -> Any:
-    """Create the app's data dir off the loop, then build its context on it.
+    """Prepare the app on disk off the loop (:func:`_prepare_hook_load`), then build its context.
 
-    The ``mkdir`` is blocking disk I/O on the enable and boot paths, so it takes
-    a ``to_thread`` hop; the context is built back on the loop that owns it.
+    The setup is blocking disk I/O on the enable and boot paths, so it takes a
+    ``to_thread`` hop; the context is built back on the loop that owns it.
     """
-    data_path = app_dir(app_info.get("name", "")) / "data"
-    await asyncio.to_thread(data_path.mkdir, parents=True, exist_ok=True)
+    await asyncio.to_thread(_prepare_hook_load, app_info.get("name", ""))
     return _build_app_context_from_info(app_info, cron_service, broadcast_fn, spawn_impl)
 
 

@@ -4,15 +4,19 @@ Backed by files in the app's data directory:
 ``~/.kiro/crew/apps/{app_name}/data/kv/{key}.json``
 
 Keys are validated to prevent path traversal. A key that is not a usable
-Windows filename is encoded into one, and ``list_keys`` decodes it back, so a
-key round-trips to the same value on every platform.
+Windows filename, or that holds an upper-case letter, is encoded into one, and
+``list_keys`` decodes it back, so a key round-trips to the same value on every
+platform, including a case-insensitive volume where ``Foo`` and ``foo`` would
+otherwise share one file.
 Values are JSON-serializable dicts or strings.
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote
@@ -95,14 +99,36 @@ def _encode_key(key: str) -> str:
     the fixed-width digest form instead, so the name a key maps to is bounded
     however long the key is. Only an unsafe key can reach either encoding, so a
     safe key's filename is never rewritten by length.
+
+    A key with an upper-case letter is encoded too, and its ASCII capitals are
+    escaped (``Foo`` becomes ``.enc-%46oo``), so no two keys map to names that
+    differ only in case. NTFS and APFS treat such names as one file.
+    shortcut: a lower-case non-ASCII pair that a volume folds together (``σ``
+    and ``ς``) still keeps its own names; escape non-ASCII too if one is reported.
     """
-    if _key_is_filename_safe(key):
+    if _key_is_filename_safe(key) and key == key.lower():
         return key
-    escaped = _ENCODED_STEM_PREFIX + quote(key, safe="")
+    escaped = _ENCODED_STEM_PREFIX + "".join(
+        f"%{ord(char):02X}" if "A" <= char <= "Z" else quote(char, safe="") for char in key
+    )
     if len(f"{escaped}.json".encode()) <= _MAX_FILENAME_BYTES:
         return escaped
     digest = hashlib.blake2b(key.encode(), digest_size=_DIGEST_BYTES).hexdigest()
     return _DIGEST_STEM_PREFIX + digest
+
+
+def _holds_file(path: Path) -> bool:
+    """``path.is_file()``, False for a name too long for the filesystem to hold.
+
+    A long key's digest file is short, but its legacy own-name location can be past
+    the filename limit; ``is_file`` raises ENAMETOOLONG for it rather than False.
+    """
+    try:
+        return path.is_file()
+    except OSError as exc:
+        if exc.errno == errno.ENAMETOOLONG:
+            return False
+        raise
 
 
 def _decode_stem(stem: str) -> str:
@@ -145,6 +171,17 @@ class AppStorage:
         # directory as empty: ``get``/``delete`` gate on ``is_file`` and
         # ``list_keys`` returns ``[]`` when the dir is absent.
 
+    def _names(self) -> set[str]:
+        """The exact names in the key directory, empty when it cannot be listed.
+
+        A case-insensitive volume opens ``Foo.json`` for ``foo.json``, so a path
+        test cannot tell two such files apart; only the listing can.
+        """
+        try:
+            return set(os.listdir(self._kv_dir))
+        except OSError:
+            return set()
+
     @property
     def app_name(self) -> str:
         return self._app_name
@@ -159,14 +196,14 @@ class AppStorage:
         regular file, so ``get("con")`` never opens the console.
         """
         path = self._key_path(key)
-        if path.is_file():
+        if _holds_file(path):
             return self._read(path, enveloped=_is_digest_stem(path.stem))
-        fallback = self._unencoded_key_path(key)
-        if fallback is None or fallback == path or not fallback.is_file():
+        legacy = self._legacy_paths(key)
+        if not legacy:
             return None
-        # Written under the key's own name by a build without the encoding, so
-        # the file holds the bare value however this key encodes now.
-        return self._read(fallback, enveloped=False)
+        # Written by an older build under a name that held the bare value,
+        # however this key encodes now.
+        return self._read(legacy[0], enveloped=False)
 
     def _read(self, path: Path, *, enveloped: bool) -> dict[str, Any] | str | None:
         """Load one value file. *enveloped* files carry their key beside the value.
@@ -218,17 +255,18 @@ class AppStorage:
         # The value under the key's own name is superseded the moment this write
         # lands, and leaving it is not inert: it is what a build without this
         # encoding reads, so it would serve that copy as current.
-        superseded = self._unencoded_key_path(key)
-        if superseded is not None and superseded != path:
+        for superseded in self._legacy_paths(key):
             try:
                 superseded.unlink(missing_ok=True)
             except OSError as exc:
-                logger.warning(
-                    "AppStorage[%s] could not remove the superseded %s: %s",
-                    self._app_name,
-                    superseded.name,
-                    exc,
-                )
+                # A name past the filename limit can hold no copy to remove.
+                if exc.errno != errno.ENAMETOOLONG:
+                    logger.warning(
+                        "AppStorage[%s] could not remove the superseded %s: %s",
+                        self._app_name,
+                        superseded.name,
+                        exc,
+                    )
         sel().log_api_access(
             caller=f"app:{self._app_name}",
             operation="app_storage.set",
@@ -244,12 +282,10 @@ class AppStorage:
         next.
         """
         paths = [self._key_path(key)]
-        fallback = self._unencoded_key_path(key)
-        if fallback is not None and fallback not in paths:
-            paths.append(fallback)
+        paths.extend(self._legacy_paths(key))
         removed = False
         for path in paths:
-            if not path.is_file():
+            if not _holds_file(path):
                 continue
             try:
                 path.unlink()
@@ -339,6 +375,24 @@ class AppStorage:
         if key.startswith(".") or key.startswith("~"):
             raise ValueError(f"Invalid storage key (unsafe prefix): {key!r}")
         return self._kv_dir / f"{_encode_key(key)}.json"
+
+    def _legacy_paths(self, key: str) -> list[Path]:
+        """Files an older build may still hold *key*'s bare value in, best first.
+
+        The older build's percent-encoded name (case kept) comes before the
+        key's own name, the order that build read them in. Each is a file listed
+        under exactly that name: on a case-insensitive volume ``Foo.json`` would
+        open, and a write would remove, the key ``foo``'s file. :meth:`set`
+        removes them once the value is written under its current name.
+        """
+        primary = self._key_path(key)
+        candidates = [self._kv_dir / f"{_ENCODED_STEM_PREFIX}{quote(key, safe='')}.json"]
+        unencoded = self._unencoded_key_path(key)
+        if unencoded is not None:
+            candidates.append(unencoded)
+        names = self._names()
+        # The listing goes first, so a name too long to stat is never stat'ed.
+        return [p for p in candidates if p != primary and p.name in names and p.is_file()]
 
     def _unencoded_key_path(self, key: str) -> Path | None:
         """Where *key* sits when its own name was used as the filename.

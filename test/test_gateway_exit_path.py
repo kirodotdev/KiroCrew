@@ -680,3 +680,34 @@ async def test_a_force_exit_claimed_during_the_clean_exit_mark_still_owns_the_ex
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("test_mode", [False, True])
+async def test_the_teardown_awaits_one_skill_view_prune_after_the_sessions_close(
+    monkeypatch, test_mode
+) -> None:
+    # Each closed runtime prunes its views on a daemon thread the hard exit can cut,
+    # and a home stopped then deleted has no next boot drain. So the
+    # teardown awaits one more prune once every session has ended and the cut turns
+    # have saved; test mode skips it, like the boot drain.
+    from slack_gateway_helpers import _make_orchestrator, _mock_sessions
+
+    from kiro_crew.agent_sdk.drivers import acp as acp_driver
+
+    order: list[str] = []
+
+    async def _unwound(_state: Any) -> None:
+        order.append("unwound")
+
+    monkeypatch.setattr(gw, "wait_for_unwinding_turns", _unwound)
+    monkeypatch.setattr(
+        acp_driver, "prune_skill_view_aliases_at_stop", lambda: order.append("prune") or 0
+    )
+    orch = _make_orchestrator(test_mode=test_mode)
+    orch.sessions = _mock_sessions()
+    orch.sessions.close_all = AsyncMock(side_effect=lambda: order.append("close_all"))
+
+    await orch._stop_services_and_sessions()
+
+    assert order == ["close_all", "unwound"] + ([] if test_mode else ["prune"])

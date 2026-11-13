@@ -163,10 +163,10 @@ class SessionCapabilities:
     #: cannot refuse a tool call (``postToolUse``, ``userPromptSubmit``,
     #: ``agentSpawn``, ``stop``).
     #:
-    #: True wherever :attr:`crew_fires_spec_hooks` is, and on claude, whose harness
-    #: is handed no spec but approves some calls without asking, so only these
-    #: events are fired there and ``preToolUse`` runs nowhere. False where the
-    #: harness runs the field itself.
+    #: True wherever :attr:`crew_fires_spec_hooks` is, and on claude and codex,
+    #: whose harnesses are handed no spec but approve some calls without asking, so
+    #: only these events are fired there and ``preToolUse`` runs nowhere. False
+    #: where the harness runs the field itself.
     crew_fires_spec_observer_hooks: bool
 
     #: Whether this harness interprets ``/todos`` as its native task-list command.
@@ -193,8 +193,10 @@ class SessionCapabilities:
     #: member mounts from the same spec parse). False for claude, whose routing is
     #: declared but not enforced by this core -- an inherited ``~/.claude``
     #: pre-approval can skip ``session/request_permission`` entirely, so the refusal
-    #: never runs. False for codex, whose sessions are served by ``AcpRuntime``,
-    #: which carries no zero-tool refusal at all. A consumer that
+    #: never runs. False for codex: its ``AcpSessionHandle`` refuses every permission
+    #: request of a zero-tool session (``_deny_zero_tools``), but codex reads files,
+    #: searches the web, runs sandboxed commands and calls self-approved tools of the MCP servers in the
+    #: operator's ``config.toml`` without asking. A consumer that
     #: spawns a zero-tool agent (the knowledge/research pool) asks this before
     #: trusting a resolved backend, rather than enumerating identities itself.
     honors_zero_tool_ban: bool

@@ -830,24 +830,20 @@ def fold_summary(value: Any) -> str:
         return type(value).__name__
 
 
-def _read_page(slug: str) -> tuple[Any, TemplateManifest | None, str]:
-    """The record a crewmate's tab shows, its parsed manifest, and the lock line.
+def _read_page(slug: str) -> tuple[Any, TemplateManifest | None]:
+    """The record a crewmate's tab shows and its parsed manifest.
 
     The manifest is ``None`` when there is no page in force. The record is ``None``
     then too, except for an UNADOPTED record with no default to show -- a crewmate with
     no page named for it -- which comes back as the stored record: whether its tab
-    draws the suggestions page is :func:`shows_suggestions`'s question to answer. The
-    lock line is the store's own refusal (``LOCKED_REFUSAL``) while the person's lock
-    is set, else ``""``; it is read off the stored record BEFORE any fallback, because
-    the default page carries no lock of its own, so it can be set while there is no
-    page. TOTAL: a record that cannot be read is no page and no lock line.
+    draws the suggestions page is :func:`shows_suggestions`'s question to answer.
+    TOTAL: a record that cannot be read is no page.
     """
     try:
         from kiro_crew.dashboard_templates import instance as instance_store
         from kiro_crew.dashboard_templates.manifest import parse_manifest
 
         record = instance_store.read(slug)
-        locked = instance_store.LOCKED_REFUSAL if getattr(record, "structure_locked", False) else ""
         if getattr(record, "package_slug", ""):
             # The crewmate's own package is in force: its Model is the page's, read
             # the way `dashboard_write` reads it, so the block names the right fields.
@@ -855,18 +851,18 @@ def _read_page(slug: str) -> tuple[Any, TemplateManifest | None, str]:
 
             package = dashboard_package.read_package_model(slug)
             if package.from_package and package.model is not None:
-                return record, package.model.manifest, locked
+                return record, package.model.manifest
         if record.state == instance_store.STATE_EMPTY:
             fallback = instance_store.default_instance(slug)
             if fallback is None:
-                return record, None, locked
+                return record, None
             record = fallback
         elif record.state not in (instance_store.STATE_LIVE, instance_store.STATE_STALE):
-            return None, None, locked
-        return record, parse_manifest(dict(record.manifest)), locked
+            return None, None
+        return record, parse_manifest(dict(record.manifest))
     except Exception:
         logger.debug("no dashboard page in force for %r", slug, exc_info=True)
-        return None, None, ""
+        return None, None
 
 
 def _package_manifest(slug: str) -> TemplateManifest | None:
@@ -897,7 +893,7 @@ def page_in_force(slug: str) -> tuple[Any, TemplateManifest] | None:
     The one lookup :func:`turn_block` and ``dashboard_upkeep`` share, so the block and
     the upkeep scripts always describe one page.
     """
-    record, manifest, _locked = _read_page(slug)
+    record, manifest = _read_page(slug)
     if record is None or manifest is None:
         return None
     return record, manifest
@@ -957,9 +953,8 @@ def package_on_screen(slug: str) -> str:
     """The package crewmate *slug*'s Dashboard tab draws, or ``""`` for its template page.
 
     The read route's rule (``member_dashboard._serve``), for a reader that holds no
-    request: a pinned package is in force; a record that released packages, or one
-    under the person's lock, draws its template; only an older unlocked record looks
-    the package up by binding, and then only one a person cut a version of. TOTAL:
+    request: a pinned package is in force; a record that released packages draws its
+    template; only an older record looks the package up by binding, and then only one a person cut a version of. TOTAL:
     an unreadable record is no package.
     """
     try:
@@ -1002,20 +997,20 @@ def tab_shows_suggestions(slug: str) -> bool:
     """Whether crewmate *slug*'s Dashboard tab shows the suggestions page right now.
 
     The answer :func:`turn_block` gives, for a caller that only needs the yes or no:
-    the stored instance record, no template page in force, no package on screen
-    (none under a lock), and :func:`shows_suggestions` on that. A template page in
+    the stored instance record, no template page in force, no package on screen,
+    and :func:`shows_suggestions` on that. A template page in
     force, a page named for the crewmate, or a package the tab draws is ``False``.
     TOTAL: a dashboard that cannot be read answers ``False``, so nothing is asked of
     a crewmate whose page might be there. Blocking IO.
     """
     try:
-        record, manifest, locked_line = _read_page(slug)
+        record, manifest = _read_page(slug)
     except Exception:
         logger.debug("dashboard: %r's page could not be read", slug, exc_info=True)
         return False
     if record is None or manifest is not None:
         return False
-    package_slug = "" if locked_line else package_on_screen(slug)
+    package_slug = package_on_screen(slug)
     return shows_suggestions(slug, record, package_slug=package_slug)
 
 
@@ -1032,7 +1027,7 @@ def page_offer_target(slug: str) -> dict[str, str] | None:
     try:
         if bound_package(slug):
             return None
-        record, manifest, _locked = _read_page(slug)
+        record, manifest = _read_page(slug)
         if record is None:
             return None
         if manifest is None:
@@ -1292,8 +1287,9 @@ def stale_fields_enabled() -> bool:
     failure, so a config that cannot be read changes nothing. TOTAL."""
     try:
         from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.edition_locks import feature_previews
 
-        previews = KiroCrewConfig.load().dashboard.feature_previews
+        previews = feature_previews(KiroCrewConfig.load().dashboard.feature_previews)
     except Exception:  # noqa: BLE001 -- an unreadable config reads as off
         return False
     return isinstance(previews, dict) and previews.get(STALE_FIELDS_PREVIEW) is True
@@ -1472,13 +1468,13 @@ def stale_notice(manifest: TemplateManifest, slot: str) -> str:
 def _member_page_manifest(slug: str) -> TemplateManifest | None:
     """The manifest of crewmate *slug*'s page in force, or ``None`` when it has none.
 
-    `turn_block`'s rule for which page is on screen: a lock keeps the template.
+    `turn_block`'s rule for which page is on screen.
     Blocking IO; raises what the page read raises.
     """
-    record, manifest, locked_line = _read_page(slug)
+    record, manifest = _read_page(slug)
     if record is None:
         return None
-    if manifest is None and not locked_line and package_on_screen(slug):
+    if manifest is None and package_on_screen(slug):
         manifest = _package_manifest(slug)
     return manifest
 
@@ -1566,27 +1562,20 @@ def turn_block(slug: str, member: str = "", *, slot: str = "") -> str:
     one line naming each FOLD field the crewmate can fix and why
     (:func:`unresolved_line`). The person's page draws no warning about such a field,
     so this line is the only place it is reported, and it leaves the block once the
-    field resolves. No read is made without *member* (the apply reply), on a locked
-    page, or with the crew panel off, because the fix is a tool call none of those
-    can make.
+    field resolves. No read is made without *member* (the apply reply) or with the
+    crew panel off, because the fix is a tool call neither can make.
 
     With the ``dashboard_stale_fields`` preview on, the block also names each agentic
     field that is out of date (:func:`stale_line`), read from the crewmate's DM slot,
     or from *slot* for a root session's page, which has no crewmate.
     TOTAL: a dashboard that cannot be read costs the turn this block, nothing else.
     """
-    record, manifest, locked_line = _read_page(slug)
+    record, manifest = _read_page(slug)
     if record is not None and manifest is None:
         # No template page in force. The read route's rule for which package is on
-        # screen: a lock keeps the template instance there, so a locked crewmate serves
-        # no package. The lock is read off the STORED record, which is what
-        # `locked_line` already is.
-        package_slug = "" if locked_line else package_on_screen(slug)
+        # screen.
+        package_slug = package_on_screen(slug)
         if shows_suggestions(slug, record, package_slug=package_slug):
-            if locked_line:
-                # Locked: the store's own refusal is the whole instruction, so no line
-                # here can read as "write one".
-                return f"[DASHBOARD]\n{SUGGESTIONS_STATE}\n{locked_line}"
             if not _crew_panel_on():
                 # ``agent.crew_panel`` off: no kirocrew-panel, so no dashboard_save to
                 # build a page with. Where the tab stands, and nothing to act on.
@@ -1597,8 +1586,7 @@ def turn_block(slug: str, member: str = "", *, slot: str = "") -> str:
             # a write is checked against, so the block, the tab and the write agree.
             manifest = _package_manifest(slug)
     if record is None or manifest is None:
-        # The line is the store's own refusal, so the turn and the tool never disagree.
-        return f"[DASHBOARD]\n{locked_line}" if locked_line else ""
+        return ""
     from kiro_crew import dashboard_upkeep  # the upkeep module reads this one
 
     names = sorted(agentic_fields(manifest))
@@ -1611,19 +1599,17 @@ def turn_block(slug: str, member: str = "", *, slot: str = "") -> str:
     block = (
         "[DASHBOARD]\n"
         f"Your Dashboard tab shows {shows}.\n"
-        + (f"{locked_line}\n" if locked_line else "")
         + f"Fields you write: {writes}. Call dashboard_fields for their shapes and "
         "current values before dashboard_write."
     )
-    if member and not locked_line and _crew_panel_on():
-        # Only when the crewmate can act: a locked page refuses dashboard_apply, and
-        # with the crew panel off there is no dashboard_save to call.
+    if member and _crew_panel_on():
+        # Only when the crewmate can act: with the crew panel off there is no
+        # dashboard_save to call.
         unresolved = unresolved_line(manifest, _unresolved_fold_fields(slug, member, manifest))
         if unresolved:
             block += "\n" + unresolved
-    # The out-of-date line, preview on only. A locked page still takes field writes,
-    # so the lock does not silence it; with the crew panel off a crewmate has no
-    # dashboard_write to call, so that does.
+    # The out-of-date line, preview on only. With the crew panel off a crewmate has
+    # no dashboard_write to call, so that silences it.
     if names and stale_fields_enabled():
         page_slot = slot or (_member_slot(member, slug) if member and _crew_panel_on() else "")
         stale = stale_notice(manifest, page_slot) if page_slot else ""
@@ -1640,7 +1626,7 @@ def unresolved_notice(slug: str, member: str) -> str:
     on every turn. A V1 crewmate (no ``member_id``) gets that section only when a
     session starts, resumes or is re-injected, so a binding that breaks between warm
     turns would go unreported. This is the same line under the same gates -- the page
-    in force, not locked, the crew panel on -- without the rest of the block, which
+    in force, the crew panel on -- without the rest of the block, which
     the section already carried. No upkeep sync: that is the section's job. With the
     ``dashboard_stale_fields`` preview on it also carries :func:`stale_line`, which a
     field crosses between warm turns just as a binding breaks. TOTAL.
@@ -1648,20 +1634,18 @@ def unresolved_notice(slug: str, member: str) -> str:
     if not member:
         return ""
     try:
-        record, manifest, locked_line = _read_page(slug)
+        record, manifest = _read_page(slug)
         if record is None or not _crew_panel_on():
             return ""
         if manifest is None:
-            if locked_line or not package_on_screen(slug):
+            if not package_on_screen(slug):
                 return ""
             manifest = _package_manifest(slug)
             if manifest is None:
                 return ""
-        lines = []
-        if not locked_line:
-            lines.append(unresolved_line(manifest, _unresolved_fold_fields(slug, member, manifest)))
-        # The out-of-date line rides here too (preview on), and on a locked page,
-        # which still takes field writes -- the same gates as in `turn_block`.
+        lines = [unresolved_line(manifest, _unresolved_fold_fields(slug, member, manifest))]
+        # The out-of-date line rides here too (preview on), under the same gates as
+        # in `turn_block`.
         if agentic_fields(manifest) and stale_fields_enabled():
             lines.append(stale_notice(manifest, _member_slot(member, slug)))
         text = "\n".join(line for line in lines if line)
@@ -1736,7 +1720,7 @@ BOARD_IN_PANEL_LINE: Final[str] = (
 def _shows_board(key: str) -> bool:
     """Whether the page in force for store key *key* is one of :data:`BOARD_TEMPLATES`."""
     try:
-        _record, manifest, _locked = _read_page(key)
+        _record, manifest = _read_page(key)
     except Exception:
         return False
     return manifest is not None and manifest.id in BOARD_TEMPLATES

@@ -972,6 +972,23 @@ describe('PullRequestPanel', () => {
     expect(warning).toHaveTextContent('Open the pull request for the complete set')
   })
 
+  it('shows a failed section read through ErrorNotice and keeps truncation a status note', async () => {
+    mockApi.pullRequestSource.mockResolvedValue({
+      ...github,
+      partialSections: ['files', 'checks'],
+      failedSections: ['checks'],
+    })
+    renderPanel()
+    const failure = await screen.findByTestId('pull-request-panel-failed-sections')
+    expect(failure).toHaveAttribute('role', 'alert')
+    expect(failure).toHaveTextContent("Couldn't load checks for this pull request")
+    expect(failure).toHaveTextContent('Ask the agent')
+    // The page-limit cut failed nothing, so only it stays in the status banner.
+    const warning = screen.getByRole('status')
+    expect(warning).toHaveTextContent('Provider results may be partial for files.')
+    expect(warning).not.toHaveTextContent('checks')
+  })
+
   it('shows commits, checks, and review comments in their tabs', async () => {
     const onAddToChat = vi.fn()
     renderPanel(onAddToChat)

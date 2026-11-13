@@ -26,7 +26,8 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_continue` | `POST /api/session-control/continue` | The same `continue_slot_turn` call without `require_interrupted`, as the Continue button makes it, through the helper `retry_target` shares (`_continue_turn_of_target`); the result's `body` is `resumed` or `continued`, whichever continuation `_is_interrupted` chose, and the allowed audit line records it. Not in any auto-grant: a member or conductor is asked before each call |
 | `session_set_model` | `POST /api/session-control/set-model` | Record a pending model and/or reasoning-effort pick on an idle session; `apply_pending_model_pick` commits it at the start of the target's next turn after re-running `authorize_target` in the same synchronous step. Each half yields separately to a newer user pick from its own control. A busy target is refused with `target_busy` and keeps its settings |
 | `session_set_color` | `POST /api/session-control/set-color` | Set the sidebar tint (palette index 0-6, or clear). `authorize_target` (self refused), then a creator fence for every caller: only sessions it created |
-| `session_reload` | `POST /api/session-control/reload` | Relaunch the agent process of an idle session the caller created, through `chat_handlers.reload_slot_session` (shared with the tab menu's Reload session). The transcript is kept and gets one notice naming the caller. Self, remote-crew and busy targets (turn running or starting, queued messages, sub-agents) are refused |
+| `session_set_note` | `POST /api/session-control/set-note` | Leave a note: the reach of `session_set_color` (`authorize_created_target`), then `chat_handlers.write_slot_note`, the body of `POST /api/chat/slots/{slot}/note`, with nothing suspending between the gate and the write. The visible line, the next-turn context half (source `session_set_note`), the hold while a turn runs, the limits and the reply are that route's. The visible line is an inject row like any `/note` line: history replay carries it, and its hold retires with its committed row ([session](session.md), the held-note table). The context half carries the containment the gate admitted (`containment_meta`, as `admission`, a key only `write_slot_note` sets, so a `/note` or `/context` entry under the same source label is plain context). Before the drain, `drop_session_notes_out_of_reach` finds each waiting half by that key, compares it with the target's containment now and drops the half when a constraint `authorize_target` refuses newly holds (a mirror or link gained, a workspace move), as the queue drain drops a `session_send` message. A half held across a restart keeps its `admission` key with only its admitted workspace (`slot_buffers._sanitize_restored_context`), judged against the all-false floor plus that workspace, and a half whose admission is not an object is dropped. A half the turn keeps has its admission recorded on the turn (`record_audience_admission`), so a channel linked before the reply withholds it. Each drop is a `note_containment_drop` SEL row |
+| `session_reload` | `POST /api/session-control/reload` | Relaunch the agent process of an idle session the caller created, through `chat_handlers.reload_slot_session` (shared with the tab menu's Reload session). The transcript is kept and gets one notice naming the caller, then one row once the respawn has ended: the agent is ready, it did not start (with the redacted error), or it starts with the next message (`_report_reload_respawn`). A message still waiting on the respawn gets that row. No row is added once a turn has answered after the reload notice (a reply, tool call or error card follows it): that turn already shows how the agent came back, and a respawn that ended late would put the row after it. Self, remote-crew and busy targets (turn running or starting, queued messages, sub-agents) are refused |
 | `session_rename` | `POST /api/session-control/rename` | Set the caller's own title or a target's through `chat_title.apply_manual_title`, the sidebar rename's code, after `authorize_target` with `allow_self`; a scheduled run's own session is still refused as `unattended_target`. The title is final (`_TITLE_ORIGIN_USER`). An empty title, one over 200 characters (before or after `_scrub_text` redaction, which lengthens credential-shaped text into markers), one with no character that renders (only whitespace, characters `terminal_safe._is_invisible` reports such as zero-width, variation-selector and Hangul-filler characters, or the blank Braille pattern U+2800), one containing U+2800 anywhere (scanning normalization keeps it, so it could split a secret past the redactors), or one with a control character or any text-direction control (embeddings, overrides, isolates and the U+200E/U+200F/U+061C marks), or any other `Cf` format character except U+200C/U+200D and the tag characters U+E0020..U+E007F that spell flag subdivisions (`_is_allowed_format_char`; the tag block's other `Cf` character, U+E0001 LANGUAGE TAG, is refused; its unassigned code points are not `Cf`), is refused with `invalid_title`; if the history write fails the live slot keeps and broadcasts the new title (best-effort, like the sidebar and channel renames; the next full save writes it) and the verb answers `title_persist_failed` (500) instead of `ok` |
 | `session_generate_title` | `POST /api/session-control/generate-title` | Regenerate a session's title through `chat_title.generate_manual_title` and `chat_title.apply_regenerated_title`, the sidebar "Regenerate title" code: one awaited titling-model call; the result replaces the current title (a hand-set one included) and stays auto. After `authorize_target` (no `allow_self`), the target must be one the caller created (`not_creator`, 403) for every caller class. One admitted call per target per `create_rate_limit.WINDOW_SECS` (300 s) through the shared creation limiter keyed by the target slot, stamped before the model call (`title_rate_limited`, 429). After the model answers, the slot identity and closing flag are checked (`target_replaced`, 409) and `authorize_target` runs again synchronously; then every field is assigned before the first await, as `session_rename` does, and the save only makes that change durable. The save passes `still_current` (slot identity), so `_persist_title` refuses the write under the history lock when the slot left its key, and the verb then answers `target_replaced` (409) rather than overwriting a successor's saved title. A rename that landed during the model call wins (`changed: false`). If the history write fails the live slot keeps the title and the verb answers `title_persist_failed` (500). The sidebar push is skipped when the slot left its key during the save |
 | `session_close` | `POST /api/session-control/close` | Close (archive) another session, or the caller itself, as the tab ✕ does — heavier than stop, and recoverable rather than a delete |
@@ -41,6 +42,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_read_message` | `GET /api/session-control/read` | Read another session's transcript tail + liveness |
 | `session_summary` | `GET /api/session-control/summary` | Read another session's cached intent summary + liveness, authorized as `session_read_message` is; never generates one |
 | `work_dispatch` | `POST /api/work-ledger/record`, then `POST /api/session-control/create`, `record` again and `POST /api/session-control/send` | Create a work item, open its worker, bind it and seed it in one call ([rfc-work-dispatch](../../request-for-change/rfc-work-dispatch.md)). No route of its own: the MCP process calls the four routes in order as the caller, sends the seed only after `bind` succeeded and only to the key `create` returned, and on a failure names the step and closes what it made (session, then item). The step-1 create carries `dispatch`; `/api/work-ledger/record` strips it before schema validation and refuses `no_ledger` when the verified caller owns no ledger, so `work_dispatch` never opens one and only `kirocrew-work`'s `work_ledger_record` does (rfc-work-dispatch amendment 2026-10-28); not auto-approved |
+| `session_queue` | `POST /api/session-control/queue` | List or move queue entries on a session the caller manages (its creator until `session_handoff` names another manager); move reaches only entries the caller queued (sender stamp), and a move earlier may pass only the caller's own entries |
 
 `session_adopt` and `session_release` reshape the session tree, so both go
 through `authorize_target` like every other verb and add tree checks of their
@@ -100,7 +102,15 @@ other caller, keeps `target_not_found`.
 **Two verbs here write into another session's conversation: `session_send` and
 `session_broadcast`.** Reading returns a transcript tail, stopping cancels a turn
 the way the Stop button does, creating opens an empty session, and sending
-delivers a message that the target runs as its next turn. Delivery is the
+delivers a message that the target runs as its next turn. `session_queue` adds
+no new content to the target: its `move` arm reorders an entry already in the
+target's queue, and the queued transcript row that mirrors it, and only for
+entries the caller itself queued. It has no `cancel`, because a queued send to a
+ledger-bound worker can already be the recorded hand-back. `move` takes the queue
+card's own path (`PUT .../queue/order`): the change
+lands in memory, the same tab frame is broadcast, and the periodic flush saves
+it, so the verb makes no durability promise the card does not. Nothing in
+`queue_target` suspends between the gate and the reply. Delivery is the
 sharpest verb and is bounded accordingly: the body is redacted through
 `sanitize_outbound` before it is persisted, it is prefixed with a `[sent by
 session <caller> via <verb>]` envelope so the target's transcript can never
@@ -131,10 +141,14 @@ are SEQUENTIAL rather than gathered, one target's refusal is COLLECTED as a row
 instead of aborting the rest, and the audience is capped at
 `MAX_BROADCAST_TARGETS` (50) with an over-cap request refused rather than
 truncated — a silently-cut broadcast is one the caller believes reached everyone.
-That cap sits at `MAX_SLOTS_PER_CREATOR` and must never fall below it: the
-`all: true` audience is bounded by the per-creator slot cap and by nothing else, so
-a lower broadcast cap would make that path refuse an audience the caller never
-chose. Reaching the whole set always takes an explicit `all: true`: a `targets`
+That cap sits at `MAX_SLOTS_PER_CREATOR`, the default per-creator slot cap, and
+must never fall below it: the `all: true` audience is bounded by the per-creator
+slot cap and by nothing else, so a lower broadcast cap would make that path refuse
+an audience the caller never chose. An owner who raises `session.max_per_creator`
+above the broadcast cap accepts that refusal for a creator holding more sessions
+than it: `all: true` then answers `too_many_targets`, whose message tells the
+caller to send to a named subset, and `targets` lists of up to
+`MAX_BROADCAST_TARGETS` each still reach every session. Reaching the whole set always takes an explicit `all: true`: a `targets`
 that is absent, `null` or empty selects nobody, because Kiro CLI drops an empty
 list from a tool call and the server cannot tell it from an omission. A call with
 neither `targets` nor `all: true` is refused `target_required`, and one with both is
@@ -558,6 +572,24 @@ a bare `@kirocrew-dashboard`, or `@kirocrew-dashboard/<glob>` (case-sensitive,
 `*` and `?` only) count as granting send. A bare `session_send`, `*_send` or `@*`
 does not, since kiro-cli still prompts for them.
 
+That reading is one function, `agent_specs.creates_without_send`, and it has two
+callers: the refusal above, and the spec writer. Every spec written through
+`auto_approve.write_governed_spec` (the conductors, the team lead, the worker and
+the other service agents; not the default `kirocrew.json` or the heartbeat spec,
+which hold neither grant) passes `auto_approve.govern_spec`, which after
+filtering the grants appends one line to the prompt of a spec the function is true of
+(`auto_approve.SEED_AFTER_CREATE_RULE`): "`session_create`'s `message` is refused
+for this agent (`message_needs_send_approval`): create, then `session_send`."
+So a conductor or team lead is told before its first dispatch, no charter
+restates the rule, and a spec that gains `session_send` (a user entry) or loses
+`session_create` (a ceiling) stops carrying the line on its next write. A fork is
+the user's file and is not edited, and neither is a prompt kept in a file, an
+empty prompt, or the managed prompt stub, which is matched by equality. An
+agent outside the generated specs that auto-approves the create alone has the
+tool's own description to go by: it states the condition once, with the code.
+The server's `instructions` say the same: seed with `message` unless the prompt
+carries that line.
+
 `session_create` also takes an optional `folder` — a folder id or `/`-separated
 human path, resolved with `chat_folder_create`'s `parent` semantics (missing
 segments created, behind the same tree-shaping gate) — and files the slot as
@@ -889,8 +921,8 @@ pending-rewrite flush being the fork's own save; then the rotated-archive rebuil
 through the child's mint, message copy, save and the deleted-source rollback. The
 session-control verb calls the same two, so what an agent's fork copies and what
 it inherits — agent, model, memory store and mode bound at birth, project,
-folder, tags, `forked_from` — is by construction what a person's fork copies
-and inherits, except the sidebar pin (last table row) and the folder of a
+folder, tags, sidebar color, `forked_from` — is by construction what a person's
+fork copies and inherits, except the sidebar pin (last table row) and the folder of a
 Ultra Mode caller's child, which is cleared (§ `session_create`'s Ultra Mode
 filing rule). The human route's behaviour is unchanged by the split; the core
 takes the request-derived facts as arguments (`request_app`, `origin`,
@@ -945,7 +977,7 @@ and skip the target guard while keeping the creator gates.
 **What the child gets on top of the human fork**, applied by a `stamp` callback
 `fork_slot` runs on the child before its birth save, so it lands in the same
 metadata line as the transcript and is on disk before the slot is broadcast (no
-second persistence window; a failed save withdraws the whole child): `title` (a final, user-origin name; else the fork's `↳ Fork of <parent>`, which `refresh_forked_title` renames from the first message a person sends the child when the parent's title was auto),
+second persistence window; a failed save withdraws the whole child): `title` (a final, user-origin name; else the fork's `↳ Fork of <parent>`, which `refresh_forked_title` renames when a person sends the child its first message and the parent's title was auto; the new name is made from that message and the copied turns before it, the child's newest title window),
 `folder_id` (else the parent's folder, which the human fork inherits; an
 unknown folder refuses the whole fork before any copy, confirmed read-only under
 the folder-store lock like `create_session`, and the Model-B un-hide runs only
@@ -957,6 +989,24 @@ session posture — `_trust` and `_trust_reads`, with `_trusted_patterns` and
 A fork spends the `session_create` rate budget and is bounded by the same live
 and per-creator slot ceilings; it is a session the caller manufactured, whatever
 it starts with.
+
+**The per-creator ceiling is a setting.** `session.max_per_creator` (default 50,
+`MAX_SLOTS_PER_CREATOR`; 10-450) is how many live slots one creator may be charged.
+Create, fork, revive and handoff all decide through one function,
+`creator_slot_cap_refusal` (`dashboard/state_parts/slot_directory.py`), so they
+refuse at the same number with the same sentence: how many sessions the creator
+holds, the limit, and where the owner changes it (Settings > Chat > Sessions >
+Sessions per creator). `max_slots_per_creator` reads the value on every call, from
+the config watcher's snapshot when one is armed and through the loader otherwise,
+so a saved change applies to the next create with no restart; a config that cannot
+be read answers the default, never a refusal. The highest setting is
+`MAX_LIVE_SLOTS` minus `CREATOR_CAP_RESERVE` (50), so one creator can never hold
+every live slot, and the global ceiling is still tested first. The setting is the
+owner's: the Settings write goes through the owner-only
+`PATCH /api/config/kirocrew`, `config.json` is a read-only leaf inside the sandbox,
+an agent's `setting.change` card that raises the value is labelled `widen` and
+waits for the owner's Apply, and a hand-edited value above the range is clamped at
+load (`_SECURITY_BOUNDED_FIELDS`) with a SEL `config_bounds_clamped` event.
 
 **Deliberately not offered.** No `agent`, `model` or `mode` override: a
 transcript belongs to the memory boundary it was written in, and `chat_fork`
@@ -1122,23 +1172,61 @@ that is out of bounds is visible after the fact even though nothing happened.
 | Target is the caller | 403 | A session controlling itself has no exit |
 | Target is unattended (`cron-*`, `workflow-*`) | 403 | A `workflow-<run_id>` slot is display-only and a cron's turns are driven by a schedule. Not exempted for a cron CALLER: a cron may create and drive its own children, never another job's tab |
 | Target is incognito or temporary | 403 | Never addressable, matching `list_sessions` |
-| Target is app-scoped | 403 | App sessions are the app's, not a peer's |
+| Target is app-scoped | 403 | App sessions are the app's, not a peer's. **Exception:** see "App sessions the owner's chats may reach" below |
 | Target is channel-linked (`linked_session_key` set) | 403 | Its conversation is mirrored to Slack/Telegram, so reaching it crosses a surface boundary both ways — and its stop cannot be honoured, because the stop path addresses `dashboard:<slot>` while a linked slot's turns run under its linked key |
 | Target or caller has an outbound channel mirror (`get_mirror_link`) | 403 | The same boundary reached by the other mechanism. `linked_session_key` marks a channel-BORN slot; a dashboard-born slot given a mirror link republishes its turns to a channel just as surely, and the link lives in the session store rather than on the slot, so the slot-side check reads empty on exactly the session that mirrors. **Caller-side exception, two shapes:** an owner DM whose mirror IS its own conversation, and a dashboard-born caller whose outbound mirror IS the owner's own 1:1 DM (the conductor tab the operator linked to their phone) — the same audience either way, established by `owner_dm_refusal` before either caller-side channel refusal runs; the threadless Slack row every unlinked channel session carries reads as no mirror from the store itself (`SessionMap.get_mirror_link` never synthesizes a Slack mirror without a thread), and a Slack thread bound beside the mirror row (`get_slack_link`) counts as a second audience. **A paused mirror refuses exactly like a live one.** `_has_channel_mirror` reads the binding, never `mirror_paused`: the dashboard's Disconnect row mutes outbound delivery and keeps the binding, inbound from that conversation still routes into the session (`SessionBinder.resolve_inbound` does not read the flag either), and one click on the same row resumes delivery — so a paused binding is a latent audience that returns without any further authorization, and admitting the session while it stands would let a session control peers between two clicks of the same toggle. Fail-closed here means the way back into session control is to **sever** the binding: the menu's `Unlink from X` item (`mirror-unlink` / `slack-unlink`) or an in-channel `/unlink`, both of which drop the row and the pause flag with it (#14068; pinned in `test_session_control_boundaries.py::test_a_paused_mirror_still_refuses`). The exemption reads the binding the same way, so a paused mirror to the owner's own DM is admitted exactly as a live one is — the audience did not change. Whether a dashboard-born session mirroring to the owner's OWN DM is that contained audience was left open by #14084 and is decided by #15288: it is, on the same clauses, with the peer read off the transport's own record of the DM (see "Owner-DM channel callers" below) |
 | Target is in another workspace | 403 | Workspaces are the memory boundary |
 | Target names no open session | 404 | A mistake, not an authorization failure |
 | Title matches more than one session | 409 | Guessing means acting on the wrong conversation |
 
+### App sessions the owner's chats may reach
+
+An app that runs one chat session per work item can let the owner's general chats read
+those sessions and send them follow-ups. It declares the verbs in
+`permissions.reachableByUserSessions` (`"read"`, `"send"`; `apps/user_session_reach.py`).
+Each verb is an entry of a staged grant family: an install approves what it declares,
+an update that adds a verb holds it back until the owner approves it on the app's page,
+and a stored set from before the family existed approves nothing, so the owner's
+approval and every update start the family from nothing too. Before each read,
+summary and send gate (the steer and queue re-gates and the autonudge read included),
+`prewarm_app_reach` reads the live manifest, that approval and the record's `enabled` in
+a worker thread for the app of every live app session. `authorize_target` reads only
+that verdict, so it does no disk read on the event loop. A verdict older than 30 s
+allows nothing, so a gate that no prime precedes fails closed. Each verdict is stamped
+before its read, and a prime that read earlier never replaces a later one, so a slow
+read from before a disable cannot undo the refusal.
+
+`authorize_target` lifts `app_scoped_target` for one call only when all of these hold
+(`session_control_parts/app_reach.py`):
+
+1. The app allows the verb the operation needs: `read` for `read` and `summary`, `send`
+   for `send` (a broadcast's per-target delivery and the steer re-gate included).
+2. The caller is one of the owner's own chats: a `chat-` tab with origin `user` (or none,
+   on an older record), no `_created_by`, no `_app`, persistent memory, not a remote
+   executor, no channel or cron link, not channel-born, no outbound mirror, and not a
+   crew member's session. The owner-DM exemption does not apply. This runs after
+   `refuse_caller_surface`, so a caller it refuses keeps that refusal's code.
+
+Every other clause still runs: the target's own unattended, ephemeral, link and mirror
+refusals (the app clause is the only one skipped), the workspace compare and the
+ownership fence. Every other verb keeps `app_scoped_target`. `stop` ends a turn the app
+started and may still be waiting on, and `close` archives a session the app still holds
+by key, so neither is offered. `revive` keeps refusing an archived app session for the
+second reason. A sent message carries the usual `meta.relay` sender, so the transcript
+shows which chat sent it. The peer turn on an app session no person drives runs outside
+the background-turn cap, like a send to any of the owner's sessions. A queued send is not
+checked against the grant again at drain, so one queued before a withdrawal still runs.
+
 ### Handoff: the manager a fenced caller is checked against
 
-The ownership fence below admits a fenced caller to the sessions it CREATED. A lead
-that opens a conductor and its workers cannot put the workers under the conductor that
-way, because the conductor created none of them. `session_handoff` names a MANAGER for
-a session, and for the verbs that run a session (`HANDOFF_WIDENED_OPERATIONS`: `send`,
-`read`, `summary`, `stop`, `close`, `adopt`, `release`, `handoff`) the fence checks the
-manager instead of the creator (`_outside_reach`). Every other verb, `fork`, `rename`
-and `set_model` among them, and `session_create`'s delegation lineage, still read
-`_created_by`, which a handoff never rewrites. So a manager runs the sessions it was
+The ownership fence below admits a fenced caller to the sessions it CREATED. A lead that
+opens a conductor and its workers cannot put the workers under the conductor that way,
+because the conductor created none of them. `session_handoff` names a MANAGER for a
+session, and for the verbs that run a session (`HANDOFF_WIDENED_OPERATIONS`: `send`,
+`read`, `summary`, `queue`, `stop`, `close`, `adopt`, `release`, `handoff`) the fence
+checks the manager instead of the creator (`_outside_reach`). Every other verb, `fork`,
+`rename` and `set_model` among them, and `session_create`'s delegation lineage, still
+read `_created_by`, which a handoff never rewrites. So a manager runs the sessions it was
 handed and cannot fork them or open sessions against the creator's memory.
 
 The reach moves: once a session is handed on, a fenced giver is refused the widened
@@ -1282,7 +1370,8 @@ are untouched: they still require the switch.
 The exceptions are `session_end_wait`, whose own creator fence (below, "Ending
 a wait early") binds every caller class, owner sessions included,
 `session_reload`, whose creator fence binds every caller class the same way,
-and `session_set_color`, whose creator fence also binds every caller class.
+and `session_set_color` and `session_set_note`, whose creator fences also bind
+every caller class.
 
 #### The owner's Conductor: the same bypass, the same fence
 
@@ -2273,6 +2362,152 @@ opener is pinned in `test/test_discord_mirroring.py` and `test/test_telegram_lin
 followed by a `work_ledger_record` write against the real writer lands, and the
 resumed-session path opens nothing.
 
+### Code-channel conductor callers: the second exemption
+
+A Slack code channel runs in ONE dashboard slot the code-channel runtime created and
+recorded in `slack-code-channels.json`. Its turns are mirrored into the channel, so every
+caller-side channel refusal above (`mirrored_caller`) and the work-ledger gate
+(`channel_session`) refuse it, and its default agent -- a conductor, which writes nothing
+itself -- could do nothing there. `session_control_parts/code_channel_exemption.py`
+(`judge_code_channel`) is the second exemption beside owner-DM, consulted by the same three
+gates (`_refuse_ineligible_creator`, `refuse_caller_surface`, `handlers/work_ledger.caller_admission_with_route`
+and its post-read re-check) only after owner-DM refused, and only for a slot whose identity
+is a code channel's. Every other caller meets exactly the refusals above.
+
+**Clauses** (positive facts, first failure is the refusal, one SEL row
+`code_channel_dispatch_exemption` per judgement naming `channel=<id>`):
+
+- *identity* -- `caller_access.code_channel_binding_of`: the store's in-memory binding names
+  the slot key, `get_linked_slot(anchor)` IS the slot, and the slot's `_slack_channel` names
+  the binding's channel (an unloaded store is "not a code channel");
+- *switch* -- `slack.code_channels` on and capable, and `slack.code_channel_dispatch is True`
+  (opt-in, default `false`; a missing, non-boolean or dropped value reads `false`), and no config
+  file or `slack` section this process failed to read whole (`degraded_sections` on the snapshot
+  or the sticky `observed_degraded_sections`, which the live watcher's torn-file probe and an
+  overlay path that is not a readable file both record);
+- *channel state* -- not archived or Stop-fenced, workspace admitted, admitted by the
+  per-channel policy ceiling (`channel_policy.channel_refusal`, audited), and confirmed neither
+  archived nor shared outside the workspace from a `conversations.info` reading at most five
+  minutes old (Slack's own `is_archived`, since an archive made while the gateway was offline
+  sent no event to stamp)
+  (`slack/code_channels/audience.py`; missing, stale or failed readings refuse and start one
+  background re-read);
+- *audience* -- ONE `_read_mirror_binding` names only the channel's own room; that read is the
+  recorded admission the publisher judges against;
+- *verb* -- `status`, `send`, `close`, `stop`, `end_wait`, `create` (not `fork`) and the ledger;
+  `send` starts a turn on the conductor's OWN worker, which is the point of dispatch; never
+  `read`, `summary`, `broadcast`, `fork`, or `retry` / `continue` / `reload` / `set_model`;
+- *turn author* -- on a channel-origin or channel-narrowed turn, every Slack author routed into
+  the slot (`note_channel_sender`, from `maybe_route_linked_thread`) is the owner by identity
+  (the handler's `is_owner`, not the allow-list) now. The clause governs who DRIVES the session; third-party text it reads
+  as content (the origin thread the first turn carries as fenced untrusted data, files, issues)
+  is bounded by reach, not by authorship.
+
+**Reach.** Admission binds the call to the creator fence (`_code_channel_admitted(deny)`, and
+`_caller_is_ownership_fenced` is true for the slot by identity); `_delegation_lineage_fenced`
+roots at it, so no private-member workers. `create_session` files a worker in the conductor's
+own folder, beside its session, so the sidebar's lineage lane nests it under the conductor;
+any other folder, a new one inside it, or a folder-walk preflight is refused
+(`code_channel_folder`). The conductor is told this, and to answer status questions from
+`session_status`, in `CONDUCTOR_GUIDANCE` (seeded by `routing._seed_framing`, repeated on its
+`session_create` replies). The same text governs a `reason=stall` ledger wake: before nudging,
+the conductor checks the worker's `session_status`, its item (`work_ledger_read`) and its PR
+and CI on the forge (`gh pr list --head <branch>`, or `--state all --search` by issue or title
+when no branch is known, then `gh pr checks`), then states what it found; `last_status=(none
+yet)` or an empty `pr`/`branch` only means no report arrived, and a quiet worker may have
+finished and failed to report. It never claims a worker "stopped
+without telling me why", nor "PR: none yet" unless `gh` found none. The checks use only verbs
+the exemption admits; `read`/`summary` stay refused.
+A worker is one level deep: `code_channel_root` reads the worker record `create_session`
+writes into the code-channel store at birth -- for the resolved slot AND every live slot that
+answers to the same caller key (`_slots_sharing_identity`), since `caller_slot_key` takes the
+first match -- then the worker's `_created_by` against every
+session key a channel ever ran in (current and retired, never evicted), from the loaded
+snapshot only (the async entry points load it off the loop first; an unloaded, unreadable or
+malformed store refuses an agent-created caller). A single binding row that does not read back
+whole fences only its own channel (`CodeChannelStore.is_quarantined`): the channel is not
+routed or bound again, every write carries the row back unchanged, and a `session_key` the row
+still names stays among the channel session keys; worker records are unaffected.
+Refusals: `code_channel_worker_caller` on
+create, `depth_exceeded` on a ledger goal/create; the channel's own ledger opens at
+`MAX_DEPTH - 1`. The same record keeps a worker creator-fenced
+(`_caller_is_ownership_fenced`) when its transcript `created_by` has been edited away.
+
+**Opt-in.** `slack.code_channel_dispatch` defaults off, matching the base RFC's "every switch
+defaults off": a fresh or upgraded install's code-channel conductor cannot hand off work until
+the owner turns on **Let code channels start helper agents** under Code channels on the Slack Code
+card (hot-applied). Turning Code channels on never saves it on. With the default off, any
+lost value reads off; the degradation clause covers the remaining case, an unreadable file that
+held an opt-out shadowing an opt-in in the other file (either file as a directory or a dangling
+symlink counts as unreadable, not absent, and is fingerprinted apart from a missing file). When
+`config.local.json` sets the key, or cannot be read, the card disables the toggle and says so,
+and the save answers 409 rather than writing a base value the overlay may override.
+
+**Switched off, in the channel.** The refusal (`DISPATCH_OFF_REFUSAL`) names the control a
+person uses -- Settings → Channels → Slack → Code channels → "Let code channels start helper agents"
+-- and the key only in parentheses, since the agent relays it as is. The judgement also asks
+`slack/code_channels/handoff.notice_soon` for ONE fixed-text notice in the channel with a
+**Turn on helper agents for all code channels** button, deduplicated per channel until the switch is
+next judged on (`forget`); memory only, no disk access. The button (`handle_handoff_click`,
+action `kc_code_channel_enable_handoff`) is the owner's alone (`is_owner`; anyone else gets an
+ephemeral refusal), bound to its channel, gated like the wrap-up's Archive button (workspace,
+channel and origin admission, channels governance), and confirmed once by Slack's own dialog.
+It writes the switch through `messaging_api/slack_settings.save_code_channel_dispatch`, the
+card's save path (config lock, `validate_code_settings` with its overlay 409s,
+`_LockedSectionWrite` under `live.hold()`, SEL `slack.config.update` with `source=slack`, hot
+apply), then edits the notice to "Helper agents are on. Send your request again." It never re-runs the
+refused call; the conductor's next turn dispatches.
+
+**What reaches the channel.** Ledger reads and record replies for an exempt caller are the
+published-fields projection only: the goal's first line (`published_goal`, at most 200
+characters) and per item `published_item_fields` -- title, derived state, the worker's report
+summary's first line (at most 140), `branch`, PR, CI verdict, item and worker handles -- with
+mention markup removed and outbound redaction applied last. Never acceptance, decisions,
+events, other artifacts or transcripts. A reader outside the channel's turn (the work board)
+uses the same projection; its "is this the channel's conductor, and is that its worker"
+predicate ships with that reader, not here. Because that read carries no `status` and no bars,
+`accept_eval` with no document asks the gateway instead (`GET /api/work-ledger/accept-eval`,
+code-channel callers only): the stored bars are evaluated there by the tool's own evaluator
+and the answer carries each item's `id`, `verdict` and skip `why` alone, never the bar or the
+check's output.
+
+**Its workers' state, and a link to each.** `session_status` (admitted, creator-fenced) lists
+only the workers this conductor created, each with its state -- `working` / `queued` / `idle` /
+`pending_approval` (+ the redacted tool name) / `closed` / `lost` -- and, for a code channel's
+conductor only (other callers' rows are unchanged), `last_activity_at` /
+`since_activity_s`: the newest transcript row's timestamp, never its text, read from the
+restore tail for a row whose window is not loaded. For that conductor each live row, and the `session_create` reply, also carries `dashboard_link`
+(`worker_dashboard_link`): built server-side from the gateway's own origin (dashboard URL, or
+the tunnel when `slack.use_tunnel_url` opts in), a path link with no sign-in token, passed
+through the outbound credential/exfiltration filter and dropped whole if anything
+credential-shaped remains. Transcript verbs (`read`, `summary`) stay refused; their refusal
+names `session_status` and, for its own worker only, that link (`transcript_read_hint`).
+
+**Restart resume** (`slack/code_channels/resume.py`). After the memory barrier, once Slack is
+connected, each bound, live, not archived and not wrapped-up code channel's interrupted work
+(archived asked of Slack itself once the channel has interrupted work -- a confirmed archive is
+stamped as the missed event would have, an unreadable answer holds the work for Resume, and a
+press asks again) is continued through `continue_slot_turn(require_interrupted=True)` -- the channel's session
+and its own workers (store worker records plus the crew-log tree), nothing else. The
+interrupted turn (named only from the code-channel store: the opener the dispatcher's admission recorded for that session (`slack/code_channels/dispatch_record.py`, a turn observer registered on `chat_turn/turn_marker.py`), checked against the recovery row the last resume recorded; never from a transcript row or the metadata line) is recorded in the code-channel store's `resume` table
+before the continue; a recorded turn is never auto-resumed again. The stale status is settled
+(`status.settle_after_stop`) before the conductor's turn is continued, and one top-level
+notice follows; anything held back gets an owner-only Resume
+button (`kc_code_channel_resume_<hash>`) honoured only on the recorded notice ts and claimed by
+compare-and-set; it resumes what is interrupted in the channel now (identity and admission
+re-checked under the lock) and is given back when nothing could be resumed.
+The pass, both notice buttons (Resume and Stop) and the hand-off notice and its
+button all apply the per-channel policy ceiling (`allowed_channel_ids`) as Archive
+does: in a channel it refuses, nothing is resumed, stopped, posted or saved, and the
+policy seam audits the refusal.
+`resume.subscribe` hands each channel's report to the work board.
+
+**Agents cannot wear the gateway's buttons.** Agent-supplied Block Kit on both the send and
+the edit path is refused (`blocks_reserved_action`) when an `action_id` or `block_id` starts
+with `kc_code_channel_`, so an agent cannot post, or edit onto a gateway message, a copy of
+the Archive or Turn-on-hand-off button. The hand-off button also counts only on the notice
+this process registered, once.
+
 ## The wait → read poll loop
 
 `session_read_message` is the observation half, and polling is the supported
@@ -2428,6 +2663,34 @@ degrading it to 400. A target that loses its name during any of the close's
 waits is refused 409 `target_replaced` before the next step that acts by key: the
 shared close raises `slot_replaced` and `close_target` answers it with this
 surface's code, the one its own pre-pop re-check uses.
+
+### Naming a slot instance: the server-minted incarnation
+
+`close_slot` pops the slot only after the nudge-lock and app-close-hook awaits, so a
+list read issued before the close can be serialized while the closing slot is still
+listed and arrive after it is gone. Nothing else on the wire identifies an instance:
+`api_chat_slot_resume` restores `slot.created_at`, so `created` cannot tell a resumed
+replacement from the original.
+
+**Slot identity is explicit on the wire.** A key is reusable, so `created` cannot
+identify an instance. Every slot row carries an `incarnation`: the slot's
+`_dashboard_card_identity`, minted once per live slot object and never restored. The
+card lifecycle already uses that id to tell a replacement from the original, so there is
+one identity per slot, not two. `DELETE /api/chat/slots/{key}` accepts `?incarnation=`
+to name the object the caller meant. A mismatch answers `target_replaced` at HTTP 409
+before any teardown step runs. A replacement that takes the key during the close's
+awaits is refused by `close_slot`'s own `slot_replaced` check.
+
+**The dashboard sends it, and omitting it is permitted but unprotected.** A key-only
+close cannot distinguish the object the user dismissed from a replacement that took the
+key before the request arrived: the lookup resolves `slot` to that replacement, so object
+identity holds and a live turn is archived. `deleteChatSlot` therefore carries the row's
+`incarnation`. The parameter stays optional rather than required, because requiring it
+would hard-fail two callers that cannot supply one: `docs/app-kit/migration-guide.md`
+documents a key-only `DELETE` as the app pattern, and a client whose store holds no row
+for the key names no instance. Naming the instance is protection a caller opts into; one
+that omits it keeps the identity-only guarantee and nothing weaker. The client that
+holds a dismissed row out of the sidebar lands as a separate change.
 
 **Authorization is re-asserted at the point of no return.** `authorize_target`
 runs before `close_slot`, but `close_slot` then awaits — auto-nudge retirement
@@ -2808,7 +3071,8 @@ goes to its owner, and the owners import each other lowest layer first, in this 
 - `src/kiro_crew/dashboard/session_control_parts/model_switch.py`: `session_set_model` and
   the deferred model pick.
 - `src/kiro_crew/dashboard/session_control_parts/session_titles.py`: title cleaning,
-  `session_rename`, `session_generate_title` and `session_set_color`.
+  `session_rename`, `session_generate_title`, `session_set_color`, and
+  `authorize_created_target`, the gate `session_set_color` and `session_set_note` share.
 - `src/kiro_crew/dashboard/session_control_parts/crew_filing.py`: the Ultra Mode filing
   rule `session_create` and `session_fork` share: whether the caller is in a turned-on
   Ultra Mode tree, and the `folder_ignored` / `crew_mode` reply keys.

@@ -57,11 +57,10 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
     "capabilities.script_hooks": _CAPABILITY_OFF,
     "capabilities.messaging": _CAPABILITY_OFF,
     "capabilities.agentcore": _CAPABILITY_OFF,
-    # ``publish_provider.DEFAULT_PROVIDER``.
-    "capabilities.publish": {
-        "enabled": True,
-        "scopes": {"destinations": {"mode": "allow", "allow": ["default"]}, **_PUBLISH_LISTS_OFF},
-    },
+    # Kept off by the owner: artifact publishing will move to Kiro Space, under
+    # its own rule. ``BASELINE_INNER_LISTS`` still keeps the publish lists off
+    # when a remote policy turns this on.
+    "capabilities.publish": _CAPABILITY_OFF,
     "capabilities.theme_install": _CAPABILITY_OFF,
     "capabilities.telemetry": _CAPABILITY_OFF,
     "capabilities.tailnet_origin": _CAPABILITY_OFF,
@@ -115,6 +114,8 @@ BASELINE_UNGATED: Dict[str, str] = {
     + "local UI only; the user still opts in through Feature Preview and settings",
     "capabilities.decisions_local": _OPEN
     + "a local model; it stays inert while `capabilities.decisions` is off",
+    "external_access.registry_hosts": _OPEN
+    + "Discover queries every registry unless a policy names the key",
 }
 
 # LTS minimal values for the policy-only fields outside ``controls``, filled

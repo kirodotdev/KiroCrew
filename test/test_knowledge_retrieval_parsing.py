@@ -37,6 +37,13 @@ class TestHybridRetrieverExtended:
         retriever = HybridRetriever(store)
         assert retriever._graph_search("nonexistent") == []
 
+    def test_search_with_a_lone_surrogate_still_finds_the_rest_of_the_query(self, store):
+        # A JSON "\ud83d" escape, or a query cut mid-emoji, carries a lone
+        # surrogate that SQLite cannot bind; the search must still run.
+        item_id = store.add_item("Auth", "JWT token design", "doc")
+        results = HybridRetriever(store).search("JWT " + chr(0xD83D))
+        assert [r["id"] for r in results] == [item_id]
+
     def test_graph_search_with_neighbors(self, store):
         e1 = store.add_entity("Auth", "service")
         e2 = store.add_entity("JWT", "concept")

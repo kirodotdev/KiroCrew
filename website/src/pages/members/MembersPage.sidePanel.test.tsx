@@ -11,7 +11,7 @@ import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { QueryClient } from '@tanstack/react-query'
 import { memberProjectionStore } from '../../state/memberProjectionStore'
 import { sseConnected, sseSlots } from '../../store/dashboardSlice'
-import { __resetPaneDraftsForTests } from '../../utils/chatPaneDrafts'
+import { __resetPaneDraftsForTests, readPaneDraft } from '../../utils/chatPaneDrafts'
 import { _resetViewedThreadForTests } from '../../lib/viewedThread'
 import {
   __resetErrorJournalForTests,
@@ -178,11 +178,13 @@ vi.mock('../chat/FolderPanel', () => ({ default: () => null }))
 // (CrewDynamicDashboard.test.tsx); here the stub reports the identity the tab
 // passes it, which is all a page case can claim.
 vi.mock('./CrewDynamicDashboard', () => ({
-  default: ({ target, displayName, preview, onPreviewGone }: {
+  default: ({ target, displayName, preview, onPreviewGone, onAct, onSend }: {
     target: { slug?: string; member?: string }
     displayName: string
     preview?: boolean
     onPreviewGone?: (gone: boolean) => void
+    onAct?: (text: string) => void
+    onSend?: (text: string) => Promise<unknown>
   }) => (
     <div
       data-testid="crew-dashboard-stub"
@@ -194,6 +196,13 @@ vi.mock('./CrewDynamicDashboard', () => ({
       {onPreviewGone && (
         <button type="button" data-testid="crew-dashboard-stub-gone" onClick={() => onPreviewGone(true)}>gone</button>
       )}
+      {/* A page's `kirocrew-dashboard:send`, the way the real frame routes it: to
+          `onSend` when the host offers one, otherwise into the composer (`act`). */}
+      <button
+        type="button"
+        data-testid="crew-dashboard-stub-send"
+        onClick={() => { if (onSend) void onSend('Approve the plan'); else onAct?.('Approve the plan') }}
+      >send</button>
     </div>
   ),
 }))
@@ -612,6 +621,51 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     const stub = await screen.findByTestId('crew-dashboard-stub', undefined, PANE_READY)
     expect(stub).toHaveAttribute('data-slug', 'oncall')
     expect(screen.queryByTestId('member-identity-row')).toBeNull()
+  })
+
+  describe('a card reply on the Dashboard tab', () => {
+    const clickCardSend = async () => {
+      // The thread must be confirmed first: before that no send is offered either
+      // way, and the off case would pass without the switch being read at all.
+      await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+      const stub = await screen.findByTestId('crew-dashboard-stub', undefined, PANE_READY)
+      fireEvent.click(within(stub).getByTestId('crew-dashboard-stub-send'))
+    }
+
+    it('with one-click sends off (the default), fills the composer and never calls the gateway', async () => {
+      const sendMock = api.sendChat as ReturnType<typeof vi.fn>
+      sendMock.mockClear()
+      // A send that would fail if it were made: the off path must not make it.
+      sendMock.mockImplementation(() => Promise.reject(new Error('network down')))
+      try {
+        await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+        fireEvent.click(await rosterRow('oncall'))
+        await clickCardSend()
+        await waitFor(() => expect(readPaneDraft('member-oncall').text).toContain('Approve the plan'))
+        expect(sendMock).not.toHaveBeenCalled()
+      } finally {
+        sendMock.mockReset()
+        sendMock.mockImplementation(() =>
+          Promise.resolve(new Response(JSON.stringify({ ok: true, delivered: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })))
+      }
+    })
+
+    it('with one-click sends on, sends into the confirmed thread tagged as a card', async () => {
+      const sendMock = api.sendChat as ReturnType<typeof vi.fn>
+      sendMock.mockClear()
+      await renderPage([row({ bound: true, slot_key: 'member-oncall', dashboard_card_send: true })])
+      fireEvent.click(await rosterRow('oncall'))
+      await clickCardSend()
+      await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(1))
+      const call = sendMock.mock.calls[0]
+      expect(call[0]).toBe('Approve the plan')
+      expect(call[1]).toBe('member-oncall')
+      expect(call[8]).toBe('dashboard_card')
+      expect(readPaneDraft('member-oncall').text).not.toContain('Approve the plan')
+    })
   })
 
   describe('a refresh opens the Dashboard tab, not the last focused one', () => {

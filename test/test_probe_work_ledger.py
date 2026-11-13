@@ -912,6 +912,7 @@ def test_a_parked_items_seen_set_outlives_closed_items_under_the_tracked_cap(mon
         finished = _create(title=f"finished {index}")
         _report(finished, "done", summary="shipped")
         briefs.extend(o.brief for o in _observe(_probe(), _ctx()).observations)
+        work_ledger.apply_conductor_action(CONDUCTOR, "verdict", item_id=finished, verdict="pass")
         work_ledger.apply_conductor_action(
             CONDUCTOR, "close", item_id=finished, state="accepted", decision="verified"
         )
@@ -939,6 +940,7 @@ def test_a_closed_items_seen_tokens_are_dropped(monkeypatch):
         _run_once()
     assert done in lw._read_rate(CONDUCTOR)
 
+    work_ledger.apply_conductor_action(CONDUCTOR, "verdict", item_id=done, verdict="pass")
     work_ledger.apply_conductor_action(
         CONDUCTOR, "close", item_id=done, state="accepted", decision="verified"
     )
@@ -1041,6 +1043,64 @@ def test_a_quiet_progress_item_whose_worker_is_looping_raises_no_stall(monkeypat
     assert "reason=stall" not in _briefs(looping)
     assert "reason=stall" in _briefs(idle)
     assert item in _briefs(idle)
+
+
+def test_a_wake_at_on_a_held_loop_does_not_hide_a_stall(monkeypatch):
+    """A worker reports ``progress`` with a ``wake_at`` hours out, counting on its own
+    loop, but that loop is held on an unanswered approval and never fires. A
+    held loop voids the ``wake_at``, so the normal window flags the item; a loop that
+    can fire, or no loop at all, keeps the declared wait."""
+    from datetime import datetime, timedelta, timezone
+
+    from kiro_crew.probes.work_ledger import WorkLedgerProbe
+
+    _open_ledger()
+    item = _create()
+    wake = (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat()
+    work_ledger.apply_worker_report(
+        CONDUCTOR, item, status="progress", summary="my loop checks every 20 min", wake_at=wake
+    )
+    real_list = work_ledger.list_work_items
+    reported = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+
+    def _aged(key):
+        rows = real_list(key)
+        for row in rows:
+            row.last_report_at = reported
+        return rows
+
+    monkeypatch.setattr(work_ledger, "list_work_items", _aged)
+    held = _observe(WorkLedgerProbe(worker_loop_held=lambda _k: True), _ctx())
+    alive = _observe(WorkLedgerProbe(worker_looping=lambda _k: True), _ctx())
+    no_loop = _observe(WorkLedgerProbe(), _ctx())
+    assert "reason=stall" in _briefs(held) and item in _briefs(held)
+    assert "reason=stall" not in _briefs(alive)
+    assert "reason=stall" not in _briefs(no_loop)
+
+
+class TestWorkerLoopHeld:
+    """``ledger_wake.worker_loop_held``: an ACTIVE loop that cannot fire."""
+
+    def test_a_loop_held_on_an_approval_is_held(self):
+        held = _Loop("chat-1", approval_stalled=True)
+        assert lw.worker_loop_held(_Service(held), "dashboard_chat-1") is True
+
+    def test_a_loop_past_its_bound_is_held(self):
+        import time
+
+        spent = _Loop("chat-1", max_runtime_secs=60, created_ts=time.time() - 3600)
+        assert lw.worker_loop_held(_Service(spent), "chat-1") is True
+        capped = _Loop("chat-1", max_cycles=5, cycle_count=5)
+        assert lw.worker_loop_held(_Service(capped), "chat-1") is True
+
+    def test_a_loop_that_can_fire_a_stopped_loop_or_none_is_not_held(self):
+        assert lw.worker_loop_held(_Service(_Loop("chat-1")), "chat-1") is False
+        unbounded = _Loop("chat-1", max_cycles=0, max_runtime_secs=0)
+        assert lw.worker_loop_held(_Service(unbounded), "chat-1") is False
+        stopped = _Loop("chat-1", active=False, approval_stalled=True)
+        assert lw.worker_loop_held(_Service(stopped), "chat-1") is False
+        assert lw.worker_loop_held(_Service(), "chat-1") is False
+        assert lw.worker_loop_held(None, "chat-1") is False
 
 
 class _Loop:
@@ -1177,6 +1237,7 @@ def test_every_item_closed_wakes_once_and_is_never_terminal():
     _open_ledger()
     assert _observe(_probe(), _ctx()).observations == []
     item = _create()
+    work_ledger.apply_conductor_action(CONDUCTOR, "verdict", item_id=item, verdict="pass")
     work_ledger.apply_conductor_action(
         CONDUCTOR, "close", item_id=item, state="accepted", decision="verified"
     )
@@ -1208,6 +1269,7 @@ def test_one_unaccepted_item_decides_the_whole_board_did_not_finish_well():
 
     _open_ledger()
     good, bad = _create(), _create()
+    work_ledger.apply_conductor_action(CONDUCTOR, "verdict", item_id=good, verdict="pass")
     work_ledger.apply_conductor_action(
         CONDUCTOR, "close", item_id=good, state="accepted", decision="verified"
     )
@@ -1356,6 +1418,7 @@ def test_an_unreadable_item_cannot_terminate_the_watch():
     _open_ledger()
     closed = _create(title="finished")
     torn = _create(title="still open, and unreadable")
+    work_ledger.apply_conductor_action(CONDUCTOR, "verdict", item_id=closed, verdict="pass")
     work_ledger.apply_conductor_action(
         CONDUCTOR, "close", item_id=closed, state="accepted", decision="verified"
     )

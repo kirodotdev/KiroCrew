@@ -349,12 +349,18 @@ def _register_config_watch(
     app["config_watch_initial"] = initial
 
     async def _config_watch_shutdown(app_: web.Application) -> None:
-        await live.watch().stop()
+        try:
+            await live.watch().stop()
+        except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
+            logger.warning("Config watcher stop failed during shutdown", exc_info=True)
         lifecycle = getattr(state, "_dynamic_cards", None)
         if lifecycle is not None:
-            # One call rather than reaching for a worker attribute: the producer owns two
-            # tasks, the model queue and the number refresher, and both must settle.
-            await lifecycle.shutdown()
+            try:
+                # One call rather than reaching for a worker attribute: the producer owns
+                # two tasks, the model queue and the number refresher, and both must settle.
+                await lifecycle.shutdown()
+            except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
+                logger.warning("Dynamic cards shutdown failed", exc_info=True)
 
     app.on_cleanup.append(_config_watch_shutdown)
 

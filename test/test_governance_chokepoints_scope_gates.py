@@ -269,7 +269,8 @@ class TestSpawnGrantIsWithheldUnderASpawnPolicy:
         from kiro_crew.acp import kas_agents
 
         _install(_SPAWN_OFF)
-        kept = kas_agents._ceiling_permitted(["use_subagent", "web_fetch"], "a")
+        gate = kas_agents._authored_allow_gate("", None)
+        kept = kas_agents._ceiling_permitted(["use_subagent", "web_fetch"], "a", gate)
         assert kept == ["web_fetch"]
 
     def test_a_disabled_spawn_capability_withholds_it_on_kiro_cli(self):
@@ -315,7 +316,8 @@ class TestSpawnGrantIsWithheldUnderASpawnPolicy:
             }
         )
         assert may_skip_gate_now("use_subagent") is True
-        assert kas_agents._ceiling_permitted(["use_subagent"], "a") == ["use_subagent"]
+        gate = kas_agents._authored_allow_gate("", None)
+        assert kas_agents._ceiling_permitted(["use_subagent"], "a", gate) == ["use_subagent"]
 
     def test_no_policy_leaves_both_backends_unchanged(self):
         from kiro_crew import agent
@@ -323,7 +325,8 @@ class TestSpawnGrantIsWithheldUnderASpawnPolicy:
 
         _install(None)
         assert agent._may_auto_approve("use_subagent") is True
-        assert kas_agents._ceiling_permitted(["use_subagent"], "a") == ["use_subagent"]
+        gate = kas_agents._authored_allow_gate("", None)
+        assert kas_agents._ceiling_permitted(["use_subagent"], "a", gate) == ["use_subagent"]
 
 
 # ── shared helpers ──

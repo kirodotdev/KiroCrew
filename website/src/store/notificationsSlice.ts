@@ -1,7 +1,8 @@
 import { createSlice, createAsyncThunk, isDraft, original, type PayloadAction } from '@reduxjs/toolkit'
 import { api } from '../api/client'
 import { ApiError, isTerminalApprovalRefusal } from '../api/apiError'
-import type { Notification } from '../types'
+import type { CoordinatorApprovalTarget, Notification } from '../types'
+import { coordinatorTarget, approvalTargetKey, sameApprovalTarget } from '../types/approvalTarget'
 import { jsonEqual } from '../utils/structuralEqual'
 
 interface NotificationsState {
@@ -29,8 +30,8 @@ interface NotificationsState {
   ackSeqByTs?: Record<string, number>
   /** The ts of every approval row that can no longer be decided although it
    *  is still listed: a decide this tab sent was refused as no longer pending
-   *  (`isTerminalApprovalRefusal`: a 404, or the `no pending approval` 400), so
-   *  the request FAILED and the row says so as an error. An
+   *  (`isTerminalApprovalRefusal`), and the row says so as status, not an
+   *  error. An
    *  `approval_resolved` frame removes a live row instead: only a refused
    *  press keeps one, to say why. A retired row is also read: it no longer
    *  asks for anything, so `approvalDecisionSettled` marks it read in this tab and
@@ -52,7 +53,7 @@ interface NotificationsState {
    *  decision lifecycle is idle (no entry) -> deciding (an entry) -> settled
    *  (the entry is gone and the row has left, is retired, or is in
    *  `dismissFailed`). `inFlight` counts the presses still awaiting a
-   *  response. `ended` records that a frame (resolved, superseded, decided on
+   *  response. `ended` records that a frame (resolved, decided on
    *  another surface) ended the request while it was deciding: the row stays
    *  until the response settles, because a refusal must still be shown on
    *  it, and leaves then if nothing else claimed it. `dismissed` records that
@@ -726,7 +727,7 @@ export default notificationsSlice.reducer
  *  (an app channel named `approval`) and even an `approval_id` from its meta,
  *  but never `_local` (the bus drops underscore-prefixed meta keys), so it is
  *  deleted on the server like any other note. */
-const isLocalApprovalRow = (n: Pick<Notification, 'kind' | '_local'>): boolean =>
+export const isLocalApprovalRow = (n: Pick<Notification, 'kind' | '_local'>): boolean =>
   n.kind === 'approval' && n._local === true
 
 /** The action that takes a row out of the feed: a local approval row leaves
@@ -763,25 +764,30 @@ export const applyNotificationDismiss = createAsyncThunk(
   },
 )
 
-/** The key a decide is sent under. */
-const approvalDecisionKey = (n: Pick<Notification, 'approval_id' | 'ts'>): string => n.approval_id || n.ts
+/** The request an approval row was raised for, or null when the row cannot
+ *  name one. Feed rows are only ever raised by the coordinator, so the target
+ *  is the row's id, its owning slot ('' for a slotless approval, such as a cron
+ *  job's) and the server-issued instance. A row with no instance (written by an
+ *  older build) names no request, and nothing decides it. */
+export const approvalDecideTarget = (
+  n: Pick<Notification, 'approval_id' | 'approval_instance' | 'slot'>,
+): CoordinatorApprovalTarget | null => coordinatorTarget(n.approval_id, n.slot || '', n.approval_instance)
 
-/** The coordinator target a row's decide carries whenever the row names its
- *  request's instance, so the server refuses it once another request holds the
- *  id instead of settling that one. A row with no owning slot (a cron,
- *  autonudge or task-runner approval) names its slot as empty, which the
- *  server matches only against a record with no slot. */
-const coordinatorDecideTarget = (
-  n: Pick<Notification, 'slot' | 'approval_instance'>,
-): { origin: 'coordinator'; slot: string; instance: string } | undefined =>
-  n.approval_instance ? { origin: 'coordinator', slot: n.slot ?? '', instance: n.approval_instance } : undefined
+/** The key a decide is claimed under: the request the row names, so a claim
+ *  for one request under a recurring id never holds back another's (the row's
+ *  ts when it names none). */
+export const approvalDecisionKey = (n: Pick<Notification, 'approval_id' | 'approval_instance' | 'slot' | 'ts'>): string => {
+  const target = approvalDecideTarget(n)
+  return target ? approvalTargetKey(target) : n.ts
+}
 
-/** The listed rows for approval *id* that can still be decided, i.e. are not
- *  retired. The id recurs, so a retired row for an earlier request can share it
- *  with the live one; a retirement or a resolution must land on the live row,
- *  never on that earlier one. */
-export const liveApprovalRows = (notifications: NotificationsState, id: string): Notification[] =>
-  notifications.items.filter(n => n.approval_id === id && rowPhase(notifications, n.ts).phase === 'live')
+/** Every listed row raised for *target*, retired or not. */
+export const approvalRowsFor = (notifications: NotificationsState, target: CoordinatorApprovalTarget): Notification[] =>
+  notifications.items.filter(n => sameApprovalTarget(approvalDecideTarget(n), target))
+
+/** The listed rows raised for *target* that can still be decided. */
+export const liveApprovalRows = (notifications: NotificationsState, target: CoordinatorApprovalTarget): Notification[] =>
+  notifications.items.filter(n => rowPhase(notifications, n.ts).phase === 'live' && sameApprovalTarget(approvalDecideTarget(n), target))
 
 /** What one Approve/Reject press on a feed row or the detail panel came to. */
 export type ApprovalDecisionOutcome =
@@ -815,11 +821,17 @@ export const decideApprovalRow = createAsyncThunk<
 >(
   'notifications/decideApprovalRow',
   async ({ n, action }, { dispatch, getState }) => {
+    // Bound to the request this row showed: the id recurs, so only the row's
+    // own target may be decided. A row that names none has nothing to decide,
+    // and settles as refused with nothing sent.
+    const target = approvalDecideTarget(n)
     dispatch(approvalDecisionBegan(n.ts))
-    const target = coordinatorDecideTarget(n)
-    const key = approvalDecisionKey(n)
+    if (!target) {
+      dispatch(approvalDecisionSettled({ ts: n.ts, outcome: 'refused' }))
+      return { kind: 'refused' }
+    }
     try {
-      await (target ? api.resolveApproval(key, action, target) : api.resolveApproval(key, action))
+      await api.decideApproval(target, action)
     } catch (e) {
       if (isTerminalApprovalRefusal(e)) {
         dispatch(approvalDecisionSettled({ ts: n.ts, outcome: 'refused' }))

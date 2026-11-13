@@ -445,11 +445,36 @@ def _display_redaction_cache_key(
     return (digest, len(raw)), len(raw)
 
 
+#: Moved by every reset of the display caches, so a memo keyed on
+#: :func:`display_redaction_stamp` is dropped whenever they are.
+_display_cache_epoch = 0
+
+
+def display_redaction_stamp() -> tuple[object, ...] | None:
+    """Everything besides the text that the display battery's answer depends on.
+
+    The same material :func:`_display_redaction_cache_key` folds into every
+    digest -- the exempt-host set, the token-parameter prefixes and the verdict
+    MAC base -- plus the cache epoch. Equal stamps mean ``_redact_for_display``
+    and ``_redacted_preview`` give the same answer for the same text, so a
+    caller may memo their outputs under it. ``None`` inside a scope that changes
+    the battery's answer, where nothing may be memoized
+    (:func:`_display_scope_changes_battery`). Read it once per pass: it costs a
+    few microseconds, the digest's set reads.
+    """
+    if _display_scope_changes_battery():
+        return None
+    hosts = _exempt_exact_hosts() | current_scoped_exempt_hosts()
+    base = _display_verdicts.mac_base()
+    return (_display_cache_epoch, hosts, _token_param_exempt_prefixes(), base)
+
+
 def _clear_display_redaction_cache() -> None:
     """Reset the process-local caches for deterministic tests."""
     global _display_redaction_cache_bytes, _display_clean_young, _display_clean_old
     global _display_preview_cache_bytes, _display_preview_by_object_chars
-    global _display_preview_by_object_context
+    global _display_preview_by_object_context, _display_cache_epoch
+    _display_cache_epoch += 1
     with _display_redaction_cache_lock:
         _display_redaction_cache.clear()
         _display_redaction_cache_bytes = 0
@@ -939,7 +964,27 @@ def _live_child_instance(state: "DashboardState", slot: "_ChatSlot") -> str:
         return ""
 
 
-def _broadcast_expired_oauth_banners(state: "DashboardState", slot: "_ChatSlot") -> None:
+def _open_oauth_banner_rows(slot: "_ChatSlot") -> list[dict]:
+    """*slot*'s ``mcp_oauth`` rows that still offer a link and record no outcome."""
+    return [
+        message
+        for message in list(slot.messages)
+        if message.get("role") == "mcp_oauth"
+        for meta in (message.get("meta") or {},)
+        if meta.get("oauth_url")
+        and not (meta.get("completed") or meta.get("failed") or meta.get("superseded"))
+    ]
+
+
+def _oauth_banner_row_key(message: dict) -> str:
+    """A stable name for one banner row: its ``mid``, else its ``ts``."""
+    meta = message.get("meta") or {}
+    return str(meta.get("mid") or message.get("ts") or "")
+
+
+def _broadcast_expired_oauth_banners(
+    state: "DashboardState", slot: "_ChatSlot", *, only: "set[str] | None" = None
+) -> None:
     """Push the read-time gate's current verdict on *slot*'s OAuth banners to open tabs.
 
     The gate in `_prepare_messages` runs only when a client FETCHES, so an
@@ -976,16 +1021,15 @@ def _broadcast_expired_oauth_banners(state: "DashboardState", slot: "_ChatSlot")
     # any tab in this process (opening the tab loads the window first), so no
     # tab shows one of its banners to withdraw; asking would load its whole
     # transcript on the loop for nothing.
+    #
+    # ``only`` limits the frames to the rows with those keys
+    # (:func:`_oauth_banner_row_key`), so a caller that already announced some
+    # rows does not send them again.
     if getattr(slot, "window_pending", False) is True:
         return
-    candidates = [
-        message
-        for message in slot.messages
-        if message.get("role") == "mcp_oauth"
-        for meta in (message.get("meta") or {},)
-        if meta.get("oauth_url")
-        and not (meta.get("completed") or meta.get("failed") or meta.get("superseded"))
-    ]
+    candidates = _open_oauth_banner_rows(slot)
+    if only is not None:
+        candidates = [m for m in candidates if _oauth_banner_row_key(m) in only]
     if not candidates:
         return
     live_child = _live_child_instance(state, slot)
@@ -1140,6 +1184,24 @@ def with_allowed_links_restored(m: dict) -> dict:
     return {**m, "content": new_text, "meta": new_meta}
 
 
+def _carry_row_mid(meta: dict, msg: dict) -> dict:
+    """*meta* (parsed from a row's ``cls``) with the row's own ``mid`` kept.
+
+    A row whose structured fields live in ``cls`` (a permission row) keeps its
+    delivery identity, ``mid``, in the stored ``meta`` dict instead. The live
+    ``chat_message`` frame merges the two, so a card rendered live carries the
+    mid a native decide is bound by; a reader that rebuilt meta from ``cls``
+    alone dropped it, and every card rendered after a reload (or over the
+    stream) then named no request and refused its own presses. Only the mid is
+    carried: the rest of the stored meta keeps its own handling on each path.
+    """
+    stored = msg.get("meta")
+    mid = stored.get("mid") if isinstance(stored, dict) else None
+    if isinstance(mid, str) and mid and "mid" not in meta:
+        return {**meta, "mid": mid}
+    return meta
+
+
 def _prepare_messages_scoped(messages: list[dict], running: bool, *, live_child: str) -> list[dict]:
     """:func:`_prepare_messages` inside its allowed-host scope."""
     out: list[dict] = []
@@ -1207,11 +1269,8 @@ def _prepare_messages_scoped(messages: list[dict], running: bool, *, live_child:
             # elicitation rows only (the two the approval registry binds, and
             # the two whose resolution frame names a `mid`), so every other
             # row's wire meta stays exactly as before.
-            stored = m.get("meta")
-            stored_mid = stored.get("mid") if isinstance(stored, dict) else None
-            keep_mid = isinstance(stored_mid, str) and stored_mid and "mid" not in meta
-            if role in ("permission", "elicitation") and keep_mid:
-                meta = {**meta, "mid": stored_mid}
+            if role in ("permission", "elicitation"):
+                meta = _carry_row_mid(meta, m)
             msg_out["meta"] = _expire_dead_child_oauth_meta(
                 role, _redact_meta_for_role(role, meta), live_child
             )

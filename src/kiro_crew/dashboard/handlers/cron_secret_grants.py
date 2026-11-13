@@ -329,6 +329,10 @@ async def _promote_pending_grant(
             # the request (compensating write), so the re-approve path
             # survives without that window.
             secret_env_pending={},
+            # A new approval ends the denial the resurfacing marker records:
+            # the next stale revision is asked about even when its code
+            # matches one an earlier marker covered.
+            secret_env_resurfaced_pin="",
             # Locked compare-and-swap: everything above ran against a snapshot
             # the agent could have replaced in the meantime; the store refuses
             # the swap unless the record STILL carries exactly that snapshot.
@@ -594,6 +598,20 @@ async def api_cron_secret_grant(request: web.Request) -> web.Response:
         deny_expected = body.get("expected_secret_env")
         deny_expected_ts = body.get("expected_ts")
         deny_ts: float | None = None
+        if isinstance(deny_expected_ts, bool):
+            # A JSON bool is not a timestamp. Without this guard it is compared
+            # as ``float(True)==1.0`` / ``float(False)==0.0``, which matches or
+            # misses a stored timestamp by accident -- a misleading 409, or a
+            # silent deny when it happens to equal the stored value. The approve
+            # path rejects a bool here too. No real client sends one: the UI
+            # sends the numeric ``secret_env_pending_ts`` or omits the field.
+            return web.json_response(
+                {
+                    "error": "expected_ts must be a number, not a boolean",
+                    "code": "invalid_secret_env",
+                },
+                status=400,
+            )
         if isinstance(deny_expected_ts, (int, float)):
             deny_ts = _expected_ts_value(deny_expected_ts)
             if deny_ts is None:
@@ -649,6 +667,14 @@ async def api_cron_secret_grant(request: web.Request) -> web.Response:
         except CronStoreUnreadable as exc:
             return _cron_unreadable_response(exc)
         state.push_refresh("crons")
+        if not updated:
+            # The job was removed between the pending read and this write, so
+            # there was nothing left to deny. Main answered ``ok`` here, so keep
+            # the 200 (a 404 would newly fail a call that succeeds today) but
+            # name it in a warning: the denial is a no-op, the job is gone.
+            return web.json_response(
+                {"ok": True, "id": job_id, "warnings": ["job_not_found: the job was removed"]}
+            )
         return web.json_response({"ok": True, "id": job_id})
     if body.get("approve_pending") is True:
         # The approval must restate the request the approver saw (409

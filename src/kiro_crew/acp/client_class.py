@@ -55,6 +55,7 @@ from kiro_crew.acp.engine_fallback import EngineFallbackTracker
 from kiro_crew.acp.liveness import LivenessOracle
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.mcp_startable import PrunedServer
+from kiro_crew.acp.prompt_blocks import SentImageLedger, StagedImages
 from kiro_crew.acp.runtime_models import DEFAULT_MODEL
 from kiro_crew.acp.runtime_process_tree import ChildRecord
 from kiro_crew.acp.skill_reads import SkillReadTracker
@@ -65,12 +66,14 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
+    ACP_BACKENDS_SENT_IMAGE_RECORD,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STEER_CONCURRENT_PROMPT,
@@ -118,6 +121,8 @@ class AcpClient:
     # The scrub this session applies to what a harness reports back, handed to the
     # host adapters that quote such a value (``ProcessSession._scrub_observed``).
     _scrub_observed = staticmethod(_scrub_observed)
+    # The newest ``available_commands_update``: its session id and its rows.
+    _advertised_commands: tuple[str, tuple[dict[str, str], ...]] = ("", ())
 
     # Idle reader state (see _maybe_start_idle_reader). Class-level so a client
     # built without __init__ reads the idle defaults.
@@ -333,6 +338,9 @@ class AcpClient:
         # refuses EVERY permission request when it is set (``_handle_permission``).
         # Cleared on reset with the array.
         self._spec_zero_tools: bool = False
+        # The built-ins a crewmate worker keeps (``SessionProjection.builtin_tools``),
+        # carried as claude's ``tools`` option; None keeps the harness's preset.
+        self._claude_worker_builtin_tools: tuple[str, ...] | None = None
         # Narrowed servers the projection withheld because THIS session cannot put
         # their per-tool rule in force (``SessionProjection.unhonoured_servers``). No
         # member mount may re-add one, whatever the backend's PerToolDeny says.
@@ -352,6 +360,14 @@ class AcpClient:
         # own resolved config, so a fused tool title from one of them splits back
         # exactly. Recorded by its launch (``acp.harness.opencode``).
         self._opencode_config_mcp_servers: tuple[str, ...] = ()
+        # MiMo Code's own copies of the four read-back fields above, recorded by its
+        # launch (``acp.harness.mimocode``) and read only on a mimocode session.
+        self._mimocode_denies_in_force: frozenset[str] | None = None
+        self._mimocode_denies_unenforced: frozenset[str] = frozenset()
+        self._mimocode_native_mounts: frozenset[str] = frozenset()
+        self._mimocode_disabled_servers: frozenset[str] = frozenset()
+        self._mimocode_config_mcp_servers: tuple[str, ...] = ()
+        self._mimocode_governed_stop: tuple[str, str] | None = None
         # The per-session nonce a gate extension echoes in every dialog it raises;
         # minted by the pi, DeepSeek Harness or Strands launch, placed in the child's
         # environment there, and the only key under which a permission frame is read
@@ -384,6 +400,11 @@ class AcpClient:
         # read tools by name, or ``""`` once its launch proved stock dsh composes
         # them (``tool_gate.deepseek_read_only_owner_issue``). Refused until then.
         self._deepseek_read_only_issue = "the harness composition was not read back"
+        # Set by the MiMo Code launch once its routing is read back: a shell call
+        # that completes without Crew having been asked about it stops the harness,
+        # because that harness's own loopback listener can switch it to auto-allow
+        # mid-session (``acp.harness.mimocode``).
+        self._unasked_shell_tripwire = False
         # toolCallIds the gate extension asked about in this session, read off the
         # envelopes; a completed tool call not in it is a call the gate never saw.
         self._pi_gate_asked_ids: set[str] = set()
@@ -811,6 +832,15 @@ class AcpClient:
         # See _maybe_audit_unasked_tool_call.
         self._sel_settled_tool_calls: set[str] = set()
         self._last_stop_reason: str = ""
+        # The pictures this client's current session already holds (see
+        # AcpSessionHandle), only on a harness whose compaction this client
+        # sees; and the request id of the prompt whose inlined pictures are
+        # staged, with that prompt's staging: only that prompt's answer commits them.
+        self._sent_images: SentImageLedger | None = (
+            SentImageLedger() if acp_backend in ACP_BACKENDS_SENT_IMAGE_RECORD else None
+        )
+        self._sent_images_req: int | None = None
+        self._sent_images_staged: StagedImages | None = None
         # Dynamic config from ACP session/new response and config_option_update notifications.
         # Only the effort configOptions are consumed (model lists come from
         # _capture_available_models, which parses the real dict-shaped `models`).
@@ -867,6 +897,7 @@ class AcpClient:
     _session_mcp_servers = _client_mcp_array._session_mcp_servers
     _claude_session_mcp_servers = _client_mcp_array._claude_session_mcp_servers
     _opencode_session_mcp_servers = _client_mcp_array._opencode_session_mcp_servers
+    _mimocode_session_mcp_servers = _client_mcp_array._mimocode_session_mcp_servers
     _deepseek_session_mcp_servers = _client_mcp_array._deepseek_session_mcp_servers
     _copilot_session_mcp_servers = _client_mcp_array._copilot_session_mcp_servers
     _pi_session_mcp_servers = _client_mcp_array._pi_session_mcp_servers
@@ -938,6 +969,10 @@ class AcpClient:
     @property
     def _is_opencode(self) -> bool:
         return self.backend == ACP_BACKEND_OPENCODE
+
+    @property
+    def _is_mimocode(self) -> bool:
+        return self.backend == ACP_BACKEND_MIMOCODE
 
     @property
     def _is_pi(self) -> bool:
@@ -1401,6 +1436,7 @@ class AcpClient:
     _drop_superseded_config_frames = _client_permissions._drop_superseded_config_frames
     _refuse_session_config_drift = _client_permissions._refuse_session_config_drift
     _tripwire_pi_gate = _client_permissions._tripwire_pi_gate
+    _tripwire_mimocode_governed_mcp = _client_permissions._tripwire_mimocode_governed_mcp
     # Answer an MCP server's elicitation on this client: ``kiro_crew.acp.client_elicitation``.
     _handle_elicitation_request = _client_elicitation._handle_elicitation_request
     _audit_elicitation_decision = _client_elicitation._audit_elicitation_decision
@@ -1441,6 +1477,8 @@ class AcpClient:
     _agent_turn_pending = _client_transport._agent_turn_pending
     _maybe_start_idle_reader = _client_transport._maybe_start_idle_reader
     _idle_read_loop = _client_transport._idle_read_loop
+    _note_advertised_commands = _client_transport._note_advertised_commands
+    advertised_commands = _client_transport.advertised_commands
 
     # Prepare an ``AcpClient`` spawn before the process exists: ``kiro_crew.acp.client_spawn_env``.
     _prepare_spawn_workspace = _client_spawn_env._prepare_spawn_workspace
@@ -1460,6 +1498,7 @@ class AcpClient:
     # Run an ``AcpClient`` prompt turn and dispatch the frames it reads: ``kiro_crew.acp.client_turn``.
     _process_message = _client_turn._process_message
     _defer_opencode_shell_permission = _client_turn._defer_opencode_shell_permission
+    _defer_mimocode_shell_permission = _client_turn._defer_mimocode_shell_permission
     _prompt_loop = _client_turn._prompt_loop
     _consult_liveness_model_wait = _client_turn._consult_liveness_model_wait
     send_message = _client_turn.send_message
@@ -1467,6 +1506,7 @@ class AcpClient:
     stream_events = _client_turn.stream_events
     stream_unsolicited = _client_turn.stream_unsolicited
     _dispatch_events = _client_turn._dispatch_events
+    _forget_sent_images = _client_turn._forget_sent_images
     _send_prompt = _client_turn._send_prompt
     _read_prompt_response = _client_turn._read_prompt_response
 

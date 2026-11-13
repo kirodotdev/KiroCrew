@@ -150,7 +150,31 @@ To see the ceiling on such a host:
 ```bash
 kirocrew policy show
 kirocrew policy explain <scope> <item>
+kirocrew policy explain <scope> <item> --json
+kirocrew policy explain --batch checks.jsonl
 ```
+
+`--json` prints the answer as one JSON object. `--batch FILE` (`-` reads stdin)
+answers many checks in one run, which is how a script tests profiles kept in git:
+each line is a JSON object with `scope`, `item` and optional `session_key`,
+`agent` and `app` (the flags fill in what a line leaves out; other keys, such as
+your expected verdict, are ignored), and each answer is one JSON line with the
+request's `line` number, those inputs, and `verdict`, `profile`, `rule`, `layer`,
+`reason`, `explicit_deny`, `gate_verdict` and `gate_reason`. A line it cannot
+read, or an unknown scope, prints `{"line": N, "error": ...}` and the command
+exits 1 at the end.
+
+To test a profile, assert `verdict`: it answers that one scope-and-item question
+the way the live gate answers each scope and item a tool call names. The gate is
+looser in two places, and only for a DENIED that means "not in the allow list"
+(`explicit_deny: false`): a built-in tool it knows by more than one name is let
+through when each layer lists one of its names, and a call it knows is not a shell
+command is refused outside its own scopes, `commands` included, only by a deny rule.
+`explicit_deny: true` means a deny rule matched, which the gate refuses in every
+case. `gate_verdict` ignores the scope and reads the item as a tool's display title
+with no arguments (`Running: <command>`, `Reading <path>`, `mcp__<server>__<tool>`,
+or a bare name checked as both a command and a tool). Neither covers the refusals in
+**What is refused, and why** above, which are checked before governance.
 
 These are CLI-only on purpose: the governed agent does not get a tool for
 enumerating its own ceiling.

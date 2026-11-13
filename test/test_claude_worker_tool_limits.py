@@ -6,7 +6,10 @@ from that spec, keyed by the session (``session_mcp_crewmate.crewmate_worker_den
 never from the base on disk by name. The live capture
 ``test/fixtures/acp_frames/claude/worker-tool-limits-live.jsonl`` is the evidence
 ``ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS`` holds claude to. A native-tool exclude
-has no such carrier, so it is still refused before spawn.
+rides the session's ``tools`` option instead, an allow-list of the built-ins the
+worker keeps; ``worker-native-tool-limits-live.jsonl`` is the evidence
+``ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS`` holds claude to. A native entry no
+built-in row covers is still refused before spawn.
 """
 
 from __future__ import annotations
@@ -17,10 +20,11 @@ from types import SimpleNamespace
 
 import pytest
 from acp_session_mcp_helpers import isolated_seed_provenance  # noqa: F401
+from acp_session_mcp_helpers import _pin_harness
 
 from kiro_crew import mate_worker
 from kiro_crew.acp import session_mcp
-from kiro_crew.acp.client import AcpClient
+from kiro_crew.acp.client import AcpClient, AcpError
 from kiro_crew.acp.session_mcp_crewmate import crewmate_worker_deny_rules, worker_deny_rules
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
@@ -28,8 +32,10 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
+    ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS,
     ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
 )
+from kiro_crew.agent_sdk.backends import CC_PIN_INHERITED_MODE_ENV
 from kiro_crew.mate_worker import MATE_WORKER_AGENT
 from kiro_crew.session_capabilities import CapabilityStartupError
 
@@ -171,13 +177,14 @@ def test_an_ordinary_claude_session_keeps_the_rules_read_by_name(pixel_worker):
 @pytest.mark.parametrize(
     "excluded",
     [
-        ["shell"],
-        ["fs_write"],
+        ["use_aws"],
+        ["introspect"],
+        ["fs_*"],
         ["@jira/*"],
         ["*"],
         ["@jira/"],
         ["@builtin"],
-        ["@builtin/execute_bash"],
+        ["@builtin/*"],
     ],
     ids=str,
 )
@@ -191,7 +198,7 @@ def test_a_limit_no_deny_carries_is_still_refused_on_claude(pixel_worker, exclud
         )
     from kiro_crew.session_allocation_parts.get_or_create import _worker_tool_limited_servers
 
-    assert _worker_tool_limited_servers(KEY, True) == tuple(sorted(excluded))
+    assert _worker_tool_limited_servers(KEY, True, True) == tuple(sorted(excluded))
 
 
 @pytest.mark.parametrize(
@@ -366,3 +373,149 @@ class TestTheArrayIsHeldToTheSettingsInForce:
 
         client = AcpClient(work_dir=tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE)
         assert _claude_worker_settings_lag(client, {"excludedTools": ["@srv/t"]}) is False
+
+
+#: The built-ins a worker excluding ``shell`` and ``fs_write`` must not be offered.
+WITHHELD = (
+    "Bash",
+    "Monitor",
+    "PowerShell",
+    "TaskStop",
+    "Write",
+    "Edit",
+    "MultiEdit",
+    "NotebookEdit",
+)
+
+
+def _native_capture() -> tuple[dict, list[dict]]:
+    lines = (FIXTURES / "worker-native-tool-limits-live.jsonl").read_text(encoding="utf-8")
+    first, *rest = lines.splitlines()
+    return json.loads(first)["_meta"], [json.loads(line) for line in rest]
+
+
+def test_the_native_capture_withheld_the_excluded_tools_while_the_rest_ran():
+    meta, frames = _native_capture()
+    assert not set(WITHHELD) & set(meta["offered_tools"]), "not offered to the model"
+    assert {"Bash", "Write", "Edit", "Monitor", "PowerShell"} <= set(meta["control_offered_tools"])
+    assert {"mcp__native-probe__probe_echo", "ToolSearch"} <= set(meta["offered_tools"])
+    called = {
+        (f["params"]["update"]["_meta"]["claudeCode"]["toolName"], f["params"]["sessionId"])
+        for f in frames
+        if f.get("params", {}).get("update", {}).get("sessionUpdate") == "tool_call"
+    }
+    assert {"Read", "Grep", "Agent"} <= {name for name, _ in called}
+    assert not {name for name, _ in called} & set(WITHHELD)
+    # The subagent the worker started ran on its own session with the same limits.
+    assert {name for name, sid in called if sid != "claude-session-1"} <= {"ToolSearch", "Glob"}
+    asked = [f for f in frames if f.get("method") == "session/request_permission"]
+    assert [f["params"]["toolCall"]["title"] for f in asked] == ["mcp__native-probe__probe_echo"]
+    assert "PROBE:hello" in json.dumps(frames)
+    assert meta["files_after"] == [".claude", "seed.txt"]
+
+
+def test_the_captured_tools_are_what_crew_derives_for_the_worker(pixel_worker):
+    from kiro_crew.providers.mirrors.registry import mirror_for
+
+    meta, _ = _native_capture()
+    native = {**MATE, "excludedTools": [*MATE["excludedTools"], *meta["excluded_tools"]]}
+    (pixel_worker / "pixel.json").write_text(json.dumps(native), encoding="utf-8")
+    mirror = mirror_for(ACP_BACKEND_CLAUDE)
+    for owned in (True, False):
+        projection = mirror.session_projection(
+            MATE_WORKER_AGENT, permission_surface_owned=owned, session_key=KEY
+        )
+        assert projection.builtin_tools == tuple(meta["options"]["tools"])
+    # The MCP excludes alone keep claude's whole preset.
+    (pixel_worker / "pixel.json").write_text(json.dumps(MATE), encoding="utf-8")
+    projection = mirror.session_projection(
+        MATE_WORKER_AGENT, permission_surface_owned=True, session_key=KEY
+    )
+    assert projection.builtin_tools is None
+
+
+def test_the_session_options_carry_the_list_and_keep_a_narrower_one(tmp_path):
+    meta, _ = _native_capture()
+    client = AcpClient(
+        work_dir=tmp_path, agent=MATE_WORKER_AGENT, acp_backend=ACP_BACKEND_CLAUDE, session_key=KEY
+    )
+    client._claude_worker_builtin_tools = tuple(meta["options"]["tools"])
+    assert client._claude_session_meta()["claudeCode"]["options"]["tools"] == (
+        meta["options"]["tools"]
+    )
+    client._spec_zero_tools = True
+    assert client._claude_session_meta()["claudeCode"]["options"]["tools"] == []
+    client._spec_zero_tools = False
+    client._claude_worker_builtin_tools = None
+    assert "tools" not in client._claude_session_meta()["claudeCode"]["options"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version, stopped", [("0.83.9", True), ("", True), ("0.94.0", False)])
+async def test_a_narrowed_worker_needs_an_adapter_that_honours_its_tools_list(
+    tmp_path, monkeypatch, version, stopped
+):
+    """Below the options floor, or with no version, the ``tools`` list may be ignored."""
+    monkeypatch.delenv(CC_PIN_INHERITED_MODE_ENV, raising=False)
+    client = AcpClient(
+        work_dir=tmp_path, agent=MATE_WORKER_AGENT, acp_backend=ACP_BACKEND_CLAUDE, session_key=KEY
+    )
+    client._claude_worker_builtin_tools = ("Read", "Grep")
+    sent, killed = _pin_harness(client, monkeypatch)
+    client._agent_version_read = True
+    client._agent_version = version
+    resp = {"sessionId": "s-1", "modes": {"currentModeId": "auto"}}
+    if stopped:
+        with pytest.raises(AcpError, match="not verified to honour"):
+            await client._pin_claude_starting_mode(resp)
+        assert killed == [True]
+    else:
+        # Above the floor its mode is any other session's: kept, with the pin off.
+        await client._pin_claude_starting_mode(resp)
+        assert killed == []
+    assert sent == []
+
+
+@pytest.mark.parametrize(
+    "ref, withheld",
+    [
+        ("shell", {"Bash", "Monitor", "PowerShell", "TaskStop"}),
+        ("@builtin/execute_bash", {"Bash", "Monitor", "PowerShell", "TaskStop"}),
+        ("write", {"Write", "Edit", "MultiEdit", "NotebookEdit"}),
+        ("read", {"Read", "Grep", "Glob"}),
+        ("subagent", {"Task", "Agent"}),
+        (" web_search ", {"WebSearch"}),
+    ],
+)
+def test_a_mapped_native_exclude_is_carried_and_withholds_its_built_ins(ref, withheld):
+    from kiro_crew.agent_sdk.claude_worker_tools import claude_worker_builtin_tools
+
+    assert mate_worker.uncarried_tool_limits_of({"excludedTools": [ref]}) == (ref.strip(),)
+    assert (
+        mate_worker.uncarried_tool_limits_of(
+            {"excludedTools": [ref]}, native_tool_limits_carried=True
+        )
+        == ()
+    )
+    kept = claude_worker_builtin_tools([ref])
+    assert kept is not None and not set(kept) & withheld and "ToolSearch" in kept
+
+
+def test_native_membership_is_positive():
+    """H6: native excludes are an opt-in set of their own, never claude by absence."""
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+    from kiro_crew.providers.acp import AcpProvider
+    from kiro_crew.providers.base import LLMProvider
+
+    assert ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS == frozenset(
+        {ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE}
+    )
+    assert ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS <= ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS
+    assert LLMProvider.mate_worker_native_tool_limits_supported.fget(object()) is False
+    for backend in (ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_KIRO):
+        client = SimpleNamespace(_client=SimpleNamespace(backend=backend))
+        runtime = SimpleNamespace(_runtime=SimpleNamespace(acp_backend=backend))
+        want = backend in ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS
+        assert AcpProvider.mate_worker_native_tool_limits_supported.fget(client) is want
+        # The shared runtime carries no ``tools`` list, so it never claims the carrier.
+        assert AcpSessionProvider.mate_worker_native_tool_limits_supported.fget(runtime) is False

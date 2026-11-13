@@ -12,6 +12,7 @@
 import { forwardRef } from 'react'
 import { Search, Loader2, X } from 'lucide-react'
 
+import { fmtList } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 interface SearchBarProps {
   idPrefix: string
@@ -74,7 +75,7 @@ export const DiscoverySearchBar = forwardRef<HTMLInputElement, SearchBarProps>(
         <div className="mt-1.5 flex items-center justify-between text-xs text-muted">
           {/* Before a search the list is the bundled featured one, so no provider is
               being searched: the "Popular …" heading carries that state. */}
-          <span>{providers.length > 0 && debouncedQuery.length >= 2 ? i18nT('components.discoverySearchBar.searching_2', { name: providers.join(', ') }) : '\u00A0'}</span>
+          <span>{providers.length > 0 && debouncedQuery.length >= 2 ? i18nT('components.discoverySearchBar.searching_2', { name: fmtList(providers, { style: 'narrow' }) }) : '\u00A0'}</span>
           {debouncedQuery.length >= 2 && !isLoading && (
             /* This plural base is also used by file-explorer's SearchPanel — keep the
                key alive (or re-home it) if this component is ever removed. */

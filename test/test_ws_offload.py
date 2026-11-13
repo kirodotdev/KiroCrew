@@ -28,6 +28,7 @@ import logging
 import threading
 import time
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -366,7 +367,7 @@ async def test_cached_status_snapshot_publishes_null_for_unknown_counts(monkeypa
         seen_kwargs.update(kwargs)
         return {"cron_jobs": kwargs["cron_jobs"], "lessons": kwargs["lessons"], "sessions": 1}
 
-    state = SimpleNamespace(status_snapshot=fake_snapshot)
+    state = SimpleNamespace(status_snapshot=fake_snapshot, background_turn_stats=dict)
 
     snap = await cached_status_snapshot(state)  # type: ignore[arg-type]
 
@@ -405,12 +406,69 @@ async def test_cached_status_snapshot_reads_bundle_id_off_event_loop(monkeypatch
         seen_kwargs.update(kwargs)
         return {}
 
-    state = SimpleNamespace(status_snapshot=fake_snapshot)
+    state = SimpleNamespace(status_snapshot=fake_snapshot, background_turn_stats=dict)
 
     await sc_module.cached_status_snapshot(state)  # type: ignore[arg-type]
 
     assert seen["bundle"] != loop_thread, "served_bundle_id must run off the event loop"
     assert seen_kwargs["bundle_id"] == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_cached_status_snapshot_reads_the_armed_update_record_off_event_loop(monkeypatch):
+    """The armed-update file read runs in a worker thread, never on the loop."""
+    from kiro_crew import update_next_start
+    from kiro_crew.dashboard import status_counts as sc_module
+
+    async def fake_refresh(_state):
+        return (0, 0)
+
+    monkeypatch.setattr(sc_module, "_refresh_status_counts", fake_refresh)
+    loop_thread = threading.get_ident()
+    seen: dict[str, int] = {}
+
+    def recording_fields():
+        seen["thread"] = threading.get_ident()
+        return {"update_armed_version": "9.9.9", "pending_apply_error": None}
+
+    monkeypatch.setattr(update_next_start, "status_fields", recording_fields)
+    seen_kwargs: dict = {}
+
+    def fake_snapshot(**kwargs):
+        seen_kwargs.update(kwargs)
+        return {}
+
+    state = SimpleNamespace(status_snapshot=fake_snapshot, background_turn_stats=dict)
+
+    await sc_module.cached_status_snapshot(state)  # type: ignore[arg-type]
+
+    assert seen["thread"] != loop_thread, "the armed-update record must be read off the loop"
+    assert seen_kwargs["update_armed_version"] == "9.9.9"
+
+
+@pytest.mark.asyncio
+async def test_update_check_reads_the_armed_update_record_off_event_loop(monkeypatch):
+    from kiro_crew import update_next_start
+    from kiro_crew.dashboard.handlers import updates, updates_check
+
+    loop_thread = threading.get_ident()
+    seen: dict[str, int] = {}
+
+    def recording_fields():
+        seen["thread"] = threading.get_ident()
+        return {"update_armed_version": None, "pending_apply_error": None}
+
+    async def _noop():
+        return None
+
+    monkeypatch.setattr(update_next_start, "status_fields", recording_fields)
+    # Through the facade: these names are bound by more than one owner of the family.
+    monkeypatch.setattr(updates, "_do_update_check", _noop)
+    monkeypatch.setattr(updates, "_refresh_auto_update_effect_once", _noop)
+
+    await updates_check.api_update_check(MagicMock())
+
+    assert seen["thread"] != loop_thread, "the armed-update record must be read off the loop"
 
 
 @pytest.mark.asyncio
@@ -430,7 +488,7 @@ async def test_status_frame_publishes_null_for_unknown_counts(monkeypatch):
     def fake_snapshot(**kwargs):
         return {"cron_jobs": kwargs["cron_jobs"], "lessons": kwargs["lessons"], "sessions": 1}
 
-    state = SimpleNamespace(status_snapshot=fake_snapshot)
+    state = SimpleNamespace(status_snapshot=fake_snapshot, background_turn_stats=dict)
 
     frame = await _status_frame(state, dashboard_user=False)  # type: ignore[arg-type]
 
@@ -464,7 +522,9 @@ async def test_status_frame_carries_the_live_grant_to_the_dashboard_user_only(mo
         last_renewed_by="",
     )
     monkeypatch.setattr(sc_module, "safety_override", lambda: SimpleNamespace(status=lambda: grant))
-    state = SimpleNamespace(status_snapshot=lambda **_kwargs: {"sessions": 1})
+    state = SimpleNamespace(
+        status_snapshot=lambda **_kwargs: {"sessions": 1}, background_turn_stats=dict
+    )
 
     owner = await _status_frame(state, dashboard_user=True)  # type: ignore[arg-type]
     assert owner.get("yolo") is True
@@ -649,3 +709,35 @@ async def test_sse_dashboard_event_serves_warm_cache_without_inline_counts(monke
     assert dashboard["lessons"] == 42
     assert calls["count_lessons"] == 0, "the inline lesson count must not run on a warm cache"
     assert calls["list_jobs"] == 0, "the inline cron count must not run on a warm cache"
+
+
+@pytest.mark.asyncio
+async def test_status_snapshot_reads_the_background_turn_cap_off_event_loop(monkeypatch, tmp_path):
+    """The background-turn stats are taken in a worker, never on the loop.
+
+    Until the first unattended turn sizes the cap's semaphore, the
+    ``background_turns`` cap is a ``config.json`` read (a stat and two opens).
+    Every ``/api/status`` poll and every WS or SSE status frame builds the
+    snapshot, so taking it inline puts that disk work on the loop thread, where
+    a disk scanned on access stalls the whole gateway. The shared
+    ``cached_status_snapshot`` takes the stats in a worker and hands them to
+    ``status_snapshot``, which emits them verbatim.
+    """
+    from kiro_crew.dashboard import status_counts as sc_module
+
+    state, _calls = _recording_state(monkeypatch, tmp_path)
+    _warm_counts_cache(monkeypatch, (0, 0))
+    loop_thread = threading.get_ident()
+    readers: list[int] = []
+
+    def recording_raw_config() -> dict:
+        readers.append(threading.get_ident())
+        return {"dashboard": {"max_background_turns": 7}}
+
+    monkeypatch.setattr("kiro_crew.dashboard.state._raw_config", recording_raw_config)
+
+    snap = await sc_module.cached_status_snapshot(state)
+
+    assert snap["background_turns"] == {"cap": 7, "running": 0, "waiting": 0}
+    assert readers, "the cap was not read from config.json at all"
+    assert loop_thread not in readers, "the background-turn cap read config.json on the loop"

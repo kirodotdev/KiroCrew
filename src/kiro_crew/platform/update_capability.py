@@ -109,11 +109,13 @@ EXTERNALLY_MANAGED_STAMPS = _ELECTRON_DISTRIBUTIONS | _CONTAINER_DISTRIBUTIONS
 _GIT_TIMEOUT_SECS = 5
 
 #: What the gateway's unattended update loop does with an available update.
-#: ``install``: with ``auto_update`` on, it installs and restarts. ``notify``: it
-#: only tells the user, whatever ``auto_update`` says (because no route can
-#: install here, or because policy turns unattended installs off and leaves the
-#: route to a person's Update). ``mandatory``: a policy floor this build is below
-#: installs it whatever ``auto_update`` says.
+#: ``install``: with ``auto_update`` on, it builds the new version beside the
+#: running install and leaves it staged for the next restart; it never restarts a
+#: running gateway. ``notify``: it only tells the user, whatever ``auto_update``
+#: says (because no route can install here, because the route replaces the
+#: running tree in place, or because policy turns unattended installs off; the
+#: route is left to a person's Update). ``mandatory``: a policy floor this build
+#: is below stages it whatever ``auto_update`` says, where staging is possible.
 #: ``unknown`` is the status surface's value before the first derivation; the
 #: loop never sees it.
 AUTO_EFFECT_INSTALL = "install"
@@ -365,11 +367,8 @@ class UpdateCapability:
             return self
 
         # Function-local for the same cycle reason as the import in the factory.
-        from kiro_crew.platform.update_layout import channel_is_published, wheel_update_command
+        from kiro_crew.platform.update_layout import wheel_update_command
 
-        if not channel_is_published(channel):
-            # No command cli.sh would accept (RFC D11 lts before it publishes).
-            return replace(self, remediation=_unpublished_remediation(channel))
         repinned = dict(self.remediation)
         repinned["command"] = wheel_update_command(channel)
         return replace(self, remediation=repinned)
@@ -389,13 +388,6 @@ class UpdateCapability:
 
 def _command_remediation(message: str, command: str) -> dict[str, str]:
     return {"kind": "command", "message": message, "command": command}
-
-
-def _unpublished_remediation(channel: str) -> dict[str, str]:
-    """A message with no command, for a channel with no builds yet."""
-    from kiro_crew.platform.update_layout import unpublished_channel_note
-
-    return {"kind": "message", "message": unpublished_channel_note(channel)}
 
 
 def derive_capability(
@@ -482,13 +474,8 @@ def derive_capability(
 
     # Function-local: update_layout imports this module for its own shape
     # detection, so importing it at module scope would close a cycle.
-    from kiro_crew.platform.update_layout import (
-        channel_is_published,
-        release_channel,
-        wheel_update_command,
-    )
+    from kiro_crew.platform.update_layout import release_channel, wheel_update_command
 
-    channel = release_channel()
     return UpdateCapability(
         supported=True,
         managed_by=MANAGED_BY_KIROCREW,
@@ -498,13 +485,9 @@ def derive_capability(
         # executing. The wheel engine that makes it survivable is a later phase.
         can_apply=False,
         requires_restart=True,
-        remediation=(
-            _command_remediation(
-                "Re-run the installer to upgrade.",
-                wheel_update_command(channel),
-            )
-            if channel_is_published(channel)
-            else _unpublished_remediation(channel)
+        remediation=_command_remediation(
+            "Re-run the installer to upgrade.",
+            wheel_update_command(release_channel()),
         ),
     )
 
@@ -530,8 +513,9 @@ class AutoUpdateEffect:
     def manual_only(self) -> bool:
         """The loop only notifies, but a person's Update still installs by :attr:`route`.
 
-        The one ``notify`` that keeps its route: ``updates.unattended_apply``
-        turned the unattended install off, not the install shape.
+        The ``notify`` that keeps its route: ``updates.unattended_apply`` turned
+        the unattended install off, or the route replaces the running tree in
+        place; neither is the install shape failing.
         """
         return self.effect == AUTO_EFFECT_NOTIFY and self.route is not None
 
@@ -544,6 +528,11 @@ _SOURCE_PIN_REASON = "the update source is not the one the security policy pins"
 
 #: The reason a route that can install only notifies: ``updates.unattended_apply``.
 _UNATTENDED_OFF_REASON = "the security policy turns off unattended installs"
+
+#: The reason a route that replaces the running tree in place only notifies: the
+#: gateway is never updated while it runs (decision entry "updates never restart a
+#: running gateway").
+_IN_PLACE_REASON = "it replaces the running install in place, so a person applies it"
 
 
 def bundled_by_desktop_app(dist: str | None = None) -> bool:
@@ -706,6 +695,11 @@ def auto_update_effect(
         return AutoUpdateEffect(AUTO_EFFECT_MANDATORY, route)
     if not unattended_apply_allowed():
         return AutoUpdateEffect(AUTO_EFFECT_NOTIFY, route, _UNATTENDED_OFF_REASON)
+    if route != AUTO_ROUTE_WHEEL:
+        # A git reset or a policy command rewrites the tree this process serves
+        # from, which is the very disturbance a running gateway must not get. Only
+        # the managed venv builds beside it.
+        return AutoUpdateEffect(AUTO_EFFECT_NOTIFY, route, _IN_PLACE_REASON)
     return AutoUpdateEffect(AUTO_EFFECT_INSTALL, route)
 
 

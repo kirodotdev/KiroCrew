@@ -37,7 +37,9 @@ ENFORCE_LAUNCH_APPROVAL = True
 
 def _declare_second_agent(agents: Path, args: list[str]) -> None:
     entry = {"command": _APPROVED_CMD, "args": args}
-    (agents / "b.json").write_text(json.dumps({"name": "b", "mcpServers": {"srv": entry}}))
+    (agents / "b.json").write_text(
+        json.dumps({"name": "b", "tools": ["*"], "mcpServers": {"srv": entry}})
+    )
 
 
 def _pairs(refusal: dict, side: str = "") -> set[tuple[tuple[str, ...], tuple[str, ...]]]:

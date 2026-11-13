@@ -416,13 +416,16 @@ def after_shows_the_write(
         written = ev[1].get("revision") if len(ev) > 1 else None
         return bool(written) and after.get("revision") == written
     if kind == catalog.KIND_TEMPLATE_MCP_SERVER:
-        # Undo removes the record this card wrote: the same card id and entry.
+        from kiro_crew.dashboard.handlers.member_capability_catalog import mask_settings
+
+        # Undo removes the record this card wrote: the same card id and entry,
+        # read as the card shows it (the snapshot masks env and header values).
         written = ev[0].get("card_id") if ev else None
         return (
             bool(written)
             and after.get("present") is True
             and after.get("card_id") == written
-            and same(after.get("entry"), p.get("entry"))
+            and same(after.get("entry"), mask_settings(p.get("entry")))
         )
     if kind == catalog.KIND_MCP_TOGGLE:
         return after.get("enabled") is bool(p.get("enabled"))
@@ -809,8 +812,11 @@ def _template_server_state(p: dict[str, Any]) -> dict[str, Any]:
         "template_has": template_declares(p["template"], p["server"]),
     }
     if added is not None:
+        from kiro_crew.dashboard.handlers.member_capability_catalog import mask_settings
+
         out["card_id"] = added.card_id
-        out["entry"] = _jsonable(dict(added.entry))
+        # A card never holds a setting value, its snapshots included.
+        out["entry"] = _jsonable(mask_settings(dict(added.entry)))
     return out
 
 
@@ -1248,7 +1254,12 @@ async def read_context(
         return {"next_run_at": when, "timezone": zone}
     if kind == catalog.KIND_CREWMATE_CAPABILITIES:
         from kiro_crew.agent_capabilities import CapabilityError
+        from kiro_crew.dashboard.handlers.member_capability_catalog import masks_unresolved
 
+        if masks_unresolved(p):
+            raise catalog.CardCatalogError(
+                "redacted_value_not_writable", "capabilities refused: redacted_value_not_writable"
+            )
         body = {"revision": before.get("revision"), **p["draft"]}
 
         def _preview() -> dict[str, Any]:
@@ -1292,6 +1303,9 @@ async def read_context(
             "impact": impact,
             "label": await asyncio.to_thread(_crewmate_label, p["member"]),
             "gateway": sorted(await asyncio.to_thread(gateway_matches, p)),
+            # A crewmate on its own file: the edit reaches its worker only, never
+            # the conductor its chat runs on (``mate_worker``).
+            "worker_kit": result.get("mode") == "mate",
         }
     if kind == catalog.KIND_TEMPLATE_UPDATE:
         from kiro_crew.config.loader import KiroCrewConfig
@@ -1497,8 +1511,8 @@ async def _workflow_context(
     from kiro_crew.workflows.validate import validate
 
     result = await asyncio.to_thread(validate, params["source"])
-    if not result.ok:
-        errors = "; ".join(str(e) for e in result.errors)
+    if result.save_errors:  # a compile-stage error still saves, with a warning
+        errors = "; ".join(str(e) for e in result.save_errors)
         raise catalog.CardCatalogError(
             "invalid_workflow", f"the script is not valid: {errors[:400]}"
         )

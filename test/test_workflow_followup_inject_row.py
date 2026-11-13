@@ -29,7 +29,9 @@ async def test_the_workflow_followup_is_an_inject_row_on_both_paths(tmp_path, bu
     state.broadcast_ws = MagicMock()
     slot._turn_admission_reserved = busy
 
-    started = slot.enqueue_or_run_prompt(PROMPT, _no_turn, state, workflow_followup=True)
+    started = slot.enqueue_or_run_prompt(
+        PROMPT, _no_turn, state, gateway_prompt_kind="workflow_followup"
+    )
 
     if busy:
         assert started is False

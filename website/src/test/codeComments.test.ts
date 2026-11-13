@@ -306,6 +306,40 @@ describe('multi-line chip placement', () => {
   })
 })
 
+describe('CRLF and lone CR line endings', () => {
+  for (const [name, eol] of [['CRLF', '\r\n'], ['lone CR', '\r']] as const) {
+    const src = DOC.split('\n').join(eol)
+    it(`${name}: spans cover the fence content and the last line round-trips`, () => {
+      const spans = codeFenceSpans(src)
+      expect(spans.map(s => s.contentStartLine)).toEqual([4, 11])
+      expect(src.slice(spans[0].contentStart, spans[0].contentEnd)).toBe(['class Foo {', '  int x;', '}'].join(eol))
+      const a = buildCodeCommentAnchor(src, spans[0], 2, 3)!
+      expect(a.quote).toBe(['  int x;', '}'].join(eol))
+      expect(a.line).toBe(5)
+      const c = comment('eol', { quote: a.quote, prefix: a.prefix, suffix: a.suffix, start_offset: a.startOffset, end_offset: a.endOffset })
+      expect(routeCodeComments(src, spans, [c]).byFence.get(4)).toEqual([{ id: 'eol', line: 3, count: 1, unread: false }])
+      const posted = postedCodeRange(src, spans, { startOffset: a.startOffset, quote: a.quote, seq: 1 })
+      expect(posted).toEqual({ blockStartLine: 4, start: 2, end: 3, seq: 1 })
+    })
+  }
+
+  it('CRLF: span offsets are source offsets, the \\r\\n pairs kept', () => {
+    const src = 'p\r\n\r\n```\r\nab\r\ncd\r\n```\r\n'
+    const [span] = codeFenceSpans(src)
+    expect([span.contentStart, span.contentEnd]).toEqual([10, 16])
+    expect(src.slice(span.contentStart, span.contentEnd)).toBe('ab\r\ncd')
+  })
+
+  it('CRLF: a saved quote ending in the last line\'s \\r still routes to its fence', () => {
+    const src = DOC.split('\n').join('\r\n')
+    const spans = codeFenceSpans(src)
+    const quote = '  int x;\r\n}\r'
+    const at = src.indexOf(quote)
+    const c = comment('legacy', { quote, prefix: src.slice(at - 10, at), suffix: src.slice(at + quote.length, at + quote.length + 10), start_offset: at, end_offset: at + quote.length })
+    expect(routeCodeComments(src, spans, [c]).byFence.get(4)).toEqual([{ id: 'legacy', line: 3, count: 1, unread: false }])
+  })
+})
+
 describe('proseOverlayComments', () => {
   it('drops the code-claimed threads (root and replies) and keeps prose ones', () => {
     const [span] = codeFenceSpans(DOC)

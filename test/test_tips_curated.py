@@ -163,7 +163,7 @@ class TestCuratedTips:
             (
                 "mcp-gateway",
                 (
-                    "MCP Management > Advanced > Servers",
+                    "MCP Servers > Sharing > Servers",
                     "**Share**",
                     "**Enable all shareable**",
                     "confirm any prompt that appears",
@@ -194,7 +194,7 @@ class TestCuratedTips:
         }
         assert not tips["interactive-widget"].get("doc_link")
         assert tips["monitor-change"]["title"] == "Watch for a change"
-        assert tips["mcp-gateway"]["action"]["route"].endswith("#mcp-management")
+        assert tips["mcp-gateway"]["action"]["route"] == "/mcp?view=sharing"
         assert "launch and sharing review" not in tips["mcp-gateway"]["body"]
         app_steps = (
             "Apps › Discover",

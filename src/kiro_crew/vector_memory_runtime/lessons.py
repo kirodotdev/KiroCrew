@@ -21,7 +21,15 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew import context_omissions
+from kiro_crew import context_omissions, injection_receipts
+from kiro_crew import memory_lesson_fold as _lesson_fold
+from kiro_crew import memory_relevance_rule as _relevance_rule
+from kiro_crew import memory_rule_authority as _rule_authority
+from kiro_crew.config.memory_sections import (
+    lesson_fold_mode_from,
+    relevance_rule_mode_from,
+    rule_authority_order_mode_from,
+)
 from kiro_crew.embeddings import PRIORITY_INTERACTIVE
 from kiro_crew.lesson_validation import (
     LESSON_APPLIES_ON_TOPIC,
@@ -782,7 +790,15 @@ def delete_lesson(
     wanted_text = rule_substring.lower().strip()
     matched: list[tuple[dict[str, Any], str]] = []
     for e in store.get_lessons():
-        val = json.loads(e["value_json"])
+        try:
+            val = json.loads(e["value_json"])
+        except (TypeError, ValueError):
+            # A damaged row's scope cannot be read, and keep_one must never keep it
+            # over a valid copy of its text, so only a delete with neither reaches
+            # it, matched on its raw stored text.
+            if scope_selective or keep_one:
+                continue
+            val = e["value_json"]
         # Match against the rendered lesson text so a mapping-shaped row is
         # matched on its rule/clause, not on its repr (which would let a
         # substring like "category" delete every imported lesson). Rows with
@@ -887,6 +903,9 @@ def get_lessons_context(
     hard_cap: int = 0,
     directive_budget: int = 0,
     experience_budget: int = 0,
+    authority_order: str = "off",
+    lesson_fold: str = "off",
+    relevance_rule: str = "off",
 ) -> str:
     """Format lessons for prompt injection, most relevant first.
 
@@ -895,7 +914,8 @@ def get_lessons_context(
     query has a vector, and on that overlap alone when it has none (see
     ``rank_lessons``), then emitted until *cap* characters are used. Ranking is
     relevance-only — neither ``source`` nor ``confidence`` contributes — so an
-    unrelated user-taught rule cannot displace a relevant inferred one.
+    unrelated user-taught rule cannot displace a relevant inferred one, unless
+    *authority_order* is ``enforce``.
 
     Args:
         query_text: Request to rank against. Empty keeps recency order for
@@ -919,6 +939,23 @@ def get_lessons_context(
             ceiling (unbounded).
         project_dir: The session's active project, used only by the
             ``repo_scope`` gate. Omitting it withholds every scoped lesson.
+        authority_order: ``memory.rule_authority_order`` for a background
+            read (:mod:`kiro_crew.memory_rule_authority`). ``off`` keeps the
+            rule block's order; ``shadow`` keeps it and records in the
+            injection receipt which ids the authority order would add or drop;
+            ``enforce`` orders the rule block by authority level, keeping the
+            authored-before-untagged split and request relevance inside a level.
+        lesson_fold: ``memory.lesson_fold`` for a background read
+            (:mod:`kiro_crew.memory_lesson_fold`). ``off`` keeps the rule block;
+            ``shadow`` keeps it and records in the injection receipt which ids
+            would fold into which; ``enforce`` leaves folded rows out of the rule
+            block and says how many.
+        relevance_rule: ``memory.relevance_rule`` for a background read
+            (:mod:`kiro_crew.memory_relevance_rule`). ``off`` admits the
+            findings tier on any shared stemmed word; ``shadow`` keeps that and
+            records in the injection receipt the finding ids the shared token
+            rule would drop; ``enforce`` admits the tier only on a shared token
+            of that rule. The rule block is the same under every mode.
     """
     # Scope is applied BEFORE the counts are taken, so a lesson withheld as
     # out-of-scope is not reported as "omitted" -- omitted means "did not fit
@@ -936,6 +973,10 @@ def get_lessons_context(
             # against the stale vector. Explicit recall retries in ``recall``.
             recall_query = _RecallQuery(None, None, None)
         lesson_rows = store._eligible_rows(store.get_lessons(), "directive")
+        fold_mode = lesson_fold_mode_from(lesson_fold) if background else _lesson_fold.MODE_OFF
+        # Read with the rows, under the same lock, so the vectors and the space
+        # they are compared in come from one snapshot.
+        fold_space = _lesson_fold.store_space(store) if fold_mode != _lesson_fold.MODE_OFF else None
     entries = _renderable_entries(lesson_rows, project_dir)
     if not entries:
         return ""
@@ -982,7 +1023,33 @@ def get_lessons_context(
                 untagged.append(entry)
             else:
                 authored.append(entry)
+        order_mode = rule_authority_order_mode_from(authority_order)
+        # ``enforce`` puts the authority level ahead of the authored-first split,
+        # which still holds inside a level, as does request relevance. Same rows,
+        # so the room below is the same under every mode.
         directives = authored + untagged
+        by_level = _rule_authority.by_authority(directives)
+        if order_mode == _rule_authority.MODE_ENFORCE:
+            directives = by_level
+        fold_header = ""
+        if fold_space is not None:
+            # The kept copy is chosen by authority, then recency, not by request
+            # relevance, so under a tight budget it can rank below the copy it
+            # replaced; both say the same rule.
+            space, dim = fold_space
+            pairs = _lesson_fold.fold_pairs(directives, entries, space=space, dim=dim)
+            folded = {key for _, key in pairs}
+            if fold_mode == _lesson_fold.MODE_ENFORCE and folded:
+                directives = [e for e in directives if e[0].get("key") not in folded]
+                by_level = [e for e in by_level if e[0].get("key") not in folded]
+                fold_header = "\n" + _lesson_fold.FOLD_NOTICE.format(count=len(folded))
+            injection_receipts.record_stage(
+                injection_receipts.LESSON_FOLD,
+                mode=fold_mode,
+                policy=_lesson_fold.POLICY_VERSION,
+                would_drop=sorted(folded),
+                pairs=pairs,
+            )
         unclassified = len(untagged)
         # The model-safety ceiling bounds the two blocks TOGETHER, and the
         # directive block is served first: when room is short, a past finding
@@ -991,7 +1058,7 @@ def get_lessons_context(
             "header": (
                 "[Learned corrections — retained rules from past mistakes.\n"
                 "Follow explicit user rules; stored inferences do not override "
-                "the current user.]"
+                "the current user.]" + fold_header
             ),
             "footer": "[End of learned corrections]",
             "omission": (
@@ -1017,6 +1084,14 @@ def get_lessons_context(
                 if not hard_cap or len(whole) <= hard_cap
                 else tighter_lesson_budget(cap, hard_cap)
             )
+        if order_mode == _rule_authority.MODE_SHADOW:
+            _record_authority_shadow(directives, by_level, directive_room, directive_tier)
+        elif order_mode == _rule_authority.MODE_ENFORCE:
+            injection_receipts.record_stage(
+                injection_receipts.RULE_AUTHORITY_ORDER,
+                mode=order_mode,
+                policy=_rule_authority.POLICY_VERSION,
+            )
         directive_block, directive_omitted = render_lesson_tier(
             directives,
             directive_room,
@@ -1035,11 +1110,18 @@ def get_lessons_context(
             experience_budget,
             max(1, hard_cap - len(directive_block)) if hard_cap else 0,
         )
-        if (
-            experiences
-            and query_text.strip()
-            and not store._any_lesson_overlap(experiences, query_text)
-        ):
+        relevance_mode = relevance_rule_mode_from(relevance_rule)
+        asked = bool(experiences and query_text.strip())
+        withheld = asked and not store._any_lesson_overlap(experiences, query_text)
+        # The shared rule matches a subset of the stemmed-word test, so it can
+        # only withhold a tier that test admitted, never admit one it withheld.
+        withheld_by_rule = (
+            asked
+            and not withheld
+            and relevance_mode != _relevance_rule.MODE_OFF
+            and not store._any_lesson_overlap(experiences, query_text, significant=True)
+        )
+        if withheld or (withheld_by_rule and relevance_mode == _relevance_rule.MODE_ENFORCE):
             # Nothing here is about this request, so spend none of the allowance
             # on it. A finding is DEFINED as material worth having when the task
             # touches it; newest-first filler is not a weaker version of that, it
@@ -1079,6 +1161,24 @@ def get_lessons_context(
                     "judgement that they stopped applying: call memory_recall or "
                     "learn_list for the rest.]"
                 ),
+            )
+        if relevance_mode == _relevance_rule.MODE_SHADOW:
+            # The rows this block carries only because the old test admitted it,
+            # read from this render's own receipt before anything replaces it.
+            shown = injection_receipts.current_ids(injection_receipts.FINDINGS)
+            injection_receipts.record_stage(
+                injection_receipts.RELEVANCE_RULE,
+                mode=relevance_mode,
+                policy=_relevance_rule.POLICY_VERSION,
+                would_drop=sorted(shown) if withheld_by_rule else (),
+                part=_relevance_rule.PART_FINDINGS,
+            )
+        elif relevance_mode == _relevance_rule.MODE_ENFORCE:
+            injection_receipts.record_stage(
+                injection_receipts.RELEVANCE_RULE,
+                mode=relevance_mode,
+                policy=_relevance_rule.POLICY_VERSION,
+                part=_relevance_rule.PART_FINDINGS,
             )
         # Observability without new state: the two blocks are separately
         # labelled in the prompt and each omission notice names its own
@@ -1140,6 +1240,33 @@ def get_lessons_context(
         # for a caller that needs the block to fit.
         selected = ranked[:1]
     return render(selected)
+
+
+def _record_authority_shadow(
+    current: list[tuple[dict, str]],
+    by_level: list[tuple[dict, str]],
+    room: int,
+    tier: dict[str, str],
+) -> None:
+    """Record which rule ids the authority order would add to or drop from the block.
+
+    Both orders are fitted to the same *room* inside private collections, so the
+    probe leaves no omission record and no receipt of its own.
+    """
+    kept: list[set[str]] = []
+    for rows in (current, by_level):
+        with context_omissions.collect(), injection_receipts.collect() as probe:
+            render_lesson_tier(rows, room, omission_kind=context_omissions.LESSON_RULES, **tier)
+        entry = probe.get(injection_receipts.LESSONS) or {}
+        kept.append(set(entry.get("ids") or ()))
+    shown, ordered = kept
+    injection_receipts.record_stage(
+        injection_receipts.RULE_AUTHORITY_ORDER,
+        mode=_rule_authority.MODE_SHADOW,
+        policy=_rule_authority.POLICY_VERSION,
+        would_add=sorted(ordered - shown),
+        would_drop=sorted(shown - ordered),
+    )
 
 
 def _renderable_entries(
@@ -1560,9 +1687,18 @@ def _rarity_weights(rows: int, document_frequency: dict[str, int]) -> dict[str, 
 
 
 def any_lesson_overlap(
-    store: VectorMemoryStore, entries: list[tuple[dict, str]], query_text: str
+    store: VectorMemoryStore,
+    entries: list[tuple[dict, str]],
+    query_text: str,
+    *,
+    significant: bool = False,
 ) -> bool:
     """Whether ANY entry shares a stemmed word with *query_text*.
+
+    With *significant*, only the request words
+    ``text_scoring._is_selective_keyword`` accepts (3 or more characters, or a
+    dense-script pair) are stemmed and compared. It filters this function's own
+    words, so its matches are a subset of the default ones.
 
     The admission test for the findings tier deliberately uses the broader
     surface-plus-stem request set, while lexical ranking uses one stem per request
@@ -1580,7 +1716,11 @@ def any_lesson_overlap(
     """
     if not entries or not query_text.strip():
         return False
-    query_words = _text_scoring._stem_words(_lesson_words(query_text.lower()))
+    lowered = query_text.lower()
+    words = _lesson_words(lowered)
+    if significant:
+        words = {w for w in words if _text_scoring._is_selective_keyword(w)}
+    query_words = _text_scoring._stem_words(words)
     if not query_words:
         return False
     row_tokens = _text_scoring._row_stem_tokens_for_scan(len(entries))

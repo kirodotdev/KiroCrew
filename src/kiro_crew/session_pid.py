@@ -1395,12 +1395,21 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         signal_orphaned_spawn_group,
     )
     from kiro_crew.session_pid_rss import (  # noqa: F401
+        _LEFTOVER_NAME_MAX,
         _PAGE_SIZE,
+        Leftover,
+        SessionLeftovers,
+        _live_tree,
         _off_linux_tree_mb,
+        _process_label,
+        _process_mb,
         _read_rss_pages,
         _rss_ceiling_inert_warned,
         _rss_mb_from_tree,
+        _session_member_pids,
         _warn_rss_ceiling_inert_once,
+        end_session_leftovers,
+        find_session_leftovers,
         get_session_rss_mb,
     )
     from kiro_crew.session_pid_tracking import (  # noqa: F401

@@ -438,8 +438,17 @@ async def request_approval(
     tool_purpose: str = "",
     slot: str = "",
     is_background: bool = False,
+    run_task_id: str = "",
+    task_index: int | None = None,
+    on_host_decision: Callable[[str], object] | None = None,
 ) -> bool:
-    """Request interactive approval and deny on timeout or cancellation."""
+    """Request interactive approval and deny on timeout or cancellation.
+
+    A task runner gate passes ``run_task_id`` and ``task_index``; the
+    record carries them so ``GET /api/approvals`` names the gate's run
+    and task. *on_host_decision* is for a caller that records who decided;
+    see ``ApprovalCoordinator.request``.
+    """
     return await _approvals_for(self).request(
         self,
         approval_id,
@@ -451,6 +460,9 @@ async def request_approval(
         is_background=is_background,
         redact_url=redact_exfiltration_urls,
         redact_secret=redact_credentials,
+        run_task_id=run_task_id,
+        task_index=task_index,
+        on_host_decision=on_host_decision,
     )
 
 
@@ -468,7 +480,14 @@ def linked_session_busy(self: DashboardState, session_key: str) -> bool:
     if not session_key or not callable(is_busy):
         return False
     try:
-        return is_busy(session_key) is True
+        if is_busy(session_key) is True:
+            return True
+        # Mid-reprojection the live session is popped, so ``is_busy`` reads
+        # False; the key is still held in a replay gap and a turn is about to
+        # re-claim it. Read as running so a dashboard Stop routes through
+        # ``stop_turn`` (which records it) instead of returning idle.
+        gap_probe = getattr(sessions, "has_open_replay_gap", None)
+        return bool(callable(gap_probe) and gap_probe(session_key) is True)
     except Exception:
         logger.debug("linked_session_busy: probe failed for %s", session_key, exc_info=True)
         return False
@@ -504,9 +523,16 @@ def _audit_and_broadcast_approval(
     approved: bool,
     decision: str = "",
     *,
+    origin: str = "",
     instance: str = "",
+    mid: str = "",
 ) -> None:
-    """Audit and broadcast one approval decision."""
+    """Audit and broadcast one approval decision.
+
+    *origin* (``coordinator`` or ``native``) names the registry that held
+    the request; the frame carries it so a client settles only that
+    registry's rows.
+    """
     _approvals_for(self).audit_and_broadcast(
         self,
         session_key,
@@ -514,7 +540,9 @@ def _audit_and_broadcast_approval(
         approved,
         decision,
         audit_provider=sel,
+        origin=origin,
         instance=instance,
+        mid=mid,
     )
 
 
@@ -539,7 +567,13 @@ def resolve_approval(
     *,
     rejected_once: bool = False,
 ) -> bool:
-    """Resolve one state- or slot-level approval without widening authority."""
+    """Resolve one state- or slot-level approval without widening authority.
+
+    By bare id, for callers that hold their own link to the request (a
+    channel button, a bulk sweep). A dashboard control decides through an
+    owner-bound target instead (the decide route's coordinator target, or
+    a native target on the slot approve route).
+    """
     return _approvals_for(self).resolve(
         self,
         approval_id,

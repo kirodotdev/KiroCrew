@@ -247,7 +247,7 @@ unset here -- see "Reconnect is not resume" below for what it is for.
 | `approval/requested` / `approval/decided` (subagent spawn gate) | `_spawn_with_approval_impl` in `subagent_manager/admission/pump.py`, when a spawn needs approval, through the writer in `subagent_manager/admission/gate_reporting.py`; decided in a `finally`, including a host-attributed cancel | in the PARENT's log under the turn that asked (`dispatch_origin`): approval id `spawn:<agent_id>`, tool `spawn_run`; `by: host` (and its `cause`) when the callback answered with nobody asked, by returning a `HostSpawnDecision` |
 | `approval/requested` / `approval/decided` (a running child's tool prompt) | `subagent_manager/run.py`, when a child asks for a tool | in the PARENT's log under the turn that asked (`child_origin`): approval id `<child_id>:<request_id>` |
 | `plan/updated` | `EVENT_TODO_UPDATE`, inside `slot.set_todo`'s own change gate | turn, the whole task list as `{id, text, state}` |
-| `background/completed` | `run_bg_oneliner` and `background_turn`, at the point they record usage, against an owner pinned BEFORE the call | kind, served model, provider, the billed token dimensions, credits, ms -- no turn |
+| `background/completed` | `run_bg_oneliner` and `background_turn`, at the point they record usage, against the slot's newest unit: the owner is pinned BEFORE the call, and when the slot moved to another unit during the call the entry goes to that newest unit (held in `pending-open` until its crew log exists) | kind, served model, provider, the billed token dimensions, credits, ms -- no turn |
 | `subagent/spawned` | `_log_spawned`, the one site every started run passes and no rejection does | the turn that ASKED and its attempt when observed, read from the pin taken at acceptance; child id, agent, model, the task text redacted and clipped, the three context-scope flags |
 | `subagent/steered` | `steer_run` after the provider accepted, `follow_up_run` after the queue accepted | child id, `interrupt` or `follow_up` |
 | `subagent/completed` | the exclusive terminal report, for outcome `completed` | child id, elapsed ms, credits when billed |
@@ -293,8 +293,9 @@ pin this account cannot run is withheld at spawn and the session runs on the bac
 default, while the pin is deliberately KEPT -- the composer chip still shows it, and
 clearing it would delete an explicit user setting on the evidence of one session's
 advertised list. An unpinned slot is the mirror case: it names no model of its own,
-and the model it runs on is known only after the handle exists (when only its
-Bot pins a model, its pin is backfilled from the provider then).
+and the model it runs on is known only after the handle exists (a Bot thread with
+no pick of its own is one too: it asks for the Bot's model, and `slot.model` stays
+empty).
 
 So `session/opened` and `request/configured` read `served_model`, the session fact,
 through one helper. It is empty when the backend serves its own default, and the entry
@@ -750,7 +751,11 @@ The drain runs on EVERY gateway mode, not only where a dashboard exists. The das
 registers a cleanup hook, but a mode that builds no dashboard app never runs one and the
 gateway's hard exit skips `atexit`, so the drain also sits on the exit path itself --
 before the log queue is flushed, so its own warning about an incomplete drain still
-reaches the log. Calling it twice is a no-op.
+reaches the log. Calling it twice is a no-op. aiohttp stops at the first cleanup hook that
+raises, so every gateway cleanup step registered ahead of the drain (the Kiro services, the
+speech and decision models, the config watcher, the remote puller, the instance tunnels)
+logs its own failure instead of raising
+(`test_a_raising_cleanup_step_does_not_skip_the_crew_log_drain`).
 
 ## A step is one model call; a call index orders the tools
 
@@ -1110,26 +1115,53 @@ would put someone else's cost in a user's log. Four kinds are emitted today: `ti
 `background/completed` names no turn. The call runs after a turn ends, on a separate session, and
 naming the turn that happened to be last would attribute the cost to work that did not cause it.
 
-The OWNER is resolved before the call, not in the teardown that writes the entry, and the reason is
-the resolver's own contract: it answers which unit a slot's work is landing in *now*. A slot can be
-reset, switched or compacted while a model call is in flight, and the successor cold-starts a new ACP
-session id -- so a teardown-time lookup would hand this call's spend to a session that never incurred
-it, silently, in a file nothing rewrites. Reading it up front pins the unit that was current when the
-work was ordered. This is the general rule for every future emit site too: the resolver answers a
-question about the present, so anything that outlives the moment it was asked must carry the answer
-rather than ask again.
+The OWNER is pinned before the call, and the entry is written to the slot's NEWEST unit. When the
+call ends, the background helper resolves the slot's session key again. If the slot still points at
+the pinned unit, or the key no longer resolves, the entry goes to the pinned unit. If a reset, switch
+or compaction moved the slot to another unit while the call ran, the entry goes to that newest unit.
 
-**What this misses, and why the alternative is worse.** A background call charged to a session whose
-ACP session is already GONE -- idle-expired, reset, or a consolidation scheduled long after the tab
-closed -- resolves to no unit, so its spend reaches the usage store and never reaches the log. The
-crew log FILE still exists on disk; what is missing is any live thing that names its id, and finding
-one would take a persisted key-to-id index this change deliberately does not add.
+The reason is that a crew log is append-only and a unit the slot has moved past must not grow.
+Growing the older unit retires the slot's savepoints beside the newest one, and a restart would then
+read that older unit again. So a call that ends after a reset counts in the
+successor unit's `usage`. The slot total is unchanged, because the slot's spend rows key by slot, not
+by unit. The successor session's root card shows that one call's credits, since the card folds only
+the current unit. Crediting it back to the older unit would need a cross-unit read on the card.
 
-Resolving later does not fix it and makes something worse. Later is strictly no more likely to find a
-live session, and in the one interleaving where it finds one that an earlier read would have missed --
-the owner starting a fresh session WHILE this call runs -- that session was created after the work was
-ordered, so the entry would name a unit that did not incur the cost. An omission a reader can see is
-the smaller failure than a confident misattribution it cannot.
+**The newest unit may have no crew log yet.** After a reset the successor's crew log is created by
+its first turn, which alone knows the header and the link back to the older unit. Until then the
+entry waits in an owner-only file, `crew-log/pending-open/<unit>.jsonl`, written on the crew-log
+writer thread. The writer thread checks whether the log exists; the caller only queues the job. Each
+held record is one binary `os.write` on an owner-only append file, and a failed or short write cuts
+the file back to its earlier size, so a torn line never survives into the next write.
+
+Every successful opening append drains the file into the new unit, right after that append, in
+order, whether or not that open created the header. Before the first record is appended, the drain
+writes a `.draining` marker that records where the log ended. The marker is written atomically: a
+temp file, length-checked and fsynced, then renamed into place, so a failed marker write leaves no
+marker. A drain cut short by a crash leaves both files, and the next drain reads the log from the
+marker's position and skips the records already appended, so the spend counts once. The held file
+is removed first and the marker after it, only once the whole drain has landed. The skip counts
+only the unbroken run of matching entries right after the marker, and stops at the first one that
+differs.
+
+Every `background/completed` write, with or without a reset, goes through the same writer job. When
+a held file exists for the unit, the job replays it first; a failed replay raises, so the writer
+retries the whole job and the new entry never lands ahead of a held one. Two calls with identical
+payloads are therefore both counted.
+
+A unit holds at most `PER_UNIT_LIMIT` (32) records. Past that the entry is dropped, counted in
+`dropped_writes`, and one WARNING is logged per unit. A record too large for the crew log's line
+ceiling is dropped the same way, both when it is held and when a held file is drained, so it never
+blocks later writes. The pending directory is fsynced after the held file is written, after the
+marker is renamed into place, and after the drain removes both files. The crew-log retention sweep removes the held
+files and markers of units it retires, and any held file older than its cutoff, so a unit that never
+opens does not keep its file forever.
+
+**What this misses.** A background call charged to a session whose ACP session is already GONE --
+idle-expired, reset, or a consolidation scheduled long after the tab closed -- resolves to no unit,
+so its spend reaches the usage store and never reaches the log. The crew log FILE still exists on
+disk; what is missing is any live thing that names its id, and finding one would take a persisted
+key-to-id index this change does not add.
 
 ### The plan records two states because the stream carries two
 
@@ -1204,7 +1236,7 @@ the finding: an unnamed site records `user`.
 | `chat_handlers._api_chat` | dashboard composer, or an app backend under its own token | `user`, or `app` when the request carries one |
 | `slack/handler` linked-thread router | a channel message | `user` |
 | `openai_compat.chat_completions` | API request body | `user` |
-| `chat_regenerate` (regenerate, edit-resend) | the user's own message, re-run | `user` |
+| `chat_regenerate` (regenerate, edit-resend) | the user's own message, re-run; for Regenerate, the gateway prompt row its reply answers (a workflow follow-up, a heartbeat prompt) when there is one | `user` |
 | `chat_rewind` | the user's own message, rewound | `user` |
 | queue drain (`_finish_queue_cycle`) | the consumed entry's enqueue-time `kind` | `cron`, `subagent`, else `user` |
 | queue drain, a synthetic recovery | the original turn's actor, stamped at requeue (`meta.turnActor`) | whatever that turn's was |

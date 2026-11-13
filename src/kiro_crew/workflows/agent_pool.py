@@ -33,6 +33,7 @@ import asyncio
 import itertools
 import logging
 import time
+from contextvars import ContextVar
 from typing import Any, Callable, Optional
 
 from kiro_crew.acp.worker_pool import WorkerPool
@@ -58,14 +59,22 @@ from kiro_crew.workflows.agent_exec import (
     StepStopWatch,
     WorkflowEffortInvalid,
     WorkflowSpawnRefused,
+    apply_step_effort,
     persist_step_usage_row,
     step_backend_kwargs,
     step_effort_kwargs,
     step_session_name,
+    step_text,
     vet_step_spawn,
 )
 
 logger = logging.getLogger(__name__)
+
+#: Whether the step ``agent_fn`` is running has a ``schema=``. Set by ``agent_fn``
+#: around each call and read by ``_run_step``: a pooled worker's
+#: ``send_message(prompt, timeout)`` carries no step options, and
+#: ``WorkerPool.send`` awaits it in the caller's own task, so the value reaches it.
+_STEP_HAS_SCHEMA: ContextVar[bool] = ContextVar("workflow_step_has_schema", default=False)
 
 # A warm sub-pool's identity: (agent, model, cwd, effort).
 _PoolKey = tuple[Optional[str], Optional[str], Optional[str], Optional[str]]
@@ -89,6 +98,7 @@ async def _run_step(
     provider: Any,
     prompt: str,
     *,
+    key: str,
     timeout: Optional[float] = None,
     stop: Optional[StepStopWatch] = None,
 ) -> str:
@@ -101,24 +111,33 @@ async def _run_step(
     wedged turn is terminated instead of holding a permit until the run ceiling),
     and canonical output redaction (parity with ``agent_exec`` — prevents
     credential or exfiltration-URL leakage into workflow results stored in
-    history / injected into parent chat).
+    history / injected into parent chat). A person-only directive the step
+    calls is refused and audited on *key*, the step's session, and the refusal
+    leads the text (``person_only_directive_refuser``) unless the step has a
+    ``schema=`` (``_STEP_HAS_SCHEMA``), whose text is validated as JSON.
 
     A caller that writes the turn's usage row passes its own ``stop`` and calls
     ``stop.raise_if_interrupted()`` after that write, so a turn cut off from outside
     is still billed; without one, a cut-off turn raises here.
     """
+    # Local import, as in agent_exec: the dashboard-side module is not loaded
+    # at this adapter's import time.
+    from kiro_crew.dashboard.session_directive_apply import person_only_directive_refuser
+
     watch = stop if stop is not None else StepStopWatch()
+    refusals: list[str] = []
     coro = stream_and_collect(
         provider,
         prompt,
         approval_policy=ToolApprovalPolicy.AUTO_APPROVE,
         max_turns=_MAX_TURNS_PER_STEP,
         on_complete=watch.on_complete,
+        on_event=person_only_directive_refuser(key, refusals),
     )
     text = await (asyncio.wait_for(coro, timeout) if timeout is not None else coro)
     if stop is None:
         watch.raise_if_interrupted()
-    return redact(text)
+    return redact(step_text(refusals, text, has_schema=_STEP_HAS_SCHEMA.get()))
 
 
 class _WorkflowSessionWorker:
@@ -227,7 +246,7 @@ class _WorkflowSessionWorker:
         # started right before the turn so session reuse is not charged to it.
         _turn_t0 = time.monotonic()
         stop = StepStopWatch()
-        result = await _run_step(self._provider, prompt, timeout=timeout, stop=stop)
+        result = await _run_step(self._provider, prompt, key=self._key, timeout=timeout, stop=stop)
         # Per-turn usage row on the warm pool's REAL key (wf-pool:…), through the
         # same shared writer the cold path uses — surface/trigger "workflow".
         await persist_step_usage_row(
@@ -316,18 +335,20 @@ class _WorkflowSessionWorker:
         Codex) pushes it only at cold start, so without this every reuse after the
         first would run at the backend default. ``change_effort`` answering False means the model takes no
         effort, which a cold start drops the same way; a raise sends the caller down
-        the hard reset, which cold-starts with the override.
+        the hard reset, which cold-starts with the override, except a level kiro-cli
+        refuses, which keeps the conversation as it runs.
         """
-        level = self._effort_kwargs.get("reasoning_effort_override")
-        change_effort = getattr(self._provider, "change_effort", None)
-        if not level or change_effort is None:
-            return
-        # A level this session does not advertise is dropped on a cold start too;
+        # A level this session does not advertise is skipped, as on a cold start;
         # pushing it would raise and turn every reuse into a respawn for nothing.
-        accepts = getattr(self._provider, "accepts_effort_level", None)
-        if accepts is not None and not accepts(level):
-            return
-        await change_effort(level)
+        try:
+            await apply_step_effort(
+                self._provider, self._effort_kwargs.get("reasoning_effort_override")
+            )
+        except Exception as exc:
+            if getattr(exc, "command_refused", False) is not True:
+                raise
+            # kiro-cli refused the level: a hard reset would only replay it.
+            logger.warning("workflow pool: %s keeps its effort: %s", self._key, exc)
 
     async def shutdown(self) -> None:
         # A pooled worker owns an ephemeral ``wf-pool:`` session that can never
@@ -466,16 +487,21 @@ def build_pooled_agent_fn(
             if named is not None:
                 key = memory_scope.worker_key(f"named:{named}")
             await memory_scope.prepare(context_builder, key)
+        effort_kwargs = step_effort_kwargs(opts)
         provider, is_new, _resumed = await sessions.get_or_create(
             key,
             agent=opts.get("agent") or default_agent,
             model=opts.get("model") or default_model,
             cwd=opts.get("cwd") or cwd,
             extra_env=extra_env,
-            **step_effort_kwargs(opts),
+            **effort_kwargs,
             **backend_kwargs,
         )
         try:
+            if named is not None and not is_new:
+                # A live named session keeps the effort it started with; push
+                # this step's effort onto it before the turn is sent.
+                await apply_step_effort(provider, effort_kwargs.get("reasoning_effort_override"))
             # Same identity publication as the pooled worker (see
             # _WorkflowSessionWorker.send_message): a named ``session=`` chain
             # and the identity-cap overflow session both run on their own
@@ -497,7 +523,7 @@ def build_pooled_agent_fn(
             # Wall clock for this turn only (acp leaves TurnUsage.duration_ms at 0).
             _turn_t0 = time.monotonic()
             stop = StepStopWatch()
-            result = await _run_step(provider, prompt, stop=stop)
+            result = await _run_step(provider, prompt, key=key, stop=stop)
             # Per-turn usage row on this overflow session's REAL key
             # (wf-unpooled:… or the named session= key), through the same shared
             # writer the cold and pooled paths use — surface/trigger "workflow".
@@ -552,15 +578,19 @@ def build_pooled_agent_fn(
             # Launch in the RESOLVED directory and key the warm sub-pool on it, so
             # a worker is never built for an unresolved spelling of a path.
             opts = {**opts, "cwd": step_cwd}
-        # Warm workers run the default harness.
-        if opts.get("session") is not None or backend_kwargs:
-            return await _run_unpooled(prompt, opts, backend_kwargs)
-        target = _pool_for(
-            opts.get("agent"), opts.get("model"), opts.get("cwd"), opts.get("effort")
-        )
-        if target is None:
-            return await _run_unpooled(prompt, opts, backend_kwargs)
-        return await target.send(prompt)
+        has_schema = _STEP_HAS_SCHEMA.set(opts.get("schema") is not None)
+        try:
+            # Warm workers run the default harness.
+            if opts.get("session") is not None or backend_kwargs:
+                return await _run_unpooled(prompt, opts, backend_kwargs)
+            target = _pool_for(
+                opts.get("agent"), opts.get("model"), opts.get("cwd"), opts.get("effort")
+            )
+            if target is None:
+                return await _run_unpooled(prompt, opts, backend_kwargs)
+            return await target.send(prompt)
+        finally:
+            _STEP_HAS_SCHEMA.reset(has_schema)
 
     pool = _AggregatePool(default_pool, subpools)
     return agent_fn, pool
@@ -615,6 +645,9 @@ def admitted_agent_fn(
     lane = lane_for(session_key, source)
 
     async def _admitted(prompt: str, opts: dict) -> Any:
+        # Measured before the lane slot is taken: a script may pass a non-string
+        # prompt, and a raise between ``admit`` and the call would hold the slot.
+        prompt_chars = len(str(prompt))
         n = next(call_no)
         row_id = workflow_task_id(run_id, n)
         rec = await admission.accept_async(
@@ -639,7 +672,7 @@ def admitted_agent_fn(
             session_key=session_key,
         )
         try:
-            marked = await handle.running_async({"call": n, "prompt_chars": len(prompt)})
+            marked = await handle.running_async({"call": n, "prompt_chars": prompt_chars})
         except asyncio.CancelledError:
             # Synchronous, like the call's own cancel arm below, which is not
             # reached yet: the handle already holds the lane slot and the row's

@@ -609,8 +609,9 @@ class TestClassification:
     async def test_a_5xx_is_retried_with_a_bounded_linear_back_off(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # An edit, not a create: a message create is never re-sent after a 5xx.
         harness = _harness(monkeypatch, [_Resp(500), _Resp(502), _Resp(503)])
-        result = await harness.client.api_json("POST", "/channels/9111/messages", {})
+        result = await harness.client.api_json("PATCH", "/channels/9111/messages/1", {})
         assert result.outcome == DISCORD_TRANSIENT and result.retryable
         assert result.status == 503
         assert len(harness.requests) == _TRANSIENT_RETRIES + 1
@@ -621,8 +622,9 @@ class TestClassification:
 
     @pytest.mark.asyncio
     async def test_a_5xx_that_clears_succeeds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An edit, not a create: a message create is never re-sent after a 5xx.
         harness = _harness(monkeypatch, [_Resp(500), _Resp(200, {"id": "77"})])
-        result = await harness.client.api_json("POST", "/channels/9111/messages", {})
+        result = await harness.client.api_json("PATCH", "/channels/9111/messages/77", {})
         assert result.outcome == DISCORD_OK and result.message_id == "77"
 
     @pytest.mark.asyncio
@@ -642,7 +644,8 @@ class TestClassification:
     ) -> None:
         harness = _harness(monkeypatch, [exc, exc, exc])
         with caplog.at_level(logging.WARNING, logger="kiro_crew.discord.client"):
-            result = await harness.client.api_json("POST", "/channels/9111/messages", {})
+            # An edit, not a create: a create retries only a pre-send connect error.
+            result = await harness.client.api_json("PATCH", "/channels/9111/messages/1", {})
         assert result.outcome == DISCORD_TRANSIENT and result.retryable
         assert result.status == 0 and result.detail == type(exc).__name__
         assert len(harness.requests) == _TRANSIENT_RETRIES + 1

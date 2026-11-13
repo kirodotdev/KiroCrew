@@ -66,6 +66,7 @@ from kiro_crew.cron import (
 )
 from kiro_crew.messaging.queue_drain import entries_queued_by
 from kiro_crew.messaging.queue_receipt import ReceiptQueue, ReceiptSurface
+from kiro_crew.messaging.turn_bracket import arm_cancelled_turn
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
 from kiro_crew.security import redact
 from kiro_crew.sel import sel
@@ -220,8 +221,9 @@ async def stop_running_turn(
         cancel = getattr(provider, "cancel", None)
         if cancel is not None:
             try:
-                await cancel(wait_ack_timeout=0)
+                outcome = await cancel(wait_ack_timeout=0)
                 cancelled_turn = True
+                arm_cancelled_turn(sessions, session_key, outcome)
             except Exception:
                 logger.warning(
                     "%s: stop could not cancel the running turn for %s",

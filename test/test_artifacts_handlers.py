@@ -14,6 +14,7 @@ document type, webapp metadata, the content token and dashboard-package bindings
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pytest
@@ -965,6 +966,31 @@ class TestPromoteVerdict:
         assert second.status == 200
         assert _json_body(second)["slug"] == _json_body(first)["slug"]
         assert len(isolated_store.list()) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_source_path_lookup_runs_off_the_event_loop(
+        self, isolated_store, patch_restricted, disposable_file, monkeypatch
+    ) -> None:
+        """The dedup lookup scans every meta.json under the store lock."""
+        real_find = isolated_store.find_by_source_path
+        threads: list[int] = []
+
+        def _find(*args, **kwargs):
+            threads.append(threading.get_ident())
+            return real_find(*args, **kwargs)
+
+        monkeypatch.setattr(isolated_store, "find_by_source_path", _find)
+        resp = await api_artifacts_create(
+            _request(
+                body={
+                    "name": "scratch",
+                    "content": "# scratch",
+                    "source_path": str(disposable_file),
+                }
+            )
+        )
+        assert resp.status == 201
+        assert threads and threading.get_ident() not in threads
 
     @pytest.mark.asyncio
     async def test_copied_artifact_survives_source_deletion(

@@ -8,12 +8,16 @@ binds it by name, so it reads and writes the runtime's own state on the instance
 of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_announced_children``, ``_announced_overflow``,
-``_pending_init_notifications``, ``_routed_requests``, ``_session_activity_at``,
-``_session_cwds``, ``_session_inits_in_flight``, ``_session_queues``,
+``_mcp_sign_in_ended_hooks``, ``_pending_init_notifications``, ``_routed_requests``,
+``_session_activity_at``, ``_session_cwds``, ``_session_inits_in_flight``,
+``_session_mcp_reports``, ``_session_queues``,
 ``_subagent_owner``, ``_subagent_roster_overflow``, ``_subagent_sessions``, ``_turn_active_sessions``.
 
-Instance fields read: ``_agent_capabilities``, ``_dead``, ``_process``,
+Instance fields read: ``_agent_capabilities``, ``_dead``, ``_mcp_reports``, ``_process``,
 ``_record_keeping_sessions``, ``_start_collectors``.
+
+The chat turn gate scope also reads the runtime's backend and its chat turn lock,
+through the runtime it holds rather than through a self parameter.
 """
 
 from __future__ import annotations
@@ -21,9 +25,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.runtime_start import _split_init_frames
 from kiro_crew.acp.session_handle import AcpRequestTimeout
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
     MCP_ROSTER_COMPLETE_NOTE,
     METHOD_MCP_OAUTH_REQUEST,
     METHOD_MCP_SERVER_INIT_FAILURE,
@@ -135,8 +141,10 @@ def unregister_session(self: AcpRuntime, session_id: str) -> None:
     """Unregister a session queue (called by AcpSessionHandle.destroy)."""
     self._session_queues.pop(session_id, None)
     self._session_cwds.pop(session_id, None)
+    self._mcp_reports().pop(session_id, None)
     self._switched_model_record().pop(session_id, None)
     self._session_activity_at.pop(session_id, None)
+    self._mcp_sign_in_ended_hooks.pop(session_id, None)
     # Clean up any pending routed requests for this session
     stale = [k for k, v in self._routed_requests.items() if v == session_id]
     for k in stale:
@@ -293,6 +301,54 @@ def keep_record_on_teardown(self: AcpRuntime, session_id: str) -> _RecordKeeping
     where the next attempt -- or a plain resume -- can load it.
     """
     return _RecordKeepingScope(self, session_id)
+
+
+class _ChatTurnGate:
+    """The scope :func:`chat_turn_gate` opens; see it for the why.
+
+    A class rather than a generator context manager for the reason
+    :class:`_RecordKeepingScope` gives.
+    """
+
+    def __init__(self, runtime: AcpRuntime) -> None:
+        self._runtime = runtime
+        self._lock: Any = None
+
+    async def __aenter__(self) -> None:
+        if getattr(self._runtime, "_acp_backend", None) == ACP_BACKEND_KAS:
+            return
+        lock = getattr(self._runtime, "_chat_turn_lock", None)
+        if lock is None:
+            return
+        await lock.acquire()
+        self._lock = lock
+
+    async def __aexit__(self, *exc: Any) -> None:
+        lock, self._lock = self._lock, None
+        if lock is not None:
+            lock.release()
+
+
+def chat_turn_gate(self: AcpRuntime) -> _ChatTurnGate:
+    """Serialize CHAT co-tenant turns on this shared process, one at a time.
+
+    Held for the whole turn, from before the prompt is written through the last
+    event the consumer pulls. kiro-cli emits some session-control frames
+    (compaction, ``/clear``, an agent switch) without a ``sessionId``; the reader
+    loop fans such a frame to every session queue marked ``fanout_no_owner``.
+    While the gate is held at most one chat turn is in flight, so that turn is
+    the frame's only possible producer and an idle co-tenant discards it at its
+    next pre-turn drain. Only shared chat sessions enter
+    (``AcpSessionProvider`` with ``shared_runtime=True``); a subagent turn stays
+    out, because it runs while its principal's turn is open and would deadlock.
+
+    A no-op on KAS. Its engine names the session on every ``session/update`` and
+    keeps its own turn order: one turn per session, and a Crew custom-agent turn
+    waits in the engine's model queue while another session's turn runs
+    (``acp.chat_runtime_sharing.KAS_CHAT_SHARING_MIN_KIRO_CLI``). The frame
+    ownership this gate establishes is already on the wire there.
+    """
+    return _ChatTurnGate(self)
 
 
 async def evict_session(self: AcpRuntime, session_id: str) -> None:
@@ -594,6 +650,62 @@ def _stage_init_frame(self: AcpRuntime, msg: JsonRpcMessage) -> None:
         self._pending_init_notifications.append(msg)
     for collector in self._start_collectors.values():
         collector.stage_init_frame(msg)
+
+
+def _open_mcp_report(self: AcpRuntime, session_id: str, servers: Any) -> McpSessionReport:
+    """Begin and register the MCP report of a session about to get its queue.
+
+    Called with no ``await`` between it and the queue's registration, so no
+    frame can reach the session before its report exists, and nothing a frame
+    reported can be wiped by a later reset. *servers* is the roster the session
+    put on the wire, so the report reads as "of the N we sent, these reported".
+    """
+    report = McpSessionReport(folded_on_arrival=True)
+    report.begin_session(servers)
+    self._mcp_reports()[session_id] = report
+    return report
+
+
+def _mcp_reports(self: AcpRuntime) -> dict[str, McpSessionReport]:
+    """The per-session MCP reports, created on first use.
+
+    Read through this rather than the attribute for the reason
+    ``_switched_model_record`` gives: a runtime built with ``object.__new__``
+    never ran ``__init__``, and a start must not fail for want of an empty record.
+    """
+    reports: dict[str, McpSessionReport] | None = getattr(self, "_session_mcp_reports", None)
+    if reports is None:
+        reports = {}
+        self._session_mcp_reports = reports
+    return reports
+
+
+def _fold_mcp_frame(self: AcpRuntime, session_id: Any, msg: JsonRpcMessage) -> None:
+    """Fold one MCP registration frame into the report of the session it names.
+
+    THE fold on the shared runtime (``McpSessionReport.fold_frame``): the reader
+    loop calls it for every frame that carries a ``sessionId``, before routing
+    it, and the two session-start paths call it for the frames staged while
+    that id was unknown. Whoever takes the frame off the session's queue later
+    (the start drain, the pre-turn drain, a turn, or nobody between turns) does
+    not fold it again. A frame names its owner or is not folded: one with no
+    ``sessionId`` is broadcast, and crediting it would give a session a
+    co-tenant's server.
+
+    Never raises: the reader serves every session on the runtime, and a frame is
+    whatever the backend sent. One the report cannot read is left out of it.
+    """
+    report = self._mcp_reports().get(session_id) if isinstance(session_id, str) else None
+    method = msg.method
+    if report is None or msg.id is not None or not isinstance(method, str) or "mcp" not in method:
+        return
+    params = msg.params if isinstance(msg.params, dict) else {}
+    if params.get("sessionId") != session_id:
+        return
+    try:
+        report.fold_frame(msg)
+    except Exception:  # noqa: BLE001 - an unreadable frame never stops the shared reader
+        logger.debug("MCP report fold failed for session %s", session_id, exc_info=True)
 
 
 def _finish_session_init(self: AcpRuntime, session_id: str) -> list[JsonRpcMessage]:

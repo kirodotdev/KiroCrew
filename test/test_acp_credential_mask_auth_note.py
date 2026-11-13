@@ -67,6 +67,7 @@ def _runtime(
     runtime.saw_not_logged_in = MagicMock(return_value=signed_out)
     runtime.saw_sandbox_init_failure = MagicMock(return_value=False)
     runtime.saw_delegate_launch_failure = MagicMock(return_value=False)
+    runtime.kas_extract_broken_message = MagicMock(return_value="")
     runtime.settle_stderr = AsyncMock()
     runtime.kill = AsyncMock()
     handle = MagicMock(session_id="codex-sess-1", set_model=AsyncMock())

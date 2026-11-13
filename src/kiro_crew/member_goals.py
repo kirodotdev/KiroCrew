@@ -71,6 +71,7 @@ from typing import Any
 
 from kiro_crew import dashboard_frame, member_records, platform_compat
 from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retry
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.config.paths import data_home
 
 logger = logging.getLogger(__name__)
@@ -554,7 +555,7 @@ def _read_pinned(path: Path) -> bytes | None:
             os.close(fd)
             raise _Linked(f"{path.name} is not a regular file")
         with os.fdopen(fd, "rb") as fh:
-            return fh.read(_RECORD_MAX_BYTES + 1)
+            return bounded_read(fh, _RECORD_MAX_BYTES + 1)
     finally:
         os.close(d)
 

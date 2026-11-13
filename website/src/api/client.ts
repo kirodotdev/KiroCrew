@@ -92,6 +92,7 @@ export type { WakaTimeStatsEntry, WakaTimeStats } from './client/telemetry'
 export type {
   UsageSeriesDimension,
   UsageSeriesLayer,
+  UsageSeriesMetric,
   UsageSeriesPayload,
 } from './client/telemetry'
 export type {
@@ -134,9 +135,15 @@ export type {
   TrustedRegistryRow,
   TrustedRegistriesData,
   ManagedSecret,
+  SecretItemBody,
+  SecretItemFields,
+  SecretItemType,
+  SecretListItem,
+  SecretLoginPublicFields,
   SecretsListResponse,
 } from './client/security'
 export type {
+  RemoteControlState,
   TailnetStatusData,
   TailnetMobileStep,
   TailnetMobileData,
@@ -209,7 +216,7 @@ export type {
   WebhookTokenCreated,
   WebhookTestResult,
 } from './client/hooks'
-export type { SkillScriptValidation } from './client/skills'
+export type { AgentPluginRecord, AgentPluginsResponse, SkillScriptValidation } from './client/skills'
 export { SKILLS_TIMEOUT_MS } from './client/skills'
 export { FILE_SEARCH_TIMEOUT_MS, BROWSE_FILES_TIMEOUT_MS } from './client/files'
 export type { ProjectAwsProfile } from './client/files'
@@ -1544,7 +1551,7 @@ const patch = (url: string, body: object, sessionKey?: string, signal?: AbortSig
 // API module on the SAME session-key-authenticated helpers as core methods
 // (inheriting X-Session-Key + auth-recovery + ApiError), instead of forking this
 // file or writing methods on raw fetch. See api/apiTransport.ts.
-installApiTransport({ get, post, put, del, patch, j, jNullable })
+installApiTransport({ get, getWithSignal: (url, signal) => get(url, undefined, signal), post, put, del, patch, j, jNullable })
 
 // The Kiro credit-usage wire payload and the view model normalized from it stay
 // defined here, side by side: `KiroAccountModal` and `api/kiroUsage.ts` read

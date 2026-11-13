@@ -57,6 +57,11 @@ function statusOn() {
   stored = { recording: true, beacon: true }
   statusFromStore()
 }
+function renderChapter(props: { passWhenOff?: boolean; onContinue?: ReturnType<typeof vi.fn> } = {}) {
+  const onContinue = props.onContinue ?? vi.fn()
+  renderWithProviders(<PrivacyChapter open onContinue={onContinue} passWhenOff={props.passWhenOff} />)
+  return { onContinue }
+}
 
 describe('PrivacyChapter', () => {
   beforeEach(() => {
@@ -97,6 +102,17 @@ describe('PrivacyChapter', () => {
     const eyebrow = screen.getByText('Privacy', { selector: 'p' })
     expect(eyebrow).toBeInTheDocument()
     expect(eyebrow.textContent).not.toMatch(/\bof\b|·/)
+  })
+
+  it("gives the left panel the Privacy copy, not the Import step's", () => {
+    renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
+
+    // With nothing to import, Import passes by itself after its scan, so Privacy
+    // is the first screen a user reads: its panel must not advertise Import.
+    expect(screen.getByRole('heading', { name: 'See what is collected.' })).toBeInTheDocument()
+    expect(screen.getByText('What Kiro Crew records on this machine, what it sends, and what it never collects.')).toBeInTheDocument()
+    expect(screen.getByText('The same details are in Settings > Privacy.')).toBeInTheDocument()
+    expect(screen.queryByText('Bring your crew with you.')).not.toBeInTheDocument()
   })
 
   it('is mandatory: no skip affordance and Escape does not dismiss', () => {
@@ -243,6 +259,37 @@ describe('PrivacyChapter', () => {
     expect(screen.getByTestId('privacy-details-off')).toHaveTextContent('Usage and context records still stay on this device')
     expect(screen.getByTestId('privacy-details-off')).not.toHaveTextContent(/nothing described below/)
     expect(screen.queryByTestId('privacy-turn-off-scope')).not.toBeInTheDocument()
+  })
+
+  it('keeps the off form when usage data is pinned off, recording nothing on its own', async () => {
+    beaconStatus.mockResolvedValue({ ...BEACON_ON, enabled: false, env_override: true, env_var: 'DO_NOT_TRACK' })
+    collectionStatus.mockResolvedValue({ enabled: false, env_pinned: true, env_var: 'DO_NOT_TRACK' })
+    const { onContinue } = renderChapter({ passWhenOff: true })
+    expect(await readyButton('Continue')).toBeTruthy()
+    expect(onContinue).not.toHaveBeenCalled()
+  })
+
+  it('keeps the off form when a config.local.json entry holds usage data off', async () => {
+    beaconStatus.mockResolvedValue({ ...BEACON_ON, enabled: false, overlay_override: true })
+    collectionStatus.mockResolvedValue({ enabled: false, env_pinned: false })
+    const { onContinue } = renderChapter({ passWhenOff: true })
+    expect(await readyButton('Continue')).toBeTruthy()
+    expect(onContinue).not.toHaveBeenCalled()
+  })
+
+  it('passes on its own when the user turned usage data off, recording the ack', async () => {
+    beaconStatus.mockResolvedValue({ ...BEACON_ON, enabled: false })
+    collectionStatus.mockResolvedValue({ enabled: false, env_pinned: false })
+    const { onContinue } = renderChapter({ passWhenOff: true })
+    await waitFor(() => expect(onContinue).toHaveBeenCalledWith({ noticeVersion: false }))
+    expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull()
+  })
+
+  it('shows the off form with its error when the ack for an off install fails', async () => {
+    beaconStatus.mockResolvedValue({ ...BEACON_ON, enabled: false })
+    collectionStatus.mockResolvedValue({ enabled: false, env_pinned: false })
+    renderChapter({ passWhenOff: true, onContinue: vi.fn().mockRejectedValue(new Error('500')) })
+    expect(await screen.findByRole('button', { name: 'Continue' })).toBeTruthy()
   })
 
   it('counts the heartbeat fields it points to below', async () => {
@@ -410,17 +457,6 @@ describe('PrivacyChapter', () => {
     renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
 
     expect(await screen.findByText(/also sent to the metrics destination set up for it. No heartbeat is sent./)).toBeInTheDocument()
-  })
-
-  it('uses the same left panel copy as the Import setup chapter', () => {
-    renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
-
-    // Identical aside copy is what keeps the shared shell's mascots from
-    // re-animating across the hand-off.
-    expect(screen.getByText('Bring your crew with you.')).toBeInTheDocument()
-    expect(
-      screen.getByText('Merge-only setup · credentials stay where they are'),
-    ).toBeInTheDocument()
   })
 
   it('renders nothing while closed', () => {

@@ -6,7 +6,7 @@ another tier. A tier body answers one question about one call and returns a
 ``ToolHookResult`` through its counted factories, or ``None`` to let the next row
 decide. :class:`GateFacts` carries the call, the surface asking, and the values
 the tiers derive from them, derived on first use from one platform-context
-snapshot per judgement (the effective deny set is resolved twice from it).
+snapshot per judgement (the effective deny set is resolved once from it).
 
 Composed onto ``kiro_crew.hooks``; see :mod:`kiro_crew.hook_runtime`. The tier
 bodies read the facade's globals at call time, so a test that patches
@@ -82,9 +82,9 @@ class GateFacts:
     each computed on first use and kept for the rest of the judgement; the pure
     projections of the frozen call (the canonical MCP name, the governance
     reference, the exempt command) are simply recomputed. The effective deny set is
-    resolved twice, both times against the one snapshot: once for the enabled rule
-    ids and once for the deny-rules tier. Two consequences matter. The platform
-    context is read ONCE per call (:meth:`snapshot`), so a live ceiling refresh
+    resolved once against the one snapshot, and both its readers take that one
+    result: the enabled rule ids and the deny-rules tier. Two consequences matter.
+    The platform context is read ONCE per call (:meth:`snapshot`), so a live ceiling refresh
     cannot land between two reads and judge one call half under the old ceiling
     and half under the new one. And a value no tier reaches is never computed -- a
     call the first tier denies reads neither the context nor the effective deny
@@ -106,6 +106,7 @@ class GateFacts:
         classifier_only: bool,
         trust_reads: bool = False,
         deny_waivers: frozenset[str] = frozenset(),
+        pre_tool_hooks_fire: bool = False,
     ) -> None:
         self.manager = manager
         self.call = call
@@ -122,6 +123,10 @@ class GateFacts:
         #: read-only tier alone (``_tier_read_only``), for the first-party MCP
         #: proof; no deny tier, governance or grant tier consults it.
         self.trust_reads = trust_reads
+        #: The surface runs the PreToolUse hooks on this request whatever the gate
+        #: answers. Read by ``_tier_batch_guard_grant`` alone, to answer a grant a
+        #: hook held (``ToolCall.spec_hook_held``); no deny tier consults it.
+        self.pre_tool_hooks_fire = pre_tool_hooks_fire
         #: Why this call will ask when no row decides it, for the person who
         #: answers the prompt. Set only by :func:`grant_spec_builtin`; the gate's
         #: fall-through ``allow`` carries it as its reason. Never read to decide.
@@ -242,7 +247,7 @@ class GateFacts:
         input vetting) keep passing."""
         return self._once(
             "enabled_ids",
-            lambda: security.enabled_rule_ids(self.manager._effective_denied(self.ctx)),
+            lambda: security.enabled_rule_ids(self.denied_regexes),
         )
 
     @property
@@ -517,16 +522,18 @@ def _tier_unverifiable_shell(facts: GateFacts, tier: GateTier) -> ToolHookResult
         return ToolHookResult.deny(
             "Blocked: shell command could not be verified for security policy (deny-by-default)"
         )
-    # The frame PRESENTED an MCP server or tool name longer than Crew's own tool
-    # surface admits (``ToolCall.identity_unreadable``). ``mcp_tool`` is empty
-    # because the name could not be retained, not because there was none, so the
-    # exact ``@server/tool`` deny it may be under cannot be checked below, and
-    # judging it by title would hand a denied tool to the grant tiers. Denied
+    # The frame PRESENTED an MCP server or tool name Crew cannot read
+    # (``ToolCall.identity_unreadable``; the reason names which check). ``mcp_tool``
+    # is empty because the name could not be retained, not because there was none,
+    # so the exact ``@server/tool`` deny it may be under cannot be checked below,
+    # and judging it by title would hand a denied tool to the grant tiers. Denied
     # outright, the same shape as a shell command that cannot be read.
     if call.identity_unreadable:
+        from kiro_crew.deny_notice import unreadable_identity_clause
+
+        clause = unreadable_identity_clause(call.identity_unreadable_reason)
         return ToolHookResult.deny(
-            "Blocked: MCP tool identity could not be read (name over the "
-            "tool-surface bound; deny-by-default)"
+            f"Blocked: MCP tool identity could not be read ({clause}; deny-by-default)"
         )
     return None
 
@@ -1011,6 +1018,10 @@ def _tier_governance(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
     own_scopes = facts.governance_own_scopes
     if "tools" in own_scopes and not alias_groups and call.mcp_tool not in identity:
         identity = (*identity, call.mcp_tool)
+    # A shell call's title may not carry its command (KAS titles it "Run Command"),
+    # so it is judged under ``commands`` on its recovered command alone. The first
+    # tier has already refused a shell call whose command could not be recovered.
+    shell_command = call.command if call.is_shell and call.command else ""
     gov_reason = _governance_denial(
         facts.ctx,
         call.title,
@@ -1026,6 +1037,7 @@ def _tier_governance(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
         deny_aliases=deny_aliases,
         spawn_target=call.spawn_target,
         own_scopes=own_scopes,
+        shell_command=shell_command,
     )
     if gov_reason:
         return ToolHookResult.deny_policy(gov_reason)
@@ -1331,8 +1343,9 @@ def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
 
     On kiro-cli such a spec refuses every shell command its ``allowedCommands``
     do not match. KAS and claude have no rule for it, so the KAS session handle and
-    the claude direct client stamp the spec's usable patterns on their own agent's
-    permission requests
+    the claude direct client stamp the spec's usable patterns (then each entry Kiro
+    Crew cannot read, which matches nothing and which the refusal names) on their
+    own agent's permission requests
     (``AcpEvent.spec_shell_allowlist``; ``None`` when the spec does not set it, a
     sub-session's or native KAS sub-agent's request carries ``None`` too, a native
     claude sub-agent's the parent's), and this row
@@ -1366,9 +1379,14 @@ def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
             "character or --%, and >, <, $() or backticks never match. "
             "Run the script alone, or move the pipeline into the script."
         )
+    from kiro_crew.platform import allowed_commands
+
+    # The projection carries each entry Kiro Crew cannot read; it matched nothing
+    # above, and naming it is all an unattended run's record can show of it.
     return ToolHookResult.deny_policy(
         "Blocked by this agent's spec: toolsSettings.execute_bash.denyByDefault is set "
         "and the command matches none of its allowedCommands"
+        + allowed_commands.unreadable_note(tuple(allowlist))
     )
 
 
@@ -1532,7 +1550,8 @@ def _tier_spec_builtin_grant(facts: GateFacts, tier: GateTier) -> ToolHookResult
 
     A shell call reaches here only with its command recovered: the first row denies
     one whose command it could not read. The surface's own checks that follow an
-    auto-approve (the name-grant shim, PreToolUse script hooks) still run.
+    auto-approve still run: the name-grant shim, and PreToolUse script hooks where the
+    surface fires them.
 
     The body is :func:`grant_spec_builtin` with no extra condition.
     """
@@ -1597,14 +1616,17 @@ def grant_spec_builtin(
 
 
 def _tier_batch_guard_grant(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
-    """A write-class MCP tool the agent spec auto-approves, which the batch write
-    guard kept at ``ask`` on KAS (``batch_guard.withhold_write_auto_approval``).
+    """An MCP tool the agent spec auto-approves that KAS keeps at ``ask``: a write the
+    batch write guard holds (``batch_guard.withhold_write_auto_approval``), or a
+    tool a PreToolUse hook holds (``kas_hook_coverage.hook_held_grants``).
 
-    The guard runs inside ``approve_tool``, so a call the engine approves itself is
-    never judged. With the guard on, the projection gives each such write an
-    ``ask`` and records its ``@server/tool`` ref in ``spec_granted_builtins``; this
-    row answers the request it now raises, so the write still runs with no prompt,
-    and the transport's guard then refuses it only when it was batched with a read.
+    Neither the guard (in ``approve_tool``) nor the hook sees a call the engine
+    approves itself, so the projection records each ref (a write in
+    ``spec_granted_builtins``, a hook-held tool in ``spec_hook_held``) and this row
+    answers it: the grant runs unprompted, and the guard refuses a write batched with
+    a read. A hook-held ref is answered only when the surface fires the PreToolUse
+    hooks on the request (``pre_tool_hooks_fire``), so the hook still decides; on a
+    surface that does not say so (a channel bot's turn) the call keeps asking.
 
     A ``grant`` row, after every deny tier and governance, and only when all hold:
     not ``classifier_only``; the call's MCP identity is host-trusted; its
@@ -1620,7 +1642,8 @@ def _tier_batch_guard_grant(facts: GateFacts, tier: GateTier) -> ToolHookResult 
     if not call.identity_trusted or not call.mcp_server or not call.mcp_tool:
         return None
     ref = mcp_identity_ref(call.mcp_server, call.mcp_tool)
-    if not ref or ref not in call.spec_granted_builtins:
+    held = facts.pre_tool_hooks_fire and ref in call.spec_hook_held
+    if not ref or not (ref in call.spec_granted_builtins or held):
         return None
     from kiro_crew.platform.governance import may_skip_gate
     from kiro_crew.platform.governance_profiles import any_configured_profile_governs

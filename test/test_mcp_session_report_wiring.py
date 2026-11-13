@@ -28,6 +28,7 @@ from kiro_crew.dashboard.chat_runner import (
     _record_session_mcp_event,
     _session_mcp_report,
 )
+from kiro_crew.dashboard.chat_turn.mcp_session import _watch_session_mcp_report
 from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.testing.clock import ManualClock
 
@@ -305,6 +306,103 @@ class TestLiveEvents:
         payload = slot.mcp_report_payload()
         assert payload is not None
         assert payload["ready"] == ["a"]
+
+    def test_an_event_whose_frame_was_folded_on_arrival_still_reaches_the_slot(self):
+        # The transport folds a frame into the report as it arrives, before the
+        # turn yields the event for it. The event then changes nothing in the
+        # report, and the slot's copy must move all the same.
+        slot = _ChatSlot("s1")
+        state = MagicMock()
+        report = McpSessionReport(folded_on_arrival=True)
+        acp = MagicMock()
+        acp.mcp_session_report.return_value = report
+        slot._acp_client = acp
+        _publish_session_mcp_report(state, slot, acp)
+        state.broadcast_ws.reset_mock()
+        report.fold_frame(_ready_frame("slack-mcp"))
+
+        _record_session_mcp_event(state, slot, acp, EVENT_MCP_SERVER_INITIALIZED, "slack-mcp")
+
+        payload = slot.mcp_report_payload()
+        assert payload is not None
+        assert payload["ready"] == ["slack-mcp"]
+        state.broadcast_ws.assert_called_once_with(
+            "mcp_report_update", {"slot": "s1", "mcp_report": payload}
+        )
+
+    def test_a_queued_older_event_does_not_overwrite_a_newer_folded_frame(self):
+        # The server connected, then failed; both frames were folded as they
+        # arrived. The turn then yields the event for the OLDER one.
+        slot = _ChatSlot("s1")
+        state = MagicMock()
+        report = McpSessionReport(folded_on_arrival=True)
+        report.fold_frame(_ready_frame("slack-mcp"))
+        report.fold_frame(_failed_frame("slack-mcp", "died later"))
+        acp = MagicMock()
+        acp.mcp_session_report.return_value = report
+        slot._acp_client = acp
+
+        _record_session_mcp_event(state, slot, acp, EVENT_MCP_SERVER_INITIALIZED, "slack-mcp")
+
+        payload = slot.mcp_report_payload()
+        assert payload is not None
+        assert payload["ready"] == []
+        assert payload["failed"] == ["slack-mcp"]
+        assert payload["failures"] == {"slack-mcp": "died later"}
+
+
+class TestChangeHookPublishes:
+    """The chat's copy follows the report with no turn event to carry the change."""
+
+    @staticmethod
+    def _watched(session_id: str = "sess-1"):
+        slot = _ChatSlot("s1")
+        state = MagicMock()
+        report = McpSessionReport(folded_on_arrival=True)
+        report.begin_session([])
+        acp = MagicMock()
+        acp.session_id = session_id
+        acp.mcp_session_report.return_value = report
+        acp.set_mcp_report_changed_hook.side_effect = lambda hook: setattr(
+            report, "on_change", hook
+        )
+        slot._acp_client = acp
+        _publish_session_mcp_report(state, slot, acp)
+        _watch_session_mcp_report(state, slot, acp)
+        state.broadcast_ws.reset_mock()
+        return slot, state, report, acp
+
+    def test_a_server_that_connects_between_turns_reaches_the_slot(self):
+        slot, state, report, _ = self._watched()
+
+        report.fold_frame(_ready_frame("slack-mcp"))
+
+        payload = slot.mcp_report_payload()
+        assert payload is not None
+        assert payload["ready"] == ["slack-mcp"]
+        state.broadcast_ws.assert_called_once_with(
+            "mcp_report_update", {"slot": "s1", "mcp_report": payload}
+        )
+
+    def test_a_frame_after_the_slot_was_reset_brings_nothing_back(self):
+        slot, state, report, _ = self._watched()
+        slot.clear_mcp_report()
+
+        report.fold_frame(_ready_frame("slack-mcp"))
+
+        assert slot.mcp_report_payload() is None
+        state.broadcast_ws.assert_not_called()
+
+    def test_a_frame_for_a_session_the_slot_no_longer_shows_is_not_published(self):
+        slot, state, report, acp = self._watched()
+        acp.session_id = "sess-2"
+
+        report.fold_frame(_ready_frame("slack-mcp"))
+
+        payload = slot.mcp_report_payload()
+        assert payload is not None
+        assert payload["ready"] == []
+        state.broadcast_ws.assert_not_called()
 
 
 class TestResetInvalidation:

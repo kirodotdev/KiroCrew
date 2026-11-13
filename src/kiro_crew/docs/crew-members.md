@@ -1,15 +1,15 @@
 # Bots
 
-Earlier versions called a Bot a *mate* or *crewmate*.
-
-A **Bot** is a named assistant you keep. It binds a workspace folder, a
+A **bot** is a named assistant you keep. It binds a workspace folder, a
 memory store, an agent template and a default model. Creating one gives it a
-memory store of its own, which is what keeps one Bot learning your incident
+memory store of its own, which is what keeps one bot learning your incident
 runbook out of another one's notes. The other three are named bindings it points
-at, so two Bots can share a workspace or a template — and an older Bot
+at, so two bots can share a workspace or a template — and an older bot
 can share a store too, which the crew manager says on the field. The
 **Bots** page is where you see all of them and talk to each one in a standing
 thread.
+
+Earlier versions called a bot a *mate* or *crewmate*.
 
 Bots are the same objects the rest of Kiro Crew calls *crews* or *agents*:
 one entry in the `agents` map of `~/.kiro/crew/config.json`. This page is the
@@ -205,8 +205,8 @@ and you add what its worker needs in its advanced settings.
 
 ### Its worker
 
-A Bot hands longer work to a **worker**: a session it opens with
-`session_create`, which runs on the Bot's own memory and workspace with
+A Bot hands longer work to a **worker** from its own thread: a session it
+opens with `session_create`, which runs on the Bot's own memory and workspace with
 the worker's built-in tools plus whatever that Bot's settings add. To see
 what it can do, open the crew editor and choose **Abilities**. **Comes with**
 lists what every worker has; you cannot change it. **Added to** lists what was
@@ -214,8 +214,10 @@ added to this Bot, and **Remove** takes one out. A new Bot starts with
 nothing added. To add more, pick an agent under **Add abilities** on the same
 page: it shows at once which connections, skills and auto-approvals would be
 added and which the Bot already has, then **Add** writes them and says so.
-Only what is missing is added and nothing already there is replaced. If the
-agent has its own instructions, they become the Bot's **behavior
+Only what is missing is added and nothing already there is replaced. The
+agent's hooks and permission rules come too, and the worker runs them on KAS;
+an agent's allow for sub-agents or skills becomes the worker's auto-approval
+for them. If the agent has its own instructions, they become the Bot's **behavior
 directions**, which its worker follows after its built-in instructions. A Bot
 has one set: adding another agent that has directions replaces them (the
 preview says **Replaces current**), and **Remove** clears them. Later edits to that agent do not reach the
@@ -311,6 +313,14 @@ the welcome screen, the schedule form, the Projects task runner, and an agent
 channel. Kiro Crew remembers the Bot a session committed to across a
 restart, so a Bot pick stays a Bot pick and does not decay into a bare
 template.
+
+A bot that owns its own config (the kind with **Add abilities**) hands work to
+its worker only from its own thread on the **Bots** page. A chat that runs it
+anywhere else (from the agent picker in chat or on the welcome screen, as a chat
+folder's default agent, or in a channel bound to it, such as a Slack channel)
+runs on its memory and workspace but has no worker and no sub-agents, so the bot
+does that work in the chat itself. Abilities added to the bot are not available
+there, because they reach only its worker. A scheduled turn runs on its worker.
 
 Slack is the exception worth knowing. Its per-thread `!ta <name>` (`!ta off`
 clears it) resolves the name against the agent spec files in `~/.kiro/agents/`,

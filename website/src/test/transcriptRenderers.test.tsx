@@ -24,7 +24,7 @@ import { join } from 'node:path'
 import type { ReactElement } from 'react'
 import type { ChatMessage } from '../types'
 import { mergeRenderers, resolveRenderer, type MessageRenderContext } from '../app-sdk/messageRenderers'
-import { appAgentRefusalIsNewest, contextOverflowIsNewest, createTranscriptRenderers, featureRequestRefusalIsNewest, newestErrorOwnsRecovery, sessionStartRepeatIsNewest } from '../pages/chat/transcriptRenderers'
+import { appAgentRefusalIsNewest, authRequiredIsNewest, contextOverflowIsNewest, createTranscriptRenderers, featureRequestRefusalIsNewest, newestErrorOwnsRecovery, sessionStartRepeatIsNewest } from '../pages/chat/transcriptRenderers'
 import { ErrorCard } from '../pages/chat/ErrorCard'
 import NoticeCard from '../pages/chat/NoticeCard'
 import { i18nT } from '../i18n/t'
@@ -825,5 +825,26 @@ describe('newestErrorOwnsRecovery -- one rule for the composer beneath the four 
     expect(newestErrorOwnsRecovery([user(), msg('error', { content: 'Bedrock is throttling requests.' })])).toBe(false)
     expect(newestErrorOwnsRecovery([user(), failed()])).toBe(false)
     expect(newestErrorOwnsRecovery([user(), msg('assistant', { content: 'ok' })])).toBe(false)
+  })
+})
+
+describe('authRequiredIsNewest -- the composer keeps Resume under a sign-in error and names the sign-in first (#32065)', () => {
+  const user = () => msg('user', { content: 'hello' })
+  const live = () => msg('error', { content: 'Not signed in to Kiro.', kind: 'auth_required' })
+  const rebuilt = () => msg('error', { content: 'Not signed in to Kiro.', meta: { kind: 'auth_required' } })
+
+  it('holds while a sign-in error is the newest row, on the live and the rebuilt carrier, and never joins the Resume-withholding set', () => {
+    for (const rows of [[user(), live()], [user(), rebuilt()]]) {
+      expect(authRequiredIsNewest(rows)).toBe(true)
+      // Resume works once the sign-in lands, so the composer keeps it.
+      expect(newestErrorOwnsRecovery(rows)).toBe(false)
+    }
+  })
+
+  it('lets go once a later turn opens or answers, and under a newer error of another kind', () => {
+    expect(authRequiredIsNewest([user(), live(), msg('user', { content: 'again' })])).toBe(false)
+    expect(authRequiredIsNewest([user(), live(), msg('assistant', { content: 'ok' })])).toBe(false)
+    expect(authRequiredIsNewest([user(), live(), user(), msg('error', { content: 'Bedrock is throttling requests.' })])).toBe(false)
+    expect(authRequiredIsNewest([user(), msg('error', { content: 'Bedrock is throttling requests.' })])).toBe(false)
   })
 })

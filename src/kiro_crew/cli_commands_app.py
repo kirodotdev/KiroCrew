@@ -1,7 +1,9 @@
 """``kirocrew app``: install, import, list, enable, update, disable, uninstall and inspect apps.
 
 ``_handle_app`` dispatches every verb, ``dev``, ``info``, ``init`` and ``mcp`` (serve an
-app's MCP server, ``_run_app_mcp_server``) included. A lifecycle change goes through a
+app's MCP server, ``_run_app_mcp_server``) included. An ``install`` source that is a git
+URL is cloned first, with the operator's own git credentials (``_resolve_install_source``,
+``apps.git_install``), and the checkout's app folder is installed like any directory. A lifecycle change goes through a
 running gateway when one answers (``_apply_through_gateway``); otherwise it is applied
 to the files alone (``update`` has no file-only form and refuses), ``enable`` and
 ``disable`` say so (``_print_file_only_app_result``),
@@ -22,7 +24,7 @@ import sys
 import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
-from typing import NoReturn
+from typing import TYPE_CHECKING, NoReturn
 
 from kiro_crew import app_lifecycle_client
 from kiro_crew.apps.backend import recorded_backend_port
@@ -57,6 +59,9 @@ from kiro_crew.cron import CronService
 from kiro_crew.sel import sel
 from kiro_crew.terminal_safe import safe_terminal_line
 
+if TYPE_CHECKING:
+    from kiro_crew.apps.git_install import FetchedApp
+
 
 def _run_app_action_through_gateway(
     action: str, app_name: str, *, payload: dict[str, object] | None = None
@@ -68,6 +73,80 @@ def _run_app_action_through_gateway(
         lambda: app_lifecycle_client.toggle_app(app_name, action, payload=payload),
         hint="Toggle the app in the dashboard instead.",
     )
+
+
+def _resolve_install_source(args: argparse.Namespace) -> tuple[str, FetchedApp | None]:
+    """The directory ``app install`` installs from, cloning a git URL source first.
+
+    The clone runs here, in the operator's shell, so it uses their git credentials;
+    what it yields is a plain folder for the unchanged local-directory install.
+    """
+    # Call-time import: a module-level import would make this module serve these
+    # names through the ``cli_commands`` facade it does not own.
+    from kiro_crew.apps.git_install import (
+        GitInstallError,
+        fetch_app_from_git,
+        is_git_install_source,
+        validate_git_url,
+    )
+
+    source = args.source
+    ref = getattr(args, "ref", None)
+    subdirectory = getattr(args, "subdirectory", None)
+    if not is_git_install_source(source):
+        if ref is not None or subdirectory is not None:
+            print(
+                "❌ --ref and --subdirectory apply only when the source is a git URL",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        return source, None
+    try:
+        validate_git_url(source)
+        print(f"Cloning {source} with your git credentials...", flush=True)
+        fetched = fetch_app_from_git(source, ref=ref, subdirectory=subdirectory)
+    except GitInstallError as exc:
+        # The reason can quote the repository's own folder names, so it is printed
+        # with no live terminal controls.
+        print(f"❌ {safe_terminal_line(str(exc))}", file=sys.stderr)
+        sys.exit(1)
+    at_commit = f" at {fetched.commit[:12]}" if fetched.commit else ""
+    print(f"   Fetched {fetched.name}{at_commit} into {fetched.checkout}")
+    return str(fetched.app_dir), fetched
+
+
+def _print_git_update_hint(fetched: FetchedApp | None) -> None:
+    """Say how an app installed from a git URL is updated later."""
+    if fetched is None:
+        return
+    # Quoted, so a data home with a space in its path still pastes as one argument.
+    checkout = _shell_quoted(str(fetched.checkout))
+    if fetched.branch:
+        print(
+            f"   To update it later: git -C {checkout} pull, "
+            f"then kirocrew app update {fetched.name}"
+        )
+        return
+    # A tag clone fetches only that tag, so a pull would never move it.
+    print(
+        f"   It is pinned to a tag. To move it to another one: "
+        f"git -C {checkout} fetch --depth 1 origin tag <tag>, "
+        f"git -C {checkout} checkout <tag>, then kirocrew app update {fetched.name}"
+    )
+
+
+def _shell_quoted(path: str) -> str:
+    """*path* as one argument of the operator's shell: POSIX quoting, else Windows'."""
+    # Call-time imports, as in ``_resolve_install_source``: the ``cli_commands``
+    # facade serves this module's names and does not own these.
+    import shlex
+    import subprocess
+
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:
+        return subprocess.list2cmdline([path])
+    return shlex.quote(path)
 
 
 def _install_app_through_gateway(source: str) -> bool:
@@ -187,7 +266,10 @@ _SESSION_APPROVAL_DESC = (
 # The dashboard's line for ``permissions.memberThreads``
 # (``pages.appDetailPage.session_approval_member_threads``), shown only when the manifest
 # declares that scope beside the grant.
-_MEMBER_THREADS_DESC = "This includes your own chats with your Bots."
+_MEMBER_THREADS_DESC = (
+    "This includes your own chats with your Bots. "
+    "The app can send your Bots messages in your name."
+)
 
 
 def _refuse_session_approval_from_cli(app_name: str) -> NoReturn:
@@ -542,15 +624,17 @@ def _handle_app(args: argparse.Namespace) -> None:
         return
 
     if action == "install":
+        install_source, fetched = _resolve_install_source(args)
         # Ask a running gateway first, as enable, disable and uninstall do. Only
         # the gateway can start the new app's backend and publish it to the
         # dashboard it is serving; installing from files alone leaves a running
         # gateway unaware of the app until it restarts.
-        if _install_app_through_gateway(args.source):
+        if _install_app_through_gateway(install_source):
+            _print_git_update_hint(fetched)
             return
-        result = install_app(args.source)
+        result = install_app(install_source)
         if result.ok:
-            print(f"✅ {result.message}")
+            print(f"✅ {safe_terminal_line(result.message)}")
             # NOT registered here, the gateway install route's rule
             # (``apps.routes_lifecycle._app_may_run_after_install``): the record is
             # written disabled, and registering a disabled app publishes its
@@ -564,8 +648,11 @@ def _handle_app(args: argparse.Namespace) -> None:
                     "enabled from the dashboard."
                 )
             print(f"\n   Run: kirocrew app enable {result.name}")
+            _print_git_update_hint(fetched)
         else:
-            print(f"❌ {result.error}", file=sys.stderr)
+            # Manifest validation quotes the app's own fields, which for a git URL
+            # install come from a remote repository.
+            print(f"❌ {safe_terminal_line(str(result.error))}", file=sys.stderr)
             sys.exit(1)
 
     elif action == "list":
@@ -611,6 +698,18 @@ def _handle_app(args: argparse.Namespace) -> None:
             # the current directory, so it is refused rather than read as either
             # a directory or "use the recorded source".
             print("❌ --source is empty; pass the app directory or omit the flag", file=sys.stderr)
+            sys.exit(1)
+        import socket
+
+        if not hasattr(socket, "AF_UNIX"):
+            # The request travels only over the dashboard's Unix socket, the test
+            # `unix_socket_urlopen` fails on, so no running gateway can take it here.
+            print(
+                "❌ `kirocrew app update` is not available on native Windows (it needs "
+                "the dashboard's Unix socket); nothing was updated. Press Update (or "
+                "Sync) on the app's page in the dashboard.",
+                file=sys.stderr,
+            )
             sys.exit(1)
         # The gateway resolves a source against its OWN working directory, not
         # this shell's, so a given path is made absolute here as install does.

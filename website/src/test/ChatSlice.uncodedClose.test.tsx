@@ -282,7 +282,7 @@ describe('an uncoded close failure', () => {
       store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
 
       const close = store.dispatch(deleteSlot('doomed'))
-      expect(apiMock.deleteChatSlot).toHaveBeenCalledWith('doomed')
+      expect(apiMock.deleteChatSlot).toHaveBeenCalledWith('doomed', undefined)
       store.dispatch(sseSlotPatch({ removed: ['doomed'] }))
       expect(root(store).dashboard.durablyRemoved.doomed).toBe(true)
 

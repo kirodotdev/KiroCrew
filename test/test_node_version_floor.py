@@ -296,17 +296,34 @@ def test_bundle_route_without_an_installed_engine_drops_only_the_version(monkeyp
     assert "Fix:" not in out and "install Node.js" not in out
 
 
-@pytest.mark.parametrize(("stdout", "ok"), [("v22.11.0\n", False), ("v22.14.0\n", True)])
-def test_bundle_route_still_judges_a_node_on_path(monkeypatch, stdout: str, ok: bool) -> None:
-    """Other tools run on a Node on PATH, so the floor still applies to it."""
+def test_bundle_route_passes_a_node_on_path_at_the_floor(monkeypatch) -> None:
+    _fake_node(monkeypatch, cli_doctor, "v22.14.0\n")
+    issues: list[str] = []
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        cli_doctor._report_node(issues, bundle_route=True, bundle_node_version="22.23.3")
+    out = buf.getvalue()
+    assert "✅" in out and "engine bundle" not in out
+    assert issues == []
+
+
+@pytest.mark.parametrize("stdout", ["v18.20.8\n", "v22.11.0\n"])
+def test_bundle_route_warns_on_an_old_node_on_path_without_failing(
+    monkeypatch, stdout: str
+) -> None:
+    """The KAS engine runs its bundle's own Node, so an old one on PATH is a ⚠ that
+    names the bundle's Node, never the ``node`` issue that fails the run."""
     _fake_node(monkeypatch, cli_doctor, stdout)
     issues: list[str] = []
     buf = io.StringIO()
     with redirect_stdout(buf):
         cli_doctor._report_node(issues, bundle_route=True, bundle_node_version="22.23.3")
     out = buf.getvalue()
-    assert "engine bundle" not in out
-    assert issues == ([] if ok else ["node"])
+    assert f"⚠  {stdout.strip()} on PATH < {FLOOR_TEXT}" in out
+    assert "engine bundle's own Node 22.23.3" in out
+    assert "npx" in out
+    assert "❌" not in out and "Fix:" not in out
+    assert issues == []
 
 
 def test_relay_route_without_node_keeps_the_install_advice(monkeypatch) -> None:

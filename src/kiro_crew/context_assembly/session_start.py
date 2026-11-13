@@ -411,12 +411,12 @@ def build_session_context(
     lazy_skills = bool(getattr(_cfg.skills, "lazy_load", False))
     max_context_chars = caps.max_context
 
-    # Steering files from agent config resources: the Claude Code backend
-    # only, since kiro-cli loads an agent's ``resources`` natively. The gate
-    # is shared with post-compaction re-injection.
+    # Steering files from agent config resources: only on a harness that reads
+    # no agent ``resources`` (Claude Code, Codex), since kiro-cli loads them
+    # natively. The gate is shared with post-compaction re-injection.
     steering_ctx = _inclusion.steering_resources_part(
         agent=agent,
-        is_cc=is_cc,
+        provider_type=provider_type,
         essentials=essentials,
         context_groups=context_groups,
         project=project,

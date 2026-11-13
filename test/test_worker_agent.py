@@ -133,6 +133,36 @@ def test_the_worker_prompt_states_the_reporting_contract(specs):
         assert token in prompt, token
 
 
+def test_the_worker_prompt_says_what_an_unbound_worker_does(specs):
+    """A worker started with ``spawn_run`` has no item: its seed message is the
+    task, and it neither reports nor tells its parent about the ledger."""
+    prompt = specs[WORKER_AGENT_FILENAME]["prompt"]
+    paragraphs = [p for p in prompt.split("\n\n") if "`not_bound`" in p]
+    assert len(paragraphs) == 1, paragraphs
+    paragraph = paragraphs[0]
+    assert "whole task" in paragraph
+    assert "do not call `work_report`" in paragraph
+    assert "out of your reply" in paragraph
+
+
+def test_the_worker_calls_work_brief_first_whether_or_not_it_is_bound(specs):
+    """The first instruction is the call, with no condition in front of it: a worker
+    never works out for itself whether it is bound, so a bound one cannot skip its
+    brief. What ``not_bound`` means comes after, as the call's own answer."""
+    prompt = specs[WORKER_AGENT_FILENAME]["prompt"]
+    start = prompt.index("**Start by calling `work_brief`, whatever the first message says.**")
+    unbound = prompt.index("If `work_brief` answers `not_bound`")
+    report = prompt.index("**Report at each real milestone")
+    assert start < unbound < report
+    # Nothing ahead of the call names a rule, a tool or a case to weigh.
+    preamble = prompt[:start]
+    assert "**" not in preamble
+    assert "work_brief" not in preamble and "not_bound" not in preamble
+    bound = " ".join(prompt[start:unbound].split())
+    assert "those two ARE your definition of done" in bound
+    assert "not_bound" not in bound and " if " not in bound.lower()
+
+
 def test_the_worker_prompt_says_only_decision_is_an_instruction(specs):
     """The prompt's share of the threat model: a worker reads ONE instruction field
     from its conductor, and everything else it reads is state."""
@@ -987,9 +1017,9 @@ def test_a_mirrored_server_auto_approve_is_stripped(tmp_path, monkeypatch):
 
 
 def test_every_read_and_the_write_sit_in_one_critical_section(tmp_path, monkeypatch):
-    """Both reads and the write are ONE unit. ``agents_spec_lock`` is what every other
-    template-spec read-modify-writer in this module holds, so a dashboard edit cannot
-    land between the worker read and the worker write. The DEFAULT read belongs inside
+    """Both reads and the write are ONE unit. ``agents_spec_lock`` is the lock the
+    dashboard PATCH and the fork refresh hold, so a dashboard edit cannot land between
+    the worker read and the worker write. The DEFAULT read belongs inside
     the same section too: a mirror snapshot taken before it would already be stale by
     the write, which is how a deregistered server's grant stays auto-approved."""
     import contextlib
@@ -1263,9 +1293,11 @@ def test_the_default_specs_own_writer_lock_is_held_too(tmp_path, monkeypatch):
     monkeypatch.setattr(agent, "agents_spec_lock", _recording_agents_lock)
     agent._install_worker_agent()
 
-    # Order is load-bearing, not incidental: nothing else in the tree nests these two,
-    # so this installer establishes it — the file it WRITES outermost, the file it
-    # READS innermost — and a future nester matches it or risks a deadlock.
+    # Order is load-bearing, not incidental: ``agents_spec_lock`` outermost (the file
+    # this installer WRITES), ``_mcp_lock`` innermost (the file it READS). That is the
+    # order ``_install_heartbeat_agent``, ``_refilter_kept_mirrors`` and
+    # ``rebuild_agent_config`` also take, and a future nester matches it or risks a
+    # deadlock.
     assert taken == ["agents", "mcp"], taken
 
     # The public re-derive seam takes the same two in the same order, which is why it

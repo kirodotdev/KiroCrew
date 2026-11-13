@@ -54,6 +54,7 @@ from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_k
 from kiro_crew.dashboard.slot_buffers import (
     MAX_DEFERRED_NOTE_CHARS,
     MAX_SLOT_KEY_CHARS,
+    MERGED_FROM_MAX_CREATED_AT_CHARS,
     MERGED_FROM_MAX_KEY_CHARS,
     MERGED_FROM_META_KEY,
     is_merge_digest,
@@ -335,6 +336,7 @@ class TestSanitizeMergedFrom:
             "session": "dashboard:f",
             "slot": "f",
             "title": "t",
+            "createdAt": "2026-10-02T18:00:00+00:00",
             "after": "",
             "through": "m",
             "digest": "ab" * 32,
@@ -346,6 +348,13 @@ class TestSanitizeMergedFrom:
 
         assert sanitize_merged_from(raw) == self._valid()
 
+    def test_a_block_may_record_an_empty_creation_identity(self):
+        # A fork whose metadata line records no ``created_at`` merges with an
+        # empty identity; the card still parses and counts by its digest.
+        raw = {**self._valid(), "createdAt": ""}
+
+        assert sanitize_merged_from(raw) == raw
+
     @pytest.mark.parametrize(
         "missing",
         ["session", "slot", "title", "after", "through", "digest", "messages"],
@@ -355,6 +364,12 @@ class TestSanitizeMergedFrom:
         raw.pop(missing)
 
         assert sanitize_merged_from(raw) is None
+
+    def test_a_card_written_before_cards_recorded_an_identity_still_counts(self):
+        raw = self._valid()
+        raw.pop("createdAt")
+
+        assert sanitize_merged_from(raw) == {**self._valid(), "createdAt": ""}
 
     @pytest.mark.parametrize(
         "change",
@@ -367,6 +382,8 @@ class TestSanitizeMergedFrom:
             {"slot": 7},
             {"title": None},
             {"title": "t" * 201},
+            {"createdAt": None},
+            {"createdAt": "t" * (MERGED_FROM_MAX_CREATED_AT_CHARS + 1)},
             {"through": "m" * (MERGED_FROM_MAX_KEY_CHARS + 1)},
             {"after": None},
             {"after": "m" * (MERGED_FROM_MAX_KEY_CHARS + 1)},
@@ -410,6 +427,7 @@ class TestHeldMergeNote:
             "session": "dashboard:f",
             "slot": "f",
             "title": "t",
+            "createdAt": "2026-10-02T18:00:00+00:00",
             "after": "",
             "through": "m",
             "digest": "ab" * 32,

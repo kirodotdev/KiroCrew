@@ -63,6 +63,7 @@ def build(
     worker_running: Callable[[str], bool] | None = None,
     worker_closed: Callable[[str], bool] | None = None,
     worker_looping: Callable[[str], bool] | None = None,
+    worker_loop_held: Callable[[str], bool] | None = None,
 ) -> "Probe | None":
     """Return a fresh probe for *kind*, or ``None`` when nothing observes it.
 
@@ -78,8 +79,9 @@ def build(
     only effect is to move this mapping somewhere a reader has to search for.
     Revisit at the third kind, or at the first one shipped from elsewhere.
 
-    ``worker_running``, ``worker_closed`` and ``worker_looping`` are consumed only by the work-ledger
-    probe (see :mod:`kiro_crew.probes.work_ledger` for why it takes them as values).
+    ``worker_running``, ``worker_closed``, ``worker_looping`` and ``worker_loop_held``
+    are consumed only by the work-ledger probe (see :mod:`kiro_crew.probes.work_ledger`
+    for why it takes them as values).
     They are accepted here rather than at the call site so the kind-to-probe mapping
     stays in ONE place: a driver that constructed one probe itself and asked this
     function for the other would be a second, quieter copy of this branch.
@@ -96,5 +98,6 @@ def build(
             worker_running=worker_running,
             worker_closed=worker_closed,
             worker_looping=worker_looping,
+            worker_loop_held=worker_loop_held,
         )
     return None

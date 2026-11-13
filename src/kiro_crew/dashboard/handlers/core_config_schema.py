@@ -57,6 +57,8 @@ from kiro_crew.config.sections import (
     JUDGE_PROVIDERS,
     LIVE_MAX_FPS_CHOICES,
     LIVE_QUALITIES,
+    MAX_PER_CREATOR_MAX,
+    MAX_PER_CREATOR_MIN,
     REMOTE_EDITOR_HOST_PATTERN,
     REMOTE_EDITOR_IDS,
     SESSION_SORT_MODES,
@@ -70,6 +72,7 @@ from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.handlers.core_config_models import _validate_role_model
 from kiro_crew.effort import EFFORT_LEVELS
 from kiro_crew.instances.crew_ref import MAX_CREW_REF_LEN
+from kiro_crew.update_deferral import MAX_SKIPPED_VERSIONS
 from kiro_crew.validation import QUALIFIED_MODEL_PATTERN
 
 
@@ -258,6 +261,14 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "clamp_fn": lambda v: _clamp_compact_wait_secs(v, 0.0),
     },
     "session.pool_size": {"type": "int", "min": 0, "max": 10},
+    # How many live sessions one creator may hold (Settings → Chat → Sessions).
+    # Same bounds as the load-time clamp. Read at each session create, so a save
+    # applies to the next create with no restart.
+    "session.max_per_creator": {
+        "type": "int",
+        "min": MAX_PER_CREATOR_MIN,
+        "max": MAX_PER_CREATOR_MAX,
+    },
     "session.pool_agent": {"type": "str", "values_fn": _agent_values},
     "session.pool_ttl_secs": {"type": "int", "min": POOL_TTL_SECS_MIN, "max": POOL_TTL_SECS_MAX},
     # Intent-level session summaries in the chat right panel. Only the boolean
@@ -307,13 +318,23 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # with a new version) and a two-client interleave that reassembles a
     # verdict nobody expressed. Persisted in gateway config (not browser
     # storage) so the decision holds across browsers and the desktop app's
-    # embedded dashboard.
+    # embedded dashboard. The route stores a fourth, ``stored_at``, from this
+    # host's clock, in place of any a client sends.
     "dashboard.update_nudge": {
         "type": "dict",
         "keys": {
             "version": {"type": "str", "max_len": 128},
             "snoozed_until": {"type": "float", "min": 0.0, "max": 4102444800.0},
             "skipped": {"type": "bool"},
+            # Every skip. Optional: the popup's verdict omits it and the route
+            # merges the verdict into the saved list; a whole record (a change
+            # card or its Undo) sends it and is stored as sent.
+            "skipped_versions": {
+                "type": "str_list",
+                "max_items": MAX_SKIPPED_VERSIONS,
+                "max_item_len": 128,
+                "optional": True,
+            },
         },
     },
     # Default shell for the built-in terminal panel (Settings → Display →

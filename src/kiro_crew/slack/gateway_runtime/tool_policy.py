@@ -37,7 +37,9 @@ if TYPE_CHECKING:
 # short window instead of burning the full 2h human-approval window. Subagent
 # approvals are NOT background: they route to the dashboard where the spawning
 # human is present (via the parent slot), so they keep the long interactive window.
-_BACKGROUND_APPROVAL_SOURCES = frozenset({"cron", "heartbeat", "taskrunner", "autonudge", ""})
+_BACKGROUND_APPROVAL_SOURCES = frozenset(
+    {"cron", "heartbeat", "taskrunner", "autonudge", "app", ""}
+)
 
 
 # Tool-name prefixes treated as read-only by the --approval reads flag.

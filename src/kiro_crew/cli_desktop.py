@@ -36,17 +36,18 @@ ARTIFACT_NAME = "desktop-metrics.json"
 # Electron productName values, probed under ~/Library/Logs on macOS. Kept in sync
 # with website/electron/package.json (the release default) and
 # packaging/build-desktop.sh, which overrides it with
-# `-c.productName=KiroCrew Nightly` for nightly stamps. Nightly is not a cosmetic
+# `-c.productName=KiroCrew Nightly` for nightly stamps and
+# `-c.productName=KiroCrew LTS` for an LTS build. Nightly is not a cosmetic  # brand-ok
 # variant: it installs as a separate app with its own log directory, and its users
 # are the ones most likely to be profiling, so omitting it made the command report
 # "not found" against an app that was recording correctly.
-PRODUCT_NAMES = ("KiroCrew", "KiroCrew Nightly")
+PRODUCT_NAMES = ("KiroCrew", "KiroCrew Nightly", "KiroCrew LTS")  # brand-ok -- product names
 
 # npm package names, which name the Windows and Linux app.getPath("logs"): there it
 # is <userData>/logs, and Electron derives userData from the package `name`, not the
 # productName. Kept in sync with the `name` in website/electron/package.json and the
-# nightly `-c.extraMetadata.name=` override in packaging/build-desktop.sh.
-PACKAGE_NAMES = ("kirocrew-desktop", "kirocrew-desktop-nightly")
+# nightly and LTS `-c.extraMetadata.name=` overrides in packaging/build-desktop.sh.
+PACKAGE_NAMES = ("kirocrew-desktop", "kirocrew-desktop-nightly", "kirocrew-desktop-lts")
 
 SUPPORTED_VERSION = 1
 

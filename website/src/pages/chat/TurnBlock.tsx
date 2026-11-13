@@ -1,4 +1,4 @@
-import { memo, useState, useRef, useEffect, useMemo, useCallback, type CSSProperties, type ReactNode } from 'react'
+import { memo, useContext, useState, useRef, useEffect, useMemo, useCallback, type CSSProperties, type ReactNode } from 'react'
 import { ChevronRight } from 'lucide-react'
 import { RowActivityContext, type RowActivityReporter } from './rowActivity'
 import type { DisplayItem, TurnItem } from './types'
@@ -6,6 +6,7 @@ import { uniqueRowKeys } from '../../chat-core/transcript/rowKeys'
 import { useStableMessageKey } from '../../chat-core/transcript/useStableMessageKey'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { useSearchHighlight } from '../../hooks/SearchHighlightContext'
+import { ExpandStepsContext } from '../../hooks/useToolCallsStartExpanded'
 import { isWorkflowRunTool } from './WorkflowRunCard'
 import { isSpawnRunTool } from './SubagentRunCard'
 import { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
@@ -105,10 +106,17 @@ const isConclusion = (it: TurnItem) => it.kind === 'single' && (it.msg.role === 
  * button exist to make a mid-turn dispatch visible — folding it into the steps
  * pane on the default collapseAll path would hide the one row it adds. The
  * Pause all notice (crew_paused_notice) stays visible for the same reason.
+ * agent_welcome: the agent's greeting (`welcomeMessage`) lands in the turn that
+ * activated the agent, after the prompt, and is written for the user to read,
+ * so it never folds with the steps.
+ * mcp_sign_in_unsupported: the session-start notice that an MCP server's sign-in
+ * cannot work on this harness. It is the only sign that the server never
+ * connects, so it is never folded away either.
  */
 const isAlwaysVisible = (it: TurnItem) => it.kind === 'single' && (
   it.msg.role === 'mcp_oauth' || it.msg.role === 'error' || it.msg.role === 'card' ||
   it.msg.meta?.kind === 'crew_dispatch_notice' || it.msg.meta?.kind === 'crew_paused_notice' ||
+  it.msg.meta?.kind === 'agent_welcome' || it.msg.meta?.kind === 'mcp_sign_in_unsupported' ||
   (it.msg.role === 'inject' && it.msg.meta?.injectKind === 'mcp_app')
 )
 
@@ -476,7 +484,7 @@ function mergeTurnThinking(items: TurnItem[]): TurnItem[] {
  * flush (a fresh object each time) and re-key that one collapsed row, never an
  * app row, which is always a tool message with a `ts`. */
 
-/** Collapsible agent turn. collapseAll=false (default): only tool calls collapse. collapseAll=true: all working steps collapse, only final assistant text visible.
+/** Collapsible agent turn. collapseAll=false (default): only tool calls collapse. collapseAll=true: all working steps collapse, only final assistant text visible, unless ExpandStepsContext is true.
  *
  *  ``appToolCallIds``: tool_call_ids in THIS pane's slot that have a live MCP
  *  App render payload. Those rows carry an interactive iframe and must never
@@ -578,7 +586,10 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   // The fold rule, one for both phases: the candidates (foldCandidates) minus
   // every live row. A row that is running, awaiting approval, hosting an app,
   // opened by the user or focused never folds, whatever the disclosure says.
-  const mode: FoldMode = turn.interim ? 'interim' : collapseAll ? 'collapseAll' : 'default'
+  // A ChatPanel mounted with `expandSteps` shows its working steps inline,
+  // whatever the user's "Show Thinking Inline" setting says.
+  const expandSteps = useContext(ExpandStepsContext)
+  const mode: FoldMode = turn.interim ? 'interim' : collapseAll && !expandSteps ? 'collapseAll' : 'default'
   // A dismiss drops its notice from the count at once, not on the next flush.
   const specHooksNoticeDismissed = useSpecHooksRunNowhereDismissed()
   const candidates = useMemo(

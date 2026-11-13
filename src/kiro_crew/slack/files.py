@@ -21,7 +21,8 @@ Behaviour:
 - opaque files are preserved byte-for-byte with path and metadata, but are not
   automatically parsed or executed
 - text and documents are redacted, then truncated, then wrapped in
-  ``[File: …]`` / ``[Document: …]`` markers
+  ``[File: …]`` / ``[Document: …]`` markers; a cut one also lands its whole
+  redacted text in a temp ``.txt`` the caller must delete
 - size is re-checked AFTER download, so an absent or dishonest Slack ``size``
   (which defaults to 0) cannot bypass the cap
 - image bytes must match the declared mimetype's signature
@@ -452,17 +453,24 @@ def _to_attachment(f: dict) -> Attachment:
 async def process_slack_files(
     orch: GatewayOrchestrator,
     files: list[dict],
+    *,
+    slack: SlackClientOps | None = None,
 ) -> tuple[list[str], list[str]]:
     """Process non-audio file attachments from a Slack message.
 
-    Returns:
-        (attachment_paths, text_blocks) — local paths for images and opaque
-        files (caller must clean up), plus prompt-ready text and metadata.
-    """
-    if not orch.slack:
-        return [], []
+    *slack* is the client the route read before ingestion, so a reconnect
+    clearing ``orch.slack`` mid-message cannot drop the attachments. Omitted,
+    ``orch.slack`` is read once.
 
-    client = orch.slack
+    Returns:
+        (attachment_paths, text_blocks) — local paths for images, opaque
+        files and the whole text of a cut text file or document (caller must
+        clean up), plus prompt-ready text and metadata.
+    """
+    resolved = slack if slack is not None else orch.slack
+    if not resolved:
+        return [], []
+    client: SlackClientOps = resolved
 
     async def _download(url: str, dest: str) -> None:
         # Slack's downloader attaches the bot bearer token; only Slack knows

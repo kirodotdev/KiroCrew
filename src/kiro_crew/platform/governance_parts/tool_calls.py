@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, Mapping, Optional, Tuple
 
-from kiro_crew.platform.governance_parts.matching import _url_host
+from kiro_crew.platform.governance_parts.matching import _UnmatchableCommand, _url_host
 from kiro_crew.platform.guest_paths import (
     GuestPath,
     guest_also_local,
@@ -244,6 +244,16 @@ _GUEST_UNVERIFIABLE_ITEM = "\x00<governance:guest-target-unverifiable>"
 #: allow-prefix whenever the gateway runs there.
 _NO_TARGET_ITEM = "/\x00<governance:own-scope-target-absent-unverifiable>"
 
+#: Same never-permittable construction, for a shell call's recovered command that
+#: :func:`~kiro_crew.platform.allowed_commands.chain_commands` cannot split into
+#: plain commands (a quote in a chain, a redirect, a substitution, a newline, too
+#: long). ``gate_decision`` asks it beside the whole command, so an allow-mode
+#: ``commands`` set refuses a command it cannot check part by part, while a
+#: deny-mode or ungoverned scope permits it.
+_UNSPLITTABLE_COMMAND_ITEM = _UnmatchableCommand(
+    "\x00<governance:shell-command-unsplittable-unverifiable>"
+)
+
 
 def _governed_targets(
     paths: Iterable[str], root: Optional[str], also_local: bool = False
@@ -464,6 +474,26 @@ def classify_tool_args(
             # marker (see the truncated-scan policy in the docstring).
             pairs.append(("filesystem.read", _TRUNCATED_SCAN_ITEM))
             pairs.append(("filesystem.write", _TRUNCATED_SCAN_ITEM))
+    return tuple(pairs)
+
+
+def classify_image_reads(raw_params: Optional[Mapping[str, object]]) -> Tuple[Tuple[str, str], ...]:
+    """``("filesystem.read", <path>)`` for each file a batch read's Image entries open.
+
+    An Image entry (``{"mode": "Image", "image_paths": [...]}``, ``paths`` in
+    kiro-cli's agent engine) lists its files under a key the shared walk does not
+    read. The entry's shape marks the read, not the ACP kind, which kiro-cli's
+    read permission request leaves empty.
+    """
+    ops = raw_params.get("operations") if isinstance(raw_params, Mapping) else None
+    if not isinstance(ops, list):
+        return ()
+    entries = [op for op in ops if isinstance(op, Mapping) and op.get("mode") == "Image"]
+    found = target_paths({"operations": entries}, ("image_paths", "paths"))
+    targets = _governed_targets(found, guest_root(raw_params), guest_also_local(raw_params))
+    pairs = [("filesystem.read", path) for path in targets]
+    if found.truncated:
+        pairs.append(("filesystem.read", _TRUNCATED_SCAN_ITEM))
     return tuple(pairs)
 
 

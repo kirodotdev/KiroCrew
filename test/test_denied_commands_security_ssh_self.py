@@ -415,6 +415,9 @@ class TestSandboxEscapeSshSelf:
             # into the surrounding word (``$((0x7f)).0.0.1`` -> ``127.0.0.1``).
             "ssh $((0x7f)).0.0.1 id",
             "scp /tmp/f $((0x7f)).0.0.1:/tmp/x",
+            # a carrier's quoted script that assigns the verb and then runs it is read
+            # whole, as the same script typed directly is.
+            "bash -c 'x=ssh; $x localhost'",
         ],
     )
     def test_self_targets_are_denied(self, cmd):
@@ -582,6 +585,7 @@ class TestSandboxEscapeSshSelf:
             # the NEXT simple command is not this command's ssh target.
             "scp f.txt far-host:/x; ping localhost",
             "ssh far-host; echo localhost",
+            "bash -c 'x=far-host; ssh $x id'",
         ],
     )
     def test_other_hosts_and_mentions_stay_allowed(self, cmd):

@@ -92,6 +92,7 @@ import { ClosedSessionNotice } from './markdown/ClosedSessionNotice'
 import { activatePath, isFileLinkDest, isPathCandidate, splitLineRef, usePathResolution } from './markdown/pathReferences'
 import { ELEMENT_OVERRIDES, sp, textOf } from './markdown/elements'
 import { wearsRefusedLinkCue } from './markdown/refusedLinkCue'
+import { linkAddress, useLinkAddressTip } from './markdown/linkAddressTip'
 import { MD_FLOW_ROOT_CLS, MD_PARAGRAPH_CLS } from './markdown/typography'
 import { InlineCode } from './markdown/InlineCode'
 import { MarkdownTable } from './markdown/MarkdownTable'
@@ -359,6 +360,13 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
   // session link is the sentence's own; whatever this anchor renders as, it
   // goes back right after it, so no branch can swallow a full stop.
   const keep = (el: React.ReactElement) => (trailing ? <>{el}{trailing}</> : el)
+  // Where a plain link goes, shown when the pointer rests on it or keyboard
+  // focus lands on it; only the plain anchor below renders it. A session link
+  // already explains itself on hover; `linkAddress` decides which other links
+  // have an address to show.
+  const addressTip = useLinkAddressTip(
+    href && !sessionHrefNamesSession ? linkAddress(href) : undefined,
+  )
   // The inert label carries the refused-link cue: a muted dotted underline and
   // a generic reason, as the hover title and as visually-hidden generated
   // content for touch, keyboard and screen-reader users. The reason lives in a
@@ -474,6 +482,7 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
       className={missingFileLink || (sessionHrefNamesSession && !sessionLink && sessionRouting)
         ? 'text-muted'
         : 'text-accent underline underline-offset-2 decoration-accent/40 hover:decoration-accent'}
+      {...addressTip.handlers}
     >
       <InsideLinkCtx.Provider value={linkKind}>{children}</InsideLinkCtx.Provider>
       {/* The not-open explanation reaches touch / keyboard / AT users as a
@@ -490,6 +499,7 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
         <span className="sr-only">{` (${i18nT('components.markdownRenderer.session_closed_link_disabled')})`}</span>
       )}
     </a>
+    {addressTip.bubble}
     {/* The sentence's own punctuation, before the notice: "See the old run."
         keeps its full stop beside the link, and the notice follows the
         sentence instead of splitting it. */}

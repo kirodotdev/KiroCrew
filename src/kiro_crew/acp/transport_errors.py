@@ -18,6 +18,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Sequence
 
+from kiro_crew import kiro_cli
 from kiro_crew.acp.compaction_errors import (  # noqa: F401 - re-exported via this module's facade
     _COMPACTION_DETAIL_KEYS,
     _COMPACTION_DETAIL_MAX_CHARS,
@@ -28,6 +29,14 @@ from kiro_crew.acp.compaction_errors import (  # noqa: F401 - re-exported via th
     compaction_failure_detail,
     compaction_failure_is_transient,
 )
+from kiro_crew.acp.delegate_launch_signatures import (  # noqa: F401 - re-exported
+    DELEGATE_LAUNCH_FAILURE_MESSAGE,
+    KIRO_CLI_TOO_OLD_MESSAGE,
+    KIRO_CLI_TOO_OLD_TERMINAL_MESSAGE,
+    delegate_launch_failure_message,
+    is_delegate_launch_failure_output,
+)
+from kiro_crew.acp.error_frames import raw_error_detail
 from kiro_crew.acp.image_dimension_wedge import (
     format_many_image_dimension_message,
     is_many_image_dimension,
@@ -53,7 +62,12 @@ from kiro_crew.acp.structured_error_data import (
     provider_data_text,
     structured_data_prose,
 )
+from kiro_crew.acp.thinking_binding_errors import (
+    _is_thinking_binding_mismatch,
+    _is_tools_list_refusal,
+)
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
@@ -193,6 +207,8 @@ class AcpError(Exception):
         # The AWS exception name of a credential rejection (``ExpiredTokenException``),
         # set by :func:`_raise_acp_error` from the raw frame, so a caller compares a code.
         self.auth_error_code: str = ""
+        # Redacted harness frame behind curated wording; see error_frames.raw_error_detail.
+        self.raw_detail: str = ""
 
 
 class AcpTimeoutError(AcpError):
@@ -322,10 +338,35 @@ class AcpDelegateLaunchFailed(AcpError):  # noqa: N818
     :class:`AcpSandboxInitFailed` is not: that tag renders the start-failure
     card, whose Resume and repeat-start "restart the gateway" affordances cannot
     fix an install and would contradict the repair this message names.
+
+    The message is one of the curated texts :func:`delegate_launch_failure_message`
+    picks from the child's stderr: the install repair by default, or the update
+    remedy when the CLI rejected the ``--auth-method`` option because it is too
+    old (:data:`KIRO_CLI_TOO_OLD_MESSAGE`, or :data:`KIRO_CLI_TOO_OLD_TERMINAL_MESSAGE`
+    where no dashboard latched the Kiro CLI check). Never the child's own text.
     """
 
-    def __init__(self) -> None:
-        super().__init__(DELEGATE_LAUNCH_FAILURE_MESSAGE, transient=False, user_worded=True)
+    def __init__(self, message: str | None = None) -> None:
+        super().__init__(
+            message or DELEGATE_LAUNCH_FAILURE_MESSAGE, transient=False, user_worded=True
+        )
+
+
+async def delegate_launch_failed(message: str | None) -> AcpDelegateLaunchFailed:
+    """The delegate-launch error for the curated *message*, latching a too-old CLI.
+
+    The one build site both ACP transports call. A too-old CLI latches the Kiro CLI
+    check (``mark_registered_cli_too_old``), and its error names the dashboard's
+    Update Kiro CLI button only when the latch is set, so the button will show;
+    otherwise it names ``kiro-cli update``.
+    """
+    if message == KIRO_CLI_TOO_OLD_MESSAGE:
+        # circular import: the prerequisite service sits above the ACP layer.
+        from kiro_crew.kiro_prerequisite import mark_registered_cli_too_old
+
+        if not await mark_registered_cli_too_old():
+            message = KIRO_CLI_TOO_OLD_TERMINAL_MESSAGE
+    return AcpDelegateLaunchFailed(message)
 
 
 class AcpRegistrationRateLimited(AcpProcessDied):  # noqa: N818
@@ -778,49 +819,6 @@ def is_sandbox_init_failure_output(haystack: str) -> bool:
     return False
 
 
-# The POSIX ``kiro-cli`` launcher execs a SIBLING ``kiro-cli-chat`` for ``acp``
-# and ``chat``; when that sibling is absent, empty or version-skewed (a stale
-# symlink pointing at a removed binary is the field case) the launcher
-# itself answers ``--version``/``whoami`` but the exec fails with this line and
-# the child never starts. Classified for the same reason as the sandbox-init and
-# auth signatures: the condition is DETERMINISTIC, so the reconnect ladder's
-# respawn reproduces it exactly, and without this the operator gets the generic
-# "process exited (rc=None/rc=1)" card -- which points at retry or model-switch,
-# neither of which can fix an install problem -- instead of the one line that
-# names the fix (reinstall/repair Kiro CLI).
-#
-# Anchored on the ``kiro-cli-chat`` launch token specifically. A bare
-# ``failed to launch`` or a generic spawn error is ordinary output for an
-# unrelated death a respawn legitimately fixes, so matching either alone would
-# latch a permanent wrong verdict; requiring the delegate name costs no coverage
-# because the launcher always names the sibling it could not exec.
-_RE_DELEGATE_LAUNCH_FAILURE = re.compile(
-    r"failed\s+to\s+launch\s+kiro-cli-chat",
-    re.IGNORECASE,
-)
-
-
-def is_delegate_launch_failure_output(haystack: str) -> bool:
-    """True when *haystack* (a child's stderr) shows the ``kiro-cli-chat`` delegate failing to launch.
-
-    Shared by both ACP transports for the same anti-drift reason
-    :func:`is_sandbox_init_failure_output` and :func:`is_auth_failure_output`
-    are each a single function: the two transports must not come to disagree
-    about what the signature IS.
-    """
-    return bool(_RE_DELEGATE_LAUNCH_FAILURE.search(haystack))
-
-
-#: Actionable, non-retryable message for a ``kiro-cli-chat`` delegate that would
-#: not launch. Fixed recovery wording (``user_worded``), naming the install
-#: repair rather than a retry or model switch.
-DELEGATE_LAUNCH_FAILURE_MESSAGE = (
-    "The Kiro CLI chat delegate (kiro-cli-chat) failed to launch. This usually "
-    "means a stale or partial Kiro CLI install (for example a stale symlink "
-    "pointing at a removed binary). Reinstall or repair Kiro CLI and try again."
-)
-
-
 async def sandbox_init_failure(
     detail: str,
     *,
@@ -1069,35 +1067,6 @@ _RE_IMAGE_FORMAT_UNSUPPORTED = re.compile(
     r"(?:IMAGE_FORMAT_UNSUPPORTED|ImageValidationError|Could not process image)",
     re.IGNORECASE,
 )
-
-# A preserved-thinking signature rejection whose own provider text says the block
-# is bound to another conversation is recoverable by replacing the NATIVE
-# conversation. Both clauses must appear IN ONE FIELD: the shorter
-# invalid-signature form also covers tampered or undecryptable signatures, and
-# pairing a clause from ``data`` with unrelated prose from ``message`` would mint
-# a recoverable verdict the provider never sent.
-_RE_THINKING_SIGNATURE_INVALID = re.compile(
-    r"Invalid `signature` in `thinking` block", re.IGNORECASE
-)
-_RE_THINKING_BOUND_TO_OTHER_CONVERSATION = re.compile(
-    r"\bblock is bound to a different conversation\b", re.IGNORECASE
-)
-
-
-def _is_thinking_binding_mismatch(error: object) -> bool:
-    """Whether one raw provider field carries both binding-mismatch clauses."""
-    if not isinstance(error, dict):
-        return False
-    for key in ("data", "message"):
-        value = error.get(key)
-        if (
-            isinstance(value, str)
-            and _RE_THINKING_SIGNATURE_INVALID.search(value)
-            and _RE_THINKING_BOUND_TO_OTHER_CONVERSATION.search(value)
-        ):
-            return True
-    return False
-
 
 # A concurrent in-flight prompt on the session, in kiro-cli's words and in goose's
 # (-32602 "session already has active run `<id>`" for a prompt sent while its run is
@@ -1875,19 +1844,35 @@ def _raise_acp_error(
     raw_data = ""
     if isinstance(error, dict):
         raw_data = f"{error.get('data', '')} {error.get('message', '')}"
+    # Curated wording hides the provider's text; keep the frame for the log.
+    raw_detail = raw_error_detail(error) if worded else ""
     if _PROMPT_BUSY_RE.search(raw_data):
-        raise AcpPromptBusy(formatted, user_worded=worded)
+        busy = AcpPromptBusy(formatted, user_worded=worded)
+        busy.raw_detail = raw_detail
+        raise busy
     # A binding mismatch changes only the exception TYPE and its retry verdict;
     # it is built here, not raised early, so the tags below still read the frame.
     err: AcpError
     if _is_thinking_binding_mismatch(error):
         err = AcpConversationBindingMismatch(formatted, transient=False, user_worded=worded)
+        # The two harnesses whose spawn reads the never-defer list, named one by one.
+        if backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS) and _is_tools_list_refusal(error):
+            # The refusal the never-defer floor exists to prevent, on an engine
+            # the floor let through. Remembered before the caller's one rebuild,
+            # so that rebuild and every later spawn send the full tool list.
+            kiro_cli.note_tools_list_refusal()
+            logger.warning(
+                "A request was refused because a deferred tool load changed its "
+                "tools list; Kiro Crew's own MCP servers stay out of Tool Search "
+                "deferral until this process restarts"
+            )
     else:
         err = AcpError(
             formatted,
             transient=_is_transient_raw_error(error, available_models),
             user_worded=worded,
         )
+    err.raw_detail = raw_detail
     # Tag a network-path drop so the interactive retry ladder can wait out a
     # short outage instead of spending the fixed provider-error budget. Only a
     # transient verdict qualifies, so a terminal frame never becomes waitable.

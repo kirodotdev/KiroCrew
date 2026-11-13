@@ -1564,6 +1564,7 @@ class TestPinEnforcement:
                 "session": "dashboard:fork",
                 "slot": "fork",
                 "title": "fork",
+                "createdAt": "",
                 "after": "",
                 "through": "m1",
                 "digest": "0" * 64,

@@ -18,14 +18,18 @@ import copy
 import logging
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.acp._dispatch import build_permission_event
+from kiro_crew.acp._dispatch import build_permission_event, parse_session_update
 from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.types import ACP_BACKEND_KAS, AcpEvent, JsonRpcMessage
 from kiro_crew.acp_backends import ACP_BACKEND_STRANDS
+from kiro_crew.deny_notice import UNREADABLE_IDENTITY_REASONS
+from kiro_crew.hooks import TOOL_DENY, HookManager, HooksConfig, hook_gate_kwargs
+from kiro_crew.llm_helpers import ToolApprovalPolicy, _resolve_permission
+from kiro_crew.providers.acp_turns import _to_llm_event
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 _LOGGER = "kiro_crew.acp.session_handle"
@@ -154,8 +158,6 @@ async def test_the_refusal_steers_the_reason_before_the_reject_and_names_the_che
     assert trace[1] == ("response", 61, _REJECT)
 
     # The operator's log and the audit name the check that fired.
-    from kiro_crew.acp._dispatch import UNREADABLE_IDENTITY_REASONS
-
     reason = _SCENARIOS[scenario][2]
     assert event.mcp_identity_unreadable_reason == reason
     clause = UNREADABLE_IDENTITY_REASONS[reason]
@@ -244,7 +246,6 @@ def test_a_readable_identity_carries_no_reason() -> None:
 def test_every_reason_the_builder_sets_has_a_clause() -> None:
     """The codes are written as literals where each check fires; every one of
     them must name its clause, and no clause may be left without a writer."""
-    from kiro_crew.acp._dispatch import UNREADABLE_IDENTITY_REASONS
     from kiro_crew.acp._dispatch_parts import permission_requests
 
     tree = ast.parse(Path(permission_requests.__file__).read_text(encoding="utf-8"))
@@ -259,3 +260,85 @@ def test_every_reason_the_builder_sets_has_a_clause() -> None:
                 written.add(leaf.value)
     assert "server_mismatch" in written, "the scan went blind"
     assert written == set(UNREADABLE_IDENTITY_REASONS)
+
+
+def _client_path_event(scenario: str) -> AcpEvent:
+    """The event ``AcpClient._build_permission_event`` yields on KAS: the shared
+    parser and builder, handed the unreadable-identity store only KAS gets. No
+    handle refusal stands in front of it, so the consumers judge it."""
+    tool_call_kiro, identity, _reason = _SCENARIOS[scenario]
+    caches: dict[str, Any] = {
+        "tool_input_cache": {},
+        "shell_cache": {},
+        "raw_params_cache": {},
+        "mcp_server_name_cache": {},
+        "tool_name_cache": {},
+        "identity_unreadable_cache": {},
+    }
+    parse_session_update({**_TOOL_CALL, "_meta": {"kiro": tool_call_kiro}}, **caches)
+    meta = copy.deepcopy(_PERMISSION_META)
+    meta["kiro"]["mcpTool"]["identity"] = identity
+    msg = JsonRpcMessage(
+        id=71,
+        method="session/request_permission",
+        params={
+            "sessionId": "s",
+            "toolCall": {"toolCallId": "tc-mcp", "status": "pending", "title": "probe call"},
+            "options": [{"optionId": "reject", "name": "Deny", "kind": "reject_once"}],
+            "_meta": meta,
+        },
+    )
+    event, _ = build_permission_event(msg, **caches)
+    assert event is not None and event.mcp_identity_unreadable is True, scenario
+    return event
+
+
+class _SteeringProvider:
+    supports_refusal_steer = True
+
+    def __init__(self) -> None:
+        self.trace: list[tuple[str, Any]] = []
+
+    async def steer(self, notice: str) -> bool:
+        self.trace.append(("steer", notice))
+        return True
+
+    async def reject_tool(self, request_id: Any) -> None:
+        self.trace.append(("reject", request_id))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", sorted(_SCENARIOS))
+async def test_the_gate_and_the_unattended_tier_name_the_check_on_the_client_path(
+    scenario: str,
+) -> None:
+    """The hook gate and ``_resolve_permission`` said "name over the tool-surface
+    bound" for every check, and the notice told the model to fix the name."""
+    event = _client_path_event(scenario)
+    clause = UNREADABLE_IDENTITY_REASONS[_SCENARIOS[scenario][2]]
+
+    decision = HookManager(HooksConfig()).on_tool_call(event.title, **hook_gate_kwargs(event))
+    assert decision.action == TOOL_DENY
+    assert clause in (decision.reason or "")
+
+    provider = _SteeringProvider()
+    rows: list[dict] = []
+    sel_stub = MagicMock()
+    sel_stub.log_tool_invocation.side_effect = lambda **kw: rows.append(kw)
+    with patch("kiro_crew.sel.sel", lambda: sel_stub):
+        approved = await _resolve_permission(
+            provider,  # type: ignore[arg-type]
+            _to_llm_event(event),
+            ToolApprovalPolicy.AUTO_APPROVE,
+            None,
+        )
+    assert approved is False
+    assert [kind for kind, _ in provider.trace] == ["steer", "reject"]
+    notice = provider.trace[0][1]
+    assert clause in notice and "the MCP tool identity the backend reported" in notice
+    assert "failed validation" not in notice
+    assert len(rows) == 1 and clause in str(rows[0].get("error"))
+    if scenario == "server_mismatch":
+        # Both names were in bounds: no refusal may say one was too long.
+        for text in (decision.reason or "", notice, str(rows[0].get("error"))):
+            assert "longer than" not in text and "tool-surface bound" not in text

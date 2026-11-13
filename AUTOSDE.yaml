@@ -160,6 +160,7 @@ custom-rules:
       - "src/kiro_crew/cli_server_*.py"
       - "src/kiro_crew/dashboard/routes/**/*.py"
       - "src/kiro_crew/deploy/handlers.py"
+      - "src/kiro_crew/deploy/handlers_*.py"
     rule: |
       Do NOT add work to the gateway boot path. Everything between process
       start and the moment the dashboard socket accepts requests runs once, in

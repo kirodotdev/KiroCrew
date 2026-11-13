@@ -76,7 +76,7 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
     laneSlots, lineage, listNarrowed, localGroupHeader, localSlots, onDropSessionRef, pinned,
     renderCrewGroups, renderFolderBlock, renderFolderCreateError, renderHiddenReveal,
     renderOlderSessionsHint, renderSessionRow, renderStaleSection, reportDndActive, rootFolderIds,
-    rootFolders, rowAnimEnabled, searchRanked, setLaneScrollEl, shownCrewGroups, shownCrewRowCount,
+    rootFolders, rowAnimEnabled, searchHeader, searchLaneActive, searchRanked, setLaneScrollEl, shownCrewGroups, shownCrewRowCount,
     sidebarRows, slotFilter, slotFolders, sortKey, splitStale, staleExpanded, startsAutomaticSection,
     subagentApprovalCounts, ungroupedSlots, unreadSet, visibleRootFolders, pinnedBandCaption } = shell
   // True while actively dragging a session that currently lives in a folder.
@@ -148,6 +148,7 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
           <SessionRowWindowContext.Provider value={laneRowWindow.rowWindow}>
           <motion.div ref={setLaneScrollEl} onScroll={laneScrollMemory.onScroll} layoutScroll={rowAnimEnabled} className={`${LIST_BODY_CLS} flex flex-col`} style={{ scrollbarWidth: 'none' }} data-testid="conductor-view-lane">
             {folderCreateError && renderFolderCreateError(folderCreateError.folderId, folderCreateError.columnId)}
+            {searchHeader}
             {localGroupHeader}
             {(() => {
               const tree = lineage
@@ -356,6 +357,7 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                *  notice at the top of the lane so a failed folder create is
                *  never console-only in this layout. */}
               {folderCreateError && renderFolderCreateError(folderCreateError.folderId, folderCreateError.columnId)}
+              {searchHeader}
               {localGroupHeader}
               {/* Caption header before the pinned band when a property filter narrows the list. */}
               {pinnedBandCaption && flatSlots.length > 0 && sidebarRows.isPinned(flatSlots[0]) && (
@@ -367,7 +369,8 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                 // date sorts (segments mislead on name/created order, same
                 // guard as the history pane), and pinned rows render first
                 // without segments since pinning overrides date order.
-                const isDateSort = sortKey === 'date-desc' || sortKey === 'date-asc'
+                // A search orders by relevance, so date segments would mislabel it.
+                const isDateSort = !searchLaneActive && (sortKey === 'date-desc' || sortKey === 'date-asc')
                 // Hoisted above the hold so the pixel anchor can count header heights.
                 const baseSeg = (s: Slot) => (isDateSort && !sidebarRows.isPinned(s) ? dateSegment(slotActivityTs(s)) : '')
                 // "Group by kind": the unpinned rows by section, each in lane order.
@@ -411,7 +414,7 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                 })
               })()}
               {flatSlots.length === 0 && shownCrewRowCount === 0 && (
-                <div className="px-3 py-4 text-[12px] text-muted">{i18nT('pages.chatSidebar.no_sessions_match')}</div>
+                <div className="px-3 py-4 text-[12px] text-muted">{i18nT(searchLaneActive && folderNameMatchIds ? 'pages.chatSidebar.no_sessions_match_folders' : 'pages.chatSidebar.no_sessions_match')}</div>
               )}
               {/* Flat view has no containers to anchor to — every hide, top-level
                *  or nested, collapses into this one row at the bottom of the lane. */}

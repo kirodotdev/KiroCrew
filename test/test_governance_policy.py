@@ -561,7 +561,7 @@ class TestBootFlagCoercion:
     def test_absent_flags_take_documented_defaults(self):
         boot = self._boot()
         assert boot.require_sandbox is True
-        assert boot.allow_terminal is False
+        assert boot.allow_terminal is None  # no opinion: the config switch decides
         assert boot.fail_closed is True
 
     def test_real_booleans_honoured(self):

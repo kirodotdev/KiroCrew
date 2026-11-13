@@ -148,7 +148,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _darwin_process_start_microtime _darwin_process_cpu_nanos _DARWIN_PBI_STATUS_OFFSET
         _DARWIN_SZOMB _DARWIN_PIDPATH_MAXSIZE _DARWIN_CTL_KERN _DARWIN_KERN_PROCARGS2
         _DARWIN_PROCARGS_BUFSIZE _DARWIN_PROCARGS_ENV_BUFSIZE _DARWIN_KERN_PROC
-        _DARWIN_KERN_PROC_PID _DARWIN_KERN_PROC_PGRP _DARWIN_KINFO_PROC_SIZE
+        _DARWIN_KERN_PROC_ALL _DARWIN_KERN_PROC_PID _DARWIN_KERN_PROC_PGRP _DARWIN_KINFO_PROC_SIZE
         _DARWIN_KP_START_TVSEC_OFFSET _DARWIN_KP_START_TVUSEC_OFFSET _DARWIN_KP_STAT_OFFSET
         _DARWIN_KP_PID_OFFSET _DARWIN_KINFO_PGRP_SLACK _DARWIN_KINFO_PGRP_ATTEMPTS
         _DARWIN_CHILD_LIST_INITIAL DarwinProcessFacts _darwin_libproc_tree_bound
@@ -164,12 +164,14 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _darwin_tb_frequency _DARWIN_PTI_RESIDENT_SIZE_OFFSET darwin_resident_bytes_for_pid
         darwin_process_environ DarwinKinfoProc _darwin_kinfo_proc_parse
         _darwin_kinfo_size_mismatch_logged _darwin_kinfo_query darwin_kinfo_proc
-        darwin_pid_is_zombie darwin_pgroup_members _DARWIN_BSDINFO_SIZE _DARWIN_OFF_START_TVSEC
+        darwin_pid_is_zombie darwin_pgroup_members darwin_session_pids _darwin_kinfo_members
+        _DARWIN_BSDINFO_SIZE _DARWIN_OFF_START_TVSEC
         _DARWIN_OFF_START_TVUSEC _DarwinLibprocUnavailable _darwin_libproc_start_id
         _file_identity flock_owner_pid _flock_acquirer_row _flock_acquirer_in_proc_locks
         _flock_acquirer_in_fdinfo parent_pid pids_holding_file _descriptors_on
         _proc_status_rss_kb _stat_tokens _STAT_TOKEN_MAX_DIGITS _stat_token_int _parse_ppid
         ProcStat _linux_proc_root read_proc_stat _LINUX_EXITED_STATES linux_pgroup_members
+        linux_session_members _linux_stat_members
         read_proc_status_int proc_child_map proc_cpu_jiffies_for_pids _proc_children
         _parse_cpu_jiffies _proc_cpu_jiffies
         """.split()),
@@ -208,14 +210,14 @@ _MOVED: dict[str, tuple[str, ...]] = {
     "kiro_crew.platform_compat_files": tuple("""
         _RENAME_NOREPLACE_FN _RENAME_NOREPLACE_FLAG _SYS_RENAMEAT2_BY_MACHINE
         _build_renameat2_via_syscall RENAME_NOREPLACE_AVAILABLE TCC_PROTECTED_HOME_DIRS
-        TCC_LIBRARY_WALKABLE_CHILDREN _LIBRARY_DIR rename_noreplace publish_dir_noreplace
+        rename_noreplace publish_dir_noreplace
         tcc_protected_dirs_for_walk tcc_prune_walk_dirs fchmod_safe dup_fd_at_or_above
         chmod_safe
         claude_code_managed_settings_dir
         _clear_readonly_and_retry rmtree_force _WIN_FILE_SHARE_READ_WRITE_DELETE
         _SHARING_VIOLATION_WINERRORS _RMTREE_MAX_ATTEMPTS _RMTREE_BACKOFF_SECONDS
         remove_with_retry
-        open_log_file_for_tail open_lock_file_for_sweep path_volume_is_remote
+        open_file_for_shared_read open_lock_file_for_sweep path_volume_is_remote
         _WINDOWS_RUNNABLE_HOOK_SUFFIXES is_executable_file is_readonly_filesystem
         ensure_owner_rwx_dirs _SYS_STATX_BY_MACHINE _AT_FDCWD _AT_EMPTY_PATH _STATX_INO
         _STATX_MNT_ID _STATX_SIZE _statx_mnt_id_unreported _statx_call mount_identity
@@ -246,7 +248,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         """.split()),
     "kiro_crew.platform_compat_identity": tuple("""
         process_cwd get_ppid _ANCESTRY_MAX_DEPTH _PYTHON_INTERPRETER_NAME
-        process_executable_path _is_python_interpreter_path is_exec_supervisor_of_this_process
+        process_executable_path _is_python_interpreter_path is_exec_supervisor_of_this_process is_exec_supervisor_of _exec_supervisor_walk
         get_process_start_identity get_process_start_id process_namespaces_match
         process_is_sandboxed process_can_read_under_sandbox ProcessIdentitySource
         _WINDOWS_EXIT_FILETIME_TIMEOUT_SECS _WINDOWS_EXIT_FILETIME_POLL_SECS
@@ -266,7 +268,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _LOOPBACK_COVERING_ADDRESSES _LSOF_TIMEOUT_SECS _normalize_local_address
         address_covers_loopback loopback_owner_pids probe_port_listeners
         _linux_loopback_listener_inodes _windows_loopback_listener_owner_pids
-        process_owns_loopback_listener find_port_listeners find_listening_pids
+        process_owns_loopback_listener process_owns_port_listener find_port_listeners
+        find_listening_pids
         """.split()),
     "kiro_crew.platform_compat_descendants": tuple("""
         _descendants_from_parent_map _posix_process_parent_map ProcessDescendantIdentity

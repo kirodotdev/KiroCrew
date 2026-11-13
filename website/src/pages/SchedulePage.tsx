@@ -42,6 +42,7 @@ import type { CronFolder } from '../utils/cronFolders'
 import CronFolderHeader from '../components/CronFolderHeader'
 import CronBatchActionsMenu from '../components/CronBatchActionsMenu'
 import { useScheduleBatchActions, BatchRunConfirmDialog } from './SchedulePageBatchActions'
+import ScheduleCrewmateRosterNotice from './ScheduleCrewmateRosterNotice'
 import CronRowActions from '../components/CronRowActions'
 import AddJobSplitButton from '../components/AddJobSplitButton'
 import {
@@ -359,7 +360,8 @@ export default function SchedulePage() {
   // "By crewmate": '' lists every job, a crewmate name lists only that
   // crewmate's own schedules (rows whose `member_id` resolves to it).
   const [crewmateFilter, setCrewmateFilter] = useState('')
-  const { data: rosterData, isError: crewmateRosterFailed, error: crewmateRosterError, refetch: reloadCrewmateRoster, isFetching: crewmateRosterReloading } = useQuery(membersRosterQuery)
+  const crewmateRosterRead = useQuery(membersRosterQuery)
+  const rosterData = crewmateRosterRead.data
   const roster = useMemo(() => (Array.isArray(rosterData) ? rosterData : []), [rosterData])
   const [selected, setSelected] = useState<CronJob | null>(null)
   /**
@@ -786,22 +788,7 @@ export default function SchedulePage() {
           )}
           {/* Only when a listed job needs the roster: with no crewmate job the
               failed read costs the page nothing worth reporting. */}
-          {crewmateRosterFailed && jobs.some(j => j.member_id) && !detailDialogOpen && (
-            <div className="flex flex-wrap items-center gap-2 mb-3">
-              {/* askAgent on: the job dialog is closed, so no job draft can be lost. */}
-              <ErrorNotice
-                variant="inline"
-                className="flex-1 min-w-0"
-                title={i18nT('pages.membersPage.roster_load_failed')}
-                message={queryErrorMessage(crewmateRosterError)}
-                askAgent
-                testId="schedule-crewmate-roster-error"
-              />
-              <Btn onClick={() => void reloadCrewmateRoster()} disabled={crewmateRosterReloading} aria-busy={crewmateRosterReloading}>
-                {i18nT('pages.schedulePage.retry')}
-              </Btn>
-            </div>
-          )}
+          <ScheduleCrewmateRosterNotice read={crewmateRosterRead} show={jobs.some(j => j.member_id) && !detailDialogOpen} errorMessage={queryErrorMessage} />
           {lateFailures.map(f => (
             <ErrorNotice
               key={f.id}
@@ -1014,7 +1001,7 @@ export default function SchedulePage() {
                   silently is not. Widening any px column means moving `min-w` by
                   the same amount: the two numbers are one statement, and editing
                   only the column takes the difference out of Message. */}
-            <div className="relative">
+            <div className="@container relative">
             {/* The scroller is the shadcn Table's own wrapper (the table's
                 parentElement — `relative w-full overflow-x-auto` in
                 ui/table.tsx); `sticky right-0` on the Actions cells resolves
@@ -1128,7 +1115,8 @@ export default function SchedulePage() {
                       </TableRow>
                     )}
                     {!isCollapsed && group.jobs.map(j => (
-              <TableRow key={j.id} className={`group/jobrow cursor-pointer ${selected?.id === j.id ? 'bg-accent-subtle' : ''} ${selectedIds.has(j.id) ? 'bg-accent-subtle/60' : ''}`} {...guidePick(j.name)} onClick={() => openDetail(j)}>
+              <Fragment key={j.id}>
+              <TableRow key={j.id} className={`group/jobrow cursor-pointer ${selected?.id === j.id ? 'bg-accent-subtle' : ''} ${selectedIds.has(j.id) ? 'bg-accent-subtle/60' : ''} ${selected?.id === j.id || selectedIds.has(j.id) ? '[&_button.border-border]:[--border:var(--border-strong)]' : ''}`} {...guidePick(j.name)} onClick={() => openDetail(j)}>
                 <TableCell className="px-2 text-center" onClick={e => e.stopPropagation()}>
                   <input
                     type="checkbox"
@@ -1256,7 +1244,9 @@ export default function SchedulePage() {
                     SAME tokens above the base and below the controls (`-z-10`
                     inside the stacking context every sticky cell creates):
                     `--accent-subtle` is translucent, so composited over
-                    `bg-card` it matches the rest of the row exactly. */}
+                    `bg-card` it matches the rest of the row exactly. A selected
+                    row also re-points `--border` so the buttons keep an edge on
+                    that tint (the hovered-row rule in focus-and-state-cues.css). */}
                 <TableCell className="sticky right-0 whitespace-nowrap bg-card" onClick={e => e.stopPropagation()}>
                   <div aria-hidden className={`absolute inset-0 -z-10 transition-colors group-hover/jobrow:bg-bg-hover ${selected?.id === j.id ? 'bg-accent-subtle' : ''} ${selectedIds.has(j.id) ? 'bg-accent-subtle/60' : ''}`} />
                   {jobsTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" />}
@@ -1273,13 +1263,14 @@ export default function SchedulePage() {
                         aria-label, which would override the label a sighted
                         user reads and break WCAG 2.5.3 (Label in Name); the
                         row context names the job. Same convention as
-                        ChatInput's Continue/Send buttons. */}
+                        ChatInput's Continue/Send buttons. While the delete runs it
+                        is busy the way Run is: focusable, named, spinner over it. */}
                     <Btn
                       danger
-                      disabled={isDeleting(j.id)}
+                      aria-disabled={isDeleting(j.id) || undefined} aria-busy={isDeleting(j.id) || undefined} className="relative aria-disabled:cursor-progress"
                       title={confirmDeleteId === j.id ? i18nT('pages.schedulePage.click_again_to_confirm') : i18nT('pages.schedulePage.delete_job')}
                       onClick={() => { if (confirmDeleteId === j.id) void confirmDelete(j.id); else armDelete(j.id) }}
-                    >{isDeleting(j.id) ? '...' : confirmDeleteId === j.id ? i18nT('pages.schedulePage.confirm_delete_job') : i18nT('pages.schedulePage.delete')}</Btn>
+                    >{isDeleting(j.id) && <Loader2 aria-hidden className="absolute inset-0 m-auto lucide-inline motion-safe:animate-spin" />}<span className={isDeleting(j.id) ? 'opacity-0' : undefined}>{confirmDeleteId === j.id ? i18nT('pages.schedulePage.confirm_delete_job') : i18nT('pages.schedulePage.delete')}</span></Btn>
                     <CronRowActions
                       job={j}
                       folders={cronFolders}
@@ -1294,11 +1285,18 @@ export default function SchedulePage() {
                       onNewFolder={handleNewFolder}
                     />
                   </div>
-                  {/* askAgent on: row actions (pause, strict, move, run, delete)
-                      act on a persisted job; the row holds no draft. */}
-                  {actionError?.id === j.id && <ErrorNotice variant="inline" className="mt-1 whitespace-normal" message={actionError.msg} askAgent testId="schedule-job-action-error" />}
                 </TableCell>
               </TableRow>
+              {/* Own full-width row, sticky and wrapping at the scroller's width (100cqw of the @container above). askAgent: job is persisted. */}
+              {actionError?.id === j.id && (
+                <TableRow>
+                  <TableCell colSpan={SCHEDULE_COLUMNS}>
+                    <div className="sticky left-4 inline-flex max-w-[calc(100cqw-2rem)] whitespace-normal" data-testid="schedule-job-action-error-pin">
+                      <ErrorNotice variant="inline" message={actionError.msg} askAgent testId="schedule-job-action-error" />
+                    </div>
+                  </TableCell>
+                </TableRow>
+              )}</Fragment>
                     ))}</Fragment>
                   )
                 })
@@ -1706,16 +1704,19 @@ export function JobSecretsPanel({ job, onSaved }: { job: CronJob; onSaved: () =>
           {Object.keys(active).length > 0 && (
             <Btn
               danger
-              disabled={busy || revoke.isDeleting(job.id)}
-              className="w-fit"
+              disabled={busy}
+              aria-disabled={revoke.isDeleting(job.id) || undefined}
+              aria-busy={revoke.isDeleting(job.id) || undefined}
+              className="w-fit relative aria-disabled:cursor-progress"
               title={revokeArmed ? i18nT('pages.schedulePage.click_again_to_confirm') : undefined}
               onClick={() => { if (revokeArmed) void revoke.confirm(job.id); else revoke.arm(job.id) }}
             >
-              {revoke.isDeleting(job.id)
-                ? '...'
-                : revokeArmed
+              {revoke.isDeleting(job.id) && <Loader2 aria-hidden className="absolute inset-0 m-auto lucide-inline motion-safe:animate-spin" />}
+              <span className={revoke.isDeleting(job.id) ? 'opacity-0' : undefined}>
+                {revokeArmed
                   ? i18nT('pages.schedulePage.secrets_revoke_all_confirm')
                   : i18nT('pages.schedulePage.secrets_revoke_all')}
+              </span>
             </Btn>
           )}
         </div>
@@ -1844,7 +1845,7 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
           </div>
         )}
         {detailTab === 'logs' && job ? (
-          <JobLogsView jobId={job.id} jobName={job.name} isRunning={job.is_running} runningSince={job.running_since} cancelError={panelError} onCancel={async () => { setPanelError(null); try { await api.cancelCron(job.id); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : i18nT('pages.schedulePage.failed')) } }} />
+          <JobLogsView jobId={job.id} jobName={job.name} canHideIdle={!!job.script} isRunning={job.is_running} runningSince={job.running_since} cancelError={panelError} onCancel={async () => { setPanelError(null); try { await api.cancelCron(job.id); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : i18nT('pages.schedulePage.failed')) } }} />
         ) : (
           <>
             {job && <TemplateUpdatedNotice job={job} />}

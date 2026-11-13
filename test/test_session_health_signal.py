@@ -690,7 +690,7 @@ class TestDriverGateIsFunctional:
 
         fake_ws = self._fake_ws()
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", MagicMock())
 
         asyncio.run(dashboard_ws.api_ws(Request()))  # type: ignore[arg-type]

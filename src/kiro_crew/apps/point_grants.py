@@ -19,11 +19,15 @@ uses: ``api``, ``events`` and every registered family a manifest declares.
 The points shipped in this package register at the bottom of this module, so the
 registry is complete once it is imported.
 
-``register_permission_grants(families, entries)``
+``register_permission_grants(families, entries, *, explicit_only=False)``
     The same, for a grant a manifest declares in ``permissions`` rather than in
-    ``contributes`` (``permissions.workerAutoApprove``): ``entries`` maps the
+    ``contributes`` (``permissions.workerAutoApprove``,
+    ``permissions.reachableByUserSessions``): ``entries`` maps the
     manifest's ``permissions`` (parsed or a raw dict). Its families are staged and
     approved exactly like a point's, and :func:`point_grant_families` lists them too.
+    ``explicit_only`` families are approved only by entries a stored set names: a
+    stored set that lacks one approves nothing in it, where it would otherwise
+    approve what the manifest declares (:func:`explicit_only_grant_families`).
 """
 
 from __future__ import annotations
@@ -37,6 +41,8 @@ EntriesFn = Callable[[Any], dict[str, list[str]]]
 _REGISTRY: list[tuple[tuple[str, ...], EntriesFn]] = []
 #: ``permissions`` -> ``{family: entries}`` for one permission's families.
 _PERMISSION_REGISTRY: list[tuple[tuple[str, ...], EntriesFn]] = []
+#: Families a stored set approves only by naming their entries.
+_EXPLICIT_ONLY: list[str] = []
 
 
 def _refuse_clash(families: tuple[str, ...]) -> None:
@@ -52,15 +58,29 @@ def register_point_grants(families: tuple[str, ...], entries: EntriesFn) -> None
     _REGISTRY.append((tuple(families), entries))
 
 
-def register_permission_grants(families: tuple[str, ...], entries: EntriesFn) -> None:
-    """Register one permission's grant families, read from the manifest's ``permissions``."""
+def register_permission_grants(
+    families: tuple[str, ...], entries: EntriesFn, *, explicit_only: bool = False
+) -> None:
+    """Register one permission's grant families, read from the manifest's ``permissions``.
+
+    ``explicit_only`` suits a permission that a manifest could declare before this
+    host knew the key: the owner was never shown it, so a stored set written then
+    must not approve it.
+    """
     _refuse_clash(families)
     _PERMISSION_REGISTRY.append((tuple(families), entries))
+    if explicit_only:
+        _EXPLICIT_ONLY.extend(families)
 
 
 def point_grant_families() -> tuple[str, ...]:
     """Every registered point family, then every permission family, in registration order."""
     return tuple(f for families, _ in (*_REGISTRY, *_PERMISSION_REGISTRY) for f in families)
+
+
+def explicit_only_grant_families() -> tuple[str, ...]:
+    """The registered families a stored set that lacks them approves nothing in."""
+    return tuple(_EXPLICIT_ONLY)
 
 
 def grant_source(manifest: Any) -> dict[str, list[str]] | None:
@@ -141,9 +161,19 @@ from kiro_crew.apps.worker_auto_approve import (  # noqa: E402
 
 register_permission_grants(WORKER_AUTO_APPROVE_GRANT_FAMILIES, worker_auto_approve_grant_entries)
 
+from kiro_crew.apps.user_session_reach import (  # noqa: E402
+    USER_SESSION_REACH_GRANT_FAMILIES,
+    user_session_reach_grant_entries,
+)
+
+register_permission_grants(
+    USER_SESSION_REACH_GRANT_FAMILIES, user_session_reach_grant_entries, explicit_only=True
+)
+
 
 __all__ = [
     "EntriesFn",
+    "explicit_only_grant_families",
     "grant_source",
     "point_grant_families",
     "register_permission_grants",

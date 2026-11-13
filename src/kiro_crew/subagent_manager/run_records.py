@@ -326,6 +326,7 @@ async def _remember_identity_off_loop(
     cwd: str = "",
     keep: bool | None = None,
     conversation_key: str = "",
+    codex_home: str = "",
 ) -> None:
     """Persist protected cleanup identity off-loop and drain cancellation.
 
@@ -344,6 +345,7 @@ async def _remember_identity_off_loop(
             cwd=cwd,
             keep=keep,
             conversation_key=conversation_key,
+            codex_home=codex_home,
         )
     )
     await self._await_identity_write(info, writer)

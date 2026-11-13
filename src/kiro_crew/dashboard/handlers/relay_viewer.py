@@ -23,6 +23,7 @@ import asyncio
 import hashlib
 import logging
 import time
+from contextvars import copy_context
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, TypeVar
 
 from aiohttp import web
@@ -31,6 +32,7 @@ from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.core import _unix_peer_is_self
 from kiro_crew.dashboard.origin import is_loopback
 from kiro_crew.dashboard.token_auth import _ct_eq
+from kiro_crew.executors import local_auth_executor, relay_viewer_executor
 
 if TYPE_CHECKING:
     from kiro_crew.relay_viewer import cps
@@ -112,9 +114,15 @@ def _load_tunnel() -> Any:
     return KiroCrewConfig.load().tunnel
 
 
+async def _off_loop(func: Callable[..., _T], /, *args: Any) -> _T:
+    return await asyncio.get_running_loop().run_in_executor(
+        relay_viewer_executor(), copy_context().run, func, *args
+    )
+
+
 async def _settings() -> Optional[tuple[str, str, str]]:
     """``(cps_url, credential_ref, crew_domain)`` while the viewer is on, else ``None``."""
-    tunnel = await asyncio.to_thread(_load_tunnel)
+    tunnel = await _off_loop(_load_tunnel)
     if getattr(tunnel, "relay_viewer_enabled", False) is not True:
         return None
     url = getattr(tunnel, "relay_viewer_cps_url", "")
@@ -154,14 +162,16 @@ async def _bearer(ref: str, rejected: str = "") -> tuple[str, str]:
         from kiro_crew.relay_client.lease import LeaseCredentialError, read_lease_credential
 
         try:
-            return await asyncio.to_thread(read_lease_credential, ref), ""
+            return await _off_loop(read_lease_credential, ref), ""
         except LeaseCredentialError:
             raise cps.CpsRefused(cps.NOT_SET_UP, "the relay viewer credential can't be read")
     from kiro_crew.auth.bridge import default_token_store
     from kiro_crew.auth.provider import KasAuthProvider, NotAuthenticated
     from kiro_crew.auth.refresh import RefreshBlocked, RefreshRejected
 
-    provider = KasAuthProvider(default_token_store(), allow_env_api_key=False)
+    provider = KasAuthProvider(
+        default_token_store(), allow_env_api_key=False, executor=relay_viewer_executor()
+    )
     try:
         token = await provider.current()
         if rejected and token.access_token == rejected:
@@ -218,7 +228,7 @@ async def _sign_in_marker(ref: str) -> Optional[str]:
         return None
     from kiro_crew.auth.bridge import vault_identity_fingerprint
 
-    fingerprint = await asyncio.to_thread(vault_identity_fingerprint)
+    fingerprint = await _off_loop(vault_identity_fingerprint)
     if not fingerprint:
         return None
     return hashlib.sha256(b"relay-viewer-sign-in\n" + fingerprint.encode()).hexdigest()[:16]
@@ -295,7 +305,9 @@ async def _local_main_refusal(request: web.Request) -> Optional[web.Response]:
         return _error("invalid secret", "invalid_secret", 403)
     from kiro_crew.member_memory_auth import local_owner_bootstrap_provenance
 
-    provenance = await asyncio.to_thread(local_owner_bootstrap_provenance, request)
+    provenance = await asyncio.get_running_loop().run_in_executor(
+        local_auth_executor(), local_owner_bootstrap_provenance, request
+    )
     # Only the desktop app's own main process needs this, never an app backend.
     if provenance is None or provenance.app:
         _audit(request, "denied", "unverified-owner-process")

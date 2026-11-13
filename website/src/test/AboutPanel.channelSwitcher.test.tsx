@@ -119,25 +119,6 @@ describe('AboutPanel channel switcher', () => {
     expect(screen.queryByTestId('channel-switcher')).toBeNull()
   })
 
-  it('a locked channel with no published lane says so and offers no switch', async () => {
-    // RFC LTS edition D11: the edition follows lts, which has no lane
-    // until the release pipeline publishes it. "Switch channels above" would
-    // point at a switch the badge says is locked.
-    mountWithUpdateApi({
-      version: '1.0.0',
-      channel: 'lts',
-      stampedChannel: 'stable',
-      channelSwitchable: false,
-      channelLockedByPolicy: true,
-      requiredChannel: 'lts',
-      packaged: true,
-      disabled: 'channel',
-    })
-    const notice = await screen.findByTestId('updates-channel-unpublished')
-    expect(notice.textContent).toContain('LTS (long-term support)')
-    expect(notice.textContent).not.toMatch(/switch/i)
-  })
-
   it('a build that cannot follow the policy channel names it and links its build', async () => {
     mountWithUpdateApi({
       version: '0.1.0-nightly.20261026',

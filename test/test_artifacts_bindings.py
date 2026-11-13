@@ -85,6 +85,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "add_comment": ("function", "6b133a71159a", "artifacts_comments"),
     "allowed_source_roots": ("function", "4c8ae5b2fe43", "artifacts_source_link"),
     "artifact_index_key": ("staticmethod", "06db94384f74", "artifacts_scans"),
+    "check_create": ("function", "3d9bb8721033", "artifacts_writes"),
     "clear_publication": ("function", "0feb3239807e", "artifacts"),
     "create": ("function", "8800112eea34", "artifacts_writes"),
     "create_image": ("function", "bf9291cc3a6d", "artifacts_writes"),

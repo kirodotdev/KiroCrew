@@ -167,6 +167,7 @@ class KasCloudSandboxHarness(KasHarness):
         engine_features: frozenset[str] = frozenset(),
         session_cwd: str | Path | None = None,
         ssh_auth_sock_forwarded: bool = False,
+        governance_app: str | None = None,
     ) -> SessionExtras:
         """No agent definitions: the sandbox runs Kiro's own default agent."""
         return SessionExtras()

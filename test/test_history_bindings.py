@@ -186,7 +186,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "record_consolidation_failure": ("function", "fe8a2b418865", "history_marker"),
     "rewrite_session": ("function", "b67b482624a6", "history"),
     "rotation_generation": ("function", "028659ce42ac", "history_marker"),
-    "search_sessions": ("function", "cb218591aedd", "history"),
+    "search_sessions": ("function", "ee42f42a88f4", "history"),
     "session_mtime": ("function", "eed46331c744", "history"),
     "set_cached_intent_summary": ("function", "271ca4530d1f", "history_summaries"),
     "set_cached_summary": ("function", "1d6bdfb57c5e", "history_summaries"),

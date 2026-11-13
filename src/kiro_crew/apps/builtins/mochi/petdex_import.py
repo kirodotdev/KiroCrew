@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 INSTALLED_PETS_DIR = Path("~/.codex/pets")
 
 #: Slugs address a path segment on a third-party host; keep them boring.
-_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}\Z")
 
 #: Every host this module may talk to. The install script is served by the site
 #: and the assets by its CDN; nothing else is fetchable, including hosts that

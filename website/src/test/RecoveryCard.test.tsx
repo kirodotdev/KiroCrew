@@ -495,6 +495,11 @@ describe('resolveInjectCard – which inject rows become notes', () => {
     expect(card?.kind).toBe('generic')
   })
 
+  it("folds a heartbeat task's prompt into a note, never a bubble", () => {
+    const card = resolveInjectCard(row('💓 Heartbeat\n\nTwo CRs have new comments.', { injectKind: 'heartbeat' }))
+    expect(card?.kind).toBe('generic')
+  })
+
   it('folds a stamped row whose marker this build does not know', () => {
     const card = resolveInjectCard(row('[Some future marker] machine prose', { injectKind: 'recovery' }))
     expect(card?.kind).toBe('generic')
@@ -546,7 +551,7 @@ describe('injectOpensTurn – which inject rows begin a turn of their own', () =
 
   it('classifies every stamped kind, and the table is the union', () => {
     // A kind missing here fails to compile, so this pins the VALUES only.
-    expect(INJECT_KIND_OPENS_TURN).toEqual({ cron: true, mcp_app: true, synthesis: true, recovery: false, user_replay: false, automation_notice: true, workflow: true })
+    expect(INJECT_KIND_OPENS_TURN).toEqual({ cron: true, mcp_app: true, synthesis: true, recovery: false, user_replay: false, automation_notice: true, workflow: true, heartbeat: true })
     for (const [kind, opens] of Object.entries(INJECT_KIND_OPENS_TURN)) expect(injectOpensTurn(row({ injectKind: kind })), kind).toBe(opens)
   })
 

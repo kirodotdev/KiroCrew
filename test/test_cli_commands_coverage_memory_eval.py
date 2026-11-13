@@ -60,7 +60,7 @@ class TestLearnCli:
         with _LearnHarness() as h:
             h.vs.write_lesson.return_value = LessonWriteResult(LessonWriteOutcome.INSERTED)
             cc._learn(_ns(learn_action="add", rule="do x", category="tool", negative="not y"))
-        h.vs.write_lesson.assert_called_once_with("do x", "tool", "not y")
+        h.vs.write_lesson.assert_called_once_with("do x", "tool", "not y", applies=None)
         h.jsonl.save.assert_not_called()
         h.vs.close.assert_called_once()
         assert "Saved: do x (not y) [tool]" in capsys.readouterr().out
@@ -219,12 +219,12 @@ class TestLearnCli:
             h.jsonl.remove.assert_not_called()
         assert "does not name a usable scope" in capsys.readouterr().err
 
-    def test_unknown_action_prints_usage_and_closes_store(
+    def test_no_verb_prints_usage_without_opening_the_store(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         with _LearnHarness() as h:
             cc._learn(_ns(learn_action=None))
-        h.vs.close.assert_called_once()
+        h.vs.init.assert_not_called()
         assert "Usage: kirocrew learn" in capsys.readouterr().out
 
 
@@ -523,6 +523,29 @@ class TestMemoryCli:
             cc._memory_cmd(_ns(mem_action="bogus"))
         h.store.close.assert_called_once()
         assert "Usage: kirocrew memory" in capsys.readouterr().out
+
+    def test_no_verb_lists_every_verb_and_creates_no_store(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        import argparse
+
+        from kiro_crew.cli_parser_agent import register_memory_parser
+        from kiro_crew.config.loader import config_dir
+        from kiro_crew.memory_stores import MEMORY_DB_FILE
+
+        commands = argparse.ArgumentParser().add_subparsers(dest="command")
+        register_memory_parser(commands)
+        verbs = next(
+            a
+            for a in commands.choices["memory"]._actions
+            if isinstance(a, argparse._SubParsersAction)
+        ).choices
+        cc._memory_cmd(_ns(mem_action=None))
+        out = capsys.readouterr().out
+        assert out.startswith("Usage: kirocrew memory {")
+        listed = out.strip().split("{", 1)[1].rstrip("}").split("|")
+        assert sorted(listed) == sorted(verbs)
+        assert not (config_dir() / MEMORY_DB_FILE).exists()
 
 
 # ── artifact subcommands ──

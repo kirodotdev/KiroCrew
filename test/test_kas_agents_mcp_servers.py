@@ -667,7 +667,9 @@ class TestAMutedServerCannotArriveThroughThePoolingStub:
     def test_a_muted_poolable_server_is_never_stubbed_and_so_is_withheld(
         self, value: object, tmp_path: Path
     ):
-        spec = _spec(mcpServers={"muted": {"command": sys.executable, "disabled": value}})
+        spec = _spec(
+            mcpServers={"muted": {"command": sys.executable, "disabled": value}}, tools=["@muted"]
+        )
         stubbed = self._stub_names(spec, tmp_path)
 
         assert stubbed == frozenset(), "a muted server must not become a live stub"
@@ -719,7 +721,7 @@ class TestAMutedServerCannotArriveThroughThePoolingStub:
 
     def test_an_unmuted_poolable_server_still_takes_its_stub(self, tmp_path: Path):
         """The other direction, so the guard cannot pass by stubbing nothing."""
-        spec = _spec(mcpServers={"live": {"command": sys.executable}})
+        spec = _spec(mcpServers={"live": {"command": sys.executable}}, tools=["@live"])
         stubbed = self._stub_names(spec, tmp_path)
 
         assert stubbed == frozenset({"live"})
@@ -1127,6 +1129,7 @@ class TestRuntimeSuppliesTheStubbedSet:
             prompt_unread_out=None,
             engine_features=frozenset(),
             forward_ssh_auth_sock=False,
+            governance_app=None,
         ):
             seen.append(stub_server_names)
             return [{"id": agent}]
@@ -1155,6 +1158,7 @@ class TestRuntimeSuppliesTheStubbedSet:
             prompt_unread_out=None,
             engine_features=frozenset(),
             forward_ssh_auth_sock=False,
+            governance_app=None,
         ):
             seen.append((session_key, member_dispatch))
             return [{"id": agent}]

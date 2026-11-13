@@ -430,7 +430,7 @@ jobs:
           fi
 
   # The nightly's own workflow, called against this pull request's head. Same
-  # six shards, same 40-minute cap per shard, same contracts -- and the same
+  # shards, same per-shard time limit, same contracts -- and the same
   # runner queue, which is why it is behind `decide` and outside readiness.
   platform-tests:
     name: macOS Tests

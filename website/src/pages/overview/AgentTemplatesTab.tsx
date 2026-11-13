@@ -20,11 +20,12 @@ import { useAvailableModels } from '../../hooks/useAvailableModels'
 import { useScrollEdgesY } from '../../hooks/useScrollEdges'
 import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
 import { parseErrorCode, parseErrorField } from '../../utils/errorReport'
-import { defaultLookFor } from '../../lib/avatarPoses'
 import { errMessage } from '../../utils/thunkError'
 import { templateSourceKind } from '../../lib/templateSource'
 import { queryReadFailed } from '../../utils/queryReadFailed'
 import { i18nT } from '../../i18n/t'
+import UnlistedSpecFiles, { type UnlistedSpec } from './UnlistedSpecFiles'
+import EnrollAsBotDialog from './EnrollAsBotDialog'
 
 /** One row of `GET /api/agents/templates`: the discovery record plus the two
  *  facts a management page needs — whether it may be edited here, and what
@@ -159,6 +160,22 @@ const referencesIn = (body: string): TemplateReference[] => {
   } catch {
     return []
   }
+}
+
+/** What a `409 name_taken` names when no row is labelled with the refused
+ *  name: a file the list does not show (its `unlisted` entry), or a listed
+ *  file whose row carries the name the file declares (`listed`). */
+const nameHolderIn = (body: string): { file: string; row: string } => {
+  try {
+    const parsed = JSON.parse(body) as { unlisted?: { filename?: unknown }; listed?: { filename?: unknown; name?: unknown } }
+    if (typeof parsed.unlisted?.filename === 'string') return { file: parsed.unlisted.filename, row: '' }
+    if (typeof parsed.listed?.filename === 'string' && typeof parsed.listed.name === 'string') {
+      return { file: parsed.listed.filename, row: parsed.listed.name }
+    }
+  } catch {
+    // Not JSON: the plain refusal.
+  }
+  return { file: '', row: '' }
 }
 
 /** Full literal keys, so extractors and the dead-key gate can see every one. */
@@ -338,7 +355,7 @@ export default function AgentTemplatesTab() {
   const [createViaDuplicate, setCreateViaDuplicate] = useState(false)
   const [blocked, setBlocked] = useState<{ name: string; references: TemplateReference[] } | null>(null)
 
-  const { data, isLoading, error, refetch } = useQuery<{ templates: TemplateRow[] }>({
+  const { data, isLoading, error, refetch } = useQuery<{ templates: TemplateRow[]; unlisted?: UnlistedSpec[] }>({
     queryKey: ['agent-templates'],
     queryFn: () => api.agentTemplates(),
     // Templates are files another window, a package install or an editor can
@@ -346,6 +363,9 @@ export default function AgentTemplatesTab() {
     staleTime: 0,
   })
   const rows = useMemo(() => data?.templates ?? [], [data])
+  // Files the list cannot show that still take their names: without them a
+  // refused create has nothing on the tab to open, rename or delete.
+  const unlisted = useMemo(() => data?.unlisted ?? [], [data])
   const selected = useMemo(() => rows.find(r => r.name === selectedName) ?? null, [rows, selectedName])
 
   const detailQuery = useQuery<TemplateDetail>({
@@ -368,9 +388,6 @@ export default function AgentTemplatesTab() {
     setDraft(d); setBaseline(d)
   }, [detailQuery.data, detailQuery.isFetching, dirty])
   const editable = !!selected && selected.read_only === null
-  // Enrolling creates a crewmate NAMED after the template, so that is the
-  // name that decides whether it has already happened.
-  const enrolled = !!selected && selected.used_by.some(u => u.kind === 'crew' && u.id === selected.name)
   const dirtyMessage = i18nT('pages.overview.agentTemplatesTab.discard_unsaved_changes')
   // The rail click belongs to the shell; it consults this guard before
   // unmounting the pane and taking an unsaved draft with it.
@@ -393,6 +410,11 @@ export default function AgentTemplatesTab() {
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['agent-templates'] })
   const writeErrorText = (e: unknown, name = ''): string => {
     const code = e instanceof ApiError ? parseErrorCode(e.body) : undefined
+    // A name no row is labelled with is said with the file that holds it:
+    // the "Files not shown" entry that frees it, or the row whose file it is.
+    const holder = code === 'name_taken' && e instanceof ApiError ? nameHolderIn(e.body) : { file: '', row: '' }
+    if (holder.row) return i18nT('pages.overview.agentTemplatesTab.err_name_taken_listed', { file: holder.file, name: holder.row })
+    if (holder.file) return i18nT('pages.overview.agentTemplatesTab.err_name_taken_unlisted', { file: holder.file })
     return code === 'template_read_only'
       ? i18nT('pages.overview.agentTemplatesTab.err_read_only')
       : code === 'name_taken' || code === 'name_bound'
@@ -483,29 +505,29 @@ export default function AgentTemplatesTab() {
       writeError(e)
     },
   })
-  const enroll = useMutation({
-    mutationFn: (row: TemplateRow) => api.createKirocrewAgent({ name: row.name, kiro_agent: row.name, memory_store: 'default', avatar: defaultLookFor(row.name) }),
-    onSuccess: (r: { error?: string }, row) => {
-      if (r?.error) { setNotice({ kind: 'err', text: r.error }); return }
-      setNotice({ kind: 'ok', text: i18nT('pages.overview.agentTemplatesTab.enrolled', { name: row.name }) })
-      invalidate()
-      // Enrolling is a crew registry write, so it has to reach the registry's
-      // readers too -- the Crews tab beside this one on the same rail
-      // (CapabilitiesPage), and the Crew Members roster under the same prefix
-      // (api/membersQuery.ts). Nothing else will while that cache entry is
-      // live: the QueryClient sets `staleTime: Infinity`, so a remount serves
-      // the cached roster without refetching, and `POST /api/agents` pushes no
-      // `refresh` frame (the only `push_refresh("agents")` is the MCP
-      // capability install). A user who opens Capabilities on Crews, comes
-      // here, enrolls and goes back is inside that entry's `gcTime`, and the
-      // crewmate this tab just reported as enrolled is missing from the list.
-      void queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] })
-      // The same write lands in config.json, whose masked read ships the agent
-      // records -- the pairing #12740 established for a member write.
-      void queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
-    },
-    onError: writeError,
-  })
+  // A delete from "Files not shown" refused as referenced opens the same
+  // reference list a row's refused delete opens.
+  const onUnlistedReferenced = (name: string, body: string) => setBlocked({ name, references: referencesIn(body) })
+  // The custom agent "Enroll as bot" is open for. A bot can never take the
+  // agent's own name, so the dialog asks for one (EnrollAsBotDialog).
+  const [enrolling, setEnrolling] = useState<string | null>(null)
+  const onBotCreated = () => {
+    invalidate()
+    // Enrolling is a crew registry write, so it has to reach the registry's
+    // readers too -- the Crews tab beside this one on the same rail
+    // (CapabilitiesPage), and the Crew Members roster under the same prefix
+    // (api/membersQuery.ts). Nothing else will while that cache entry is
+    // live: the QueryClient sets `staleTime: Infinity`, so a remount serves
+    // the cached roster without refetching, and `POST /api/agents` pushes no
+    // `refresh` frame (the only `push_refresh("agents")` is the MCP
+    // capability install). A user who opens Capabilities on Crews, comes
+    // here, enrolls and goes back is inside that entry's `gcTime`, and the
+    // crewmate this tab just reported as enrolled is missing from the list.
+    void queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] })
+    // The same write lands in config.json, whose masked read ships the agent
+    // records -- the pairing #12740 established for a member write.
+    void queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+  }
 
   // The template a session runs when NOTHING names one: a plain chat, a CLI
   // chat, a warm-pool process, an agent-less schedule. A crewmate's DM thread
@@ -851,12 +873,17 @@ export default function AgentTemplatesTab() {
       {error && <ErrorNotice message={i18nT('pages.overview.agentTemplatesTab.load_failed')} askAgent className="mb-2" />}
       {error && <Btn className="mb-3" onClick={() => void refetch()}>{i18nT('pages.overview.agentTemplatesTab.retry')}</Btn>}
       {!isLoading && !error && rows.length === 0 ? (
-        <EmptyState
-          icon={<FileCode2 className="lucide-inline" />}
-          title={i18nT('pages.overview.agentTemplatesTab.empty_title')}
-          subtitle={i18nT('pages.overview.agentTemplatesTab.empty_subtitle')}
-          action={<Btn primary onClick={() => openCreate()}>{i18nT('pages.overview.agentTemplatesTab.new_template')}</Btn>}
-        />
+        <>
+          <EmptyState
+            icon={<FileCode2 className="lucide-inline" />}
+            title={i18nT('pages.overview.agentTemplatesTab.empty_title')}
+            subtitle={i18nT('pages.overview.agentTemplatesTab.empty_subtitle')}
+            action={<Btn primary onClick={() => openCreate()}>{i18nT('pages.overview.agentTemplatesTab.new_template')}</Btn>}
+          />
+          {/* An empty list can still hold names: a file that does not read is
+              no row, yet a create of its name is refused. */}
+          <UnlistedSpecFiles entries={unlisted} onReferenced={onUnlistedReferenced} className="mt-3 pb-2 border border-border rounded-md" />
+        </>
       ) : rows.length > 0 && (
         <div className={PANE_SHELL_CLASS}>
           {showList && (
@@ -873,6 +900,10 @@ export default function AgentTemplatesTab() {
                 ))}
                 {allFiltered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">{i18nT('pages.overview.agentTemplatesTab.no_match', { query: filter })}</div>}
               </div>
+              {/* Outside the listbox: its entries are files, not options to
+                  select, and each carries its own action. Unfiltered, since
+                  each is a name the user cannot create until it is freed. */}
+              <UnlistedSpecFiles entries={unlisted} onReferenced={onUnlistedReferenced} className="shrink-0 max-h-[45%] overflow-y-auto border-t border-border p-1 pb-2" />
             </div>
           )}
 
@@ -905,14 +936,14 @@ export default function AgentTemplatesTab() {
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="min-w-[260px] max-w-[min(360px,calc(100vw-2rem))]">
                           {!selected.private_to && (
-                            <DropdownMenuItem disabled={enroll.isPending || enrolled} onSelect={() => enroll.mutate(selected)} className="items-start">
+                            <DropdownMenuItem onSelect={() => setEnrolling(selected.name)} className="items-start">
                               <UserPlus className="lucide-inline mt-0.5 shrink-0 text-muted" aria-hidden />
                               <span className="flex flex-col gap-0.5">
                                 <span>{i18nT('pages.overview.agentTemplatesTab.enroll')}</span>
                                 {/* What enrolling starts, so the click is not a leap: a
                                     crewmate with its own memory, and nothing running. */}
                                 <span className="text-[11.5px] text-muted whitespace-normal">
-                                  {enrolled ? i18nT('pages.overview.agentTemplatesTab.enroll_already') : i18nT('pages.overview.agentTemplatesTab.enroll_hint')}
+                                  {i18nT('pages.overview.agentTemplatesTab.enroll_hint')}
                                 </span>
                               </span>
                             </DropdownMenuItem>
@@ -1174,6 +1205,14 @@ export default function AgentTemplatesTab() {
           until the create succeeds. */}
       {notice?.kind === 'err' && <ErrorNotice message={notice.text} className="mt-3" />}
     </Modal>
+
+    <EnrollAsBotDialog
+      agent={enrolling}
+      agentNames={rows.map(r => r.name)}
+      onCreated={onBotCreated}
+      onEnrolled={bot => setNotice({ kind: 'ok', text: i18nT('pages.overview.agentTemplatesTab.enroll_added', { bot, agent: enrolling ?? '' }) })}
+      onClose={() => setEnrolling(null)}
+    />
 
     <Modal open={!!blocked} onClose={() => setBlocked(null)} title={i18nT('pages.overview.agentTemplatesTab.cannot_delete_title', { name: blocked?.name ?? '' })} maxWidth={520} footer={<Btn onClick={() => setBlocked(null)}>{i18nT('pages.overview.agentTemplatesTab.close')}</Btn>}>
       <p className="text-[12.5px] text-muted mb-3">{i18nT('pages.overview.agentTemplatesTab.cannot_delete_body', { count: blocked?.references.length ?? 0 })}</p>

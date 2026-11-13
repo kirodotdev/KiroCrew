@@ -226,15 +226,17 @@ class CloudInstancePolicy:
 
     Some organizations require each EC2 instance to run a host agent (monitoring,
     inventory, patch compliance) whose permissions come from a managed policy that
-    already exists in every account. The built-in launcher attaches only Session
-    Manager's policy, and its permissions boundary caps the role to that, so such
-    an instance is non-compliant from the moment it boots. This descriptor is how
+    the organization puts into its accounts. The built-in launcher attaches only
+    Session Manager's policy, and its permissions boundary caps the role to that,
+    so such an instance is non-compliant from the moment it boots. This descriptor is how
     an edition says what those organizations need, without the public build naming
     any one of them.
 
     ``managed_policy_arns`` are attached to the instance role beside Session
     Manager's. Each is a full IAM policy ARN; ``{account}`` stands for the launch
-    account's id, for a policy that exists at the same path in every account.
+    account's id, for a policy kept at the same path in each account. A launch
+    into an account that holds no policy at one of these ARNs is refused before
+    its stack is deployed (``host_policy.require_managed_policies``).
 
     ``boundary_statements`` are ``Allow`` statements appended to the instance
     permissions boundary. A boundary is a ceiling, so without them an attached
@@ -685,6 +687,14 @@ class SttProvider(Protocol):
     also set an optional ``identifies_languages = True``. Core then offers the
     mixed-language picker for it; the provider reads the candidates from
     ``stt_config.transcribe_language_identification`` itself.
+
+    :meth:`transcribe_file` gets the clip as it was recorded (webm from the
+    dashboard, ogg/Opus from Slack). A provider that reads only 16 kHz mono 16-bit
+    PCM WAV may set an optional ``needs_pcm_wav = True``. Core then converts any
+    other clip with its own audio decoder and passes the copy; with no decoder, a
+    container that decoder does not recognize by file suffix, or a clip over
+    ``transcribe._MAX_AUDIO_SECS`` (an hour), the transcription fails without
+    calling the provider.
 
     A streaming provider whose backend decides how long one session runs may set
     an optional ``owns_session_limit = True``. Core then applies no duration cap

@@ -123,6 +123,8 @@ async def new_conversation(self: AcpClient) -> None:
     self._between_turn_credits = 0.0
     self._background_launches = BackgroundLaunchRecord()
     clear_stale_compaction_state(self)
+    # The fresh conversation holds none of the pictures the old one was sent.
+    self._forget_sent_images()
     self._resumed = False
     self._last_activity = time.monotonic()
     logger.info("ACP session %s replaced by a fresh conversation %s", old_sid, new_sid)

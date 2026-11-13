@@ -818,7 +818,7 @@
       "title": "Worktrees",
       "user_story": "As a developer, I want to create a git worktree for a follow-up session from a card, so that parallel work stays isolated.",
       "start_url": "/chat",
-      "entry_path": "Chat follow-up card → Start in new worktree",
+      "entry_path": "Chat follow-up card → Start in a separate copy",
       "preconditions": {
         "seed": "rich",
         "members": [],
@@ -1589,7 +1589,7 @@
         "seed": "minimal",
         "members": [],
         "feature_flags": [],
-        "notes": "Preference is browser-local under mc-nav-pinned (useNavPinned); clear between runs. CAPABILITY_SUB_ITEMS registered pinnable; promotedTabOwner logic in App.tsx yields active state on the host row."
+        "notes": "Preference is held under mc-nav-pinned (useNavPinned) and backed up in ui-prefs.json; clear both between runs. CAPABILITY_SUB_ITEMS registered pinnable; promotedTabOwner logic in App.tsx yields active state on the host row."
       },
       "runnable": "nightly",
       "estimated_steps": 3,
@@ -1664,7 +1664,7 @@
       "title": "Redirect /connections",
       "user_story": "As a user with an old bookmark, I want /connections to land on the Connections tab, so that deep links keep working.",
       "start_url": "/connections",
-      "entry_path": "Type /connections → /capabilities?tab=mcp",
+      "entry_path": "Type /connections → /settings/connections",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -1987,7 +1987,7 @@
       "title": "Reply in thread on a mate's bubble opens the thread panel and the bubble gains a replies footer",
       "user_story": "As a user talking to a mate, I want to ask about one thing it said in a reply thread on that message, so that the follow-up stays beside the message it is about instead of pushing the mate's findings up the main chat.",
       "start_url": "/settings",
-      "entry_path": "Settings > Developer > Mates > enable Reply threads on bot chat messages; Rail > Crew Members > Nova Sky > send a message, get a reply > hover the reply bubble > Reply in thread > Thread panel (quoted parent, 'No replies yet') > send a reply in the panel",
+      "entry_path": "Settings > Developer > Feature Previews > Crew and bots > enable Reply threads on bot chat messages; Rail > Crew Members > Nova Sky > send a message, get a reply > hover the reply bubble > Reply in thread > Thread panel (quoted parent, 'No replies yet') > send a reply in the panel",
       "preconditions": {
         "seed": "rich",
         "members": [
@@ -2441,8 +2441,8 @@
       "feature": "connections",
       "title": "Connections",
       "user_story": "As an operator, I want to install, enable and scope MCP servers, so that agents get exactly the tools they need.",
-      "start_url": "/capabilities",
-      "entry_path": "Customize → Connections tab (?tab=mcp)",
+      "start_url": "/mcp",
+      "entry_path": "MCP Servers rail entry (/mcp), Servers view",
       "preconditions": {
         "seed": "connections-two",
         "members": [
@@ -2457,7 +2457,7 @@
       "source": [
         "docs/feature-map/README.md",
         "website/src/App.tsx",
-        "website/src/pages/CapabilitiesPage.tsx",
+        "website/src/pages/McpPage.tsx",
         "website/src/pages/connections/ConnectionsPage.tsx",
         "website/src/pages/connections/registry.ts",
         "src/kiro_crew/tests_fixtures/connections-two/fixture.yaml",
@@ -2470,27 +2470,27 @@
         "connections-mcp-servers-tab",
         "connections-mcp-server-list-healthy-and-disabled"
       ],
-      "component": "website/src/pages/connections/ConnectionsPage.tsx"
+      "component": "website/src/pages/overview/McpTab.tsx"
     },
     {
       "id": "connections-mcp-management",
       "feature": "connections",
-      "title": "Customize › Connections › MCP Servers › MCP Management",
+      "title": "MCP Servers › Sharing",
       "user_story": "As a user, I want to see each MCP server's state, opt servers in to stubbing and read the sharing assessment, so that I can manage MCP connections and diagnose tool outages.",
-      "start_url": "/capabilities",
-      "entry_path": "Customize → Connections → MCP Servers sub-tab → MCP Management section below the servers list (/capabilities?tab=mcp&view=mcp-servers#mcp-management) → Per-server sharing tab with share switches, and the Sharing assessment tab",
+      "start_url": "/mcp",
+      "entry_path": "MCP Servers (/mcp?view=sharing): the sharing hero above, then the Sharing view → Per-server sharing tab with share switches, and the Sharing assessment tab",
       "preconditions": {
         "seed": "connections-two",
         "members": [],
         "feature_flags": [],
-        "notes": "MCP Management renders in the MCP Servers sub-tab of Customize → Connections (ConnectionsPage.tsx), with no Developer Mode needed. The old /settings/developer/mcp-pool and /developer?tab=mcp-pool links redirect there. Two views: Per-server sharing and Sharing assessment."
+        "notes": "MCP Management renders at the top of the MCP Servers page (McpPage.tsx), with no Developer Mode needed. The old /settings/developer/mcp-pool and /developer?tab=mcp-pool links redirect there. Two views: Per-server sharing and Sharing assessment."
       },
       "runnable": "nightly",
       "estimated_steps": 3,
       "rationale": "The section reads the mcp-gateway status and servers endpoints; the assertions are the Per-server sharing table with its share switches and the Sharing assessment view.",
       "source": [
         "docs/feature-map/README.md",
-        "website/src/pages/connections/ConnectionsPage.tsx",
+        "website/src/pages/McpPage.tsx",
         "website/src/pages/settings/McpManagement.tsx"
       ],
       "priority": "P2",
@@ -2505,7 +2505,7 @@
       "title": "Connect a third-party service from the Services gallery",
       "user_story": "As a user, I want to sign in to GitHub, Notion, or similar, so that the agent can use those services.",
       "start_url": "/capabilities",
-      "entry_path": "Customize > Connections > Services gallery > provider card > Connect (OAuth relay)",
+      "entry_path": "Settings > Connections > Services gallery > provider card > Connect (OAuth relay)",
       "preconditions": {
         "seed": "connections-two",
         "members": [],

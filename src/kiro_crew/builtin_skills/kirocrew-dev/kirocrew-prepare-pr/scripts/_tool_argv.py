@@ -33,12 +33,22 @@ RC_REFUSED = 126
 
 
 def which(name):
-    """``name`` from PATH's absolute entries only (PATHEXT applied), or None."""
+    """``name`` from PATH's absolute entries only (PATHEXT applied), or None.
+
+    PATHEXT is applied here: before Python 3.12, ``shutil.which`` adds no
+    PATHEXT suffix to a name with a directory part.
+    """
+    names = [name]
+    if os.name == "nt":
+        exts = [e for e in (os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD").split(";") if e]
+        if not name.lower().endswith(tuple(e.lower() for e in exts)):
+            names = [name + e for e in exts]
     for entry in os.environ.get("PATH", "").split(os.pathsep):
         if entry and os.path.isabs(entry):
-            found = shutil.which(os.path.join(entry, name))
-            if found:
-                return found
+            for candidate in names:
+                found = shutil.which(os.path.join(entry, candidate))
+                if found:
+                    return found
     return None
 
 

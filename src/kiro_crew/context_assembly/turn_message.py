@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.context_assembly import inclusion as _inclusion
 from kiro_crew.context_assembly import markers as _markers
+from kiro_crew.context_assembly import mcp_servers as _mcp_servers
 from kiro_crew.context_assembly import member as _member
 from kiro_crew.context_assembly import sections as _sections
 from kiro_crew.context_assembly import turn as _turn
@@ -107,6 +108,7 @@ def build_message(
     directive_user_origin: bool = False,
     conversation_reset: bool = False,
     tab_notices: list[Callable[[bool], None]] | None = None,
+    include_channel_history: bool = True,
 ) -> tuple[str, HookResult]:
     """Build the full message with context and hook processing.
 
@@ -162,6 +164,12 @@ def build_message(
     queued on the dashboard tab showing the conversation go ahead of *text*, as a
     dashboard turn in that tab sends them, the call that settles them is put in the
     list, and they leave the queue only once that settle reports the turn landed.
+
+    Pass *include_channel_history* ``False`` to keep *channel_id*'s buffered
+    recent channel messages out of the prompt while *channel_id* and
+    *thread_ts* still label the fenced thread blocks. A dashboard turn handed
+    only a thread parent does this: the parent is the one Slack text it was
+    given, and the channel buffer is a different, wider read.
 
     *provider_type* names the harness serving the session. A context
     provider that carries an :class:`EssentialDelivery` names it in place of
@@ -513,6 +521,7 @@ def build_message(
                 native_steering=context_provider is not None and context_provider.native_steering,
                 project=project,
                 native_launch_sources=native_launch_sources,
+                agent=agent,
             )
             _folder_ctx = ctx._render_folder_steering_section(
                 steering_dirs,
@@ -558,6 +567,18 @@ def build_message(
         _active_model = _sections.active_model_block(served_model)
         if _active_model:
             parts.append(_active_model)
+
+    # Every follow-up re-states the reply language: a nudge, wake or worker-report
+    # turn is all English text, and the session-start frame alone loses to it.
+    # A post-compaction turn re-sends the whole frame below, so it skips this.
+    if (
+        not is_new_session
+        and not needs_reinjection
+        and ctx._response_preferences_apply(session_key or "", runtime_source)
+    ):
+        _lang = _sections.reply_language_refresh(ctx.KiroCrewConfig.load())
+        if _lang:
+            parts.append(_lang)
 
     # Post-compaction re-injection: the skills index was lost when the
     # session-start context was compacted. Re-inject it so the model can
@@ -638,7 +659,12 @@ def build_message(
     # replaces this leg: the replies come from Slack itself, screened, so
     # this app's own replies and those before the last turn are left out
     # here too, rather than shown twice through an unscreened path.
-    if channel_id and self.channel_history and not (thread_ts and thread_replies_text):
+    if (
+        include_channel_history
+        and channel_id
+        and self.channel_history
+        and not (thread_ts and thread_replies_text)
+    ):
         ch_ctx = self.channel_history.context_for(channel_id, thread_ts=thread_ts) or None
         if ch_ctx:
             # Group-channel context is authored by other users — scrub the
@@ -711,6 +737,14 @@ def build_message(
             request_prefix_context=request_prefix_context,
         )
     )
+    # The MCP servers this session cannot use yet, so the model says a server is
+    # still starting (and waits for it) instead of saying it does not exist.
+    if not minimal_context and (
+        _mcp_block := _mcp_servers.turn_block(
+            self, session_key, rebuilt=is_new_session or needs_reinjection
+        )
+    ):
+        parts.append(_mcp_block)
 
     # Reset the per-session skill-body record on any turn that owns the one-shot
     # window-rebuild flag (fresh session or first turn after a compaction), match
@@ -950,6 +984,8 @@ def build_message(
     # Only a call with no session key keeps the user-text-first order.
     _has_native_history = bool(session_key and (resumed or not is_new_session))
     _guidance_precedes_request = bool(parts) or _has_native_history
+    # The marked rules block as this message carries it, "" when it carries none.
+    _rules_block = ""
 
     # The actual message (possibly modified by transform hook)
     if _guidance_precedes_request:
@@ -983,6 +1019,7 @@ def build_message(
         if _guidance_precedes_request and _interactive_guidance:
             parts.append(ctx._REPLY_FORMAT_RULES_MARKER + "\n")
             parts.extend(_interactive_guidance)
+            _rules_block = ctx._REPLY_FORMAT_RULES_MARKER + "\n" + "".join(_interactive_guidance)
         parts.append("[CURRENT USER REQUEST — respond to this]\n")
     # The current turn: a transform hook's output or the user's text, with quick
     # prompts expanded and forged boundaries scrubbed. Where the user's own text
@@ -1086,4 +1123,43 @@ def build_message(
                 _native_envelopes[0].translate(ctx._MULTIBYTE_TABLE) if native_documents else None
             ),
         )
+    elif (
+        delivery is not None
+        and context_provider is not None
+        and _rules_block
+        and not _private_owner
+        # H6, ``is True``: only a provider that says so. One that does not say,
+        # and any stand-in whose attributes answer truthy to everything, is
+        # "not known" and keeps the block on every message.
+        and getattr(context_provider, "reports_compaction", False) is True
+    ):
+        # The engine replays its own conversation, so the rules it holds need not
+        # be sent again. The message above always carries the block; bound as the
+        # provider's delivery envelope, the block is taken out at the wire while
+        # this conversation has acknowledged it, and goes out again after
+        # anything the delivery knows can drop it (a start, a clear, a
+        # compaction, an agent switch, a cancel, a failed turn, another
+        # conversation). The delivery holds one envelope, so a member turn, whose
+        # essentials take it, keeps the block on every message.
+        # shortcut: a member turn whose essentials came out empty binds nothing,
+        # so a rules envelope an earlier turn with no owner had acknowledged on
+        # the same provider would still be taken out of it; upgrade with a
+        # second envelope slot in the delivery.
+        try:
+            delivery.bind(
+                _rules_block.translate(ctx._MULTIBYTE_TABLE),
+                scope=("reply-format-rules", session_key),
+                incarnation=context_provider.context_incarnation,
+                # The one event the delivery cannot see: a compaction in a turn
+                # the agent started on its own. That turn is read with
+                # ``stream_unsolicited``, which sends no prompt and so passes no
+                # delivery stream; its compaction reaches only the session's
+                # re-injection flag. The flag is also set for compactions the
+                # delivery did see, where it finds nothing left to void.
+                force=needs_reinjection,
+            )
+        except Exception:  # noqa: BLE001 - a saving must never fail the build
+            # Nothing was bound (the provider could not name its conversation),
+            # so the block this message carries goes out as it is.
+            logger.debug("Reply-format rules not bound to the delivery", exc_info=True)
     return final, hook_result

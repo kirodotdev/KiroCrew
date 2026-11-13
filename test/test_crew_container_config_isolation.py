@@ -157,7 +157,8 @@ def test_no_sandbox_setting_is_forced_to_a_permissive_value(sandbox_keys) -> Non
 
     Derived, not a per-key table: a table here could be edited alongside a relaxed value
     and leave CI green. Every boolean ``sandbox*`` setting must be ``False``; the mode must
-    not be ``JAIL_MODE_OFF`` and must be one the schema declares.
+    not be ``JAIL_MODE_OFF`` and must be one the schema declares; a list-valued setting
+    only narrows what the agent may write, so it must equal ``AgentConfig``'s default.
     """
     from kiro_crew.config.sections import JAIL_MODE_OFF, AgentConfig
 
@@ -172,6 +173,14 @@ def test_no_sandbox_setting_is_forced_to_a_permissive_value(sandbox_keys) -> Non
                 f"{key} is forced to {value!r}. Every boolean sandbox setting is a way to "
                 "run with less isolation than the host offers, and this container writes "
                 "the protective value for all of them."
+            )
+        elif isinstance(getattr(declared, key), list):
+            # A list-valued sandbox setting only ever NARROWS what the agent may write
+            # (``sandbox_readonly_paths`` and its exceptions), so no value of it is less
+            # isolated than the default. The container states that default.
+            assert value == getattr(declared, key), (
+                f"{key} is forced to {value!r}, not the gateway's own default "
+                f"{getattr(declared, key)!r}"
             )
         else:
             assert value != JAIL_MODE_OFF, (

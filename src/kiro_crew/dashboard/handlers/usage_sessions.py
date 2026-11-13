@@ -1,5 +1,6 @@
-"""The Usage page's session activity: the kiro-cli and KAS sessions on disk, the parse
-cached and run off the event loop, and the snapshot a request waits for only briefly.
+"""The Usage page's session activity: the kiro-cli and KAS sessions on disk and the
+sessions of other harnesses from their usage rows, the parse cached and run off the
+event loop, and the snapshot a request waits for only briefly.
 
 An owner of :mod:`kiro_crew.dashboard.handlers.usage`: callers and tests import and
 patch these names through that facade, which mirrors a patch into every module of the
@@ -18,11 +19,16 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
-from kiro_crew.dashboard.handlers.usage_spend import daily_credits
+from kiro_crew.dashboard.handlers.usage_spend import daily_spend, spend_key_for_slot
 from kiro_crew.dashboard.handlers.usage_store import (
     _SESSIONS_HISTORY_DAYS,
+    _SHARD_COUNTED_HARNESSES,
+    _SHARD_COUNTED_PROVIDERS,
     _parse_row_day,
+    _parse_row_ts,
     _sessions_dir,
+    _shards_in_window,
+    is_session_slot,
 )
 from kiro_crew.hooks import validate_file_path
 from kiro_crew.jsonl_util import bounded_records
@@ -189,6 +195,99 @@ def _count_transcript(path: Path, kas: bool) -> tuple[str | None, int, int] | No
     return day, msgs, tools
 
 
+#: The ``surface`` prefix of a background one-liner's row (a title, a tag, a
+#: folder suggestion; ``llm_helpers_parts/background_turns.py``). Such a call is
+#: no turn of any session, whatever slot it borrows.
+_BACKGROUND_CALL_SURFACE_PREFIX = "bg:"
+
+
+#: The text :func:`_shard_sessions` tests a line for before parsing it: a row a
+#: counted provider or harness wrote names it in one of these spellings. A row's
+#: ``harness`` is matched as its whole JSON member, because a bare id such as
+#: ``pi`` is a substring of most rows (``input``).
+_SHARD_COUNTED_NEEDLES = tuple(sorted(_SHARD_COUNTED_PROVIDERS)) + tuple(
+    f'"harness": "{harness}"' for harness in sorted(_SHARD_COUNTED_HARNESSES)
+)
+
+
+def _row_messages(obj: dict) -> int:
+    """Messages one usage row stands for: the user's prompt, and the reply.
+
+    The same two transcript rows :func:`_count_row` counts for a kiro-cli turn. A
+    row marked ``delivered: false`` produced no reply, so it is the prompt alone; a
+    row without the field (an older shard) counts both.
+    """
+    return 1 if obj.get("delivered") is False else 2
+
+
+def _shard_sessions(days: int) -> dict[str, tuple[str, int]]:
+    """Sessions of :data:`_SHARD_COUNTED_PROVIDERS` and :data:`_SHARD_COUNTED_HARNESSES`
+    over the last *days*, from the usage rows.
+
+    ``{session: (day, messages)}``. A session is the row's ``acp_session_id``, else
+    its ``transcript`` key, else its ``slot``. Its day is the local day of its earliest row in the window, the
+    way a transcript is filed under its first row's day. A row outside the per-row
+    epoch cutoff, with no parseable day, with no key, written by a
+    background one-liner (:data:`_BACKGROUND_CALL_SURFACE_PREFIX`), or whose slot
+    is not a session in its own right (:func:`is_session_slot`, which leaves out
+    subagents) is skipped. A shard that cannot be read costs only its own rows.
+    """
+    cutoff = time.time() - (days * 86400)
+    first: dict[str, tuple[float, str]] = {}
+    messages: Counter = Counter()
+    for path in _shards_in_window(days):
+        try:
+            with path.open("rb") as fh:
+                for line in bounded_records(fh, path, label="usage"):
+                    # A cheap text test before the parse: most rows are kiro-cli or
+                    # KAS turns, and a row whose text holds none of these needles
+                    # cannot carry a counted ``provider`` or ``harness``.
+                    if not any(needle in line for needle in _SHARD_COUNTED_NEEDLES):
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except (ValueError, RecursionError):  # past the nesting limit
+                        continue
+                    if not isinstance(obj, dict) or obj.get("_type") != "tokens":
+                        continue
+                    if (
+                        obj.get("provider") not in _SHARD_COUNTED_PROVIDERS
+                        and obj.get("harness") not in _SHARD_COUNTED_HARNESSES
+                    ):
+                        continue
+                    surface = obj.get("surface")
+                    if isinstance(surface, str) and surface.startswith(
+                        _BACKGROUND_CALL_SURFACE_PREFIX
+                    ):
+                        continue
+                    ts_raw = obj.get("ts")
+                    ts_epoch = _parse_row_ts(str(ts_raw or ""))
+                    if ts_epoch is None or ts_epoch < cutoff:
+                        continue
+                    slot = obj.get("slot")
+                    if isinstance(slot, str) and slot and not is_session_slot(slot):
+                        continue
+                    day = _parse_row_day(ts_raw)
+                    # One conversation per ACP session, as kiro-cli writes one
+                    # transcript per session: a cron job or a channel thread reuses
+                    # its slot for every run. A row from before the field falls back
+                    # to its transcript key, then to its slot (a bare dashboard slot
+                    # filed under the session key its chat's transcript rows carry).
+                    key = (
+                        obj.get("acp_session_id")
+                        or obj.get("transcript")
+                        or (spend_key_for_slot(slot) if isinstance(slot, str) and slot else None)
+                    )
+                    if day is None or not isinstance(key, str) or not key:
+                        continue
+                    messages[key] += _row_messages(obj)
+                    if key not in first or ts_epoch < first[key][0]:
+                        first[key] = (ts_epoch, day)
+        except (OSError, UnicodeDecodeError):
+            continue
+    return {key: (first[key][1], messages[key]) for key in first}
+
+
 def _parse_sessions() -> dict:
     """Parse local kiro session files for usage analytics."""
     sessions_dir = _sessions_dir()
@@ -317,6 +416,16 @@ def _parse_sessions() -> dict:
 
     _TRANSCRIPT_COUNTS = seen_counts
 
+    # Sessions on a harness that writes none of the transcripts above (Claude
+    # Code) are counted from their usage rows, into the same totals. Those rows
+    # carry no tool-call count, so such a session adds no tool calls.
+    for day, msgs in _shard_sessions(_SESSIONS_HISTORY_DAYS).values():
+        daily[day] += 1
+        total_sessions += 1
+        all_time_sessions += 1
+        daily_msgs[day] += msgs
+        total_msgs += msgs
+
     if refused_transcripts:
         # Server-side only: %s of a Path is a filesystem path, which the
         # returned payload deliberately never carries (see the listing handler
@@ -336,24 +445,36 @@ def _parse_sessions() -> dict:
             sessions_dir.parent,
         )
 
-    # Build daily history sorted by date. Credits come from the per-turn usage
+    # Build daily history sorted by date. Spend comes from the per-turn usage
     # shards, not the transcripts, so a day can carry spend without a transcript
     # (a background slot, a refused file): such a day still gets a row, with
     # zero sessions, so that spend is shown rather than dropped. Counter lookups
     # on those days read 0 without inserting a key.
-    credits_by_day = daily_credits(_SESSIONS_HISTORY_DAYS)
-    all_days = sorted(set(daily.keys()) | set(credits_by_day.keys()))
+    spend_by_day = daily_spend(_SESSIONS_HISTORY_DAYS)
+    all_days = sorted(set(daily.keys()) | set(spend_by_day.keys()))
     history: list[dict[str, Any]] = []
     for d in all_days:
-        history.append(
-            {
-                "date": d,
-                "sessions": daily[d],
-                "messages": daily_msgs[d],
-                "tool_calls": daily_tools[d],
-                "credits": round(credits_by_day.get(d, 0.0), 2),
-            }
-        )
+        spend = spend_by_day.get(d, {})
+        credits = spend.get("credits", 0.0)
+        cost = spend.get("cost", 0.0)
+        row: dict[str, Any] = {
+            "date": d,
+            "sessions": daily[d],
+            "messages": daily_msgs[d],
+            "tool_calls": daily_tools[d],
+        }
+        # Every row records both fields, so presence cannot tell a credit-billed
+        # turn from a dollar-billed one. A day whose only spend is dollars (a
+        # Claude Code day) leaves ``credits`` off, so the page shows a dash rather
+        # than a 0.00 that reads as "nothing was spent". A day with no spend at
+        # all keeps its 0.00, as before.
+        if credits or not cost:
+            row["credits"] = round(credits, 2)
+        if cost:
+            # Unrounded: formatCost rounds for display, and a round here would
+            # double-round a total or turn a fraction of a cent into zero.
+            row["cost_usd"] = cost
+        history.append(row)
 
     # Compute period summaries
     week_start = (now_dt - timedelta(days=now_dt.weekday())).strftime("%Y-%m-%d")

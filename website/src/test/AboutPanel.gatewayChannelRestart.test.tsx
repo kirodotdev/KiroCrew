@@ -22,7 +22,7 @@ import { act, render, screen, fireEvent, waitFor, cleanup, within } from '@testi
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { store } from '../store'
-import { sseStatus } from '../store/dashboardSlice'
+import { setUpdateProgress, sseStatus } from '../store/dashboardSlice'
 import { MemoryRouter } from 'react-router-dom'
 import { AboutPanel } from '../pages/settings/AboutPanel'
 
@@ -120,24 +120,6 @@ describe('AboutPanel gateway channel switcher', () => {
     // A translated label, not the raw id.
     expect(row.textContent).toContain('LTS (long-term support)')
     expect(screen.queryByTestId('gateway-channel-switcher')).toBeNull()
-    expect(screen.queryByTestId('gateway-channel-unpublished')).toBeNull()
-  })
-
-  it('says why updates are off while the lts lane has no builds', async () => {
-    // The backend defers the check for an unpublished channel; without this
-    // line the user sees only "Not checked yet" and a locked row.
-    stubFetch()
-    seedStatus({ update_channel: 'lts', update_check_status: 'deferred' })
-    mountWeb()
-
-    const notice = await screen.findByTestId('gateway-channel-unpublished')
-    expect(notice.textContent).toContain('no builds have been published on the LTS (long-term support) channel')
-    // The notice is the only update message: no Check button or auto-update
-    // switch that could do nothing contradicts it.
-    expect(screen.queryByRole('button', { name: /check for updates/i })).toBeNull()
-    expect(screen.queryByText('Update the gateway automatically')).toBeNull()
-    // Restart is a standing maintenance action, not an update control.
-    expect(screen.getByTestId('gateway-restart-row')).toBeTruthy()
   })
 
   it('keeps nightly on screen for an install already following it, as an exit', async () => {
@@ -189,6 +171,37 @@ describe('AboutPanel gateway channel switcher', () => {
       expect(call).toBeTruthy()
       expect(call!.body).toEqual({ channel: 'insider' })
     })
+  })
+
+  // A switch re-runs the check, so its answer joins the newest-answer ordering
+  // the hero and the card share (#34868).
+  it('a switch whose re-check succeeds clears an older background failure', async () => {
+    stubFetch({ channelResponse: {
+      ok: true, channel: 'insider', check_status: 'succeeded', update_available: false, last_checked_at: 200,
+    } })
+    seedStatus({ update_channel: 'stable', update_check_status: 'failed', update_last_checked_at: 100 })
+    mountWeb()
+    expect(await screen.findByTestId('check-failed')).toBeTruthy()
+
+    fireEvent.click(within(await screen.findByTestId('gateway-channel-switcher')).getByTitle('Insider'))
+
+    await waitFor(() => expect(screen.getByTestId('hero-up-to-date')).toBeTruthy())
+    expect(screen.queryByTestId('check-failed')).toBeNull()
+  })
+
+  it('a switch whose re-check fails shows the failure and its reason, not a stale green', async () => {
+    stubFetch({ channelResponse: {
+      ok: true, channel: 'insider', check_status: 'failed', update_available: null,
+      error_code: 'feed_unreachable', last_checked_at: 200,
+    } })
+    seedStatus({ update_channel: 'stable', update_check_status: 'succeeded', update_available: false, update_last_checked_at: 100 })
+    mountWeb()
+    expect(await screen.findByTestId('hero-up-to-date')).toBeTruthy()
+
+    fireEvent.click(within(await screen.findByTestId('gateway-channel-switcher')).getByTitle('Insider'))
+
+    expect((await screen.findByTestId('check-failed')).textContent).toContain('release feed')
+    expect(screen.queryByTestId('hero-up-to-date')).toBeNull()
   })
 
   it('keeps the verdict a successful switch just found instead of discarding it', async () => {
@@ -582,5 +595,37 @@ describe('AboutPanel gateway restart', () => {
       const btn = screen.getByTestId('gateway-restart')
       expect(btn.getAttribute('disabled')).not.toBeNull()
     })
+  })
+
+  it('a restart the gateway refuses after its 200 clears the busy button and shows why (#35351)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String(input)
+      const restart = init?.method === 'POST' && url.includes('/api/restart')
+      return {
+        ok: true, status: 200,
+        json: async () => (restart ? { ok: true, status: 'restarting' } : {}),
+        text: async () => (restart ? '{"ok":true,"status":"restarting"}' : '{}'),
+        headers: new Headers({ 'content-type': 'application/json' }),
+      }
+    }))
+    seedStatus({
+      update_available: true,
+      update_check_status: 'succeeded',
+      update_can_apply: false,
+      update_command: 'curl -fsSL https://example.test/cli.sh | sh',
+      update_channel: 'stable',
+    })
+    mountWeb()
+
+    await screen.findByTestId('manual-update-command')
+    fireEvent.click(screen.getByTestId('gateway-restart'))
+    fireEvent.click(screen.getByTestId('gateway-restart'))
+    await waitFor(() => expect(screen.getByTestId('gateway-restart').getAttribute('disabled')).not.toBeNull())
+
+    act(() => { store.dispatch(setUpdateProgress({ step: 'restarting', detail: 'Restarting server…' })) })
+    act(() => { store.dispatch(setUpdateProgress({ step: 'error', detail: 'Sessions did not drain in time.' })) })
+    expect(await screen.findByTestId('manual-update-restart-error')).toHaveTextContent('Sessions did not drain in time.')
+    expect(screen.getByTestId('gateway-restart').getAttribute('disabled')).toBeNull()
+    act(() => { store.dispatch(setUpdateProgress(null)) })
   })
 })

@@ -21,6 +21,7 @@
     "kiro_cli_logs": "Read kiro-cli logs",
     "task_run": "Start task",
     "wait": "Wait",
+    "mcp_server_wait": "Wait for MCP server",
     "route_crew": "Route to crew",
     "select_crew": "Select crew",
     "register_hook": "Register webhook",
@@ -89,7 +90,13 @@
     "pod_ls": "List pods",
     "issue_radar_crew_read": "Read crew progress",
     "issue_radar_crew_record": "Log crew progress",
-    "browser": "Drive browser"
+    "browser": "Drive browser",
+    "code_channel_set_view": "Publish code channel view",
+    "code_channel_publish_plan_canvas": "Publish plan canvas",
+    "code_channel_set_context_bar": "Set code channel context bar",
+    "code_channel_rename": "Rename code channel",
+    "code_channel_set_status": "Set code channel status",
+    "code_channel_wrap_up": "Post code channel wrap-up"
   },
   "kirocrew-dashboard": {
     "chat_folder_tree": "Read folder tree",
@@ -116,6 +123,7 @@
     "session_continue": "Continue session",
     "session_set_model": "Set session model",
     "session_set_color": "Set session color",
+    "session_set_note": "Leave session note",
     "session_reload": "Reload session",
     "session_rename": "Rename session",
     "session_generate_title": "Regenerate session title",
@@ -130,7 +138,8 @@
     "session_release": "Release session",
     "session_read_message": "Read session message",
     "session_summary": "Read session summary",
-    "work_dispatch": "Dispatch work item"
+    "work_dispatch": "Dispatch work item",
+    "session_queue": "Manage session queue"
   },
   "kirocrew-cron": {
     "cron_list": "List schedules",

@@ -99,6 +99,11 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # session it merely has a tab on, bypassing the unix-socket peer check
         # that makes the declared X-Session-Key trustworthy.
         "/api/session-directive",
+        # Slack code-channel tools: the gateway leg of the code_channel_* MCP
+        # tools. STRICT for the session-directive reason above: the caller is an
+        # MCP subprocess, and the channel acted on is derived from the attested
+        # X-Session-Key, which a browser bearer must not be able to assert.
+        "/api/slack/code-channel/tool",
         # In-app update approval (RFC OQ7 step-up). STRICT: its only legitimate
         # caller is `kirocrew update approve` on the gateway host presenting the
         # trust/-fenced nonce plus X-Local-Secret; no browser ever posts to it —
@@ -228,6 +233,7 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/session-control/continue",
         "/api/session-control/set-model",
         "/api/session-control/set-color",
+        "/api/session-control/set-note",
         "/api/session-control/reload",
         "/api/session-control/rename",
         "/api/session-control/generate-title",
@@ -242,6 +248,7 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/session-control/release",
         "/api/session-control/read",
         "/api/session-control/summary",
+        "/api/session-control/queue",
         # MCP-only structured monitor inspection. The caller selects its
         # session identity through X-Session-Key, so cookie authentication can
         # never authorize this leaf.

@@ -10,11 +10,12 @@ import { Badge, Btn, Card, EmptyState, Input, PanelSectionHeader, Skeleton } fro
 import ErrorNotice from '../../components/ErrorNotice'
 import Modal from '../../components/Modal'
 import SegmentedControl from '../../components/SegmentedControl'
-import { fmtDateTimeNumeric, fmtNumber } from '../../i18n/format'
+import { fmtDateTimeNumeric, fmtList, fmtNumber } from '../../i18n/format'
 import type { MemoryEditOperation, MemoryEditPreview, MemoryRecord, MemoryRecordQuery, MemoryRecordRevision, MemoryRecordSelection } from '../../types/memoryEditing'
 import { MEMORY_QUERY_PREFIXES, MemoryStoreAvatar, memoryQueryRetry, useMemoryStores } from './MemoryStoreCard'
 import { semanticWriteErrorMessage } from './embeddingStatusText'
 import { queryReadFailed } from '../../utils/queryReadFailed'
+import { usePagerFocus } from '../../hooks/usePagerFocus'
 
 const PAGE_SIZE = 50
 const MANUAL_LIMIT = 500
@@ -112,7 +113,7 @@ function RecallEvidence({ data }: { data: RecallResult }) {
     <details className="mt-3 text-[13px]">
       <summary className="min-h-11 cursor-pointer py-3 text-muted">{t('memoryV2.provenance')}</summary>
       <ul className="space-y-3">{groups.flatMap(group => group.rows.map((item, index) => <li key={`${group.kind}:${item.id || item.key || index}`} className="space-y-2 border-t border-border pt-3">
-        {item.retrieval?.matched_terms?.length ? <p>{t('memoryV2.matched_terms', { terms: item.retrieval.matched_terms.join(', ') })}</p> : null}
+        {item.retrieval?.matched_terms?.length ? <p>{t('memoryV2.matched_terms', { terms: fmtList(item.retrieval.matched_terms, { style: 'narrow' }) })}</p> : null}
         <RecordProvenance row={item} />
       </li>))}</ul>
       {/* Exact model context, including rules, remains inspectable without becoming the main reading surface. */}
@@ -179,6 +180,7 @@ export default function MemoryRecordsEditor({ store, privateMemory = false, onDi
   const [kind, setKind] = useState<MemoryRecordQuery['kind']>(saved.kind)
   useEffect(() => { safeSetSessionItem(FILTER_KEY_PREFIX + store, JSON.stringify({ q: search, kind })) }, [store, search, kind])
   const [page, setPage] = useState(0)
+  const pager = usePagerFocus()
   const [selected, setSelected] = useState<Map<string, MemoryRecord>>(new Map())
   const [all, setAll] = useState<QuerySelection | null>(null)
   const [intent, setIntent] = useState<Intent | null>(null)
@@ -343,7 +345,7 @@ export default function MemoryRecordsEditor({ store, privateMemory = false, onDi
         <div className="mt-auto flex justify-between gap-2 border-t border-border pt-3"><Btn className="min-h-11" onClick={() => setDetail(row)}>{t('memoryV2.view_details')}<ArrowUpRight className="lucide-inline" /></Btn><Btn className="min-h-11" disabled={!row.revision} onClick={() => begin({ type: 'set', row })}><Pencil className="lucide-inline" />{editAction}</Btn></div>
       </Card>
     </motion.div> })}</div>
-    {!searching && !records.error && currentTotal > 0 && <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-[12px] text-muted">{t('memoryEditing.page_range', { from: fmtNumber(page * PAGE_SIZE + 1), to: fmtNumber(page * PAGE_SIZE + rows.length), total: fmtNumber(currentTotal) })}</span><div className="flex gap-2"><Btn aria-label={t('memoryEditing.previous')} className="min-h-11 min-w-11 justify-center" disabled={page === 0} onClick={() => setPage(value => value - 1)}><ChevronLeft className="lucide-inline" /></Btn><Btn aria-label={t('memoryEditing.next')} className="min-h-11 min-w-11 justify-center" disabled={!records.data?.has_more} onClick={() => setPage(value => value + 1)}><ChevronRight className="lucide-inline" /></Btn></div></div>}
+    {!searching && !records.error && currentTotal > 0 && <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-[12px] text-muted">{t('memoryEditing.page_range', { from: fmtNumber(page * PAGE_SIZE + 1), to: fmtNumber(page * PAGE_SIZE + rows.length), total: fmtNumber(currentTotal) })}</span><div className="flex gap-2"><Btn ref={pager.prevRef} aria-label={t('memoryEditing.previous')} className="min-h-11 min-w-11 justify-center" disabled={page === 0} onClick={() => { setPage(value => value - 1); pager.pressedPrev() }}><ChevronLeft className="lucide-inline" /></Btn><Btn ref={pager.nextRef} aria-label={t('memoryEditing.next')} className="min-h-11 min-w-11 justify-center" disabled={!records.data?.has_more} onClick={() => { setPage(value => value + 1); pager.pressedNext() }}><ChevronRight className="lucide-inline" /></Btn></div></div>}
     {detail && <Modal open title={t('memoryV2.detail_title')} onClose={() => setDetail(null)} footer={<div className="flex flex-wrap gap-2"><Btn className="min-h-11" onClick={() => begin({ type: 'set', row: detail })}>{editAction}</Btn><Btn danger className="min-h-11" onClick={() => begin({ type: 'forget', row: detail })}>{t('memoryV2.forget')}</Btn></div>}><div className="space-y-4"><Badge variant="muted">{t(MEMORY_RECORD_LABELS[detail.kind])}</Badge><p className="whitespace-pre-wrap break-words text-sm [overflow-wrap:anywhere]">{memoryRecordBody(detail)}</p>{privateMemory && detail.key && <dl className="space-y-1 text-[12px]"><dt className="text-muted">{t('memoryV2.memory_key')}</dt><dd className="break-words [overflow-wrap:anywhere]"><code>{detail.key}</code></dd></dl>}<PanelSectionHeader label={t('memoryV2.provenance')} /><RecordProvenance row={detail} /><RecordHistory store={store} row={detail} onRestore={revisionId => { begin({ type: 'restore', row: detail, revisionId }); preview.mutate({ row: detail, operation: { type: 'restore', revision_id: revisionId } }) }} onKeepCurrent={() => { begin({ type: 'set', row: detail }); preview.mutate({ row: detail }) }} onProposal={(proposal, operation) => { begin(operation === 'forget' ? { type: 'forget', row: detail } : { type: 'set', row: detail }); if (operation === 'set') setDraft(memoryRecordBody(proposal)) }} /></div></Modal>}
     {intent && <Modal open title={title} guardAccidentalDismiss onClose={busy ? () => {} : () => setIntent(null)} footer={<div className="flex flex-wrap justify-end gap-2">{(intent.type === 'forget' || intent.type === 'restore') && <Btn className="min-h-11" disabled={busy} onClick={() => setIntent(null)}>{t('components.confirmDialog.cancel')}</Btn>}{reviewedPreview && intent.type !== 'forget' && intent.type !== 'restore' && <Btn className="min-h-11" disabled={busy} onClick={() => { preview.reset(); previewPage.reset(); setReviewedPreview(null); setPreviewPageOffset(0); apply.reset() }}>{t('memoryEditing.adjust')}</Btn>}{reviewedPreview && !applyConflict ? <Btn primary={intent.type !== 'forget'} danger={intent.type === 'forget'} className="min-h-11" disabled={busy || !!previewPage.error || reviewedPreview.changed_count === 0} onClick={() => apply.mutate()}>{apply.isPending ? t('memoryEditing.applying') : intent.type === 'forget' ? t('memoryEditing.forget_count', { count: fmtNumber(reviewedPreview.changed_count) }) : intent.type === 'restore' && !apply.error ? t('memoryEditing.restore_version', { value: shortBody(reviewedPreview.entries[0]?.after ? memoryRecordBody(reviewedPreview.entries[0].after) : '') }) : apply.error ? t('memoryEditing.retry_apply') : t('memoryEditing.apply', { count: fmtNumber(reviewedPreview.changed_count) })}</Btn> : <Btn primary className="min-h-11" disabled={busy || missingRecord || (!('row' in intent && intent.row) && selectedCount === 0) || (intent.type === 'set' && !draft.trim()) || (intent.type === 'replace_text' && !find)} onClick={() => { apply.reset(); refreshSelection.reset(); preview.mutate({}) }}>{preview.isPending ? t('memoryEditing.preparing') : t('memoryEditing.preview')}</Btn>}</div>}>
       <div className="space-y-4">

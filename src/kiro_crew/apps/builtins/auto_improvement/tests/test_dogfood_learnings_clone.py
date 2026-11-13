@@ -1336,6 +1336,19 @@ class TestALongRepoKeyCanStillPersist:
                 continue
             raise AssertionError(f"unsafe key accepted: {bad!r}")
 
+    def test_a_trailing_newline_is_rejected(self) -> None:
+        """`$` matches just before a final newline, so a key like `pr-o-r-1\\n` (from a
+        `%0A` in the URL) must still be refused. On Windows it would otherwise reach
+        the file system and fail with an unhandled OSError instead of a 400."""
+        from kiro_crew.apps.builtins.auto_improvement.backend import store
+
+        for bad in ("pr-o-r-1\n", "a" * 250 + "\n"):
+            try:
+                store._validate_key(bad)
+            except ValueError:
+                continue
+            raise AssertionError(f"key with a trailing newline accepted: {bad!r}")
+
 
 class TestFixtureGitHasAutoMaintenanceOff:
     """The repo-root conftest's git floor reaches this testpath too.

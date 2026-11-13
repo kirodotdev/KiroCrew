@@ -21,9 +21,14 @@ Instance fields read: ``_closing``, ``_deps``, ``_lock``, ``_owner``, ``_start_s
 
 Through ``state`` it also changes the ending fence's and the capability records in place
 (``spawning_reservations``, ``invalidated_reservations``, ``refused_spawns``,
-``capability_failures``) and reads ``ending_keys``. It also adds and removes an eager
-start's announcement (``speculative_starts``), which a real claim of no higher start
-priority joins.
+``capability_failures``), writes the agent of a cold start in flight (``starting_agents``,
+removed through ``forget_starting_agent`` at registration and at every exit of the start)
+and reads ``ending_keys``. It also adds and removes an eager
+start's announcement (``speculative_starts``), which a real claim joins when it is of
+no higher start priority, and whatever its priority when the start is a resume prefetch
+past its spawn door. A person's claim that finds a resume prefetch short of that door
+marks it superseded (``superseded_speculative_starts``) and starts the session itself;
+the prefetch stands down at the door.
 """
 
 from __future__ import annotations
@@ -51,7 +56,11 @@ from kiro_crew.metrics.sessions import (
     record_session_ended,
     record_session_started,
 )
-from kiro_crew.runtime_ownership import acquire_session_lease, release_session_lease
+from kiro_crew.runtime_ownership import (
+    acquire_session_lease,
+    is_shared_chat_runtime,
+    release_session_lease,
+)
 from kiro_crew.session_allocation_parts.errors import (
     SessionBusyError,
     SessionClosingError,
@@ -68,6 +77,32 @@ from kiro_crew.start_priority import (
 
 if TYPE_CHECKING:
     from kiro_crew.session_allocation import LLMProvider, ProviderFactory, SessionAllocationService
+
+
+async def _end_started_provider(owner: Any, provider: Any) -> None:
+    """End a provider whose start returned but which will not be registered.
+
+    An unshared provider is hard-killed, as before. A provider on a SHARED chat
+    runtime (``chat_runtime_sharing`` preview) is ended through its own shutdown:
+    co-tenants may be mid-turn on that process, so it evicts this session and
+    kills only when it held the last lease. The shutdown runs as one task this
+    frame waits on through any cancellation, so the lease is always returned; a
+    shutdown that fails falls back to the hard kill.
+    """
+    if not is_shared_chat_runtime(provider):
+        owner._dispatch_hard_kill(provider)
+        return
+    ending = asyncio.ensure_future(provider.shutdown())
+    while not ending.done():
+        try:
+            # ``wait`` never raises the task's own exception; that is read below.
+            await asyncio.wait({ending})
+        except asyncio.CancelledError:
+            continue
+    try:
+        ending.result()
+    except Exception:
+        owner._dispatch_hard_kill(provider)
 
 
 def _model_is_a_launch_argument(provider: Any) -> bool:
@@ -416,7 +451,8 @@ async def get_or_create(
                 # An eager start announces itself in the same lock hold that
                 # finds no session, so a real claim arriving while it runs can
                 # join it (``_get_or_create_impl``) instead of spawning a
-                # second process for the key.
+                # second process for the key. The reservation token says
+                # whether it is past its spawn door yet.
                 starts = self.state.speculative_starts
                 if (
                     speculative
@@ -424,7 +460,7 @@ async def get_or_create(
                     and reserved_key not in self._sessions
                 ):
                     started = asyncio.Event()
-                    starts[reserved_key] = (started, start_priority)
+                    starts[reserved_key] = (started, start_priority, speculative_resume, token)
         if held:
             fence_deadline = await self.wait_for_ending_fence(reserved_key, fence_deadline)
             continue
@@ -447,6 +483,9 @@ async def get_or_create(
                     **extra_factory_kwargs,
                 )
             finally:
+                # Every exit -- registered, refused, failed, cancelled -- drops
+                # the agent this start recorded for its own servers' listing.
+                self.forget_starting_agent(reserved_key, token)
                 # Every exit -- registered, refused, failed, cancelled -- ends
                 # the announcement, so a joined claim never waits on a start
                 # that is over. A failed start leaves no session, and the
@@ -455,6 +494,7 @@ async def get_or_create(
                     entry = self.state.speculative_starts.get(reserved_key)
                     if entry is not None and entry[0] is started:
                         del self.state.speculative_starts[reserved_key]
+                    self.state.superseded_speculative_starts.discard(token)
                     started.set()
         except SessionEndingError:
             # The key was fenced while this allocation was in flight: a door
@@ -624,17 +664,26 @@ async def _get_or_create_impl(
                 # unless the claim outranks it. The eager start waits in every
                 # start queue at its own priority, so a person's FOREGROUND
                 # claim joining a BACKGROUND start would wait behind background
-                # work; that claim cold-starts at its own priority, as before.
+                # work; that claim cold-starts at its own priority instead.
+                # A BACKGROUND resume prefetch past its spawn door is joined
+                # all the same: it holds its cold-start permit and is starting
+                # the process that takes the saved session's per-session lock,
+                # so a second process could only wait that lock out and fall
+                # back to a fresh session plus history replay. One still short
+                # of the door has no process and no lock yet: the claim starts
+                # the session itself, and the prefetch stands down at its door
+                # (below).
                 entry = self.state.speculative_starts.get(key)
-                if (
-                    not speculative
-                    and entry is not None
-                    and not (
+                if not speculative and entry is not None:
+                    if not (
                         start_priority is StartPriority.FOREGROUND
                         and entry[1] is StartPriority.BACKGROUND
-                    )
-                ):
-                    joined_start = entry[0]
+                    ):
+                        joined_start = entry[0]
+                    elif entry[2] and entry[3] in self.state.spawning_reservations:
+                        joined_start = entry[0]
+                    elif entry[2]:
+                        self.state.superseded_speculative_starts.add(entry[3])
     finally:
         if stale_provider is not None:
             if stale_session is not None:
@@ -741,6 +790,12 @@ async def _get_or_create_impl(
             native_fork = owner._session_map.get_native_fork(key)
     if speculative and (resume_sid or native_fork) and not speculative_resume:
         raise SpeculativeResumeRefused(key)
+    # A resume prefetch with nothing to load (its hint named an entry the
+    # lookup above pruned) would be refused once its start ended (below): refuse
+    # it before a warm-pool process or a cold start is spent, so a claim that
+    # joined it does not wait out a start it cannot use.
+    if speculative and speculative_resume and not (resume_sid or native_fork):
+        raise SpeculativeResumeRefused(key)
 
     from kiro_crew.session_capabilities import prepare_runtime
 
@@ -773,6 +828,10 @@ async def _get_or_create_impl(
         effective_cwd = None
     claim_crew = extra_factory_kwargs.get("crew_agent")
     session_agent = agent
+    if session_agent and _reservation is not None:
+        # What ``get_agent`` will answer once this start registers its session, for
+        # the one reader that asks before then (``starting_agent``).
+        self.state.starting_agents[key] = (_reservation, session_agent)
     preparation = await asyncio.to_thread(prepare_runtime, agent, claim_crew, effective_cwd)
     if preparation.revision:
         # The factory may retain the pre-reconciliation config snapshot.
@@ -1129,6 +1188,8 @@ async def _get_or_create_impl(
                 provider_switched = True
                 owner._session_map.clear_sid(key)
 
+        # Whether this start asks its process to restore a saved session.
+        restores_history = bool(resume_sid)
         if resume_sid:
             if self._deps.is_acp_provider(provider):
                 cast(Any, provider).client.set_resume_session_id(resume_sid)
@@ -1142,6 +1203,7 @@ async def _get_or_create_impl(
             owner._session_map.clear_native_fork(key)
             if memory_mode == "persistent" and self._deps.is_claude_backend(provider):
                 cast(Any, provider).client.set_fork_request(*native_fork)
+                restores_history = True
                 self._deps.logger.info(
                     "Attempting session/fork for %s (source=%s)", key, native_fork[0]
                 )
@@ -1178,7 +1240,8 @@ async def _get_or_create_impl(
                 # cannot honour them for a worker (``ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS``:
                 # KAS carries them as the worker spec's ``excludedTools``). One that
                 # carries only their MCP half (``ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS``)
-                # refuses only the rest.
+                # refuses only the rest, less the native tools it carries
+                # (``ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS``).
                 from kiro_crew.members import is_crewmate_worker_session
 
                 if is_crewmate_worker_session(key):
@@ -1198,6 +1261,7 @@ async def _get_or_create_impl(
                             _worker_tool_limited_servers,
                             key,
                             provider.mate_worker_mcp_tool_limits_supported is True,
+                            provider.mate_worker_native_tool_limits_supported is True,
                         )
                         if limited:
                             raise CapabilityStartupError("capability_tool_limits_unsupported")
@@ -1205,18 +1269,46 @@ async def _get_or_create_impl(
                 # semaphore or the reads above: refuse before a process is
                 # spawned that the registration door would only refuse later.
                 self._refuse_if_ending(key, _reservation)
+                # A person's claim took this resume prefetch over while it was
+                # short of this door and is starting the session itself: stand
+                # down before a second process for the saved session exists.
+                # So does a resume prefetch left with nothing to restore (the
+                # memory mode or a provider switch cleared its saved session
+                # above, or its harness takes no fork): its fresh start would
+                # be refused once it ended.
+                if _reservation in self.state.superseded_speculative_starts or (
+                    speculative and speculative_resume and not restores_history
+                ):
+                    raise SpeculativeResumeRefused(key)
                 # Past the spawn door: from here until registration a process
                 # is being started that no map read can see -- what an
                 # ending caller's post-pass read (``spawn_in_flight``)
-                # must answer for. Same loop step as the check above.
+                # must answer for, and what a person's claim reads to join
+                # this start rather than supersede it. Same loop step as the
+                # checks above.
                 if _reservation is not None:
                     self.state.spawning_reservations.add(_reservation)
                 pre_spawn = await pre_spawn_identity(getattr(owner, "spawn_identity_reader", None))
+                # The account era this start read, and the reader it came from,
+                # for the chat-sharing placement (``providers.chat_share``):
+                # it keys a shared process on the era, and re-reads it after the
+                # acquisition. Inert while the preview is off.
+                with contextlib.suppress(Exception):
+                    setattr(provider, "pre_spawn_identity", pre_spawn)
+                    setattr(
+                        provider,
+                        "spawn_identity_reader",
+                        getattr(owner, "spawn_identity_reader", None),
+                    )
                 await provider.start()
-            except (asyncio.CancelledError, Exception):
-                if preparation.revision:
+            except (asyncio.CancelledError, Exception) as exc:
+                if preparation.revision and not isinstance(exc, SpeculativeResumeRefused):
                     self._remember_capability_failure(key, preparation)
-                owner._dispatch_hard_kill(provider)
+                # A start cancelled or failed after it took a shared-runtime lease
+                # (e.g. in the post-handoff zero-tool check) must return that lease
+                # and evict its session; a bare hard kill is refused while the lease
+                # is held, leaking the process. Unshared providers are hard-killed.
+                await _end_started_provider(owner, provider)
                 raise
             # start() has published the PID, and the stamp read below is a
             # real suspension point before registry ownership becomes
@@ -1243,7 +1335,7 @@ async def _get_or_create_impl(
                     pre_spawn=pre_spawn,
                 )
             except BaseException:
-                owner._dispatch_hard_kill(provider)
+                await _end_started_provider(owner, provider)
                 if starting_pid is not None:
                     self._starting_pids.discard(starting_pid)
                 raise
@@ -1369,6 +1461,8 @@ async def _get_or_create_impl(
                     owner._session_map.clear_sid(key)
                 self._install_work_dir_claim_probe(key, provider)
                 self._sessions[key] = session
+                if _reservation is not None:
+                    self.forget_starting_agent(key, _reservation)
                 self.advance_ownership_generation(key)
                 # Registered: from here a live session is using this runtime,
                 # so record the claim the kill gate reads. Paired with the
@@ -1454,8 +1548,15 @@ async def _get_or_create_impl(
         # kill or the gate refuses it and the process leaks -- the cleanup
         # would be refusing its own teardown. Every earlier hard-kill site in
         # this file is pre-registration and holds no lease.
-        await release_session_lease(provider)
-        owner._dispatch_hard_kill(provider)
+        #
+        # A SHARED chat runtime is the exception to "release, then kill": its
+        # co-tenants may be mid-turn on it, so the provider's own shutdown evicts
+        # this session and kills only when it held the last lease.
+        if is_shared_chat_runtime(provider):
+            await _end_started_provider(owner, provider)
+        else:
+            await release_session_lease(provider)
+            owner._dispatch_hard_kill(provider)
         raise
     finally:
         if starting_pid is not None:
@@ -1518,17 +1619,22 @@ async def _get_or_create_impl(
     return result
 
 
-def _worker_tool_limited_servers(key: str, mcp_carried: bool = False) -> tuple[str, ...]:
+def _worker_tool_limited_servers(
+    key: str, mcp_carried: bool = False, native_carried: bool = False
+) -> tuple[str, ...]:
     """The servers whose single tools worker *key*'s crewmate file turns off.
 
-    With *mcp_carried*, only the limits no MCP deny carries. Blocking.
+    With *mcp_carried*, only the limits no MCP deny carries, less the native tools
+    the session's built-in list withholds with *native_carried*. Blocking.
     """
     from kiro_crew.execution_context import read_session_execution
     from kiro_crew.mate_worker import crewmate_tool_limited_servers
 
     execution = read_session_execution(key)
     member_id = str(getattr(execution, "member_id", "") or "") if execution is not None else ""
-    return crewmate_tool_limited_servers(member_id, mcp_tool_limits_carried=mcp_carried)
+    return crewmate_tool_limited_servers(
+        member_id, mcp_tool_limits_carried=mcp_carried, native_tool_limits_carried=native_carried
+    )
 
 
 def _crew_oauth_bridges_chat() -> bool:

@@ -85,6 +85,7 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatPane from '../components/ChatPane'
 import { api } from '../api/client'
+import { PANE_DICTATION_SCOPE, _resetDictationProvenance, isDictated, markDictated } from '../chat-core/composer/dictationProvenance'
 
 const SLOT = 'pane-slash'
 
@@ -142,6 +143,16 @@ describe('ChatPane client-only slash commands', () => {
     expect(openSideChat).toHaveBeenCalledWith(SLOT)
     expect(api.sendChat).not.toHaveBeenCalled()
     await waitFor(() => expect(box.value).toBe(''))
+  })
+
+  it('a /side that runs takes the composer\'s dictation mark with its words', async () => {
+    // Otherwise the next message, typed by hand, would go out with the note.
+    _resetDictationProvenance()
+    renderPane({ openSideChat: () => true })
+    markDictated(SLOT, PANE_DICTATION_SCOPE)
+    const box = await typeAndSend('/side what changed?')
+    await waitFor(() => expect(box.value).toBe(''))
+    expect(isDictated(SLOT, PANE_DICTATION_SCOPE)).toBe(false)
   })
 
   it('/btw is refused on a pane whose host has no Side Chat, and the text stays', async () => {

@@ -486,8 +486,38 @@ describe('DecisionsProviderPicker', () => {
   })
 })
 
+describe('refused hosted default (round-14 repro)', () => {
+  it('lets the owner save No model over a refused hosted default', async () => {
+    const save = vi.spyOn(api, 'saveDecisionsProvider').mockResolvedValue(providerOf('none'))
+    await renderPicker({ data: { ...providerOf('none'), hosted_permitted: false } })
+    fireEvent.click(await screen.findByRole('radio', { name: 'No model' }))
+    const button = await screen.findByRole('button', { name: 'Use this model' })
+    fireEvent.click(button)
+    await waitFor(() => expect(save).toHaveBeenCalledWith('none'))
+  })
+
+  it('names the refusal and does not draw the switch as active', async () => {
+    await renderPicker({ data: { ...providerOf('none'), hosted_permitted: false } })
+    expect(await screen.findByText(/policy blocks Jev/i)).toBeTruthy()
+  })
+
+  it('names SageMaker, not Jev, when only the SageMaker host is refused', async () => {
+    await renderPicker({
+      data: {
+        ...providerOf('none'),
+        configured_endpoint: 'sagemaker://research/us-west-2/ep',
+        hosted_permitted: true,
+        sagemaker_permitted: false,
+        configured_refused: true,
+      },
+    })
+    expect(await screen.findByText(/Turned off by your organization's policy/i)).toBeTruthy()
+    expect(screen.queryByText(/policy blocks Jev/i)).toBeNull()
+  })
+})
+
 describe('fleet policy', () => {
-  it('greys out hosted Jev when policy withdraws it and keeps local models choosable', async () => {
+  it('hides hosted Jev when policy withdraws it and keeps local models choosable', async () => {
     vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue({
       ...providerOf('plumb-4b'),
       hosted_permitted: false,
@@ -502,12 +532,9 @@ describe('fleet policy', () => {
         <DecisionsProviderPicker frozen={false} />
       </QueryClientProvider>,
     )
-    const jev = await screen.findByRole('radio', {
-      name: /Jev, hosted by TypeSafe/i,
-    })
-    expect(jev).toBeDisabled()
-    expect(screen.getByRole('radio', { name: 'Laya' })).not.toBeDisabled()
-    expect(screen.getAllByText(/Turned off by your organization's policy/i)).toHaveLength(1)
+    expect(await screen.findByRole('radio', { name: 'Laya' })).not.toBeDisabled()
+    expect(screen.queryByRole('radio', { name: /Jev, hosted by TypeSafe/i })).toBeNull()
+    expect(screen.queryByText(/Turned off by your organization's policy/i)).toBeNull()
   })
 
   it('keeps "No model" choosable when policy withdraws both sides', async () => {
@@ -673,13 +700,39 @@ describe('SageMaker endpoint', () => {
   it('says what to install when the gateway has no boto3, and holds the fields', async () => {
     await renderPicker({ data: withSageMaker('jev', null, false) })
     fireEvent.click(await screen.findByRole('radio', { name: 'Your SageMaker endpoint' }))
-    expect(screen.getByText(/pip install 'boto3>=1\.34,<2'/)).toBeTruthy()
+    expect(screen.getByText(/pip install "boto3>=1\.34,<2"/)).toBeTruthy()
     expect(screen.getByLabelText('Endpoint name')).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Test connection' })).toBeDisabled()
   })
 
-  it('is greyed out with hosted Jev when policy withdraws the hosted side', async () => {
+  it('is hidden with hosted Jev when a gateway without its own answer withdraws the hosted side', async () => {
     await renderPicker({ data: { ...withSageMaker('none'), hosted_permitted: false } })
-    expect(await screen.findByRole('radio', { name: 'Your SageMaker endpoint' })).toBeDisabled()
+    await screen.findByText('Plumb-4B')
+    expect(screen.queryByRole('radio', { name: 'Your SageMaker endpoint' })).toBeNull()
+  })
+
+  it('is hidden when the ceiling permits no SageMaker runtime host, while hosted Jev stays', async () => {
+    await renderPicker({ data: { ...withSageMaker('none'), sagemaker_permitted: false } })
+    await screen.findByText('Plumb-4B')
+    expect(screen.queryByRole('radio', { name: 'Your SageMaker endpoint' })).toBeNull()
+    expect(screen.getByRole('radio', { name: /Jev, hosted by TypeSafe/i })).toBeTruthy()
+  })
+
+  it('on a ceiling that allows only SageMaker and loopback, offers SageMaker and local models and no hosted default', async () => {
+    await renderPicker({
+      data: {
+        ...withSageMaker('sagemaker', { endpoint_name: 'decision-model-a', region: 'us-west-2', profile: '' }),
+        hosted_permitted: false,
+        sagemaker_permitted: true,
+      },
+    })
+    // SageMaker has its own answer, apart from the hosted default's.
+    const sagemaker = await screen.findByRole('radio', { name: 'Your SageMaker endpoint' })
+    expect(sagemaker).toBeChecked()
+    expect(sagemaker).not.toBeDisabled()
+    expect(screen.getByLabelText('Endpoint name')).toHaveValue('decision-model-a')
+    expect(screen.getByLabelText('AWS region')).toHaveValue('us-west-2')
+    expect(screen.queryByRole('radio', { name: /Jev, hosted by TypeSafe/i })).toBeNull()
+    expect(screen.getByRole('radio', { name: 'Laya' })).not.toBeDisabled()
   })
 })

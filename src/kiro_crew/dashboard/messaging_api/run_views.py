@@ -17,6 +17,8 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.messaging import (
         _SPAWN_STATUS_MAX_GREP_LEN,
         _SPAWN_STATUS_MAX_LINES,
+        INVALID_WAIT_CODE,
+        MAX_HOLD_SECS,
         PERSISTED_SUBAGENT_REPLAY_KEEP,
         PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS,
         DashboardState,
@@ -31,6 +33,8 @@ if TYPE_CHECKING:
         _queued_run_payload,
         _queued_runs,
         _run_belongs_to_caller,
+        _wait_secs,
+        agent_dir_for_display,
         classify_persisted_ending,
         internal_memory_scope,
         is_sensitive_path,
@@ -44,6 +48,7 @@ if TYPE_CHECKING:
         redact_exfiltration_urls,
         slot_owner_snapshot,
         subagent_event_slot,
+        wait_done,
     )
 
 
@@ -118,7 +123,12 @@ async def _apply_result_view(request: web.Request, text: str) -> tuple[str, dict
 
 
 async def api_spawn_status(request: web.Request) -> web.Response:
-    """GET /api/spawn/{id} — poll subagent status."""
+    """GET /api/spawn/{id} — a run's status.
+
+    ``wait_secs`` (0..8) holds the answer for a live run until it ends or the
+    bound passes, whichever is first. A run with no live record (queued, or read
+    from disk) is answered at once.
+    """
     state: DashboardState = request.app["state"]
     if not state.subagents:
         return web.json_response({"error": "subagents not available"}, status=503)
@@ -202,10 +212,26 @@ async def api_spawn_status(request: web.Request) -> web.Response:
                 disk_data["outcome"] = outcome
                 disk_data["stopped"] = stopped
                 disk_data["error"] = _redact(error) if error else ""
+                shown_dir = await asyncio.to_thread(agent_dir_for_display, agent_id)
+                disk_data["result_path"] = str(shown_dir / "result.txt")
                 return web.json_response(disk_data)
         except Exception:
             logger.debug("Persistence fallback failed for %s", agent_id, exc_info=True)
         return web.json_response({"error": "not found"}, status=404)
+    if not info.done and "wait_secs" in request.query:
+        # A caller waiting for this run to end (``spawn_sub_agents``, a blocking
+        # ``kirocrew spawn run``) is answered when it does, or at the bound. Before
+        # the ``done`` read below, which must share a step with the turn-holding read.
+        wait = _wait_secs(request)
+        if wait is None:
+            return web.json_response(
+                {
+                    "error": f"wait_secs must be a finite number in 0..{MAX_HOLD_SECS:g}",
+                    "code": INVALID_WAIT_CODE,
+                },
+                status=400,
+            )
+        await wait_done(info, wait)
     data = {"id": info.id, "task": _redact(info.task), "done": info.done}  # type: dict[str, object]
     # Read in the same step as ``done``, before this handler awaits anything.
     seen_under = _parent_turn_holding(request, state, info) if info.done else None
@@ -246,6 +272,9 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         if view_meta:
             data["result_meta"] = view_meta
         data["error"] = _redact(info.error) if info.error else ""
+        # The pointer ``spawn_sub_agents`` gives for a long result, in the
+        # configured home spelling its own MCP process cannot know.
+        data["result_path"] = info.result_path
     else:
         data["turns"] = info.turns
         data["last_tool"] = _redact(info.last_tool)

@@ -17,6 +17,7 @@ such as guarded reset and queue retirement.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import Callable
@@ -35,6 +36,7 @@ from kiro_crew.metrics.sessions import (
     record_session_started,
     started_trigger_of,
 )
+from kiro_crew.runtime_ownership import chat_turn_gate_hold
 from kiro_crew.session_idle_compaction import (
     COMPACT_TRIGGER_IDLE,
     IdleCompaction,
@@ -1389,7 +1391,7 @@ class CompactionCoordinator:
         session.turn_owner = asyncio.current_task()
         try:
 
-            async def _run() -> None:
+            async def _run_compaction() -> None:
                 nonlocal result_wait_used, reported
                 # Keep this lazy: importing the ACP package eagerly recreates
                 # the providers/session cycle avoided by this module boundary.
@@ -1425,11 +1427,30 @@ class CompactionCoordinator:
                 if status != "completed":
                     raise RuntimeError(f"compaction reported {status or 'no result'}")
 
-            # The inner status wait spends the full remainder; margin keeps its
-            # graceful no-result diagnostic ahead of the outer backstop.
-            await asyncio.wait_for(
-                _run(), timeout=timeout + self._deps.compact_result_wait_margin_secs
-            )
+            # On a shared chat runtime, hold the per-process chat turn gate across
+            # the whole compaction (the /compact turn AND the deferred receipt), so
+            # a co-tenant cannot start a turn between them into which this
+            # session's ownerless compaction terminal is fanned. Taken OUTSIDE the
+            # compaction budget, under its own bound: a co-tenant's long turn is
+            # not a failed compaction, so a gate that stays busy answers "busy".
+            gate = contextlib.AsyncExitStack()
+            try:
+                async with asyncio.timeout(timeout):
+                    await gate.enter_async_context(chat_turn_gate_hold(session.provider))
+            except TimeoutError:
+                await gate.aclose()
+                return "busy"
+            # The compaction's own clock starts once the gate is held: time spent
+            # waiting for a co-tenant must not shrink the deferred receipt's budget.
+            started = time.monotonic()
+            try:
+                # The inner status wait spends the full remainder; margin keeps its
+                # graceful no-result diagnostic ahead of the outer backstop.
+                await asyncio.wait_for(
+                    _run_compaction(), timeout=timeout + self._deps.compact_result_wait_margin_secs
+                )
+            finally:
+                await gate.aclose()
         except (Exception, asyncio.TimeoutError):
             if self._stop_generation(key) > stop_gen:
                 # A user Stop ended the ``/compact`` turn. That is not the harness
@@ -1456,6 +1477,12 @@ class CompactionCoordinator:
                 )
                 return "absent"
             if not idle:
+                if reported is None:
+                    # No status: the harness can still finish this /compact, and the
+                    # next turn's pre-turn drain drops the late frames only after
+                    # that turn's prompt was built. Both arms below can keep this
+                    # session; a restart that replaces it discards the flag with it.
+                    session.needs_context_reinjection = True
                 if (
                     _harness_managed_backend(session.provider) is not None
                     and self._owner._sessions.get(key) is session
@@ -1480,11 +1507,6 @@ class CompactionCoordinator:
                     self.state.cooldown_until[key] = (
                         time.monotonic() + self._deps.compact_failure_cooldown_secs
                     )
-                    if reported is None:
-                        # No status: the harness can still finish this /compact,
-                        # and the next turn's pre-turn drain drops the late frames
-                        # only after that turn's prompt was built.
-                        session.needs_context_reinjection = True
                     await self._owner._fire_compact_callback(key, pct, success=False)
                     return "failed"
                 return await self._restart_after_failure(

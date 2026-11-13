@@ -1,6 +1,6 @@
 # OpenCode frame corpus
 
-Seven files, all live. Read `../README.md` first for what a fixture is and what
+Eight files, all live. Read `../README.md` first for what a fixture is and what
 the corpus does and does not prove.
 
 | File | Provenance | Frame classes it carries |
@@ -12,6 +12,7 @@ the corpus does and does not prove.
 | `mcp-directive-call-live.jsonl` | live | a Crew MCP `tool_call`, its `in_progress` refinement and its terminal `tool_call_update` -- the single-underscore `kirocrew-core_<tool>` title, an empty-then-refined `rawInput`, and a result carrying a directive marker |
 | `compact-live.jsonl` | live | a MANUAL `/compact`: an ordinary turn's `usage_update` and `stopReason`, then the `/compact` turn's summary `agent_message_chunk`, its far smaller `usage_update`, and its `stopReason: end_turn` with NO compaction status frame |
 | `effort-live.jsonl` | live | `session/set_config_option` results for the per-model `effort` select (low, medium, high and default on a reasoning model, absent on a plain one), a `-32602` refusal of an unoffered level, and the reset to the first level after a model switch |
+| `crew-oauth-bridge-args-live.jsonl` | live (1.19.1) | `permission: ask`: an MCP `tool_call` and its `session/request_permission`, both with `rawInput` `{}`, then the in-progress update that carries the arguments the stub server received; the evidence opencode stays out of `ACP_BACKENDS_CREW_OAUTH_BRIDGE` |
 
 Re-captured off `opencode acp` 1.19.1, the release the Real Adapter Contract lane pins, with each file's `initialize` frame kept so its version is read off the wire. Five drive a local Ollama model (llama3.2 3b, 16k context); `effort-live.jsonl` and `mcp-directive-call-live.jsonl` drive a local OpenAI-compatible stub instead. Every capture ran in a throwaway home and a scratch project, and was reduced at capture through `scripts/capture_acp_compaction.py`'s own reduction: the working directory reads `<cwd>`, the home directory `~`, session and message ids are synthetic, the local model id is the synthetic `local/model-1`, the command inventory is dropped and each `configOptions` select is cut to its current option -- except in `effort-live.jsonl`, whose selects ARE the evidence and keep their stub models and levels. `tool-call-live.jsonl` and `compact-live.jsonl` are **slices**, and each fixture's own `_meta.note` says what was omitted.
 

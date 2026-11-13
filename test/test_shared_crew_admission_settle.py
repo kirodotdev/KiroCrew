@@ -68,7 +68,35 @@ def test_a_second_failure_keeps_the_first_durable_record():
     settle.mark_unpersisted(live, S.CANCELLED, None, {"b": 2})
     assert live.unpersisted[0] is first
     assert live.unpersisted[1:] == (S.CANCELLED, None, {"a": 1, "b": 2})
-    assert live.work.state is S.CANCELLED and live.work.extra == {"a": 1, "b": 2}
+    # RUNNING cannot reach CANCELLED, so memory shows the end the retry will write.
+    assert live.work.state is S.FAILED and live.work.extra == {"a": 1, "b": 2}
+
+
+@pytest.mark.asyncio
+async def test_memory_and_store_agree_on_an_unreachable_target():
+    """A queued item failed closed reads CANCELLED in memory, as the store will."""
+    live = _live(S.QUEUED)
+    settle.mark_unpersisted(live, S.FAILED, ReasonCode.RUNTIME_ERROR)
+    assert live.work.state is S.CANCELLED
+    store = _Store()
+    svc, _ = _service(store, live)
+    assert await settle.persist_pending(svc) == 1
+    assert store.calls == [S.CANCELLED] and live.work.state is S.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_a_moved_record_re_derives_the_end_memory_shows():
+    live = _live(S.ADMITTED)
+    settle.mark_unpersisted(live, S.FAILED, ReasonCode.RUNTIME_ERROR)
+    assert live.work.state is S.FAILED
+
+    def stale(work, state):
+        raise StaleRevision(1, 2)
+
+    # The store moved the record back to QUEUED, which can only end CANCELLED.
+    svc, _ = _service(_Store(advance=stale, get=lambda wid: _Work(wid, S.QUEUED)), live)
+    assert await settle.persist_pending(svc) == 0
+    assert live.unpersisted[0].state is S.QUEUED and live.work.state is S.CANCELLED
 
 
 def test_the_target_falls_back_to_a_legal_end():

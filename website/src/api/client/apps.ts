@@ -90,7 +90,7 @@ export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fet
     getAppManifest: (name: string) => fetch('/api/apps/' + encodeURIComponent(name) + '/manifest').then(j),
     installApp: (source: string) => post('/api/apps/install', { source }).then(j),
     // grantsConsent names the staged entries the owner was shown; only those are approved.
-    enableApp: (name: string, sessionApprovalConsent = false, grantsConsent?: { api: string[]; events: string[]; linkPreviewHosts?: string[]; linkPreviewTextPatterns?: string[]; linkPreviewFullUrl?: string[]; messageActions?: string[]; linkOpenHosts?: string[]; linkOpenFullUrl?: string[]; composerActions?: string[]; selectionActions?: string[]; workerAutoApprove?: string[] }, memberThreadsConsent = false) => post('/api/apps/' + encodeURIComponent(name) + '/enable', {
+    enableApp: (name: string, sessionApprovalConsent = false, grantsConsent?: { api: string[]; events: string[]; linkPreviewHosts?: string[]; linkPreviewTextPatterns?: string[]; linkPreviewFullUrl?: string[]; messageActions?: string[]; linkOpenHosts?: string[]; linkOpenFullUrl?: string[]; composerActions?: string[]; selectionActions?: string[]; workerAutoApprove?: string[]; reachableByUserSessions?: string[] }, memberThreadsConsent = false) => post('/api/apps/' + encodeURIComponent(name) + '/enable', {
       sessionApprovalConsent,
       // Only a consent whose disclosure named member threads says so; the
       // server refuses a consent that omits a scope the live manifest declares.
@@ -155,7 +155,15 @@ export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fet
         body: JSON.stringify({ name }),
         signal,
       })
-      if (!res.ok || !res.body) {
+      if (!res.ok) {
+        // A refusal answered before the stream opens (owner-only, a bad body, an
+        // expired or stale-owner session) is a JSON error body: read it through
+        // the shared parser every other call uses, so the page shows its message
+        // and code, not the raw JSON, and the sign-in recovery runs. `j` always
+        // throws on a non-2xx.
+        await j(res)
+      }
+      if (!res.body) {
         const text = await res.text()
         throw new Error(text || `HTTP ${res.status}`)
       }

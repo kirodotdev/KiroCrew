@@ -403,6 +403,12 @@ class TestGerritManagedRows:
     def test_no_hosts_no_rows(self) -> None:
         assert _managed_secret_catalog([], [], False, False, []) == []
 
+    def test_stored_wakatime_oauth_tokens_stay_labelled_while_wakatime_is_off(self) -> None:
+        # The vault routes refuse this entry whether or not WakaTime is enabled,
+        # so a disabled integration must not turn it into a deletable custom row.
+        catalog = _managed_secret_catalog(["WAKATIME_OAUTH_TOKENS"], [], False, False, [])
+        assert catalog == [{"name": "WAKATIME_OAUTH_TOKENS", "kind": "wakatime_oauth"}]
+
     def test_lone_host_offers_the_global_name(self) -> None:
         catalog = _managed_secret_catalog([], [], False, False, [_GERRIT_ONE])
         assert catalog == [
@@ -592,12 +598,14 @@ class TestApiSecretsSet:
         # A real .vault directory (not a link), so the symlink branch is not taken.
         (tmp_path / ".vault").mkdir()
 
-        async def _raise_enospc(_self: SecretVault, _name: str, _value: str) -> str:
+        async def _raise_enospc(
+            _self: SecretVault, _name: str, _item_type: str, _fields: object
+        ) -> str:
             raise OSError(errno.ENOSPC, "No space left on device")
 
         with (
             patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(tmp_path)),
-            patch.object(SecretVault, "set_with_revision", _raise_enospc),
+            patch.object(SecretVault, "set_item_with_revision", _raise_enospc),
         ):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
@@ -1190,3 +1198,27 @@ class TestApiSecretsChannelCredentialRemote:
             status, _ = await self._call(tmp_path, "delete", name, headers=_REMOTE)
             assert status == 200, name
             assert SecretVault(tmp_path).get(name) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["post", "delete"])
+async def test_wakatime_oauth_tokens_entry_is_not_edited_here(vault_dir: Path, method: str) -> None:
+    """The OAuth flow rotates WAKATIME_OAUTH_TOKENS under its own lock, so the
+    generic routes refuse it with 409 and leave the stored entry untouched."""
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.config.loader import CRED_WAKATIME_OAUTH_TOKENS
+
+    SecretVault(vault_dir)._set_sync(CRED_WAKATIME_OAUTH_TOKENS, "{}")
+    with patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(vault_dir)):
+        async with TestClient(TestServer(_app())) as client:
+            if method == "post":
+                resp = await client.post(
+                    "/api/secrets", json={"name": CRED_WAKATIME_OAUTH_TOKENS, "value": "x"}
+                )
+            else:
+                resp = await client.delete(f"/api/secrets/{CRED_WAKATIME_OAUTH_TOKENS}")
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "managed_by_wakatime_oauth"
+    stored = SecretVault(vault_dir).get(CRED_WAKATIME_OAUTH_TOKENS)
+    assert stored is not None and stored.reveal() == "{}"

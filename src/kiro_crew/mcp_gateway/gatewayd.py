@@ -133,9 +133,11 @@ from kiro_crew.mcp_gateway.daemon.admission_protocol import (  # noqa: F401
 )
 from kiro_crew.mcp_gateway.daemon.audit import (  # noqa: F401
     _audit_abort_applied,
+    _audit_agent_socket_decision,
     _audit_caller_claimed,
     _audit_caller_rekey,
     _audit_disconnect_cancel,
+    _audit_owner_port,
     _audit_peer_allowed,
     _audit_peer_denied,
     _audit_peer_identity_denied,
@@ -163,6 +165,7 @@ from kiro_crew.mcp_gateway.daemon.connection import (  # noqa: F401
 from kiro_crew.mcp_gateway.daemon.control import (  # noqa: F401
     _apply_abort,
     _apply_claim,
+    _apply_owner_port,
     _apply_set_spawn_capacity,
     _apply_stand_down,
     _pong_payload,
@@ -224,8 +227,13 @@ from kiro_crew.mcp_gateway.daemon.identity import (  # noqa: F401
 )
 from kiro_crew.mcp_gateway.daemon.launch import (  # noqa: F401
     _LAUNCH_APPROVAL_SNAPSHOT,
+    _OWNER_PORT_DECLINES_WARNED,
+    OwnerPortUnproven,
     TargetResolver,
     _approval_env_identity,
+    _await_owner_port,
+    _backend_work_dir,
+    _binds_from_environment,
     _call_with_approval_snapshot,
     _coherent_env_sidecars,
     _declared_env_for_private_backend,
@@ -234,12 +242,19 @@ from kiro_crew.mcp_gateway.daemon.launch import (  # noqa: F401
     _declared_env_to_forward,
     _declared_non_secret_env,
     _env_sidecar_dir_for_config,
+    _is_port_number,
     _launch_approved_from_snapshot,
     _load_env_sidecar,
+    _note_owner_port_unknown,
+    _owner_label,
+    _owner_port_pending,
     _read_declared_env_sidecar,
     _resolve_once_home,
     _resolve_target_off_loop,
     _TargetUnknown,
+    agent_socket_resolver,
+    bind_control_plane_to_owner,
+    bound_to_owner_port,
     env_target_resolver,
     resolvable_target_stems,
     resolve_once_resolver,
@@ -308,7 +323,12 @@ from kiro_crew.mcp_gateway.manager import is_credential_env_key  # noqa: F401 - 
 from kiro_crew.mcp_gateway.pool import DRAIN_DEADLINE_SECS  # noqa: F401 - not a seam
 from kiro_crew.mcp_gateway.pool import BackendUnavailable  # noqa: F401 - not a seam
 from kiro_crew.mcp_gateway.pool import PoolAtCapacity  # noqa: F401 - not a seam
-from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES, BackendPool, PoolKey
+from kiro_crew.mcp_gateway.pool import (
+    _MAX_SPAWN_DRAIN_RETRIES,
+    READ_BUFFER_LIMIT_BYTES,
+    BackendPool,
+    PoolKey,
+)
 from kiro_crew.mcp_gateway.prewarm import prewarm_from_payloads  # noqa: F401 - not a seam
 from kiro_crew.mcp_gateway.prewarm import HotKeyStore, default_hot_keys_path
 from kiro_crew.mcp_gateway.resolve_once import resolved_launch  # noqa: F401
@@ -344,6 +364,7 @@ from kiro_crew.sandbox import (
 )
 from kiro_crew.security import redact
 from kiro_crew.sel import SecurityEventLog  # noqa: F401
+from kiro_crew.start_priority import StartPriority
 
 logger = logging.getLogger(__name__)
 
@@ -364,6 +385,100 @@ _CONSENT_SWEEP_SECS = _CONSENT_RECHECK_SECS / 2
 #: :func:`_pong_payload` so a pinger can tell an ORPHAN (owner dead) from a
 #: daemon another live gateway still owns, and by the stand-down handler.
 _OWNER_PID: int = 0
+
+#: The port the owning gateway's listener bound, as that gateway announced it:
+#: the ``owner-port`` control frame (``control._apply_owner_port``), or
+#: ``--owner-port`` on an owned daemon spawned after the bind. An unowned daemon
+#: refuses every announce and ignores the flag, so it stays 0 there, and the
+#: daemon binds pooled control-plane backends from its own environment, as before
+#: the announce existed: the environment the resolver built, unchanged. 0 until
+#: known. On an owned daemon, pooled control-plane backends wait for it
+#: (:func:`_await_owner_port`), are bound to it
+#: (:func:`bind_control_plane_to_owner`), and are not reused after it changes
+#: (:func:`bound_to_owner_port`). Written only by :func:`_set_owner_port`.
+_OWNER_PORT: int = 0
+
+#: True on an owned daemon that cannot verify an announce, so pooled
+#: control-plane backends bind from its environment instead of waiting.
+#: ``run_gatewayd`` sets it at start on a platform with no peer-pid mechanism
+#: (``socketsec.PEER_IDENTITY_SUPPORTED`` is False), so such a daemon never
+#: waits, even before the first announce. ``control._apply_owner_port`` also
+#: sets it on the first ``owner-port`` frame whose sender pid cannot be read, on
+#: any platform: a Darwin getsockopt failure or a Windows pipe handle that does
+#: not resolve can cost that read on every frame. While :data:`_OWNER_PORT` is 0,
+#: the daemon binds pooled control-plane backends from its own environment,
+#: unchanged. A verified port always wins over it. Written only by
+#: :func:`_set_owner_port_unverifiable`.
+_OWNER_PORT_UNVERIFIABLE: bool = False
+
+#: ``(loop, event)``: the event :func:`_set_owner_port` sets, made for the running
+#: loop on first use by :func:`_owner_port_event`. ``None`` until a wait asks.
+_OWNER_PORT_EVENT: Optional[tuple[asyncio.AbstractEventLoop, asyncio.Event]] = None
+
+
+def _wake_owner_port_waiters() -> None:
+    """Set the owner-port event, so every acquisition that waits on it re-checks."""
+    global _OWNER_PORT_EVENT
+    if _OWNER_PORT_EVENT is None:
+        return
+    try:
+        current = asyncio.get_running_loop()
+    except RuntimeError:
+        current = None
+    if _OWNER_PORT_EVENT[0] is current:
+        _OWNER_PORT_EVENT[1].set()
+    else:
+        # Made on another loop, so nothing on this one waits on it.
+        _OWNER_PORT_EVENT = None
+
+
+def _set_owner_port(port: int) -> int:
+    """Record the owner's port and wake every acquisition that waits for it.
+
+    Returns the previous value. A port of 0 clears it (a fresh ``run_gatewayd``).
+    """
+    global _OWNER_PORT
+    previous = _OWNER_PORT
+    _OWNER_PORT = port
+    if port > 0:
+        _wake_owner_port_waiters()
+    return previous
+
+
+def _set_owner_port_unverifiable(unverifiable: bool) -> bool:
+    """Record whether no announce can be verified on this host, and wake waiters.
+
+    ``run_gatewayd`` sets it on an owned daemon whose platform has no peer-pid
+    mechanism (``socketsec.PEER_IDENTITY_SUPPORTED`` is False), and clears it on
+    every other start. ``control._apply_owner_port`` sets it when a sender's pid
+    cannot be read, on any platform. Every acquisition that waits for the port
+    then wakes and binds from the daemon's environment. Returns the previous
+    value.
+    """
+    global _OWNER_PORT_UNVERIFIABLE
+    previous = _OWNER_PORT_UNVERIFIABLE
+    _OWNER_PORT_UNVERIFIABLE = unverifiable
+    if unverifiable:
+        _wake_owner_port_waiters()
+    return previous
+
+
+def _owner_port_event() -> asyncio.Event:
+    """The event that is set once no pooled control-plane backend waits for the port.
+
+    That is once :data:`_OWNER_PORT` is known, or once
+    :data:`_OWNER_PORT_UNVERIFIABLE` switched the daemon to its environment.
+    Made for the running loop.
+    """
+    global _OWNER_PORT_EVENT
+    loop = asyncio.get_running_loop()
+    if _OWNER_PORT_EVENT is None or _OWNER_PORT_EVENT[0] is not loop:
+        event = asyncio.Event()
+        if _OWNER_PORT > 0 or _OWNER_PORT_UNVERIFIABLE:
+            event.set()
+        _OWNER_PORT_EVENT = (loop, event)
+    return _OWNER_PORT_EVENT[1]
+
 
 #: This daemon's own ``process_start_time`` token, computed once at startup
 #: (off the loop) so the pong can publish it without a syscall or a ``ps``.
@@ -430,7 +545,9 @@ async def run_gatewayd(
     target_resolver: Optional[TargetResolver] = None,
     prewarm_count: int = 0,
     credential_watch_paths: Optional[list[Path]] = None,
+    backend_agent_socket: Optional[str] = None,
     owner_pid: int = 0,
+    owner_port: int = 0,
     spawn_concurrency: int = DEFAULT_CAPACITY,
     spawn_concurrency_min: int = DEFAULT_FLOOR,
     spawn_concurrency_max: int = DEFAULT_CEILING,
@@ -472,6 +589,17 @@ async def run_gatewayd(
             change drains ALL pooled backends via blue-green cutover so they
             respawn with the fresh credential, then re-warms. ``None`` or
             empty creates no watcher. The daemon never interprets the paths.
+        backend_agent_socket: The ssh-agent socket the supervising gateway was
+            started with (``agent_socket.DAEMON_ENV``, which ``_amain`` takes out
+            of the environment). When given, the resolver is wrapped by
+            :func:`agent_socket_resolver`, which offers it as ``SSH_AUTH_SOCK``
+            to the backends the operator names in
+            ``ssh_auth_sock_consent.json``. ``None`` (the default) wraps
+            nothing, so the run is byte-identical to a daemon without it.
+        owner_port: The port the owner's listener already bound, when the
+            owner spawns this daemon after its bind (``--owner-port``). ``0``
+            (the boot spawn) leaves it to the ``owner-port`` announce. Kept only
+            on an owned daemon, and only when it is a port number.
         spawn_concurrency: Daemon-wide number of backend spawn+initialize
             windows allowed in flight at once (the :class:`SpawnGate`
             capacity); ``spawn_concurrency_min`` / ``_max`` clamp it and are
@@ -493,8 +621,19 @@ async def run_gatewayd(
     path) propagate so the caller can surface a clear error.
     """
     # Published for the ping reply before anything can connect.
-    global _OWNER_PID
+    global _OWNER_PID, _OWNER_PORT_EVENT
     _OWNER_PID = int(owner_pid) if owner_pid > 0 else 0
+    _OWNER_PORT_EVENT = None
+    # Before anything can connect too: a stub that registers first must find the
+    # port a respawn after the bind was given, not wait for an announce.
+    _set_owner_port(owner_port if _OWNER_PID > 0 and _is_port_number(owner_port) else 0)
+    # A platform with no peer-pid mechanism can verify no announce, so its owned
+    # daemon binds from its environment from the start and never waits, even
+    # before the first announce. On other platforms the first frame whose pid
+    # cannot be read sets the flag (``control._apply_owner_port``). An unowned
+    # daemon binds from its environment anyway, so the flag is an owned
+    # daemon's only.
+    _set_owner_port_unverifiable(_OWNER_PID > 0 and not socketsec.PEER_IDENTITY_SUPPORTED)
     # The fingerprint the pong and the stand-down handler read is computed
     # once, HERE, off the loop: its first computation runs git (or walks the
     # package tree), and the connection handler that reads it must not pay
@@ -557,6 +696,10 @@ async def run_gatewayd(
     # handed through unchanged. Wrapping an INJECTED resolver too keeps the
     # behaviour identical whether the daemon resolves from env or a test's stub.
     resolver = resolve_once_resolver(resolver)
+    # Outermost, so the socket lands after every resolver step has built the env.
+    if backend_agent_socket:
+        resolver = agent_socket_resolver(resolver, backend_agent_socket)
+        logger.info("gatewayd: offering the gateway's ssh-agent socket to operator-named backends")
     # Shared circuit breaker keyed by server name: a server
     # that crash-loops on spawn trips OPEN and get_or_create rejects further
     # spawns so the stub falls back to per-session exec instead of churning.
@@ -994,6 +1137,7 @@ async def _acquire_backend(
     wait_deadline: Optional[float] = None,
     on_queued: Optional[OnQueued] = None,
     prewarm: bool = False,
+    priority: StartPriority = StartPriority.BACKGROUND,
 ) -> tuple[Backend, bool]:
     """Return ``(backend, was_spawned)`` for ``pool_key`` — spawning one via
     the resolver if absent.
@@ -1032,11 +1176,26 @@ async def _acquire_backend(
     permit settles at once (no one initialises a warm backend until a stub
     attaches).
 
+    A Kiro Crew control-plane backend first waits, inside the same
+    ``wait_deadline``, for the port its gateway announces
+    (:func:`_await_owner_port`); the prewarm pass skips such a key until the port
+    is known. Its spawn is
+    bound to the port current after the gate's wait, records it as
+    ``Backend.owner_port``, and no control-plane backend bound to another port
+    is handed out (:func:`bound_to_owner_port`): the pool refuses a pooled one,
+    and a private one is discarded and spawned again.
+
     Raises :class:`_TargetUnknown` when the resolver has no mapping for the
     server (a clean rejection, not a crash); :class:`HostBudgetExhausted`,
     :class:`SpawnGateTimeout`, :class:`SpawnGateClosed` and
-    :class:`PoolAtCapacity` from the three admission steps.
+    :class:`PoolAtCapacity` from the three admission steps;
+    :class:`OwnerPortUnproven` when the owner's port is still unknown at the
+    deadline, or when it changed during every attempt
+    to spawn a private backend.
     """
+    await _await_owner_port(
+        pool_key, admission=admission, deadline=wait_deadline, on_queued=on_queued
+    )
     approval_snapshot = await asyncio.to_thread(launch_approval.load_approvals)
     target = await _resolve_target_off_loop(resolver, pool_key, approval_snapshot)
     if target is None:
@@ -1071,7 +1230,7 @@ async def _acquire_backend(
         slot: Any = None
         if admission is not None:
             permit = await admission.gate.acquire(
-                label=label, deadline=wait_deadline, on_queued=on_queued
+                label=label, deadline=wait_deadline, on_queued=on_queued, priority=priority
             )
             try:
                 charge = admission.budget.reserve(label=label, kind=charge_kind)
@@ -1122,6 +1281,7 @@ async def _acquire_backend(
 
     async def _spawn_admitted() -> Backend:
         spawn_env = dict(env)
+        owner_port = 0
         # Cold-spawn only (never per request), and entirely off the event loop:
         # the flag check reads config and the sidecar read touches the
         # filesystem, either of which would stall gateway traffic and heartbeat
@@ -1237,6 +1397,12 @@ async def _acquire_backend(
             spawn_env,
             Path(_config_dir()),
         )
+        if pool_key.server_name in CONTROL_PLANE_BACKENDS:
+            # Bound again after the gate's wait: the owner may have announced a
+            # new port since resolution, and the respawn after a ``reusable``
+            # refusal must not repeat the old one. This bind runs after the
+            # declared merge so a spec-declared port cannot replace the proven one.
+            owner_port = bind_control_plane_to_owner(spawn_env, pool_key.server_name)
         # Decided BEFORE the child exists, from the command about to be exec'd
         # plus the env and cwd it will run in, and never again: the connection
         # handler reads this flag to decide whether the session token may ride
@@ -1291,12 +1457,23 @@ async def _acquire_backend(
         )
         if fresh_target is None or fresh_target[:2] != (command, args):
             raise _TargetUnknown(f"target approval changed for server {pool_key.server_name!r}")
+        # The backend starts in the freshly resolved cwd. The daemon's work dir is
+        # pinned in its env for its whole life (``manager.BACKEND_WORK_DIR_ENV``),
+        # so this is the same directory the verdict above judged.
+        # The ssh-agent socket decision is re-judged here too: a grant withdrawn, or
+        # a path refused, while this spawn queued must not reach the child. A
+        # socket that became available meanwhile is left out, as first decided.
+        offered = env.get("SSH_AUTH_SOCK")
+        if offered is not None and fresh_target[2].get("SSH_AUTH_SOCK") != offered:
+            raise _TargetUnknown(
+                f"ssh-agent socket decision changed for server {pool_key.server_name!r}"
+            )
         backend = await spawn_backend(
             pool_key=pool_key,
             command=command,
             args=list(args),
             env=spawn_env,
-            work_dir=work_dir,
+            work_dir=fresh_target[3],
             # Containment yields only to temp keys cleared by the shared rule.
             # ``spawn_backend`` checks them again after secret resolution, so a
             # path hidden behind ``secret://`` cannot bypass the runtime check.
@@ -1318,6 +1495,7 @@ async def _acquire_backend(
             spawn_env.pop(_sk, None)
         backend.control_plane = control_plane
         backend.control_plane_denial = denial[0] if not control_plane and denial else ""
+        backend.owner_port = owner_port
         # Start the stdout pump immediately so replies to the first
         # forwarded message can route back. The task is owned by the
         # Backend and cancelled at shutdown().
@@ -1328,10 +1506,36 @@ async def _acquire_backend(
         return backend
 
     if exclusive_stub_uuid:
-        backend = await pool.acquire_exclusive(pool_key, exclusive_stub_uuid, _spawn)
-        return backend, was_spawned
+        # The pooled branch's ``reusable`` check, for a private backend: one bound
+        # to a port the owner has since replaced is discarded and spawned again
+        # (``_spawn_admitted`` binds each attempt to the port current then), with
+        # the same bound ``get_or_create`` puts on its own respawns. A refusal is
+        # never the first answer: a stub that gets ``capacity`` on
+        # ``ensure_backend`` serves that error for the rest of its life.
+        for _attempt in range(_MAX_SPAWN_DRAIN_RETRIES + 1):
+            backend = await pool.acquire_exclusive(pool_key, exclusive_stub_uuid, _spawn)
+            if bound_to_owner_port(backend):
+                return backend, was_spawned
+            logger.info(
+                "mcp-gateway: private backend pid=%s for %s was bound to owner port %d, "
+                "now %d; discarding it and spawning again",
+                backend.pid,
+                label,
+                backend.owner_port,
+                _OWNER_PORT,
+            )
+            await pool.release_exclusive(exclusive_stub_uuid)
+            # Pool ownership makes daemon shutdown join this reap if acquisition is cancelled.
+            reap = pool.spawn_shutdown(backend)
+            with contextlib.suppress(Exception):
+                await asyncio.shield(reap)
+        # Capacity-classed, never a fallback: the stub's own exec would run the
+        # control-plane server inside the session's sandbox.
+        raise OwnerPortUnproven(
+            f"{pool_key.server_name!r}: the owner port changed during every spawn"
+        )
 
-    backend = await pool.get_or_create(pool_key, _spawn)
+    backend = await pool.get_or_create(pool_key, _spawn, reusable=bound_to_owner_port)
     return backend, was_spawned
 
 

@@ -1,4 +1,6 @@
 import { render, screen, fireEvent, within } from '@testing-library/react'
+// `/all` for the Japanese catalog: `../../i18n` registers English only.
+import { i18next } from '../../i18n/all'
 import type { LegacyGoalLoop, StructuredMonitor } from '../../monitoring/automation'
 import CrewOnItsOwn, { patrolLoopOf } from './CrewOnItsOwn'
 
@@ -72,7 +74,7 @@ describe('CrewOnItsOwn', () => {
     expect(row).toHaveAttribute('data-state', 'running')
     expect(within(row).getByTestId('crew-patrol-state')).toHaveTextContent('Running')
     expect(row).toHaveTextContent('Watching its tasks')
-    expect(row).toHaveTextContent('Wakes when a task reports back, or every 15m')
+    expect(row).toHaveTextContent('Wakes when a task reports back, or every 15 min')
     const facts = within(row).getByTestId('crew-patrol-facts')
     expect(facts).toHaveTextContent('Last check 2m ago · Next in 13m · 3 tasks open')
     const toggle = within(row).getByTestId('crew-patrol-toggle')
@@ -80,6 +82,13 @@ describe('CrewOnItsOwn', () => {
     fireEvent.click(toggle)
     expect(onPause).toHaveBeenCalledOnce()
     expect(onResume).not.toHaveBeenCalled()
+  })
+
+  it('says the interval in unit words inside the Japanese sentence, never the narrow 15m (#33514)', async () => {
+    onTestFinished(() => i18next.changeLanguage('en'))
+    await i18next.changeLanguage('ja')
+    const { row } = setup()
+    expect(row).toHaveTextContent('タスクから報告があったとき、または15 分ごとに起動します')
   })
 
   it('shows none of the budget bookkeeping the Profile readout used to, and leaks no prompt or path', () => {

@@ -41,6 +41,7 @@ from kiro_crew.apps.execution import (
     is_builtin_app,
     shipped_builtin_module_path,
 )
+from kiro_crew.apps.gateway_origin import loopback_gateway_origin as _loopback_gateway_origin
 from kiro_crew.apps.interpreter import app_deps_dir, path_command_is_abi_matched, resolve_app_python
 from kiro_crew.apps.manager import app_dir, get_app_manifest
 from kiro_crew.apps.manifest import file_entry_point_refusal, is_module_style_entry_point
@@ -54,7 +55,9 @@ from kiro_crew.constants import (
 from kiro_crew.env import nvm_dirs as _nvm_dirs
 from kiro_crew.jsonl_util import rotate_jsonl_at as _rotate_jsonl_at
 from kiro_crew.owner_only_files import ensure_directory as _ensure_directory
-from kiro_crew.owner_only_files import owner_only_opener_for as _owner_only_opener_for
+from kiro_crew.owner_only_files import (
+    open_log_for_append_owner_only as _open_log_for_append_owner_only,
+)
 from kiro_crew.sandbox import (
     MD_NOTEBOOK_APP_NAME,
     RLIMIT_PROFILE_BUILD,
@@ -837,32 +840,13 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     # gateway or at a port nothing is listening on. Absent or invalid evidence
     # => omit the origin entirely, so a backend that needs a callback base fails
     # closed (dormant) rather than trusting a guessed address. Generic name
-    # only; no app-specific env is set here.
-    bound_port = os.environ.get("KIROCREW_BOUND_PORT", "").strip()
-    bound_host_env = os.environ.get("KIROCREW_BOUND_HOST", "").strip()
-    gateway_origin = ""
-    if (
-        bound_port.isdigit()
-        and 1 <= int(bound_port) <= 65535
-        and bound_host_env in ("", "::1")
-    ):
-        # Host evidence: absent means loopback (the default bind shapes —
-        # loopback itself, or a wildcard bind loopback reaches); "::1" is the
-        # v6-loopback family marker. Only these two shapes are injected: a
-        # backend's callback arrives with no Origin header, and the gateway's
-        # CSRF barrier (origin.check_origin) trusts an Origin-less mutating
-        # request ONLY from a loopback peer. A gateway bound to a SPECIFIC
-        # interface exports that address, but injecting it would mint an
-        # origin whose every mutating callback is refused at the barrier —
-        # a half-alive backend, worse than designed dormancy — so that shape
-        # is omitted (fail closed, warned below) until such a request path is
-        # admitted. IPv6 literals are bracketed per RFC 3986.
-        bound_host = bound_host_env or "127.0.0.1"
-        if ":" in bound_host and not bound_host.startswith("["):
-            bound_host = f"[{bound_host}]"
-        gateway_origin = f"http://{bound_host}:{int(bound_port)}"
+    # only; no app-specific env is set here. The host rules are
+    # ``gateway_origin.loopback_gateway_origin``'s, shared with ``AppContext``.
+    gateway_origin = _loopback_gateway_origin()
+    if gateway_origin:
         env["KIROCREW_GATEWAY_ORIGIN"] = gateway_origin
     else:
+        bound_host_env = os.environ.get("KIROCREW_BOUND_HOST", "").strip()
         # Dormancy is the DESIGNED outcome here, so the operator must be able
         # to see it: an app that declares notification channels but gets no
         # origin will silently never push. Warn for those; stay at debug for
@@ -896,19 +880,23 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     # an inherited or spoofed env value. The proof is injected ONLY when the
     # secret is readable AND the origin was injected above; a missing
     # .app_secret is tolerated as before and yields neither the secret nor the
-    # proof (a secret-less legacy backend gets the origin only).
-    try:
-        _proxy_secret = (root / ".app_secret").read_text().strip()
-        if _proxy_secret:
-            env["KIROCREW_PROXY_SECRET"] = _proxy_secret
-            if gateway_origin:
-                env["KIROCREW_GATEWAY_ORIGIN_PROOF"] = hmac.new(
-                    _proxy_secret.encode("utf-8"),
-                    gateway_origin.encode("utf-8"),
-                    hashlib.sha256,
-                ).hexdigest()
-    except OSError:
-        pass
+    # proof (a secret-less legacy backend gets the origin only). This env var is the
+    # backend's ONLY channel for its secret: the gateway keeps it where no sandbox,
+    # the backend's own included, can read it (``token_auth.read_app_secret``).
+    # circular import: token_auth -> app_secret_store -> manager -> backend
+    # An app an older version left a folder secret gets a new one here, the one place
+    # it is handed over (``token_auth.replace_legacy_app_secret``).
+    from kiro_crew.dashboard.token_auth import replace_legacy_app_secret
+
+    _proxy_secret = replace_legacy_app_secret(app_name)
+    if _proxy_secret:
+        env["KIROCREW_PROXY_SECRET"] = _proxy_secret
+        if gateway_origin:
+            env["KIROCREW_GATEWAY_ORIGIN_PROOF"] = hmac.new(
+                _proxy_secret.encode("utf-8"),
+                gateway_origin.encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()
     # Expose the provisioned deps dir (pip --target, above) to the child.
     # PYTHONPATH rather than an interpreter switch: it is honored identically
     # by the app's own venv interpreter and the gateway fallback, on every
@@ -1324,13 +1312,7 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         # aside with the shared ``rotate_jsonl_at`` primitive when it is full,
         # so append does not grow it without bound.
         _rotate_jsonl_at(log_path, _BACKEND_LOG_MAX_BYTES)
-        log_fh = open(
-            log_path,
-            "a",
-            encoding="utf-8",
-            errors="replace",
-            opener=_owner_only_opener_for(log_path),  # 0600 inside the data home
-        )
+        log_fh = _open_log_for_append_owner_only(log_path)  # owner-only on Windows too
         # Where THIS session's output begins. backend.log is opened in append
         # mode, so it may already hold prior sessions' lines; the immediate-exit
         # diagnostic below must read only from here, or a stale "errno 98" from a
@@ -1631,6 +1613,7 @@ if _typing.TYPE_CHECKING:
         _pidfile_lock,
         _pidfile_path,
         _read_pidfile,
+        _read_pidfile_for_update,
         _write_pidfile,
         atomic_write,
         json,

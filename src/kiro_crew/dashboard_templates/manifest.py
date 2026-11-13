@@ -76,6 +76,7 @@ from kiro_crew.crew_log.projection import (
     TREE_PROJECTION_NAMES,
 )
 from kiro_crew.dashboard_templates.parity import ExtractionRefused, html_fields
+from kiro_crew.user_json import loads_user_json
 
 __all__ = [
     "FIELD_TYPES",
@@ -466,7 +467,7 @@ def check_parity(manifest: TemplateManifest, html: str) -> None:
 def load_template(directory: Path) -> tuple[TemplateManifest, str]:
     """Load and fully check one template directory."""
     try:
-        raw = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+        raw = loads_user_json((directory / "manifest.json").read_text(encoding="utf-8"))
         html = (directory / "template.html").read_text(encoding="utf-8")
     # UnicodeDecodeError too, so one non-UTF-8 directory isolates itself: escaping as a
     # bare ValueError would carry past `_scan` and fail the whole registry read.

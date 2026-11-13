@@ -12,6 +12,7 @@
  * second click ends and is the accessible name, so it carries no aria-label.
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Loader2 } from 'lucide-react'
 import { api } from '../../api/client'
 import { isNotFoundError } from '../../api/apiError'
 import type { LeakedRuntimes, LeakedRuntimesReclaim } from '../../api/client/system'
@@ -99,13 +100,20 @@ export default function LeakedRuntimesCard() {
         </p>
       )}
       {data.count > 0 && (
+        // `aria-disabled`, not `disabled`, while the reclaim runs: the confirming
+        // press keeps focus, and useArmedDelete ignores a press while it is pending.
         <Btn
           danger={armed}
-          disabled={isDeleting(RECLAIM_ID)}
+          aria-disabled={isDeleting(RECLAIM_ID) || undefined}
+          aria-busy={isDeleting(RECLAIM_ID) || undefined}
+          className="relative aria-disabled:cursor-progress"
           onClick={() => { if (armed) void confirm(RECLAIM_ID); else arm(RECLAIM_ID) }}
           data-testid="leaked-runtimes-reclaim"
         >
-          {armed ? i18nT('pages.servicesTab.leaked_reclaim_confirm') : i18nT('pages.servicesTab.leaked_reclaim')}
+          {isDeleting(RECLAIM_ID) && <Loader2 aria-hidden className="absolute inset-0 m-auto lucide-inline motion-safe:animate-spin" />}
+          <span className={isDeleting(RECLAIM_ID) ? 'opacity-0' : undefined}>
+            {armed ? i18nT('pages.servicesTab.leaked_reclaim_confirm') : i18nT('pages.servicesTab.leaked_reclaim')}
+          </span>
         </Btn>
       )}
     </Card>

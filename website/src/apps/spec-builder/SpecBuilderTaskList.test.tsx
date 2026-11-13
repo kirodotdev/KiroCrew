@@ -59,17 +59,24 @@ describe('TaskList', () => {
   it('disables every run while a build owns the whole list', () => {
     // The backend refuses a single-task run during a whole-list build, because both
     // write the same files and check off the same boxes. The control explains that
-    // instead of failing on click.
-    render(<TaskList tasks={tasks} pendingIndex={null} busy onRun={vi.fn()} />)
+    // instead of failing on click. It reads aria-disabled, not native disabled, so
+    // a keyboard user who had it focused keeps their place (#32999).
+    const onRun = vi.fn()
+    render(<TaskList tasks={tasks} pendingIndex={null} busy onRun={onRun} />)
     for (const btn of screen.getAllByRole('button', { name: /^run task:/i })) {
-      expect(btn).toBeDisabled()
+      expect(btn).toHaveAttribute('aria-disabled', 'true')
+      expect(btn).not.toBeDisabled()
+      fireEvent.click(btn)
     }
+    // Inert: aria-disabled drops the click handler, so a press sends nothing.
+    expect(onRun).not.toHaveBeenCalled()
   })
 
   it('disables the other runs while one is being dispatched', () => {
     render(<TaskList tasks={tasks} pendingIndex={1} busy={false} onRun={vi.fn()} />)
     for (const btn of screen.getAllByRole('button', { name: /^run task:/i })) {
-      expect(btn).toBeDisabled()
+      expect(btn).toHaveAttribute('aria-disabled', 'true')
+      expect(btn).not.toBeDisabled()
     }
   })
 

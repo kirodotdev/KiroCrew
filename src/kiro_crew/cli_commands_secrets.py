@@ -165,6 +165,7 @@ def _publish_secret_request_policy(path: Path, content: str) -> None:
 
 def _authorize_txn(args: "argparse.Namespace", path) -> None:
     """The locked read-verify-modify-sign-write body of ``secrets authorize``."""
+    from kiro_crew.bounded_read import bounded_read
     from kiro_crew.secrets_mediation.policy import (
         _MAX_POLICY_BYTES,
         PolicyError,
@@ -178,6 +179,12 @@ def _authorize_txn(args: "argparse.Namespace", path) -> None:
         verify_secret_authorizations,
     )
 
+    # Whether a --reset threw away a damaged (unparseable or unverifiable) policy
+    # that was on disk. When it did, an empty authorization map is the intended
+    # fresh start and MUST be signed and published to repair the file, so the
+    # no-op early return below for a `--remove` of an absent name does not apply.
+    reset_discarded = False
+
     try:
         if path.exists():
             # Bounded read: cap the bytes taken from disk BEFORE the JSON decode so
@@ -187,7 +194,7 @@ def _authorize_txn(args: "argparse.Namespace", path) -> None:
             # bounded here exactly as the host endpoint bounds its own read. Read
             # cap+1 and refuse on overflow — same ceiling, no drift.
             with open(path, "rb") as fh:
-                raw_bytes = fh.read(_MAX_POLICY_BYTES + 1)
+                raw_bytes = bounded_read(fh, _MAX_POLICY_BYTES + 1)
             if len(raw_bytes) > _MAX_POLICY_BYTES:
                 raise SystemExit(
                     f"error: {path} exceeds the {_MAX_POLICY_BYTES}-byte policy size "
@@ -208,6 +215,7 @@ def _authorize_txn(args: "argparse.Namespace", path) -> None:
                 "--reset to discard it."
             )
         raw_existing = {}
+        reset_discarded = True
     if not isinstance(raw_existing, dict):
         # Valid JSON but not an object (e.g. a list or scalar). Calling .get() on
         # it would raise AttributeError; overwriting it could drop owner data.
@@ -260,11 +268,21 @@ def _authorize_txn(args: "argparse.Namespace", path) -> None:
             file=sys.stderr,
         )
         authorizations = {}
+        reset_discarded = True
     else:
         authorizations = {}
 
     name = args.name
     if args.remove:
+        if name not in authorizations and not reset_discarded:
+            # Nothing to remove: say so rather than report a removal that did not
+            # happen (and do not re-sign or audit an unchanged policy). Exit 0 so
+            # an idempotent `--remove` in a script still succeeds. A pending
+            # `--reset` that discarded a damaged policy is NOT a no-op: it must
+            # still publish the fresh signed empty policy to repair the file, so
+            # it falls through below.
+            print(f"No mediated-request authorization for {name!r}; nothing removed.")
+            return
         authorizations.pop(name, None)
     else:
         try:

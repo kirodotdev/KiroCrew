@@ -938,12 +938,65 @@ async def test_an_unconfirmed_append_is_answered_as_a_failure_naming_the_committ
 
     status, body = await _report(WORKER, {"status": "progress", "summary": "half"})
     assert (status, body["code"], body["item_id"]) == (503, "crew_log_unrecorded", item_id), body
+    # The text says what happened: the write was undone, not stored.
+    assert body["error"] == "the write was not recorded and has been undone; retry it"
     status, body = await _record(
         CONDUCTOR, {"action": "create", "title": "item two", "acceptance": ACCEPTANCE}
     )
     assert (status, body["code"]) == (503, "crew_log_unrecorded"), body
-    # The create was undone with the refusal: the id is returned, the item is gone.
-    assert body["item_id"] != item_id and wl.read_work_item(CONDUCTOR, body["item_id"]) is None
+    # The create was undone with the refusal: the item is gone, so no id names it.
+    assert body["item_id"] is None
+    assert [item.item_id for item in wl.list_work_items(CONDUCTOR)] == [item_id]
+
+
+@pytest.mark.asyncio
+async def test_a_create_whose_undo_fails_still_names_its_item(recorded, monkeypatch):
+    """The item may still be on the board, so the answer keeps the id to look for."""
+    await _board()
+    monkeypatch.setattr(routes.crew_log_emit, "on_work_recorded", lambda unit, data: False)
+
+    def _fail(*_args, **_kwargs):
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(wl, "restore_snapshot", _fail)
+    status, body = await _record(
+        CONDUCTOR, {"action": "create", "title": "item two", "acceptance": ACCEPTANCE}
+    )
+    assert (status, body["code"]) == (503, "crew_log_unrecorded"), body
+    assert body["item_id"] and wl.read_work_item(CONDUCTOR, body["item_id"]) is not None
+
+
+@pytest.mark.asyncio
+async def test_an_unrecorded_write_whose_undo_fails_says_it_was_not_undone(recorded, monkeypatch):
+    await _board()
+    monkeypatch.setattr(routes.crew_log_emit, "on_work_recorded", lambda unit, data: False)
+
+    def _fail(*_args, **_kwargs):
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(wl, "restore_snapshot", _fail)
+    status, body = await _report(WORKER, {"status": "progress", "summary": "half"})
+    assert (status, body["code"]) == (503, "crew_log_unrecorded"), body
+    assert body["error"] == (
+        "the write was not recorded and could not be undone; read the board before retrying"
+    )
+    assert wl.cache_dirty(CONDUCTOR), "the failed undo flags the board"
+
+
+@pytest.mark.asyncio
+async def test_a_partial_undo_is_not_reported_as_undone(recorded, monkeypatch):
+    """A restore that passes over a file another gateway changed returns normally
+    and flags the cache; the answer must not say the write was undone."""
+    await _board()
+    monkeypatch.setattr(routes.crew_log_emit, "on_work_recorded", lambda unit, data: False)
+
+    def _partial(slot, *_args, **_kwargs):
+        wl.mark_cache_dirty(slot, "an unrecorded write was passed over in 1 of its files")
+
+    monkeypatch.setattr(wl, "restore_snapshot", _partial)
+    status, body = await _report(WORKER, {"status": "progress", "summary": "half"})
+    assert (status, body["code"]) == (503, "crew_log_unrecorded"), body
+    assert "could not be undone" in body["error"], body
 
 
 def test_on_work_recorded_acknowledges_only_an_append_that_landed(monkeypatch):
@@ -1481,7 +1534,7 @@ async def test_a_board_born_in_a_failed_request_leaves_nothing_behind(monkeypatc
     )
     assert (status, body["code"]) == (503, "crew_log_unrecorded"), body
     assert wl.read_conductor(CONDUCTOR) is None
-    assert wl.read_work_item(CONDUCTOR, body["item_id"]) is None
+    assert body["item_id"] is None and wl.list_work_items(CONDUCTOR) == []
 
 
 @pytest.mark.asyncio

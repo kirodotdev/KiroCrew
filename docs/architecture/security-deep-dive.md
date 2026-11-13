@@ -215,7 +215,10 @@ this document names what the default leaves open so that choice is informed.
 (`off`, `standard`, `cc`) and whose harness mask does not hide it, so the
 agent can use the operator's ssh-agent there, including a forwarded one. Under
 `strict`, or a harness mask over `~/.ssh`, it is scrubbed unless the operator
-records consent in the keystone leaf `ssh_auth_sock_consent.json`.
+records consent in the keystone leaf `ssh_auth_sock_consent.json`. A shared MCP
+gateway backend never gets it unless the operator names that backend in the
+same leaf (`mcp_gateway_backends`), and then only the socket the gateway was
+started with.
 
 To grant that consent, write `{"enabled": true}` to
 `<config_dir>/ssh_auth_sock_consent.json` from a terminal outside Kiro Crew;
@@ -350,10 +353,10 @@ model's title **and** the raw command:
 
 - **Denied-command rules** (`BUILTIN_DENIED_RULES`): first-class
   `DeniedCommandRule` records (stable `id`, regex `pattern`, `category`,
-  human `description`) covering credential exfiltration, destructive
-  infrastructure and data operations, publishing to a protected branch, and
-  self-protection (the agent disabling Kiro Crew or minting its own dashboard
-  token). Default-ON, user-configurable from Settings → Security; the governance
+  human `description`, optional agent-facing refusal `note`) covering
+  credential exfiltration, destructive infrastructure and data operations,
+  publishing to a protected branch, and self-protection (the agent disabling
+  Kiro Crew or minting its own dashboard token). Default-ON, user-configurable from Settings → Security; the governance
   `commands` scope is the enterprise force-pin that cannot be opted out of
   (tightest-wins).
 - **Sensitive-bash detection** (`is_sensitive_bash_command`): refuses commands
@@ -464,7 +467,10 @@ credential and exfiltration-URL chain before reaching the dashboard or MCP calle
   its own. It withholds the trailing run of credential-class characters until a
   non-credential terminator arrives or the stream ends, emitting only the
   confirmed-safe prefix, with a bounded hold-back so latency and memory stay
-  bounded on a pathologically long unbroken run.
+  bounded on a pathologically long unbroken run. The dashboard lets one kind of
+  held run go at once: a plain word ending a sentence, which no later text can
+  make part of a credential (security.md, "When the dashboard lets a held tail
+  go").
 
 Two ordering rules generalize beyond this layer and are worth stating once:
 **screen after decode, not before** (screening an encoded form and then writing
@@ -688,7 +694,7 @@ text is framed as explicitly untrusted data with a SEL event on every drop.
 | HTML/SVG sanitization | Model-authored Markdown, highlighted code, Mermaid, SVG and icon markup pass through DOMPurify before a controlled HTML sink |
 | Executable document isolation | Widgets and other executable `srcdoc` content use sandboxed iframes plus restrictive CSP rather than DOMPurify, which would strip their scripts |
 | Safe DOM APIs | Ordinary text and error fallbacks use React text children or `createElement` + `textContent` |
-| Mermaid | `securityLevel: 'strict'`, followed by sanitization, so an injected diagram cannot execute JS |
+| Mermaid | `securityLevel: 'strict'`, followed by sanitization, so an injected diagram cannot execute JS; the sanitizer config (`mermaidSanitize.ts`) also strips images and other self-loading URLs from HTML labels, so a label cannot make a zero-click request either; mermaid's `img:` node shape loads its URL during render and is not covered by that config |
 | No regex linkification | React elements via `.split()` |
 
 ## Credential file handling
@@ -819,3 +825,23 @@ userland forward proxy that validates the socket after connect. Choosing the
 mechanism is a per-platform infrastructure decision (macOS vs Linux vs CI, the
 privilege model, and fail-open vs fail-closed when the layer is unavailable), so
 it is tracked as a design item on #17748 rather than shipped here.
+
+**A sandboxed command's detached descendants are not bound to its lifetime
+([#5883](https://github.com/kirodotdev/KiroCrew/issues/5883)).** The Linux
+launcher unshares only the user and mount namespaces. It deliberately adds no
+PID namespace: an earlier PID-namespace version broke session identity, which is
+keyed on host pids, and seccomp denies the host-wide `kill(-1)` broadcast
+instead. A process that detaches from a sandboxed command, such as a build
+daemon (the Gradle or Kotlin daemon, `mvnd`, the Bazel server), keeps running
+after the command and can outlive its agent runtime's teardown, under the
+confinement it was spawned with (on Linux, inside the sandbox's mount
+namespace). A later `agent.sandbox` change does not re-confine it. On Linux
+with systemd, the agent-scope reaper keeps an intentional detached server left
+after its agent runtime exits
+([session.md § Reaping abandoned agent scopes](../system-specs/modules/session.md#reaping-abandoned-agent-scopes)).
+A later build that connects to it runs under that confinement, not its own.
+Only Gradle has a guard, on Linux: the launcher adds
+`-Dorg.gradle.daemon=false` to `GRADLE_OPTS`. No other tool has one and the
+macOS path has none, because each guard covers one tool and the class is
+open-ended. Stopping the daemon (`gradle --stop`, `mvnd --stop`,
+`bazel shutdown`) ends it. **Status: ACCEPTED.**

@@ -37,7 +37,7 @@ from real_dashboard_state import _settle_real_dashboard_states  # noqa: F401
 from real_dashboard_state import drain, open_feed, real_dashboard_state
 from title_refresh_helpers import _fake_state, _patch_generator, _titled_slot
 
-from kiro_crew.dashboard import chat_persistence, chat_title
+from kiro_crew.dashboard import chat_persistence, chat_title, title_audit
 from kiro_crew.dashboard.chat_title import (
     _TITLE_EARLY_REFRESH_MILESTONE,
     _TITLE_ORIGIN_AUTO,
@@ -920,7 +920,7 @@ class TestRenameIsFinal:
             return True
 
         monkeypatch.setattr(chat_title, "_persist_title", _saved)
-        monkeypatch.setattr(chat_title, "sel", MagicMock())
+        monkeypatch.setattr(title_audit, "sel", MagicMock())
         slot = _ChatSlot("chat-1-1")
         state = _fake_state()
         state._slots = {"chat-1-1": slot}

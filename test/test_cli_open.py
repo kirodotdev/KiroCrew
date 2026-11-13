@@ -49,6 +49,19 @@ class TestBuildDeepLink:
             == "kirocrew://chat?sid=hook%3Acos%3Amenubar-chat"
         )
 
+    def test_accepts_the_percent_encoded_sid_from_the_dashboard_url(self):
+        # The help says to paste the dashboard URL's ?sid= value, which is encoded.
+        try:
+            url = build_deep_link(session="hook%3Acos%3Amenubar-chat")
+        except DeepLinkError as exc:
+            pytest.fail(f"the dashboard's encoded sid was refused: {exc}")
+        assert url == "kirocrew://chat?sid=hook%3Acos%3Amenubar-chat"
+        with pytest.raises(DeepLinkError):
+            build_deep_link(session="x%2Fy")
+        # Decoded once only: a twice-encoded key still carries '%' and is refused.
+        with pytest.raises(DeepLinkError):
+            build_deep_link(session="hook%253Acos%253Amenubar-chat")
+
     @pytest.mark.parametrize(
         "session", ["a b", "-leading", "a" * 201, "x/y", "../x", "cos-quick-chat\n"]
     )
@@ -65,6 +78,7 @@ class TestOpenUrl:
             launched.append((url, wait_for_exit))
             return True
 
+        monkeypatch.setattr(cli_open, "desktop_launcher_available", lambda: True, raising=False)
         monkeypatch.setattr(cli_open, "open_with_default_app", launch)
         for platform in ("darwin", "linux"):
             assert open_url("kirocrew://chat?sid=k", platform=platform) == (
@@ -76,12 +90,24 @@ class TestOpenUrl:
     def test_no_registered_handler_is_a_failure(self, monkeypatch):
         # The launcher exiting non-zero ("No application knows how to open URL",
         # xdg-open's exit 3/4) is what the shared helper reports as False here.
+        monkeypatch.setattr(cli_open, "desktop_launcher_available", lambda: True, raising=False)
         monkeypatch.setattr(
             cli_open, "open_with_default_app", lambda url, *, wait_for_exit=None: False
         )
         assert open_url("kirocrew://", platform="linux") == (
             False,
             "no application is registered for kirocrew://",
+        )
+
+    def test_no_desktop_session_is_named_not_reported_as_no_handler(self, monkeypatch):
+        def refuse(url, **_kwargs):
+            raise AssertionError("with no desktop session nothing is launched")
+
+        monkeypatch.setattr(cli_open, "desktop_launcher_available", lambda: False, raising=False)
+        monkeypatch.setattr(cli_open, "open_with_default_app", refuse)
+        assert open_url("kirocrew://", platform="linux") == (
+            False,
+            "no desktop session or URL opener on this host",
         )
 
     def test_windows_uses_startfile_not_the_shared_launcher(self, monkeypatch):

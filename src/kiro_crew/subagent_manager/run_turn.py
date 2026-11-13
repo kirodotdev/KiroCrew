@@ -64,6 +64,7 @@ if TYPE_CHECKING:
         _route_unpinned_start,
         _RunCreditAccounting,
         _selection_kind,
+        _spawning_agents,
         _validate_agent,
         _vet_spawn_governance,
         acp_error_is_transient,
@@ -107,6 +108,7 @@ async def _run_inner_impl(
     setattr(info, "_session_id", "")
     setattr(info, "_session_provider", "")
     setattr(info, "_session_cwd", "")
+    setattr(info, "_session_codex_home", "")
     # Mark the real start of execution BEFORE any await so the startup
     # watchdog measures from here, not from registration (which may include
     # an arbitrary spawn-approval wait). Must be the first statement.
@@ -239,9 +241,19 @@ async def _run_inner_impl(
     kind = _selection_kind(info)
     if info.crew or execution.member_id or (not info.agent and agent):
         policy_agent = info.crew or (execution.selection_name if kind == "member" else agent)
-        denial = await asyncio.to_thread(
-            _vet_spawn_governance, info.parent_session_key, policy_agent, app=info.app
-        )
+        denial = None
+        for parent_agent in _spawning_agents(
+            self._manager._agents.values(), info.parent_session_key or ""
+        ) or ("",):
+            denial = await asyncio.to_thread(
+                _vet_spawn_governance,
+                info.parent_session_key,
+                policy_agent,
+                app=info.app,
+                **({"parent_agent": parent_agent} if parent_agent else {}),
+            )
+            if denial:
+                break
         if denial:
             raise RuntimeError(f"spawn refused by governance: {denial}")
         sel().log_api_access(
@@ -560,8 +572,8 @@ async def _run_inner_impl(
         from kiro_crew.agent_sdk.spec_hooks import session_agent
 
         logger.warning(
-            "Subagent %s: agent %s sets %d spec key(s) this backend does not receive, "
-            "so they have no effect in this run",
+            "Subagent %s: agent %s sets %d spec key(s) this backend does not apply "
+            "as written in this run",
             info.id,
             session_agent(client, agent),
             len(_spec.lost),
@@ -592,6 +604,8 @@ async def _run_inner_impl(
             session_key=session_key,
             agent=info.agent or "",
             app=info.app or "",
+            # The ladder's SpecHooks floor fired the PreToolUse hooks first.
+            pre_tool_hooks_fire=True,
             **hook_gate_kwargs(event),
         )
         return verdict

@@ -328,6 +328,62 @@ describe('WorkflowLibraryTab', () => {
     }
   })
 
+  it('draws every field of a workflow no ref reaches as read-only and names the file fields to change', async () => {
+    mockApi.workflowDefinitions.mockResolvedValue({
+      definitions: [{ ...DEFINITION, shadowed_refs: ['debug-project', 'wfd_1'] }],
+    })
+    renderTab()
+    const source = await editorReady()
+    await screen.findByText(i18nT('pages.overview.workflowLibrary.no_command_note'))
+
+    const runInput = screen.getByLabelText(
+      i18nT('pages.overview.workflowLibrary.run_input'),
+    )
+    expect(runInput).toHaveAttribute('readonly')
+    for (const field of [
+      screen.getByLabelText(i18nT('pages.overview.workflowLibrary.name')),
+      screen.getByLabelText(i18nT('pages.overview.workflowLibrary.slug')),
+      screen.getByLabelText(
+        i18nT('pages.overview.workflowLibrary.workflow_description'),
+      ),
+      runInput,
+    ]) {
+      expect(field).toHaveAttribute('aria-readonly', 'true')
+      expect(field).toHaveClass('opacity-60', 'cursor-not-allowed')
+    }
+    expect(source.parentElement).toHaveClass('opacity-60', 'cursor-not-allowed')
+    expect(
+      i18nT('pages.overview.workflowLibrary.no_command_note'),
+    ).toContain('`id` and `slug`')
+  })
+
+  it('keeps the run input editable for a workflow a ref reaches and empty for one no ref reaches', async () => {
+    mockApi.workflowDefinitions.mockResolvedValue({
+      definitions: [
+        DEFINITION,
+        {
+          ...DEFINITION,
+          id: 'wfd_2',
+          slug: 'triage-tickets',
+          name: 'Triage Tickets',
+          shadowed_refs: ['triage-tickets', 'wfd_2'],
+        },
+      ],
+    })
+    renderTab()
+    await editorReady()
+    const runInput = () =>
+      screen.getByLabelText(i18nT('pages.overview.workflowLibrary.run_input'))
+    expect(runInput()).not.toHaveAttribute('readonly')
+    expect(runInput()).not.toHaveClass('opacity-60')
+    fireEvent.change(runInput(), { target: { value: 'for debug-project' } })
+
+    fireEvent.click(screen.getByRole('button', { name: /Triage Tickets/ }))
+    await screen.findByText(i18nT('pages.overview.workflowLibrary.no_command_note'))
+    expect(runInput()).toHaveAttribute('readonly')
+    expect(runInput()).toHaveValue('')
+  })
+
   it('finds a workflow whose slug does not reach it by the id its row shows', async () => {
     mockApi.workflowDefinitions.mockResolvedValue({
       definitions: [

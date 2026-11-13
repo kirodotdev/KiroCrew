@@ -546,30 +546,41 @@ test("a service-owned stale bundle adds conditional service recovery guidance", 
 // A managed install keeps each version in its own folder. After an update the
 // previous version's gateway, left running when the old app quit, runs from the
 // sibling folder and has been reparented to launchd (PPID 1) without being a
-// launchd job.
+// launchd job: an orphan nothing restarts.
 const MANAGED_RESOURCES = "/X/0.11.0.3/KiroCrew.app/Contents/Resources";
 const PREVIOUS_MANAGED_GATEWAY =
   "/X/0.10.0.3/KiroCrew.app/Contents/Resources/backend-dist/kirocrew-backend-arm64/bin/python3.12 -s -P -m kiro_crew gateway --no-open --port 5476";
+const STALE_MESSAGE = "The gateway is still running an older version.";
 
+// `choose` is the label of the button every dialog answers with; a dialog
+// without it answers its first button. The CLI stop frees the port unless
+// `stopFails`, and `exitsDuringDialog` frees it while the first dialog is open.
 function managedStaleHarness({
-  response = 0,
+  choose = "Continue with existing gateway",
   command = PREVIOUS_MANAGED_GATEWAY,
   gatewayVersion = "0.10.0.3",
   launchdJobs = [310],
   launchdFails = false,
+  stopFails = false,
+  exitsDuringDialog = false,
   store,
   appVersion = "0.11.0.3",
   resourcesPath = MANAGED_RESOURCES,
 } = {}) {
   const dialogs = [];
   const launchctl = [];
+  const stops = [];
+  const port = { held: true };
   const instance = harness({
     app: { isPackaged: true, getVersion: () => appVersion },
     store,
     processRef: {
       platform: "darwin", arch: "arm64", env: {}, resourcesPath,
       getuid: () => 501,
-      kill() { throw new Error("the stale warning must not signal the gateway"); },
+      kill(_pid, signal) {
+        if (signal === 0) throw Object.assign(new Error("no such process"), { code: "ESRCH" });
+        throw new Error("the app must not signal the gateway itself");
+      },
     },
     httpMod: {
       get(url, _options, callback) {
@@ -588,64 +599,142 @@ function managedStaleHarness({
         return req;
       },
     },
-    execFileFn(file, args, _options, callback) {
-      if (file.endsWith("lsof")) callback(null, "123", "");
+    execFileFn(file, args, options, callback) {
+      if (file.endsWith("lsof")) callback(null, port.held ? "123" : "", "");
       else if (file === "/bin/launchctl") {
         launchctl.push(args[1]);
         if (launchdFails) callback(new Error("launchctl failed"), "", "");
         else callback(null, `\tservices = {\n${launchdJobs.map((pid) => `\t\t ${pid} - \tjob.${pid}\n`).join("")}\t}\n`, "");
       } else if (args.includes("ppid=")) callback(null, "1", "");
-      else callback(null, command, "");
+      else if (args[0] === "stop") {
+        stops.push({ file, args, options });
+        if (stopFails) callback(Object.assign(new Error("exit 1"), { code: 1 }), "", "refused");
+        else {
+          port.held = false;
+          callback(null, "Sent SIGTERM to gateway (pid 123).", "");
+        }
+      } else callback(null, command, "");
     },
-    dialog: { async showMessageBox(options) { dialogs.push(options); return { response }; } },
+    dialog: {
+      async showMessageBox(options) {
+        dialogs.push(options);
+        if (exitsDuringDialog) port.held = false;
+        return { response: Math.max(0, options.buttons.indexOf(choose)) };
+      },
+    },
   });
-  return { ...instance, dialogs, launchctl };
+  return { ...instance, dialogs, launchctl, stops };
 }
 
-test("a managed update's previous-version orphan gateway is no service and gets the stale warning", async () => {
+test("a managed update's previous-version orphan is a plain local gateway, not a service", async () => {
+  assert.equal(await managedStaleHarness().supervisor.probePrimaryPortOwner(), "kirocrew");
+  assert.equal(await managedStaleHarness({ launchdJobs: [310, 123] }).supervisor.probePrimaryPortOwner(), "service");
+  assert.equal(await managedStaleHarness({ launchdFails: true }).supervisor.probePrimaryPortOwner(), "service",
+    "an unreadable job list keeps the service verdict");
+});
+
+test("a managed update's previous-version orphan gets the stale warning with Stop and restart", async () => {
   const state = managedStaleHarness();
   assert.equal(await state.supervisor.start(), true);
   assert.equal(state.spawnCalls.length, 0, "Continue reuses it; nothing is spawned over it");
+  assert.equal(state.stops.length, 0, "Continue stops nothing");
   assert.equal(state.dialogs.length, 1);
-  assert.equal(state.dialogs[0].message, "The gateway is still running an older version.");
+  assert.equal(state.dialogs[0].message, STALE_MESSAGE);
+  assert.deepStrictEqual(state.dialogs[0].buttons, ["Stop and restart", "Continue with existing gateway", "Quit"]);
+  assert.equal(state.dialogs[0].cancelId, 1, "Escape continues; it never stops the gateway");
   assert.match(state.dialogs[0].detail, /app is version 0\.11\.0\.3/);
   assert.match(state.dialogs[0].detail, /gateway is still running version 0\.10\.0\.3/);
-  assert.match(state.dialogs[0].detail, /kirocrew stop --port 5476/);
+  assert.match(state.dialogs[0].detail, /Stop and restart stops that gateway with kirocrew stop --port 5476 and starts this version's gateway\./);
   assert.doesNotMatch(state.dialogs[0].detail, /If the gateway starts again automatically/,
     "an orphan has no service restarting it");
   assert.ok(state.logs.some((line) => line.includes("pid 123 on :5476 has launchd as its parent but is no launchd job")));
-  assert.deepStrictEqual(state.launchctl, ["gui/501", "user/501", "system"]);
+  assert.deepStrictEqual(state.launchctl.slice(0, 3), ["gui/501", "user/501", "system"]);
+});
+
+test("Stop and restart on a previous-version orphan runs the port stop, then starts the bundled backend", async () => {
+  const state = managedStaleHarness({ choose: "Stop and restart" });
+  assert.equal(await state.supervisor.start(), true);
+  assert.equal(state.stops.length, 1, "the CLI stop ran once");
+  assert.deepStrictEqual(state.stops[0].args, ["stop", "--port", "5476"],
+    "the command the dialog names; --expect-pid needs a pidfd macOS lacks");
+  assert.equal(state.stops[0].options.env.KIROCREW_HOME, "/virtual/kirocrew-home");
+  assert.equal(state.stops[0].options.env.KIROCREW_PORT, undefined);
+  assert.equal(state.spawnCalls.length, 1, "the freed port gets this version's gateway");
+  assert.deepStrictEqual(state.spawnCalls[0][1].slice(0, 4), ["gateway", "--no-open", "--port", "5476"]);
+});
+
+test("a stop that leaves the orphan on its port fails the start instead of spawning into it", async () => {
+  const state = managedStaleHarness({ choose: "Stop and restart", stopFails: true });
+  assert.equal(await state.supervisor.start(), false);
+  assert.equal(state.stops.length, 1);
+  assert.equal(state.spawnCalls.length, 0);
+  assert.ok(state.logs.some((line) => line.includes("kirocrew stop --port 5476` failed")));
+});
+
+test("an orphan that exits while the stale warning is open is replaced without a stop", async () => {
+  const state = managedStaleHarness({ choose: "Stop and restart", exitsDuringDialog: true });
+  assert.equal(await state.supervisor.start(), true);
+  assert.equal(state.stops.length, 0, "nothing is left to stop");
+  assert.equal(state.spawnCalls.length, 1);
+  assert.ok(state.logs.some((line) => line.includes("emptied while the dialog was open")));
 });
 
 test("Quit on a managed update's previous-version gateway warning aborts the launch", async () => {
-  const state = managedStaleHarness({ response: 1 });
+  const state = managedStaleHarness({ choose: "Quit" });
   assert.equal(await state.supervisor.start(), false);
   assert.equal(state.spawnCalls.length, 0);
+  assert.equal(state.stops.length, 0);
   assert.equal(state.dialogs.length, 1);
 });
 
-test("a previous-version gateway launchd runs as a job keeps the service guidance", async () => {
+test("a previous-version gateway launchd runs as a job keeps the service guidance and no stop", async () => {
   const state = managedStaleHarness({ launchdJobs: [310, 123] });
   assert.equal(await state.supervisor.start(), true);
   assert.equal(state.dialogs.length, 1);
+  assert.deepStrictEqual(state.dialogs[0].buttons, ["Continue with existing gateway", "Quit"]);
   assert.match(state.dialogs[0].detail, /If the gateway starts again automatically/);
 });
 
-test("an unreadable launchd job list keeps the service note (fail closed)", async () => {
+test("an unreadable launchd job list keeps the service note and offers no stop (fail closed)", async () => {
   const state = managedStaleHarness({ launchdFails: true });
   assert.equal(await state.supervisor.start(), true);
   assert.equal(state.dialogs.length, 1);
+  assert.deepStrictEqual(state.dialogs[0].buttons, ["Continue with existing gateway", "Quit"]);
   assert.match(state.dialogs[0].detail, /If the gateway starts again automatically/);
 });
 
-test("an orphaned gateway of the other release family is still reused, never offered a takeover", async () => {
-  // Quitting the other family's app cannot stop a gateway whose app already
-  // exited, so the launchd check must not turn an orphan into a takeover target.
-  const state = managedStaleHarness({ gatewayVersion: "0.1.2-nightly.20260729t073648" });
+test("an orphaned gateway of the other release family is offered a stop, not a quit of its app", async () => {
+  // Quitting the other family's app cannot stop a gateway that outlived it.
+  const state = managedStaleHarness({
+    gatewayVersion: "0.1.2-nightly.20260729t073648", choose: "Stop and continue",
+  });
   assert.equal(await state.supervisor.start(), true);
+  assert.equal(state.dialogs.length, 1, "one takeover prompt, no stale dialog");
+  assert.equal(state.dialogs[0].message,
+    "A Kiro Crew Nightly gateway (0.1.2-nightly.20260729t073648) is still running with your Kiro Crew data.");
+  assert.deepStrictEqual(state.dialogs[0].buttons, ["Stop and continue", "Cancel"]);
+  assert.match(state.dialogs[0].detail, /quitting Kiro Crew Nightly would not stop it/);
+  assert.match(state.dialogs[0].detail, /kirocrew stop --port 5476/);
+  assert.equal(state.stops.length, 1);
+  assert.deepStrictEqual(state.stops[0].args, ["stop", "--port", "5476"]);
+  assert.equal(state.spawnCalls.length, 1);
+});
+
+test("Cancel on the other family's orphan aborts the launch and stops nothing", async () => {
+  const state = managedStaleHarness({ gatewayVersion: "0.1.2-nightly.20260729t073648", choose: "Cancel" });
+  assert.equal(await state.supervisor.start(), false);
+  assert.equal(state.stops.length, 0);
   assert.equal(state.spawnCalls.length, 0);
-  assert.equal(state.dialogs.length, 0, "no stale dialog and no takeover prompt");
-  assert.deepStrictEqual(state.launchctl, [], "launchd is read only for the stale dialog");
+});
+
+test("the other family's launchd job keeps today's reuse, never a takeover", async () => {
+  const state = managedStaleHarness({
+    gatewayVersion: "0.1.2-nightly.20260729t073648", launchdJobs: [310, 123],
+  });
+  assert.equal(await state.supervisor.start(), true);
+  assert.equal(state.dialogs.length, 0);
+  assert.equal(state.stops.length, 0);
+  assert.equal(state.spawnCalls.length, 0);
 });
 
 test("no stale warning when the gateway's version does not name the sibling folder it runs from", async () => {
@@ -759,7 +848,7 @@ test("no stale warning when the port belongs to a configured remote crew", async
     store: fakeStore({ remoteHosts: { 5476: { host: "devbox", binPath: "", remotePort: "", remotePath: "" } } }),
   });
   await state.supervisor.start();
-  assert.equal(state.dialogs.filter((d) => d.message === "The gateway is still running an older version.").length, 0);
+  assert.equal(state.dialogs.filter((d) => d.message === STALE_MESSAGE).length, 0);
 });
 
 // A gateway this app found already serving and adopted, as it is when a desktop
@@ -989,7 +1078,7 @@ test("an adopted gateway from another install is left alone by the update stop",
 
 test("a client-only launch whose crew opted in opens the managed tunnel before asking the port", async () => {
   const timers = fakeTimers();
-  const { supervisor, spawnCalls } = harness({
+  const { supervisor, spawnCalls, tunnelCalls } = harness({
     timers,
     store: remoteCrewStore(5477, {
       host: "devbox.example.com",
@@ -1003,8 +1092,8 @@ test("a client-only launch whose crew opted in opens the managed tunnel before a
 
   const started = supervisor.start();
   await flush();
-  assert.strictEqual(spawnCalls.length, 1, "the keeper is spawned first");
-  const [, args] = spawnCalls[0];
+  assert.strictEqual(tunnelCalls.length, 1, "the keeper is spawned first");
+  const [, args] = tunnelCalls[0];
   assert.deepStrictEqual(args.slice(0, 2), ["desktop", "tunnel"]);
   assert.deepStrictEqual(
     args.slice(2),
@@ -1018,22 +1107,120 @@ test("a client-only launch whose crew opted in opens the managed tunnel before a
     await flush();
   }
   assert.strictEqual(await started, false);
-  assert.strictEqual(spawnCalls.length, 1, "client-only still starts no local gateway");
+  assert.strictEqual(spawnCalls.length, 0, "client-only still starts no local gateway");
 
   supervisor.stopOnQuit();
-  assert.ok(spawnCalls[0].child.killed, "quitting stops the keeper");
+  assert.ok(tunnelCalls[0].child.killed, "quitting stops the keeper");
 });
 
-test("without the opt-in a client-only launch spawns nothing and does not wait", async () => {
-  const { supervisor, spawnCalls } = harness({
-    store: remoteCrewStore(5477, {
-      host: "devbox.example.com",
-      binPath: "kirocrew",
-      remotePort: "5476",
-      remotePath: "",
-    }, { runLocalGateway: false }),
+const NOT_OPTED_IN_CREW = {
+  host: "devbox.example.com",
+  binPath: "kirocrew",
+  remotePort: "5476",
+  remotePath: "",
+  manageTunnel: false,
+};
+
+// The listener probe (lsof) reporting `pids` on the launch port.
+function lsofReports(pids) {
+  return (file, _args, _options, callback) => {
+    if (!String(file).endsWith("lsof")) throw new Error(`unexpected ${file}`);
+    callback(null, pids.map((pid) => `${pid}\n`).join(""), "");
+  };
+}
+
+test("without the opt-in, a client-only port nothing answers still gets the forward", async () => {
+  // A crew the Add Remote Crew form saved unticked: nothing else forwards the
+  // port, so without this the launch fails on every reopen.
+  const timers = fakeTimers();
+  const { supervisor, spawnCalls, tunnelCalls } = harness({
+    timers,
+    store: remoteCrewStore(5477, NOT_OPTED_IN_CREW, { runLocalGateway: false }),
+    port: 5477,
+    execFileFn: lsofReports([]),
+  });
+
+  const started = supervisor.start();
+  for (let i = 0; i < 20 && tunnelCalls.length === 0; i += 1) await flush();
+  assert.strictEqual(tunnelCalls.length, 1, "the keeper is spawned once the port is found unanswered");
+  const [, args] = tunnelCalls[0];
+  assert.deepStrictEqual(
+    args,
+    ["desktop", "tunnel", "--host", "devbox.example.com", "--local-port", "5477", "--remote-port", "5476"],
+  );
+  while (timers.pending.some((timer) => timer.ms === 500)) {
+    timers.fire(500);
+    await flush();
+  }
+  assert.strictEqual(await started, false);
+  assert.strictEqual(spawnCalls.length, 0, "client-only still starts no local gateway");
+  supervisor.stopOnQuit();
+  assert.ok(tunnelCalls[0].child.killed, "quitting stops the keeper");
+});
+
+test("without the opt-in, a port something else answers is never taken over", async () => {
+  // The user's own VPN, kubectl or ssh forward already carries the port.
+  const http = switchableHttp({ status: 200, body: JSON.stringify({ app: "kirocrew", version: "0.6.0" }) });
+  const { supervisor, tunnelCalls } = harness({
+    store: remoteCrewStore(5477, NOT_OPTED_IN_CREW, { runLocalGateway: false }),
+    port: 5477,
+    httpMod: http,
+  });
+  await supervisor.start();
+  assert.ok(http.requests.length > 0, "the port was asked");
+  assert.strictEqual(tunnelCalls.length, 0);
+});
+
+test("a remote-crew save that stays unticked stops the launch-time fallback forward", async () => {
+  const timers = fakeTimers();
+  const { supervisor, tunnelCalls } = harness({
+    timers,
+    store: remoteCrewStore(5477, NOT_OPTED_IN_CREW, { runLocalGateway: false }),
+    port: 5477,
+    execFileFn: lsofReports([]),
+  });
+  const started = supervisor.start();
+  for (let i = 0; i < 20 && tunnelCalls.length === 0; i += 1) await flush();
+  assert.strictEqual(tunnelCalls.length, 1);
+  while (timers.pending.some((timer) => timer.ms === 500)) {
+    timers.fire(500);
+    await flush();
+  }
+  await started;
+  // What Set Remote Host calls after saving the launch port's crew.
+  supervisor.syncTunnel();
+  assert.ok(tunnelCalls[0].child.killed, "the saved false ends the fallback");
+  assert.strictEqual(tunnelCalls.length, 1);
+});
+
+test("without the opt-in, a port held by a forward whose far end is down is never taken over", async () => {
+  // Nothing answers over HTTP, but the user's own ssh still listens on the port.
+  const { supervisor, spawnCalls, tunnelCalls } = harness({
+    store: remoteCrewStore(5477, NOT_OPTED_IN_CREW, { runLocalGateway: false }),
+    port: 5477,
+    execFileFn: lsofReports([4321]),
+  });
+  assert.strictEqual(await supervisor.start(), false);
+  assert.strictEqual(tunnelCalls.length, 0);
+  assert.strictEqual(spawnCalls.length, 0);
+});
+
+test("without the opt-in, a port the listener probe cannot read is never taken over", async () => {
+  // The default harness execFile throws, so the probe answers "unknown".
+  const { supervisor, tunnelCalls } = harness({
+    store: remoteCrewStore(5477, NOT_OPTED_IN_CREW, { runLocalGateway: false }),
     port: 5477,
   });
   assert.strictEqual(await supervisor.start(), false);
-  assert.strictEqual(spawnCalls.length, 0);
+  assert.strictEqual(tunnelCalls.length, 0);
+});
+
+test("with the local gateway on, an unanswered crew port opens no unrequested forward", async () => {
+  const { supervisor, spawnCalls, tunnelCalls } = harness({
+    store: remoteCrewStore(5477, NOT_OPTED_IN_CREW, { runLocalGateway: true }),
+    port: 5477,
+  });
+  assert.strictEqual(await supervisor.start(), false);
+  assert.strictEqual(tunnelCalls.length, 0);
+  assert.strictEqual(spawnCalls.length, 0, "and no gateway is bound over the crew's port");
 });

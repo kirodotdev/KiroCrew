@@ -4,7 +4,7 @@
 // An aria-modal dialog that lets focus wander behind the overlay would let
 // keyboard users activate obscured controls, so every dialog needs the same
 // three pieces. They live here rather than being re-implemented per dialog.
-import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import { useDocumentImeLatch } from './useImeGuard'
 import { useLocalCrewHidden } from '../components/overlayRoot'
 
@@ -51,7 +51,7 @@ const newestArmedTrap = (): number => Math.max(-1, ...armedTabTraps)
  * entry, restoration, and Tab trapping.
  *
  * `restoreFocus` gates ONLY the return half: focus still moves into the dialog
- * on mount, but nothing is captured or restored on unmount. Pass `false` from a
+ * on mount, but nothing is restored on unmount. Pass `false` from a
  * trigger-anchored popover whose host already moves focus back itself, for two
  * reasons this hook cannot decide from the inside:
  *
@@ -94,13 +94,22 @@ export function useDialogFocusTrap(
   // mid-entrance (translated off-screen), so that scroll lands on the page
   // BEHIND it and the workspace visibly twitches as the animation settles; on
   // close the same happens to whatever regains focus.
+  //
+  // The restore target is what holds focus when this effect runs, unless that
+  // is inside the dialog already (React applies a child's `autoFocus` in the
+  // commit, before any effect): then it is what held focus at the first
+  // render. The effect-time read stays first because a dialog closing in the
+  // same commit hands focus back to its own opener before this effect runs.
+  const [opener] = useState(() => document.activeElement as HTMLElement | null)
   useEffect(() => {
-    const restoreTo = restoreFocus ? (document.activeElement as HTMLElement | null) : null
+    const active = document.activeElement as HTMLElement | null
+    const target = containerRef.current?.contains(active) ? opener : active
+    const restoreTo = restoreFocus ? target : null
     const first = Array.from(containerRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])
       .find((el) => el.tabIndex >= 0)
     ;(first ?? containerRef.current)?.focus({ preventScroll: true })
     return () => restoreTo?.focus?.({ preventScroll: true })
-  }, [containerRef, restoreFocus])
+  }, [containerRef, restoreFocus, opener])
 
   // IME guard for the Tab-cycles-focus path. This listener receives NATIVE
   // KeyboardEvents (window capture), which `useImeGuard`'s synthetic-only

@@ -300,7 +300,10 @@ unreachable on exactly the hosts that need it to explain how to get the desktop 
 
 ```bash
 # Build the UI bundle if the app has one
-cd my-app/ui && npm install && npm run build && cd ..
+cd my-app/ui
+npm install
+npm run build
+cd ..
 
 kirocrew app install /absolute/path/to/my-app
 kirocrew app enable my-app
@@ -378,10 +381,14 @@ edit gets the same revocation, but only once the liveness watch notices, and an
 app's shutdown hook can no longer load by then. See
 `docs/architecture/app-platform-trust-model.md` for the full contract.
 
-Non-executable resources (agents, skills, MCP server declarations, cron
-definitions, UI bundles) are unaffected. If your app needs any executable
-surface, say so in your README: a user who has not turned the setting on will see
-`app_execution_denied` rather than a working install.
+The gate covers the whole app, not only its executable surfaces. Until the app
+is trusted, either alone (`agent.apps_trusted`, which the App Store asks for at
+enable) or through that setting, `enable` refuses it and registration denies it,
+so none of its agents, skills, MCP server declarations or cron definitions is
+registered. That holds for an app that declares only a skill and a remote MCP
+server, too. Only the static files of an installed UI bundle are still served
+from `/apps/<name>/ui/`. Tell users in your README to trust the app when they enable it; a
+user who has not will see `app_execution_denied` rather than a working install.
 
 Repository layout:
 
@@ -681,8 +688,8 @@ useful to Kiro Crew users.
 | Stage | Command or action |
 |-------|-------------------|
 | Scaffold | `kirocrew app init my-app` |
-| Build UI | `cd ui && npm run build` |
-| Install locally | `POST /api/apps/install`, or `kirocrew app install <dir>` |
+| Build UI | `npm run build` in `ui/` |
+| Install locally | `POST /api/apps/install`, or `kirocrew app install <dir or git URL>` |
 | Enable | Trust the app first, then `POST /api/apps/{name}/enable`, or `kirocrew app enable <name>` |
 | Live reload | `kirocrew app dev <name>` |
 | Update local copy | `POST /api/apps/{name}/update`, or `kirocrew app update <name> [--source <dir>]` |

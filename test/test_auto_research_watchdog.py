@@ -795,6 +795,293 @@ class TestWatchdogStopTombstone:
         svc.remove.assert_awaited_once_with(loop.id)
 
 
+class TestWatchdogFindingVerdicts:
+    """A new finding can end the run (verified pass, cycle cap, stagnation).
+    Each of those must stop the worker loop like the idle-expiry settlement
+    does, or the loop keeps scheduling turns for a campaign the watchdog no
+    longer polls."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("max_cycles", "baseline", "final", "expected"),
+        [
+            (30, 1, {"new_findings_count": 1, "verification": {"passed": True}}, "complete"),
+            (2, 1, {"new_findings_count": 1, "verification": None}, "complete"),
+            (30, 4, {"new_findings_count": 0, "verification": None}, "stagnant"),
+        ],
+        ids=["verified", "cycle-cap", "stagnant"],
+    )
+    async def test_a_terminal_finding_stops_the_worker_loop(
+        self, _isolate: Path, monkeypatch, max_cycles, baseline, final, expected
+    ):
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        cid = create_campaign(
+            {
+                "question": "Research a sufficiently detailed question here",
+                "sources": ["web"],
+                "max_cycles": max_cycles,
+            }
+        )["id"]
+        update_campaign_status(cid, CampaignStatus.RUNNING)
+        findings = _isolate / "research" / cid / "findings"
+        findings.mkdir(parents=True, exist_ok=True)
+        for n in range(1, baseline + 1):
+            findings.joinpath(f"cycle_{n:03d}.json").write_text(
+                json.dumps({"summary": "partial", "new_findings_count": 0})
+            )
+
+        loop = SimpleNamespace(
+            id="loop-1", slot_key=f"research-{cid}", active=True, stopped_reason=""
+        )
+
+        async def _update(_loop_id, **fields):
+            for key, value in fields.items():
+                setattr(loop, key, value)
+
+        svc = MagicMock()
+        svc.get_by_slot.return_value = loop
+        svc.update = AsyncMock(side_effect=_update)
+        svc.remove = AsyncMock()
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        monkeypatch.setattr(h, "is_app_enabled", lambda _name: True)
+        monkeypatch.setattr(h, "_advance_exploration", lambda _cid: None)
+        events: list[dict] = []
+        monkeypatch.setattr(h, "_emit_sse", events.append)
+
+        def _publish_final(poll: int) -> None:
+            # Poll 1 records the baseline; the final finding lands before poll 2.
+            if poll == 2:
+                findings.joinpath(f"cycle_{baseline + 1:03d}.json").write_text(
+                    json.dumps({"summary": "final", **final})
+                )
+
+        _drive_watchdog_polls(monkeypatch, h, on_poll=_publish_final)
+        slot = SimpleNamespace(_trust=True, running=False)
+        # flake-ok: bounded by the patched pacing sleep, which cancels the loop after poll 2
+        await h._watchdog_loop({"state": SimpleNamespace(_slots={f"research-{cid}": slot})})
+
+        assert get_campaign(cid)["status"] == expected
+        assert loop.active is False, "terminal finding left the worker loop active"
+        assert loop.stopped_reason == f"campaign_{expected}"
+        svc.remove.assert_awaited_once_with(loop.id)
+        assert [e["type"] for e in events][-1] == expected
+
+    @pytest.mark.asyncio
+    async def test_a_terminal_finding_waits_for_the_worker_turn(self, _isolate: Path, monkeypatch):
+        """Loop removal waits until the turn that wrote the finding exits."""
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        cid = create_campaign(
+            {
+                "question": "Research a sufficiently detailed question here",
+                "sources": ["web"],
+            }
+        )["id"]
+        update_campaign_status(cid, CampaignStatus.RUNNING)
+        findings = _isolate / "research" / cid / "findings"
+        findings.mkdir(parents=True, exist_ok=True)
+        findings.joinpath("cycle_001.json").write_text(
+            json.dumps({"summary": "partial", "new_findings_count": 1})
+        )
+
+        loop = SimpleNamespace(
+            id="loop-1", slot_key=f"research-{cid}", active=True, stopped_reason=""
+        )
+
+        async def _update(_loop_id, **fields):
+            for key, value in fields.items():
+                setattr(loop, key, value)
+
+        slot = SimpleNamespace(_trust=True, running=True)
+        removal_running_states: list[bool] = []
+
+        async def _remove(_loop_id):
+            removal_running_states.append(slot.running)
+
+        svc = MagicMock()
+        svc.get_by_slot.return_value = loop
+        svc.update = AsyncMock(side_effect=_update)
+        svc.remove = AsyncMock(side_effect=_remove)
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        monkeypatch.setattr(h, "is_app_enabled", lambda _name: True)
+        monkeypatch.setattr(h, "_advance_exploration", lambda _cid: None)
+        monkeypatch.setattr(h, "_emit_sse", lambda _event: None)
+        state_before_idle: list[tuple[str, bool]] = []
+
+        def _advance_turn(poll: int) -> None:
+            if poll == 2:
+                findings.joinpath("cycle_002.json").write_text(
+                    json.dumps(
+                        {
+                            "summary": "final",
+                            "new_findings_count": 1,
+                            "verification": {"passed": True},
+                        }
+                    )
+                )
+            elif poll == 3:
+                state_before_idle.append((get_campaign(cid)["status"], loop.active))
+                slot.running = False
+
+        _drive_watchdog_polls(monkeypatch, h, polls=3, on_poll=_advance_turn)
+        await h._watchdog_loop({"state": SimpleNamespace(_slots={f"research-{cid}": slot})})
+
+        assert state_before_idle == [(CampaignStatus.RUNNING, False)]
+        assert get_campaign(cid)["status"] == CampaignStatus.COMPLETE
+        assert removal_running_states == [False]
+        svc.remove.assert_awaited_once_with(loop.id)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("reason_name", "finding_status"),
+        [
+            ("AUTONUDGE_STOP_REASON", None),
+            ("CONSECUTIVE_FAILURE_REASON", None),
+            ("SESSION_START_FAILURE_REASON", None),
+            (None, CampaignStatus.COMPLETE),
+            (None, CampaignStatus.STAGNANT),
+        ],
+        ids=["source-stop", "failed-cycles", "failed-starts", "complete", "stagnant"],
+    )
+    async def test_an_inactive_terminal_turn_revokes_trust_at_expiry(
+        self, monkeypatch, reason_name, finding_status
+    ):
+        """Every terminal tombstone revokes an active turn's expired grant."""
+        from kiro_crew import autonudge
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        clock = ManualClock()
+        clock.install(monkeypatch, h.watchdog)
+        cid = create_campaign(
+            {
+                "question": "Research a sufficiently detailed question here",
+                "sources": ["web"],
+            }
+        )["id"]
+        update_campaign_status(cid, CampaignStatus.RUNNING)
+        db = h._get_db()
+        db.execute(
+            "UPDATE campaigns SET started_at=? WHERE id=?",
+            (clock.time() - h._TRUST_TTL_SECS - 1, cid),
+        )
+        db.commit()
+        db.close()
+
+        stopped_reason = (
+            getattr(autonudge, reason_name)
+            if reason_name is not None
+            else f"campaign_{finding_status.value}"
+        )
+        loop = SimpleNamespace(
+            id="loop-1",
+            slot_key=f"research-{cid}",
+            active=False,
+            stopped_reason=stopped_reason,
+        )
+        svc = MagicMock()
+        svc.get_by_slot.return_value = loop
+        svc.update = AsyncMock()
+        svc.remove = AsyncMock()
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        monkeypatch.setattr(h, "is_app_enabled", lambda _name: True)
+
+        slot_key = f"research-{cid}"
+        slot = SimpleNamespace(key=slot_key, _trust=True, running=True)
+        sessions = MagicMock()
+        state = SimpleNamespace(_slots={slot_key: slot}, sessions=sessions)
+        _drive_watchdog_polls(monkeypatch, h, polls=1)
+
+        await h._watchdog_loop({"state": state})
+
+        assert get_campaign(cid)["status"] == CampaignStatus.RUNNING
+        assert slot._trust is False
+        sessions.set_approval_policy.assert_called_once_with(f"dashboard:{slot_key}", "")
+        svc.remove.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_inactive_finding_verdict_survives_watchdog_restart(
+        self, _isolate: Path, monkeypatch
+    ):
+        """The persisted stop reason restores a verdict after process loss."""
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        cid = create_campaign(
+            {
+                "question": "Research a sufficiently detailed question here",
+                "sources": ["web"],
+            }
+        )["id"]
+        update_campaign_status(cid, CampaignStatus.RUNNING)
+        findings = _isolate / "research" / cid / "findings"
+        findings.mkdir(parents=True, exist_ok=True)
+        findings.joinpath("cycle_001.json").write_text(
+            json.dumps(
+                {
+                    "summary": "final",
+                    "new_findings_count": 1,
+                    "verification": {"passed": True},
+                }
+            )
+        )
+
+        loop = SimpleNamespace(
+            id="loop-1",
+            slot_key=f"research-{cid}",
+            active=False,
+            stopped_reason="campaign_complete",
+        )
+        svc = MagicMock()
+        svc.get_by_slot.return_value = loop
+        svc.update = AsyncMock()
+        svc.remove = AsyncMock()
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        monkeypatch.setattr(h, "is_app_enabled", lambda _name: True)
+        monkeypatch.setattr(h, "_advance_exploration", lambda _cid: None)
+        monkeypatch.setattr(h, "_emit_sse", lambda _event: None)
+
+        _drive_watchdog_polls(monkeypatch, h)
+        slot = SimpleNamespace(_trust=True, running=False)
+        await h._watchdog_loop({"state": SimpleNamespace(_slots={f"research-{cid}": slot})})
+
+        assert get_campaign(cid)["status"] == CampaignStatus.COMPLETE
+        svc.update.assert_not_awaited()
+        svc.remove.assert_awaited_once_with(loop.id)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "status",
+        [CampaignStatus.COMPLETE, CampaignStatus.STAGNANT],
+        ids=["complete", "stagnant"],
+    )
+    async def test_launch_preparation_removes_a_retained_finding_verdict(
+        self, tmp_path, monkeypatch, status
+    ):
+        """A resumed run cannot inherit a terminal finding verdict."""
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+        from kiro_crew.autonudge import AutoNudgeService
+
+        cid = "a1b2c3d4"
+        slot_key = f"research-{cid}"
+        svc = AutoNudgeService(base_dir=tmp_path / "autonudge")
+        await svc.start()
+        try:
+            retained = await svc.add(slot_key=slot_key, message="old run", idle_secs=60)
+            await svc.update(
+                retained.id,
+                active=False,
+                stopped_reason=f"campaign_{status.value}",
+            )
+            monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+            monkeypatch.setattr(h, "_clear_worker_done_marker", lambda _cid: None)
+
+            await h._prepare_loop_launch(cid)
+
+            assert svc.get_by_slot(slot_key) is None
+        finally:
+            svc.stop()
+
+
 class TestWatchdogFindingHelpers:
     def test_list_cycle_files_sorted_newest_last(self):
         from kiro_crew.apps.builtins.auto_research import handlers as h

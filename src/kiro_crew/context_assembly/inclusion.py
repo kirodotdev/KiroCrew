@@ -4,13 +4,14 @@ A spawning parent narrows the switchable context groups for its sub-agent and th
 operator's toggles narrow them further; :func:`_build_context_scope_section` names
 what a parent withheld. :func:`_render_folder_steering_section` is the one folder
 steering renderer, :func:`skill_parts` the one loader call, and
-:func:`steering_resources_part` the one Claude Code steering-resources gate, that
-session start and post-compaction re-injection share.
+:func:`steering_resources_part` the one steering-resources gate for a harness that
+reads no agent ``resources`` (Claude Code and Codex), that session start and
+post-compaction re-injection share.
 
 Three inclusion rules stay on :mod:`kiro_crew.context`: ``_skills_injection_plan``
 (a doc pins its return expression there), ``_config_scoped_groups`` (callers rebind
 it) and ``_project_steering_delivered`` (the provider-identity guard scans that
-file). The CC-backend steering loader lives in
+file). The steering loader lives in
 :mod:`kiro_crew.context_assembly.agent_spec`, beside the agent-spec read it shares
 with the agent prompt.
 
@@ -142,11 +143,15 @@ def _folder_steering_delivery_snapshot(
     native_steering: bool,
     project: str | None,
     native_launch_sources: Collection[str],
+    agent: str | None,
 ) -> tuple[bool, Collection[str]]:
     """Resolve root dedup and the launch record the folder skips by path.
 
     ``native_launch_sources`` names the documents in the serving process's
     launch record, which kiro-cli loads and re-reads for every request.
+    ``agent`` is the chat's agent, as :func:`steering_resources_part` receives
+    it: Crew's steering load serves only the default agent, so the folder skips
+    the trees for that load only when it runs.
     ``provider_type`` is the harness as the caller named it. ``None`` is not
     kiro-cli: unless the provider reports ``native_steering``, nothing is
     skipped as delivered and no launch record applies, so the folder carries
@@ -154,7 +159,9 @@ def _folder_steering_delivery_snapshot(
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 
-    skip_delivered_roots = ctx._project_steering_delivered(provider_type, native_steering, project)
+    skip_delivered_roots = ctx._project_steering_delivered(
+        provider_type, native_steering, project, agent=agent
+    )
     if skip_delivered_roots or provider_type != ctx.PROVIDER_ACP:
         return skip_delivered_roots, ()
     return skip_delivered_roots, native_launch_sources
@@ -191,7 +198,7 @@ def skill_parts(
 def steering_resources_part(
     *,
     agent: str | None,
-    is_cc: bool,
+    provider_type: str | None,
     essentials: str,
     context_groups: frozenset[str] | None,
     project: str | None = None,
@@ -204,22 +211,27 @@ def steering_resources_part(
 
     kiro-cli loads an agent's ``resources`` natively when spawned with
     ``--agent`` (see acp/client_start.py ``_spawn``) and keeps them across its own
-    compaction, so only the Claude Code backend, which does NOT read agent
-    ``resources``, needs the explicit load (*is_cc*, a positive identity).
-    A custom agent loads its own prompt, a member chat (*essentials* non-empty)
-    carries its steering inside the essentials envelope, and the ``project``
-    context group decides whether steering is in scope at all. *project* is the
-    session's project: relative entries anchor there, as kiro-cli anchors them
-    at its working directory, and it adds the project's steering and
-    ``AGENTS.md`` that kiro-cli inherits.
+    compaction, so only a harness that does NOT read agent ``resources`` needs the
+    explicit load: *provider_type*, the session's provider label, names one in
+    ``ACP_BACKENDS_CREW_LOADS_SPEC_STEERING`` (Claude Code and Codex, a positive
+    membership). A custom agent loads its own prompt, a member chat (*essentials*
+    non-empty) carries its steering inside the essentials envelope, and the
+    ``project`` context group decides whether steering is in scope at all.
+    *project* is the session's project: relative entries anchor there, as
+    kiro-cli anchors them at its working directory, and it adds the project's
+    steering and ``AGENTS.md`` that kiro-cli inherits. A harness that reads that
+    ``AGENTS.md`` itself from its working directory (Codex) does not get it from
+    this load.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.agent_files import is_kirocrew_default_agent
 
-    if not is_cc or essentials:
+    if essentials or not ctx.acp_driver.crew_loads_spec_steering(provider_type):
         return ""
     if agent and not is_kirocrew_default_agent(agent):
         return ""
     if not _group_included(context_groups, CONTEXT_GROUP_PROJECT):
         return ""
-    return ctx._load_steering_resources(project)
+    return ctx._load_steering_resources(
+        project, harness_reads_agents_md=ctx.acp_driver.reads_project_agents_md(provider_type)
+    )

@@ -375,6 +375,7 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
 # ``print('<name>'); log('<verb>')``, which mints nothing.
 _INTERP_BINDING_RE = re.compile(r"\b([a-z_]\w*)\s*=\s*('[^']*'|\"[^\"]*\")")
 _INTERP_IDENT_RE = re.compile(r"\b[a-z_]\w*\b")
+_INTERP_ROW_NEEDS = "crew"  # every alternative of both rows needs it: without it, no copy is built
 
 
 # ``"<name> %s" % "<verb>"`` -- printf-style formatting is the same evasion as adjacent
@@ -564,6 +565,7 @@ def is_denied(
         *,
         rule: str = "",
         component: str = "",
+        span: "tuple[int, int] | None" = None,
     ) -> str:
         """Refusal text for *matched* -- see :func:`_deny_reason`, the shared producer.
 
@@ -576,11 +578,16 @@ def is_denied(
         denial's first line already names the pattern that matched the input, so a
         diagnostic would repeat it on every ordinary refusal, while a floor denial
         reports a pattern the input provably cannot match and is the refusal an
-        agent cannot diagnose at all. The span is the whole subject because a floor
-        decides on the argv's SHAPE rather than at an offset.
+        agent cannot diagnose at all.
+
+        *span* points the diagnostic at the offsets a floor read as the cause (the
+        kill floor names its target); omitted, it is the whole subject -- the
+        honest reading for a shape-level floor or an unlocatable match.
         """
         diagnostic = (
-            _diag.refusal_diagnostic(rule, component, tool_name) if rule and component else None
+            _diag.refusal_diagnostic(rule, component, tool_name, span)
+            if rule and component
+            else None
         )
         return _rules._deny_reason(
             matched, reason_notes, note_override=note_override, diagnostic=diagnostic
@@ -630,9 +637,8 @@ def is_denied(
     # therefore also matched against a copy with those joins collapsed.  Scoped to those
     # two patterns on purpose: collapsing text for all the other rules would change
     # inputs they were never measured against.
-    joined = _inline_interpreter_bindings(
-        _collapse_percent_format(_rules._LITERAL_CONCAT_RE.sub("", lower))
-    )
+    collapsed = _collapse_percent_format(_rules._LITERAL_CONCAT_RE.sub("", lower))
+    joined = _inline_interpreter_bindings(collapsed) if _INTERP_ROW_NEEDS in collapsed else lower
     if joined != lower:
         for interpreter_pattern in regex_patterns:
             if interpreter_pattern not in _rules._INTERPRETER_RULE_PATTERNS:
@@ -774,7 +780,7 @@ def is_denied(
         ("credential-exfil-kirocrew-token", _argv._is_credential_mint),
         ("self-protection-kill", _argv._is_self_kill),
         ("self-protection-dev-mode-out-of-root-confirm", _argv._is_dev_mode_out_of_root_confirm),
-        ("sandbox-escape-ssh-self", _argv._is_ssh_to_self),
+        ("sandbox-escape-ssh-self", _argv._reaches_self_over_ssh),
     ):
         pattern = _rules._SELF_PROTECTION_FLOOR_BY_ID.get(rule_id)
         if pattern is None or pattern not in floor_enabled:
@@ -782,11 +788,26 @@ def is_denied(
         # The mint predicate also gets the command AS SUBMITTED: it decodes base64
         # literals to read the name they hide, and base64 does not survive the
         # lower-casing every other predicate reads.
-        hit = (
-            _argv._is_credential_mint(lower, raw_text=tool_name)
-            if predicate is _argv._is_credential_mint
-            else predicate(lower)
-        )
+        #
+        # The kill floor derives its matched target's offsets in the same walk that
+        # decides the verdict (``_self_kill_span``), so the diagnostic points at the
+        # token not the whole command. The verdict is unchanged -- a self-kill
+        # always yields a span, so ``hit`` is exactly ``_is_self_kill``; other
+        # floors report no offsets and span the whole subject.
+        span: "tuple[int, int] | None" = None
+        if predicate is _argv._is_credential_mint:
+            hit = _argv._is_credential_mint(lower, raw_text=tool_name)
+        elif predicate is _argv._is_self_kill:
+            span = _argv._self_kill_span(lower)
+            hit = span is not None
+            # Offsets index ``lower``; the diagnostic renders ``tool_name``. They
+            # align only while ``str.lower`` kept the length -- a width-changing
+            # lowercase (``İ`` U+0130 -> two) would land them on the wrong raw
+            # bytes, so drop to the whole-command span.
+            if span is not None and len(lower) != len(tool_name):
+                span = None
+        else:
+            hit = predicate(lower)
         if hit:  # never waived: a self-guard rule (``_DenyWaiver``)
             # Report the rule's own pattern, exactly as the regex tier does, so
             # the denial reason and the SEL event still map back to the rule id —
@@ -799,6 +820,7 @@ def is_denied(
                 _rules._SELF_PROTECTION_FLOOR_NOTES.get(rule_id, ""),
                 rule=rule_id,
                 component="argv-floor",
+                span=span,
             )
     # The self-management SUBCOMMAND floors have no catalog row (their
     # product-name-anywhere regex rows were deleted, see

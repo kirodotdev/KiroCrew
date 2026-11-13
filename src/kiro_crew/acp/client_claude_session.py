@@ -13,7 +13,8 @@ Instance fields written: ``_claude_inline_settings``,
 ``_claude_local_settings_excluded``, ``_claude_shipped_restrictions``,
 ``_claude_side_read_denies``, ``claude_mode_pinned_notice``.
 
-Instance fields read: ``_agent_version``, ``_agent_version_read``, ``_include_memory``,
+Instance fields read: ``_agent_version``, ``_agent_version_read``,
+``_claude_worker_builtin_tools``, ``_include_memory``,
 ``_mcp_mount_servers``, ``_permission_mode``, ``_session_id``, ``_session_key``,
 ``_session_mcp_excludes_local``, ``_session_mcp_inline_settings``, ``_side_read_only``,
 ``_spec_shell_allowlist``, ``_spec_write_allowlist``, ``_spec_zero_tools``, ``memory_mode``.
@@ -482,6 +483,8 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
 
     A Bot's worker session (``members.is_crewmate_worker_session``) gets
     ``strictMcpConfig`` too, so a worker runs only the servers its spec grants.
+    One whose crewmate file excludes a native tool gets ``tools`` limited to the
+    built-ins of the native tools it keeps (``SessionProjection.builtin_tools``).
 
     A Side Chat session (``side_read_only``) also gets the read-only shape:
     ``tools`` limited to the read built-ins, ``strictMcpConfig``, bypass off,
@@ -561,6 +564,12 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
         # server in the user's own config, the project's ``.mcp.json`` and
         # plugins, once per worker.
         options["strictMcpConfig"] = True
+    worker_tools = getattr(self, "_claude_worker_builtin_tools", None)
+    if worker_tools is not None:
+        # A worker whose crewmate file excludes a native tool keeps only the
+        # built-ins of the native tools it keeps; a narrower list already set
+        # (``"tools": []``) stays as narrow.
+        options["tools"] = [t for t in options.get("tools", worker_tools) if t in worker_tools]
     if getattr(self, "_side_read_only", False):
         # A Side Chat session: only the read built-ins exist, so no allow rule
         # in the user's settings can pre-approve a write. No MCP server either
@@ -715,7 +724,10 @@ async def _pin_claude_starting_mode(self: AcpClient, resp: dict) -> None:
 
     A session whose spec declares ``"tools": []`` is stopped below the same
     floor, since its empty ``tools`` option is what removes the built-ins, but
-    is not pinned: it mounts no tool, so its mode approves nothing.
+    is not pinned: it mounts no tool, so its mode approves nothing. A crewmate
+    worker whose native-tool excludes narrow ``tools``
+    (``_claude_worker_builtin_tools``) is stopped below the floor for the same
+    reason; above it, its mode is handled as any other session's.
 
     Observed on claude-agent-acp 0.84.0
     (``test/fixtures/claude_mode_pin/``): ``session/new`` and
@@ -732,15 +744,12 @@ async def _pin_claude_starting_mode(self: AcpClient, resp: dict) -> None:
     side = getattr(self, "_side_read_only", False)
     zero_tools = getattr(self, "_spec_zero_tools", False)
     depends_on_options = excludes_local or side or zero_tools
-    if not depends_on_options and not resolve_cc_pin_inherited_mode():
+    narrowed = getattr(self, "_claude_worker_builtin_tools", None) is not None
+    pin_inherited = not depends_on_options and resolve_cc_pin_inherited_mode()
+    if not (depends_on_options or narrowed or pin_inherited):
         return
     below_floor = self._claude_adapter_below_setting_sources_floor()
-    # The array this start sent. The re-seed after the capture cleared the
-    # projection cache, so deriving it again here would read the spec and the
-    # settings files on the event loop.
-    if not depends_on_options and (below_floor or not getattr(self, "_mcp_mount_servers", None)):
-        return
-    if below_floor:
+    if below_floor and (depends_on_options or narrowed):
         # The adapter that answered the handshake is below the floor, or named no
         # version: it may have ignored the session's options.
         await self._kill_process(force=True)
@@ -749,6 +758,13 @@ async def _pin_claude_starting_mode(self: AcpClient, resp: dict) -> None:
             "honour settingSources or the other session options, so a session "
             "that depends on them was stopped before its first prompt"
         )
+    # The array this start sent. The re-seed after the capture cleared the
+    # projection cache, so deriving it again here would read the spec and the
+    # settings files on the event loop.
+    if not depends_on_options and (
+        below_floor or not pin_inherited or not getattr(self, "_mcp_mount_servers", None)
+    ):
+        return
     if zero_tools and not (excludes_local or side):
         # A zero-tool session mounts no tool, so its mode has nothing to approve.
         return

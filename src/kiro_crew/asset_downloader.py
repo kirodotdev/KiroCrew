@@ -80,6 +80,7 @@ import hashlib
 import io
 import logging
 import os
+import socket
 import ssl
 import stat
 import time
@@ -92,7 +93,7 @@ from typing import Callable, Iterator
 
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew._ssl_compat import _ssl_context_has_ca_trust
-from kiro_crew.atomic_write import atomic_write, atomic_write_at
+from kiro_crew.atomic_write import atomic_write, atomic_write_at, replace_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -348,6 +349,22 @@ def redact_url(url: str) -> str:
         return "<unparseable-url>"
 
 
+def network_failure_cause(exc: BaseException) -> str:
+    """Why a connection failed, in a user's words, or ``""`` for any other failure.
+
+    Read from the exception types, never their text: urllib carries the socket
+    error in ``URLError.reason``, aiohttp in ``ClientConnectorError.os_error``.
+    """
+    for err in (exc, getattr(exc, "reason", None), getattr(exc, "os_error", None)):
+        if isinstance(err, socket.gaierror):
+            return "the host name could not be resolved"
+        if isinstance(err, ConnectionRefusedError):
+            return "connection refused"
+        if isinstance(err, TimeoutError):
+            return "timed out"
+    return ""
+
+
 #: ``O_BINARY`` exists only on Windows (where a text-mode descriptor translates
 #: bytes); ``O_NOFOLLOW`` only on POSIX. Both read as 0 where absent.
 _O_BINARY = getattr(os, "O_BINARY", 0)
@@ -468,7 +485,9 @@ class TargetDir:
             pass
 
     def replace(self, src: str, dst: str) -> None:
-        os.replace(self.directory / src, self.directory / dst)
+        # The shared retry: a scanner briefly holding either file on Windows must
+        # not throw away a download that already verified.
+        replace_with_retry(self.directory / src, self.directory / dst)
 
     def restrict_to_owner(self, name: str) -> None:
         """Owner-only lockdown of *name*. Raises ``OSError``."""
@@ -1055,6 +1074,7 @@ __all__ = [
     "file_identity",
     "install_verified",
     "make_ssl_context",
+    "network_failure_cause",
     "open_staging_nofollow",
     "redact_url",
 ]

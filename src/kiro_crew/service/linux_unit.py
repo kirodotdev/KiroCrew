@@ -46,6 +46,12 @@ _SYSTEMD_BOOTED_DIR = Path("/run/systemd/system")
 # operator is most likely to be sitting in.
 USER_UNIT_SUBDIR = Path(".config/systemd/user")
 
+# The unit's crash-loop cap: at most this many starts within this many seconds,
+# then the manager parks it ``failed``. The stale-unit check compares what the
+# manager loaded against these (``linux_systemctl._start_limit_line``).
+START_LIMIT_BURST = 3
+START_LIMIT_INTERVAL_SECS = 300
+
 
 def user_unit_file_path() -> Path:
     """The per-user unit file at the remedy's location, for THIS account.
@@ -319,8 +325,8 @@ def render_unit(*, user_scope: bool = False) -> str:
         # If the gateway crashes hard 3 times within 5 minutes, give up.
         # Without this systemd would loop the restart forever and a bad
         # startup would melt the user's terminal with journal output.
-        "StartLimitBurst=3\n"
-        "StartLimitIntervalSec=300\n"
+        f"StartLimitBurst={START_LIMIT_BURST}\n"
+        f"StartLimitIntervalSec={START_LIMIT_INTERVAL_SECS}\n"
         "\n"
         "[Service]\n"
         "Type=simple\n"
@@ -342,8 +348,8 @@ def render_unit(*, user_scope: bool = False) -> str:
         # [Unit] copy above covers systemd >= 229, which places them there.
         # Emitting both ensures the crash-loop cap works on all supported distros.
         # StartLimitInterval is the pre-229 key name; >= 229 accepts it as an alias.
-        "StartLimitBurst=3\n"
-        "StartLimitInterval=300\n"
+        f"StartLimitBurst={START_LIMIT_BURST}\n"
+        f"StartLimitInterval={START_LIMIT_INTERVAL_SECS}\n"
         # ...but never against a home another gateway already serves. The
         # LIVE-holder lock refusal (kiro_crew.gateway_lock) does not clear on a
         # relaunch, so its exit code is terminal: the unit fails once with the

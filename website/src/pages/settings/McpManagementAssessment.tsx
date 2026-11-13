@@ -14,7 +14,7 @@ import {
   type McpShareReason,
 } from '../../api/client'
 import { splitOnPlaceholder } from '../../lib/splitOnPlaceholder'
-import { MCP_SERVERS_HREF } from '../connections/useConnectionsSubTab'
+import { MCP_SERVERS_HREF } from '../connections/connectionsLinks'
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
 import {

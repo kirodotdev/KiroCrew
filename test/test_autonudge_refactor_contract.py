@@ -229,7 +229,7 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "_serialized_loops": ("method", "297c6249aa5f"),
     "_set_monitor_deadline": ("method", "a9f111186976"),
     "_settle_delivered_terminal": ("method+async", "fa9fb3019298"),
-    "_settle_fire_cycle": ("method+async", "1146844abf1f"),
+    "_settle_fire_cycle": ("method+async", "c04d230bcaeb"),
     "_sidecar_transaction": ("method", "140eaa502228"),
     "_start_persistence": ("method", "3582b2532748"),
     "_stop_monitor_admitted": ("method+async", "5cc2e2081504"),
@@ -248,6 +248,7 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     # The close side of the same liveness question, injected the same way.
     "_worker_closed": ("method", "490393185551"),
     # The loop side of the same liveness question, read from this service's own table.
+    "_worker_loop_held": ("method", "490393185551"),
     "_worker_looping": ("method", "490393185551"),
     # Reads one loop's monitor kind: the startup resume treats a work-ledger
     # watch differently, because its news arrives by a push a restart loses.

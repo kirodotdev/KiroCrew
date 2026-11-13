@@ -146,6 +146,30 @@ class TestNotificationPersistence:
         assert json.loads(remaining[0])["title"] == "n6"
         assert json.loads(remaining[-1])["title"] == "n10"
 
+    def test_trim_write_failure_leaves_the_history_intact(self, monkeypatch, tmp_path) -> None:
+        """A trim whose write fails must not truncate or empty the history file.
+
+        The trim writes through atomic_write (temp + rename), so a failure leaves
+        the original bytes in place; a plain write_text would truncate first and
+        lose the whole file. The error is swallowed, so nothing is raised.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state._MAX_PERSISTED_NOTIFICATIONS", 5)
+        path = tmp_path / "notifications.jsonl"
+        lines = [json.dumps({"kind": "cron", "title": f"n{i}", "body": "x"}) for i in range(11)]
+        original = "\n".join(lines) + "\n"
+        path.write_text(original, encoding="utf-8")
+
+        def _boom(*_a: object, **_k: object) -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.atomic_write", _boom)
+
+        # Swallowed: no exception escapes.
+        _maybe_trim_notifications(path)
+
+        # The whole history survives the failed write.
+        assert path.read_text(encoding="utf-8") == original
+
     def test_notify_persists(self, monkeypatch, tmp_path) -> None:
         """DashboardState.notify() persists to disk."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -240,9 +264,7 @@ class TestNotificationPersistence:
         assert state._notification_log[0]["title"] == "Old"
         assert state._notification_log[1]["title"] == "Old2"
 
-    def test_deliver_note_offloads_persist_on_running_loop(
-        self, monkeypatch, tmp_path
-    ) -> None:
+    def test_deliver_note_offloads_persist_on_running_loop(self, monkeypatch, tmp_path) -> None:
         """On a running event loop, persistence goes through the single-worker
         executor (never blocking the loop), rows land in delivery order, and a
         later in-memory mutation (e.g. ack) does not leak into the snapshot
@@ -278,9 +300,7 @@ class TestNotificationPersistence:
         assert [r["title"] for r in rows] == ["First", "Second"]
         assert "acked" not in rows[0]
 
-    def test_deliver_note_persists_inline_without_loop(
-        self, monkeypatch, tmp_path
-    ) -> None:
+    def test_deliver_note_persists_inline_without_loop(self, monkeypatch, tmp_path) -> None:
         """Without a running loop (sync callers), persist happens inline so
         the row is on disk immediately after _deliver_note returns."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -438,9 +458,7 @@ class TestNotificationPersistence:
         assert state._notification_log == []
         assert state.broadcast_ws.call_count == 2
 
-    def test_ack_all_rewrite_not_overtaken_by_queued_append(
-        self, monkeypatch, tmp_path
-    ) -> None:
+    def test_ack_all_rewrite_not_overtaken_by_queued_append(self, monkeypatch, tmp_path) -> None:
         """ack-all's rewrite goes through the same ordered executor as the
         delivery append: acked state on disk cannot be clobbered by a
         still-queued unacked append snapshot."""

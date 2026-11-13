@@ -10,6 +10,7 @@ from kiro_crew.acp.mcp_session_report import (
     _BUCKET_CAP,
     _ERROR_CAP,
     _NAME_CAP,
+    _STATUS_CAP,
     STATE_CONNECTED_WITHOUT_PROVENANCE,
     KasMcpReadiness,
     McpSessionReport,
@@ -345,25 +346,25 @@ class TestSupersetSemantics:
 
     def test_bucket_is_capped(self):
         r = McpSessionReport()
-        for i in range(_BUCKET_CAP + 25):
+        for i in range(_STATUS_CAP + 25):
             r.record_frame(_ready(f"s{i}"), owned=True)
         payload = r.payload()
         assert payload is not None
-        assert len(payload["ready"]) == _BUCKET_CAP
+        assert len(payload["ready"]) == _STATUS_CAP
 
     def test_a_dropped_failure_does_not_leave_its_reason_behind(self):
         # The reasons dict must obey the same cap as the bucket: storing a reason
         # for a name the cap dropped grows this payload without bound in exactly
         # the case the cap exists to bound.
         r = McpSessionReport()
-        for i in range(_BUCKET_CAP):
+        for i in range(_STATUS_CAP):
             r.record_frame(_failed(f"s{i}", f"boom {i}"), owned=True)
         r.record_frame(_failed("overflow", "boom overflow"), owned=True)
         payload = r.payload()
         assert payload is not None
         assert "overflow" not in payload["failed"]
         assert "overflow" not in payload["failures"]
-        assert len(payload["failures"]) == _BUCKET_CAP
+        assert len(payload["failures"]) == _STATUS_CAP
 
     def test_a_tracked_server_transitioning_into_a_full_bucket_is_not_erased(self):
         # The original bug's exact shape: a server the report already tracked
@@ -374,7 +375,7 @@ class TestSupersetSemantics:
         # report still tracks it. The transition must land: the tracked
         # server moves, and the oldest ready entry is evicted to make room.
         r = McpSessionReport()
-        for i in range(_BUCKET_CAP):
+        for i in range(_STATUS_CAP):
             r.record_frame(_ready(f"s{i}"), owned=True)
         r.record_frame(_failed("mover", "boom"), owned=True)
         r.record_frame(_ready("mover"), owned=True)
@@ -383,14 +384,14 @@ class TestSupersetSemantics:
         assert "mover" in payload["ready"]
         assert "mover" not in payload["failed"]
         assert "mover" not in payload["failures"]
-        assert len(payload["ready"]) == _BUCKET_CAP
+        assert len(payload["ready"]) == _STATUS_CAP
 
     def test_eviction_cleans_the_evicted_servers_failure_reason(self):
         # The evicted entry degrades to "no report"; leaving its reason in the
         # dict would keep presenting evidence about a server the buckets no
         # longer describe, and would let the dict outgrow the cap.
         r = McpSessionReport()
-        for i in range(_BUCKET_CAP):
+        for i in range(_STATUS_CAP):
             r.record_frame(_failed(f"s{i}", f"boom {i}"), owned=True)
         r.record_frame(_ready("mover"), owned=True)
         r.record_frame(_failed("mover", "moved boom"), owned=True)
@@ -401,7 +402,7 @@ class TestSupersetSemantics:
         # s0 was the oldest failed entry; its slot and reason both went.
         assert "s0" not in payload["failed"]
         assert "s0" not in payload["failures"]
-        assert len(payload["failures"]) == _BUCKET_CAP
+        assert len(payload["failures"]) == _STATUS_CAP
 
 
 class TestEventOwnershipReachesTheReport:

@@ -208,7 +208,7 @@ export type AppsData = {
 // ---- Pending-update derivation ------------------------------------------
 // Shared by this hook's `updatables` and the rail's Discover badge
 // (shell/nav/railBadges.ts) —
-// the sidebar count must equal the Updates sub-tab count, and one shared
+// the sidebar count is the enabled rows of the Updates list, and one shared
 // derivation is the only arrangement two surfaces cannot drift under.
 
 /** The registry-row fields the update derivation reads. */
@@ -318,10 +318,11 @@ function isUpdatable(
 }
 
 /**
- * The updates count every badge surface shows (sidebar Discover row, Discover
- * Updates sub-tab) — the length of the same list `useAppsData.updatables`
- * builds, computed from the same two payloads. Tolerates absent inputs so a
- * cold cache (store pages never visited yet) reads as "no known updates".
+ * The rail's Discover badge count: the ENABLED rows of the list
+ * `useAppsData.updatables` builds, from the same two payloads (a disabled app
+ * stays on that list but does not run). An enabled app always passes
+ * `keepInLibrary`. Tolerates absent inputs so a cold cache (store pages never
+ * visited yet) reads as "no known updates".
  */
 export function countUpdatables(
   registry: readonly UpdatableRegistryRow[] | undefined,
@@ -330,7 +331,7 @@ export function countUpdatables(
   if (!registry?.length || !installed?.length) return 0
   const updateMap = buildUpdateMap(registry)
   if (updateMap.size === 0) return 0
-  return installed.filter(a => keepInLibrary(a) && isUpdatable(a, updateMap)).length
+  return installed.filter(a => a.enabled && isUpdatable(a, updateMap)).length
 }
 
 /** How long a ['registry'] answer serves a page switch before it is fetched again. */
@@ -703,7 +704,7 @@ export default function useAppsData(): AppsData {
   )
   const updatables = useMemo(
     // Keep this live-filtered rather than visit-held: `countUpdatables` powers
-    // the shell badge from the same raw cache and must equal the Updates list.
+    // the shell badge from the same raw cache and counts this list's enabled rows.
     () => apps
       .filter(keepInLibrary)
       .map(a => ({ ...a, updateAvailable: updateMap.has(a.name), _newVersion: updateMap.get(a.name) }))

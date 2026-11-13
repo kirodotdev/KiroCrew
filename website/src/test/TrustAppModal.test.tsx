@@ -848,6 +848,21 @@ describe('registry install trust gate', () => {
     expect(dialog.queryByText(`${K}.local_source_switch`, { exact: false })).toBeNull()
   })
 
+  it('refuses Escape while the grant is pending, like the disabled Cancel', () => {
+    const target = { name: 'secretary', displayName: 'Secretary', _registry: 'official', trustRepository: 'https://github.com/acme/secretary' }
+    const onCancel = vi.fn()
+    const { rerender } = render(
+      <TrustAppModal app={target} pending failed={false} granted={false} onCancel={onCancel} onConfirm={() => {}} />,
+    )
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(onCancel).not.toHaveBeenCalled()
+    rerender(
+      <TrustAppModal app={target} pending={false} failed={false} granted={false} onCancel={onCancel} onConfirm={() => {}} />,
+    )
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(onCancel).toHaveBeenCalledTimes(1)
+  })
+
   it('names the update while the UPDATE path is working, and keeps its outcome line after a failure', async () => {
     await openUpdateConsent()
     let finishGrant: () => void = () => {}

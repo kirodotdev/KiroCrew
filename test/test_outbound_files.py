@@ -200,6 +200,17 @@ class TestDestinationForms:
         result = extract_local_refs(f"![x](file://{p})")
         assert [f.path for f in result.files] == [str(p)]
 
+    def test_a_windows_file_uri_keeps_its_drive(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``file:///C:/...``, what ``Path.as_uri()`` writes on Windows, names ``C:/...``.
+
+        Cutting the scheme alone leaves the drive-less ``/C:/...``. A share is not rewritten.
+        """
+        from kiro_crew import file_uri
+
+        monkeypatch.setattr(file_uri, "IS_WINDOWS", True)
+        assert strip_url_syntax("file:///C:/x/y.png?a=1") == "C:/x/y.png"
+        assert strip_url_syntax("file:////server/share/y.png") == "//server/share/y.png"
+
     def test_the_walker_is_the_one_image_artifacts_uses(self) -> None:
         """Both directions share this parser, so it stays exercised from here too."""
         assert md_destination("/tmp/screenshot(1).png)") == "/tmp/screenshot(1).png"

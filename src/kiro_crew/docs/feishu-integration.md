@@ -12,7 +12,7 @@ hostname, or open port to manage.
 > only specified through a vendor SDK (handshake, tenant-token refresh, and
 > frame envelope), so it needs `lark-oapi`. It is **not** part of core, so install
 > it directly into the environment that runs the gateway:
-> `pip install 'lark-oapi>=1.4,<2'`. Without it the gateway logs a line and skips
+> `pip install "lark-oapi>=1.4,<2"`. Without it the gateway logs a line and skips
 > the channel — nothing else is affected.
 >
 > **Desktop app: nothing to install.** The app bundles `lark-oapi`, and every

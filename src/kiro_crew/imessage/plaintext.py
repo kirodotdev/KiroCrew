@@ -252,8 +252,6 @@ def chunk_plaintext(text: str, limit: int) -> list[str]:
         if head:
             chunks.append(head)
         remaining = remaining[cut:].lstrip("\n")
-        if not remaining:
-            return chunks
     tail = remaining.rstrip()
     if tail:
         chunks.append(tail)
@@ -312,7 +310,7 @@ def _grapheme_boundary(text: str, index: int) -> int:
 
 
 def _grapheme_end(text: str, index: int) -> int:
-    """Smallest boundary > ``index`` that does not split a grapheme cluster."""
+    """Smallest boundary >= ``index`` (and >= 1) that does not split a grapheme cluster."""
     end = max(index, 1)
     while end < len(text) and _joins_previous(text, end):
         end += 1

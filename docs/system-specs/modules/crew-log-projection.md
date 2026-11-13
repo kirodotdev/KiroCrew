@@ -65,6 +65,7 @@ only its registry entry (`_FOLDS`, in `crew_log/projection_registry.py`) beside 
 | `crew_log/projection_session.py` | folding one session's log on the projection kernel (`SessionProjections`, `fold_session`) and its savepoint |
 | `crew_log/projection_unit_mark_cache.py` | an older unit's `_UnitMark`, reused while one `lstat` of its directory and of each segment still match |
 | `crew_log/projection_slot_memo.py` | a slot's folds kept warm: the memo, its locks, the revision counter, resume and persist |
+| `crew_log/projection_slot_share.py` | one walk of a slot's units for every cold or stale cell the prime has queued for that slot (`prime_slot_projections`) |
 | `crew_log/projection_readers.py` | reading a slot's and a tree's folds (`fold_slot_checkpoint`, `read_slot_projection`, `units_in_succession`, `read_tree_projection`) |
 | `crew_log/projection_session_memo.py` | a session's folds kept warm, and `read_projection` |
 
@@ -851,10 +852,27 @@ shows up. Only the gateway process counts: `cli.py`'s gateway dispatch calls
 `mark_gateway_process()`, and a child process (a fresh interpreter) or another
 subcommand never does.
 
-One call is one slot fold pass (`fold_slot_warm_revised`) or, outside a pass, one
-`iter_from` walk (fold `iter_from`, the unit named in the log line). Its budget is `delta + K`. `delta` is the records decoded at or above
-the seq asked for; a cold slot fold has no position, so its delta is 0. `K` is 256, the
-same number as `checkpoint.MIN_ADVANCE_ENTRIES`, from the busy host's numbers: session
+One call is one fold pass (`fold_slot_warm_revised` for a slot, `fold_session` for a
+session) or, outside a pass, one read: an `iter_from` walk, a `get`, a `page` /
+`thread_page`, or a raw prefix walk (`raw_prefix_digest`, `raw_records_through`). Each
+read names its own fold in the warning (`iter_from`, `get`, `page`, `digest`,
+`records_through`) with the unit in the line, so one call site warns once however many
+units it reads. Its budget is `delta + K`, where `delta` is what the read answers:
+
+| read | delta |
+|---|---|
+| `iter_from(seq)` | the records at or above `seq` |
+| `iter_from` from the top of the unit with no resume point, outside a pass | 0: it read the whole unit |
+| `get(seq)` | 1 (0 on a miss) |
+| `page` / `thread_page` | the entries the page kept |
+| raw prefix walk | 0: it re-reads records a fold already consumed |
+| a fold pass | the records above its position; 0 when cold |
+
+Inside a pass, every read adds to the pass, so a digest check during a session resume is
+counted against that session fold. `resolve` stops reading at the last cited seq, so it
+costs the span.
+
+`K` is 256, the same number as `checkpoint.MIN_ADVANCE_ENTRIES`, from the busy host's numbers: session
 savepoints there never lagged their unit by more than 255 entries (16,372 files), a
 healthy resume re-reads 1 record per unit, units per slot is 3 at p99, and records per
 unit is 194 at p50. So a cold fold of a small slot stays under K and the reported
@@ -872,9 +890,9 @@ crew log read over budget: slot=<slot> fold=<fold> unit=<unit> records=<n> delta
 and any unknown value) counts and warns and changes no read; `off` counts nothing. A
 mode that answers "not ready" instead of folding cold comes with the first change that
 opts a real caller into it. `test_crew_log_read_budget.py` pins today's gateway callers
-of the cold-fold API per file; the count may only go down.
-
-Not counted: the decode-free prefix digest (`raw_prefix_digest`), `get` and `page`.
+of the cold-fold API per file, and `test_crew_log_read_budget_gaps.py` pins the callers
+of the whole-unit reads (`.page(`, `.thread_page(`, `.get(<seq>)` on a log handle,
+`iter_from(1`); each count may only go down.
 
 ## 5. The push
 
@@ -1232,7 +1250,11 @@ board it last saw and pulls the conductor's armed work-ledger loop forward for a
 that moved AND whose status is in `work_vocab.wake_statuses` (`done`, `blocked`,
 `question`, and `reply` while `work_ledger.remote_dispatch` is on) -- the event's `key` is the conductor's board, so it reads no binding, and a
 `progress` report advances the board without buying a tick the conductor's own gate
-would answer quiet. It is the only wake: a worker's slot closing and a worker's turn
+would answer quiet. The first waking report arms the tick one batch window ahead
+(`conductor_wake.DEFAULT_WAKE_BATCH_SECS`) so reports that land together share one
+turn; a report from the only open item bound to a worker arms it at once, since no
+second report can join it. Which items those are is read off the same rendered board
+(`state`, `worker_session_key`), so the subscriber still reads no store. It is the only wake: a worker's slot closing and a worker's turn
 ending reach none, and a crashed worker is surfaced by the item's `stale` / `orphaned`
 flags on the loop's scheduled tick.
 Further consumers -- a summary fold over a session's events, the automatic-card sentence
@@ -1272,6 +1294,19 @@ request retries once, and after two failures in a row the cell waits 60 s before
 attempt. The eager worker's `_advance` takes the same path, so a cold cell never stalls
 the fold worker either, and `eager.drain` (the shutdown barrier) also waits for primes.
 
+When a prime starts, it also takes every other cell of the same slot that is queued
+behind it and folds them over one shared walk (`projection_slot_share.prime_slot_projections`):
+the cold cells read every unit once, and the cells resumed from a savepoint beside the
+newest unit read that unit's tail once, from the lowest savepoint. Each cell is then built by its
+own pass's steps, so its state, savepoint and watermark are the per-cell pass's. A
+cell whose lock another pass holds is left out (the lock is tried, never waited for). A
+cell that is warm, resumed beside an older unit, or alone in its group takes its own
+pass, and its lock is released before the walk. Every cell the walk holds is marked cold
+while held, so a `cold=False` read of it answers "not ready" at once. If the shared walk
+raises, nothing is installed and each cell folds alone. While the backfill child is
+usable (the gateway default), only the resumed cells share; the cold cells are left to
+the child, which still folds one cell per run.
+
 The dashboard's `CrewLogPublisher` holds three subscriptions -- `FOLD_ADVANCED` scoped to
 `slot`, `FOLD_ADVANCED` scoped to `session`, and an unfiltered `TREE_ADVANCED` -- and keeps
 their disposers so a second install in one process swaps all three instead of doubling
@@ -1287,7 +1322,7 @@ splits the work. A `work` `FoldAdvanced` carries `kind` (`delta` or `snapshot_ne
 event. A receiver rebuilds it with `fold_delta.value_after` on the value it holds, with
 `eager.published_value` / `eager.try_published_value` (the render recorded for that
 exact revision, inside or right after the publish), or with a snapshot read
-(`conductor_wake._read_board_items`, `DashboardFeed._resync_soon`). The delta
+(`conductor_wake._read_board`, `DashboardFeed._resync_soon`). The delta
 base is a RENDER DIFF: eager holds the last published render per board (at most 64,
 narrowed to the boards delta-capable tabs watch while the dashboard exporter runs) and `fold_delta.diff_work` compares the new
 render with it item by item. The fold step and the memo cell are untouched. With no
@@ -1557,8 +1592,10 @@ resident (`SessionTreeProjection`), so a poll does not scan. The per-poll lineag
 of `GET /api/sessions/memory` is `ensure_seeded(live_sids)` then `nodes()`, an in-memory
 read; the `SessionTree` scan above runs only as the cold seed when no checkpoint can be
 used. The projection is checkpointed in `session-tree.json` under the store's
-`projections` directory (`CHECKPOINT_VERSION` 5: edges, scans, spawns with their own scan cache, and a root binding; a
-version or root mismatch discards the file and re-seeds). It is kept current by hooks
+`projections` directory (`CHECKPOINT_VERSION` 6: edges, spawns, a per-unit mark, and a root binding; a
+version or root mismatch discards the file and re-seeds). The mark is the `ResumePoint` the last boot's
+`CrewLog.iter_from` walk of that unit reached, so a boot reads each unit through `iter_from`
+from that point; a unit with no mark, or whose segments changed under it, is read in full. It is kept current by hooks
 rather than by rescans: the emitter's `record_opened` on every `session/opened`, the
 `session/adopted` / `session/released` edge records (`reconcile_edge`), the
 `session/spawned` records (`record_spawned`, re-read by `reconcile_edge` too), and
@@ -1578,7 +1615,7 @@ of its responsibility:
 | Owner | Holds |
 |---|---|
 | `crew_log/session_tree_projection_checkpoint.py` | the checkpoint: `CHECKPOINT_NAME`, `CHECKPOINT_VERSION`, the store identity a payload is bound to (`_current_root`), the row codec with the string bounds every door into the state applies (`_within_bounds`, `_edge_within_bounds`), `_load_checkpoint`, `_save_checkpoint`, and the debounced write (`_schedule_checkpoint`, `flush_checkpoint`, `cancel_pending_checkpoint`) |
-| `crew_log/session_tree_projection_seed.py` | the cold start: `ensure_seeded`, the tail replay (`_replay_tail`, `_replay_spawned`), the install over commits made while the scan ran, and the timed re-attempt of a seed that raised (`SEED_RETRY_COOLDOWN_SECS`) |
+| `crew_log/session_tree_projection_seed.py` | the cold start: `ensure_seeded`, the tail replay (`_replay_tail`), the install over commits made while the scan ran, and the timed re-attempt of a seed that raised (`SEED_RETRY_COOLDOWN_SECS`) |
 
 The module is a mirror facade (`kiro_crew._facade_mirror`). An owner function whose first
 parameter is `self` is bound as the `SessionTreeProjection` attribute of the same name, so
@@ -2136,6 +2173,22 @@ Same store, same kernel envelope, same `prefix_admit`, in a leaf of its own:
              plus optional "resume" and "prefix_extent" (as for a session fold),
  "state"}
 ```
+
+**A backfill child stages here first.** The background prime (`slot_prime.py`) folds a
+cell with nothing to resume in a child process (`slot_backfill_child.py`) when the gateway
+enabled it, and reads `cold=False` before and after. The child runs the same
+`read_slot_projection`, but `checkpoint.slot_save_dir` points `save_slot` at
+`<home>/crew-log/slot-staging/<newest unit's store dir>/<fold>.json` and it takes no lease:
+the gateway's writers hold it. The staging tree is outside every unit's directory, so a
+unit removal never races a file the child writes. When neither savepoint resume worked,
+`_fold_slot_warm_locked` (fold lock held) moves a staged file into the newest unit's
+`slot-projections/` under that unit's lease (`slot_backfill_child.admit`) and resumes from it,
+so `load_slot` checks the identity block and the witness against the files as they are
+now, exactly as for a savepoint the gateway wrote. A refused file is a refused savepoint:
+the read goes on as before. A unit being removed refuses the lease and the staged file is
+deleted; a staged file never admitted is deleted after `STALE_STAGED_SECS` (1 h) by the
+next backfill. At most one child runs per process; three failures in a row turn it off for
+the process with one WARNING; `KIROCREW_SLOT_BACKFILL_CHILD=0` keeps it off.
 
 **Beside the session folds' `projections/`, never inside it.** The kernel store derives a
 file name from the fold name alone, and `tools` is read both as a session fold and as a

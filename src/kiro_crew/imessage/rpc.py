@@ -204,7 +204,7 @@ class JsonRpcPeer:
             async with self._write_lock:
                 proc.stdin.write(line)
                 await proc.stdin.drain()
-        except (OSError, RuntimeError, ConnectionResetError) as exc:
+        except (OSError, RuntimeError) as exc:
             self._pending.pop(req_id, None)
             raise RpcTransportError(f"write to bridge failed: {exc}") from exc
         try:

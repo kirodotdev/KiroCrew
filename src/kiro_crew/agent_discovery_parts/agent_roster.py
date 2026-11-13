@@ -422,6 +422,19 @@ def list_agents(
             seen[a.name] = a
         elif a.package and not existing.package:
             seen[a.name] = a
+        elif not a.package and not existing.package:
+            # Two plain files declaring one name, such as a copy whose name was
+            # never edited: no package explains the second, and it still takes
+            # its own stem, so the drop is said where an operator sees it. The
+            # name and filenames are rendered with ``%r``: a newline in a
+            # declared name is escaped instead of starting a forged log record.
+            logger.warning(
+                "Duplicate agent name %r in %r and %r; keeping %r",
+                a.name,
+                existing.filename,
+                a.filename,
+                existing.filename,
+            )
         elif a.package and existing.package:
             if a.package == existing.package:
                 # A locally published package ships both "{package}-{name}.json"
@@ -436,7 +449,7 @@ def list_agents(
                 )
             else:
                 logger.warning(
-                    "Duplicate agent name '%s' from packages '%s' and '%s'; keeping '%s'",
+                    "Duplicate agent name %r from packages %r and %r; keeping %r",
                     a.name,
                     existing.package,
                     a.package,

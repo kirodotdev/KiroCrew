@@ -3,7 +3,7 @@ import { flushSync } from 'react-dom'
 import { useMotionValue } from 'framer-motion'
 import { takeOverDrawer } from '../../../hooks/useDrawerSwipe'
 import { shownWithin, useTrackpadSwipe } from '../../../hooks/useTrackpadSwipe'
-import { idleTrackpadDrag, moveTrackpadDrag, releaseTrackpadDrag, settleTrackpadDrag, speedCommitTrackpadDrag, type TrackpadPanelDrag } from '../../../hooks/trackpadPanelDrag'
+import { idleTrackpadDrag, leadTrackpadSamples, moveTrackpadDrag, releaseTrackpadDrag, settleTrackpadDrag, speedCommitTrackpadDrag, type TrackpadPanelDrag } from '../../../hooks/trackpadPanelDrag'
 import { openActivityPanel } from '../../../store/chatSlice'
 import { beginPanelSlide, retirePanelSlide } from '../../../utils/panelSlide'
 import type { AppDispatch } from '../../../store'
@@ -153,7 +153,9 @@ export function useChatPanelTrackpadSwipe({
       if (settleTo.current !== null) return true
       return dir === 'left' ? !now.current.activityOpen : now.current.activityOpen
     },
-    onDragStart: () => {
+    // An open from rest waits for a real swipe; a grab mid-settle never does.
+    reveals: (dir) => dir === 'left' && settleTo.current === null,
+    onDragStart: (_dir, lead) => {
       if (settleTo.current !== null) {
         // Grabbed mid-settle: stop it where it is presenting the panel and
         // follow the fingers from there; the release is judged against the
@@ -164,6 +166,8 @@ export function useChatPanelTrackpadSwipe({
         return
       }
       if (deskSlideRef.current) return
+      // Retired while the run was still short of its start distance.
+      if (!runLive.current) return
       dragSlot.current = runSlot.current
       const startedOpen = now.current.activityOpen
       // A close starts from the docked column: measure it BEFORE the swap, so
@@ -183,7 +187,8 @@ export function useChatPanelTrackpadSwipe({
       travelRef.current = travel
       deskX.set(startedOpen ? 0 : travel)
       syncSpacer()
-      drag.current = { on: true, startedOpen, travel, base: startedOpen ? 0 : travel, samples: [] }
+      const base = startedOpen ? 0 : travel
+      drag.current = { on: true, startedOpen, travel, base, samples: leadTrackpadSamples(base, lead) }
     },
     onDragMove: (sumX, at) => {
       const d = drag.current

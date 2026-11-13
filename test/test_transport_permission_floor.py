@@ -201,6 +201,40 @@ async def test_client_auto_approve_site_runs_the_floor(tmp_path):
     assert 15 not in client._permission_options
 
 
+@pytest.mark.asyncio
+async def test_client_auto_approve_floor_refusal_steers_the_host_notice_first(tmp_path):
+    """No consumer sees a request on this path, so the reject alone reached the
+    model as a user's denial; the host notice is written before it."""
+    import os
+
+    client = _client(tmp_path)
+    client._session_id = "s-floor"
+    trace: list[tuple] = []
+
+    async def _send_request(method, params, **_kw):
+        trace.append(("request", method, params))
+        return 1
+
+    client._send_request = _send_request
+    client._send_response = AsyncMock(
+        side_effect=lambda request_id, payload: trace.append(("response", request_id, payload))
+    )
+    msg = JsonRpcMessage(
+        id=16,
+        method="session/request_permission",
+        params={
+            "toolCall": {"toolCallId": "tc-16", "title": os.path.expanduser("~/.ssh/id_rsa")},
+            "options": [],
+        },
+    )
+    await client._handle_permission(msg)
+    assert [entry[0] for entry in trace] == ["request", "response"], trace
+    assert trace[0][1] == "_session/steer"
+    notice = trace[0][2]["message"]
+    assert "[Kiro Crew host notice]" in notice and "NOT a user action" in notice
+    assert trace[1][1] == 16 and trace[1][2] == {"outcome": {"outcome": OUTCOME_CANCELLED}}
+
+
 def _permission_frame(request_id, options):
     return JsonRpcMessage.from_dict(
         {

@@ -39,6 +39,7 @@ def _rewrite(
 def _spec() -> dict:
     return {
         "name": "kirocrew",
+        "tools": ["*"],
         "mcpServers": {
             "alpha-mcp": {"command": sys.executable, "args": ["--serve"]},
             "beta-mcp": {"command": sys.executable, "args": []},
@@ -132,6 +133,7 @@ def test_a_spec_level_poolable_key_no_longer_opts_a_server_in(tmp_path: Path) ->
     """
     spec = {
         "name": "kirocrew",
+        "tools": ["*"],
         "mcpServers": {
             "alpha-mcp": {"command": sys.executable, "args": [], "poolable": True},
             "beta-mcp": {"command": sys.executable, "args": []},
@@ -151,6 +153,7 @@ def test_the_config_list_still_opts_that_same_server_in(tmp_path: Path) -> None:
     """The replacement path: list it, and the spec key is irrelevant either way."""
     spec = {
         "name": "kirocrew",
+        "tools": ["*"],
         "mcpServers": {
             "alpha-mcp": {"command": sys.executable, "args": [], "poolable": True},
             "beta-mcp": {"command": sys.executable, "args": []},

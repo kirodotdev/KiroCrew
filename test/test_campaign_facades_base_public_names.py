@@ -124,7 +124,7 @@ _MOVE_DIGESTS: dict[str, str] = dict(row.split() for row in """
 
     kiro_crew.sandbox                                           c9e1858832fcd0e4
 
-    kiro_crew.slack.gateway                                     90d815f8e6349017
+    kiro_crew.slack.gateway                                     8beaf77ec5835169
     """.splitlines() if row.strip())
 
 #: Reads the rebound map from stdin, not argv: one argv string holding every facade's map

@@ -24,6 +24,7 @@ from kiro_crew.cron_service.model import (
     _AUTO_PAUSE_MAX,
     _AUTO_PAUSE_THRESHOLD,
 )
+from kiro_crew.lesson_validation import LESSON_APPLIES_VALUES
 
 if TYPE_CHECKING:
     _Commands = argparse._SubParsersAction[argparse.ArgumentParser]
@@ -329,6 +330,47 @@ Examples:
         help='Move the job to this Schedule-page folder, by name or id; "" moves it '
         "out of its folder. A missing name is created through the running gateway.",
     )
+    cron_update.add_argument(
+        "--model",
+        dest="model",
+        default=None,
+        help='New model id for the agent wake; "" clears it, back to the default model',
+    )
+    cron_update.add_argument(
+        "--timezone",
+        dest="timezone",
+        default=None,
+        help="New IANA timezone the job's wall clock is read in (e.g. America/New_York, "
+        "or 'local'); \"\" resets it to the configured timezone, else 'local'",
+    )
+    cron_update.add_argument(
+        "--persistent-session",
+        dest="persistent_session",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Resume one long-lived session across wakes, or start a fresh one each wake",
+    )
+    cron_update.add_argument(
+        "--minimal-context",
+        dest="minimal_context",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Wake with a ~200-token context instead of the full memory/lessons/steering load",
+    )
+    cron_update.add_argument(
+        "--hide-in-chat",
+        dest="hide_in_chat",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Keep the job's wakes out of the chat sidebar, or show them again",
+    )
+    cron_update.add_argument(
+        "--silent",
+        dest="silent",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Suppress auto-delivery (the agent controls notifications), or deliver again",
+    )
     cron_rm = cron_sub.add_parser("remove", help="Remove a cron job")
     cron_rm_target = cron_rm.add_mutually_exclusive_group(required=True)
     cron_rm_target.add_argument("job_id", nargs="?", default=None, help="Job ID to remove")
@@ -551,6 +593,15 @@ Examples:
         help="Lesson category (default: knowledge)",
     )
     learn_add.add_argument("--negative", help="What NOT to do (optional)")
+    learn_add.add_argument(
+        "--applies",
+        choices=list(LESSON_APPLIES_VALUES),
+        help=(
+            "When the lesson applies: always (a standing rule, loaded into every session) "
+            "or on_topic (a past finding, loaded only when relevant). "
+            "Omitted, the lesson is unstated and is treated as a standing rule"
+        ),
+    )
     learn_sub.add_parser("list", help="List all lessons")
     learn_rm = learn_sub.add_parser("remove", help="Remove lessons matching a substring")
     learn_rm.add_argument("query", help="Substring to match against lesson rules")
@@ -797,6 +848,19 @@ def register_memory_parser(sub: _Commands) -> None:
     mem_import.add_argument(
         "--store", default=None, help="Store to import into (default: the default store)"
     )
+    mem_dream = mem_sub.add_parser(
+        "dream",
+        help="Ask for a Dreaming run, or list what it proposed (memory.dream propose)",
+        description="Dreaming looks over stored lessons and facts while no chat turn "
+        "runs and writes an approval list. Nothing in the list is applied.",
+    )
+    dream_sub = mem_dream.add_subparsers(dest="dream_action", required=True)
+    dream_sub.add_parser("run", help="Ask the gateway for a run now (it still waits for idle)")
+    dream_list = dream_sub.add_parser("list", help="Print the approval list (read-only)")
+    dream_list.add_argument(
+        "--store", default=None, help="Store to read (default: the default store)"
+    )
+    dream_list.add_argument("--json", action="store_true", help="Print JSON")
 
 
 def register_agent_parser(sub: _Commands) -> None:
@@ -897,7 +961,7 @@ def register_workspace_parser(sub: _Commands) -> None:
         "--dir",
         default=None,
         help=(
-            "Workspace directory NAME, relative to the KiroCrew data home "  # brand-ok: help text kept as it was
+            "Workspace directory NAME, relative to the Kiro Crew data home "
             "(default: workspace-<name>). Any path resolving outside the data "
             "home is rejected."
         ),
@@ -908,7 +972,7 @@ def register_workspace_parser(sub: _Commands) -> None:
     ws_update.add_argument(
         "--dir",
         help=(
-            "New workspace directory NAME, relative to the KiroCrew data home. "  # brand-ok: help text kept as it was
+            "New workspace directory NAME, relative to the Kiro Crew data home. "
             "Any path resolving outside the data home is rejected."
         ),
     )
@@ -923,6 +987,8 @@ def register_app_parser(sub: _Commands) -> None:
         epilog="""
 Examples:
   kirocrew app install /path/to/oncall-watchtower
+  kirocrew app install git@github.com:you/my-app.git
+  kirocrew app install https://gitlab.com/you/apps.git --subdirectory my-app --ref v1.2.0
   kirocrew app list
   kirocrew app enable oncall-watchtower
   kirocrew app update oncall-watchtower
@@ -934,8 +1000,27 @@ Examples:
         formatter_class=_fmt,
     )
     app_sub = app_parser.add_subparsers(dest="app_action")
-    app_install = app_sub.add_parser("install", help="Install an app from a local directory")
-    app_install.add_argument("source", help="Path to app directory containing app.json")
+    app_install = app_sub.add_parser(
+        "install", help="Install an app from a local directory or a git URL"
+    )
+    app_install.add_argument(
+        "source",
+        help=(
+            "Path to an app directory containing app.json, or a git URL (https://, "
+            "ssh:// or git@host:org/repo.git) cloned with your own git credentials"
+        ),
+    )
+    app_install.add_argument(
+        "--ref",
+        help="Git URL only: the branch or tag to clone (default: the remote's default branch)",
+    )
+    app_install.add_argument(
+        "--subdirectory",
+        help=(
+            "Git URL only: the repository folder holding app.json (default: the "
+            "repository root, or its one top-level folder holding an app.json)"
+        ),
+    )
     app_import = app_sub.add_parser(
         "import",
         help="Convert a manifest-declared plugin package into an app directory",
@@ -959,7 +1044,11 @@ Examples:
     app_enable.add_argument("name", help="App name to enable")
     app_update = app_sub.add_parser(
         "update",
-        help="Update an installed app to its newest published version (needs a running gateway)",
+        help="Update an installed app to its newest published version (needs a running "
+        "gateway; not on native Windows)",
+        description="Update an installed app in place, as the Update (or Sync) button on "
+        "its page does. It needs a running gateway, and it is not available on native "
+        "Windows, which has no dashboard Unix socket; there, use that button instead.",
     )
     app_update.add_argument("name", help="App name")
     app_update.add_argument(

@@ -71,13 +71,11 @@ PINNED_FIXTURE_ADAPTERS: dict[str, tuple[str, str]] = {
 }
 
 #: Adapters held to a measured release written here instead of the lane manifest.
-#: No lane test drives claude-agent-acp yet, so the lane does not install it; the
-#: claude captures are held to the release they were taken on, and the pin moves
-#: into ``test/real_adapters/package.json`` when a lane test needs the install.
 #: Copilot is held to the one release the harness accepts at the handshake, so
 #: raising ``COPILOT_VERIFIED_VERSION`` reds here until the captures are re-taken.
+#: claude-agent-acp is in the manifest now (the harness probe drives it), pinned at
+#: the release its captures were taken on.
 MEASURED_NOT_INSTALLED: dict[str, str] = {
-    "@agentclientprotocol/claude-agent-acp": "0.94.0",
     COPILOT_PACKAGE: COPILOT_VERIFIED_VERSION,
 }
 
@@ -249,9 +247,15 @@ def _release(version: str) -> tuple[int, ...] | None:
 
 #: kiro-cli and KAS have no lane pin, so their live captures are held to a floor
 #: instead: the highest kiro-cli release a Crew version gate branches on (below it
-#: Crew drives a path a current kiro-cli never takes), and for KAS the engine the
-#: bundle pins. ``<dir>`` -> header key -> floor. KAS headers that name the
-#: kiro-cli they ran under are held to the kiro-cli floor too.
+#: Crew drives a path a current kiro-cli never takes), and for KAS an engine floor
+#: that depends on the route. ``<dir>`` -> header key -> floor. KAS headers that
+#: name the kiro-cli they ran under are held to the kiro-cli floor too.
+#:
+#: A KAS capture marked ``route: kas-bundle`` ran Crew's own pinned engine, so it is
+#: held to ``KAS_PIN_VERSION`` (``_KAS_BUNDLE_ROUTE``). Every other KAS capture ran
+#: through kiro-cli's relay, which runs the engine kiro-cli ships rather than the
+#: pin, so a pin bump cannot move it; it is held to ``_KAS_RELAY_ENGINE_FLOOR``,
+#: which rises only by re-capturing on a newer kiro-cli.
 _KIRO_CLI_FLOOR = ".".join(
     map(
         str,
@@ -262,10 +266,20 @@ _KIRO_CLI_FLOOR = ".".join(
         ),
     )
 )
+_KAS_RELAY_ENGINE_FLOOR = "0.66.33"
+_KAS_BUNDLE_ROUTE = "kas-bundle"
 FIXTURE_FLOORS: dict[str, dict[str, str]] = {
     "kiro": {"agent_version": _KIRO_CLI_FLOOR},
-    "kas": {"agent_version": KAS_PIN_VERSION, "kiro_cli_version": _KIRO_CLI_FLOOR},
+    "kas": {"agent_version": _KAS_RELAY_ENGINE_FLOOR, "kiro_cli_version": _KIRO_CLI_FLOOR},
 }
+
+
+def _floor_for(directory: str, meta: dict, header: str, floor: str) -> str:
+    """*floor*, or the bundle pin for a KAS capture made off Crew's own engine."""
+    if directory == "kas" and header == "agent_version" and meta.get("route") == _KAS_BUNDLE_ROUTE:
+        return KAS_PIN_VERSION
+    return floor
+
 
 #: ``<dir>/<file>:<header key>`` -> (header version, floor it is below). Shrink-only:
 #: a fixture below its floor is re-captured, not added here.
@@ -292,7 +306,8 @@ def _floored_live_versions(corpus: Path = CORPUS) -> list[tuple[str, str, str]]:
             for header, floor in floors.items():
                 if header in meta or header == "agent_version":
                     key = f"{directory}/{path.name}:{header}"
-                    found.append((key, str(meta.get(header)), floor))
+                    bar = _floor_for(directory, meta, header, floor)
+                    found.append((key, str(meta.get(header)), bar))
     return found
 
 
@@ -371,6 +386,32 @@ def test_a_kas_capture_under_an_old_kiro_cli_reds(tmp_path) -> None:
     problems = below_floor(_floored_live_versions(tmp_path), {})
     want = f"kas/a-live.jsonl:kiro_cli_version is 2.20.0, below floor {_KIRO_CLI_FLOOR}"
     assert problems == [f"{want}: re-capture it"]
+
+
+@pytest.mark.parametrize(
+    ("route", "version", "floor"),
+    [
+        (_KAS_BUNDLE_ROUTE, "0.66.33", KAS_PIN_VERSION),
+        (None, "0.66.32", _KAS_RELAY_ENGINE_FLOOR),
+    ],
+    ids=["bundle-held-to-pin", "relay-held-to-relay-floor"],
+)
+def test_a_kas_capture_is_held_to_its_routes_floor(tmp_path, route, version, floor) -> None:
+    """A bundle capture is held to the pin; a relay capture to the relay engine floor."""
+    (tmp_path / "kas").mkdir()
+    meta = {"backend": "kas", "recorded": "live", "agent_version": version}
+    if route:
+        meta["route"] = route
+    (tmp_path / "kas" / "a-live.jsonl").write_text(json.dumps({"_meta": meta}) + "\n")
+    problems = below_floor(_floored_live_versions(tmp_path), {})
+    assert problems == [
+        f"kas/a-live.jsonl:agent_version is {version}, below floor {floor}: re-capture it"
+    ]
+
+
+def test_the_relay_floor_never_passes_the_pin() -> None:
+    """The relay floor is a floor for engines older than the pin, never above it."""
+    assert _release(_KAS_RELAY_ENGINE_FLOOR) <= _release(KAS_PIN_VERSION)
 
 
 def test_another_adapters_capture_in_copilot_reds(monkeypatch, tmp_path) -> None:

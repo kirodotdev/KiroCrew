@@ -493,6 +493,13 @@ $listener.Start()
 $gatewayPort = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
 $listener.Stop()
 
+# An LTS build (release-lts.yml sets KIROCREW_BUILD_EDITION=lts) refuses to start
+# with nobody signed in, and the smoke has no sign-in. So for LTS the assertion is
+# the refusal itself: the gateway, started as the desktop app starts it
+# (KIROCREW_DESKTOP_GATEWAY), exits with `LTS boot refused` and never serves.
+$isLts = $env:KIROCREW_BUILD_EDITION -eq "lts"
+$ltsRefusal = "LTS boot refused"
+
 $savedEnv = @{}
 $gatewayEnv = @{
   KIROCREW_HOME = $gatewayHome
@@ -514,6 +521,7 @@ $gatewayEnv = @{
   PYTHONUTF8 = "1"
   PYTHONIOENCODING = "utf-8:backslashreplace"
 }
+if ($isLts) { $gatewayEnv["KIROCREW_DESKTOP_GATEWAY"] = "1" }
 
 $gateway = $null
 $healthy = $false
@@ -571,14 +579,25 @@ try {
   }
 }
 
-if (-not $healthy) {
+if ($isLts) {
+  $gatewayErrText = (Get-Content -LiteralPath $gatewayStderr -Raw -ErrorAction SilentlyContinue)
+  if ($healthy -or -not $gateway.HasExited -or -not $gatewayErrText -or -not $gatewayErrText.Contains($ltsRefusal)) {
+    Write-Host "Gateway stdout tail:"
+    Get-Content -LiteralPath $gatewayStdout -Tail 40 -ErrorAction SilentlyContinue
+    Write-Host "Gateway stderr tail:"
+    Get-Content -LiteralPath $gatewayStderr -Tail 40 -ErrorAction SilentlyContinue
+    throw "The signed-out LTS gateway did not exit with '$ltsRefusal' (answered /api/health: $healthy)."
+  }
+  Write-Host "> Signed-out LTS gateway refused to start in $healthSeconds seconds, as it must"
+} elseif (-not $healthy) {
   Write-Host "Gateway stdout tail:"
   Get-Content -LiteralPath $gatewayStdout -Tail 40 -ErrorAction SilentlyContinue
   Write-Host "Gateway stderr tail:"
   Get-Content -LiteralPath $gatewayStderr -Tail 40 -ErrorAction SilentlyContinue
   throw "The installed gateway did not answer /api/health within $MaxHealthSeconds seconds."
+} else {
+  Write-Host "> Installed gateway answered /api/health in $healthSeconds seconds"
 }
-Write-Host "> Installed gateway answered /api/health in $healthSeconds seconds"
 
   # BUNDLE_KIRO_CLI=1 builds only: the installed product must RESOLVE the
   # bundled copy the way the desktop shell wires it (KIROCREW_BUNDLED_KIRO_DIR,
@@ -663,6 +682,18 @@ if ($env:BUNDLE_KAS -ne "0") {
   }
   $kasStatusText = (Get-Content -LiteralPath $kasStatusOut -Raw -ErrorAction SilentlyContinue)
   if (-not $kasStatusText) { $kasStatusText = "" }
+  if ($isLts) {
+    # Signed out, an LTS `kas status` boots no platform, so it cannot read the
+    # engine; the bundled root itself was checked above.
+    $kasStatusErrText = (Get-Content -LiteralPath $kasStatusErr -Raw -ErrorAction SilentlyContinue)
+    if ($kasStatusExit -eq 0 -or -not $kasStatusErrText -or -not $kasStatusErrText.Contains($ltsRefusal)) {
+      Write-Host "kas status stdout tail:"; Get-Content -LiteralPath $kasStatusOut -Tail 40 -ErrorAction SilentlyContinue
+      Write-Host "kas status stderr tail:"; Get-Content -LiteralPath $kasStatusErr -Tail 20 -ErrorAction SilentlyContinue
+      throw "The signed-out LTS kirocrew kas status did not refuse with '$ltsRefusal' (exit $kasStatusExit)."
+    }
+    $kasStatusRow = "refused signed out (LTS)"
+    Write-Host "> Signed-out LTS kas status refused (exit $kasStatusExit), as it must"
+  } else {
   $kasStatusLines = $kasStatusText -split "`r?`n"
   $kasStatusRow = ($kasStatusLines | Where-Object { $_ -match '^installed:' } | Select-Object -First 1)
   $kasEngineRow = ($kasStatusLines | Where-Object { $_ -match '^\s*engine:' } | Select-Object -First 1)
@@ -676,6 +707,7 @@ if ($env:BUNDLE_KAS -ne "0") {
   if (-not $kasEngineRow -or ($kasEngineRow -notmatch [Regex]::Escape($bundledKasDir + "\"))) {
     Write-Host "kas status stdout tail:"; Get-Content -LiteralPath $kasStatusOut -Tail 40 -ErrorAction SilentlyContinue
     throw "The installed kirocrew kas status resolved an engine outside the bundled root $bundledKasDir."
+  }
   }
 }
 
@@ -758,7 +790,7 @@ if ($env:GITHUB_STEP_SUMMARY) {
     "| Step | Result |",
     "| --- | --- |",
     "| Silent install | $installSeconds s (ceiling $MaxInstallSeconds s) |",
-    "| Installed gateway /api/health | $healthSeconds s (ceiling $MaxHealthSeconds s) |",
+    "| Installed gateway $(if ($isLts) { 'refusal (LTS, signed out)' } else { '/api/health' }) | $healthSeconds s (ceiling $MaxHealthSeconds s) |",
     "| Bundled kiro-cli | $(if ($kiroText) { $kiroText.Trim() } else { 'none (the app detects the user''s own kiro-cli)' }) |",
     "| Bundled KAS engine | $(if ($kasStatusRow) { $kasStatusRow.Trim() } else { 'skipped (BUNDLE_KAS=0)' }) |",
     "| Start Menu shortcut target | matches this install |",

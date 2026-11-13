@@ -6,7 +6,8 @@ let cursorAwaySubscribers = 0;
 let navigateReadySent = false;
 // Set for a window whose gateway is not this machine's: the bridges whose
 // channels `assertLocalDashboard` refuses are then withheld, not exposed.
-const REMOTE_GATEWAY = process.argv.includes("--kc-remote-gateway");
+// Asked of the shell on every load; only an explicit `false` exposes them.
+const REMOTE_GATEWAY = ipcRenderer.sendSync("dashboard:is-remote-gateway") !== false;
 
 contextBridge.exposeInMainWorld("kirocrew", {
   platform: process.platform,
@@ -153,6 +154,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("focus-mode:toggle", handler);
     return () => ipcRenderer.removeListener("focus-mode:toggle", handler);
   },
+  // The OS session locked (macOS and Windows; see session-lock.js). The page
+  // stops a dictation that is still recording.
+  onSessionLocked: (cb) => {
+    const handler = () => cb();
+    ipcRenderer.on("os-session-locked", handler);
+    return () => ipcRenderer.removeListener("os-session-locked", handler);
+  },
   // A macOS swipe main.js relays as one route-history step: -1 Back, 1 Forward
   // (see swipe-history.js). The SPA takes it through its guarded history step.
   onHistoryStep: (cb) => {
@@ -251,6 +259,31 @@ contextBridge.exposeInMainWorld("localGatewayAPI", {
 if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("remoteCrewSetupAPI", {
   available: () => ipcRenderer.invoke("first-run:can-use-remote-crew"),
   start: () => ipcRenderer.invoke("first-run:use-remote-crew"),
+});
+
+// Settings → About's Restart gateway, for the gateway this app runs.
+// `available` resolves true only where `restart` can work; `restart` resolves
+// "restarting" (the app then replaces this page with its splash and reconnects)
+// or "unavailable". Neither takes an argument: the main process decides from
+// the sender. Absent in plain browsers and in windows on another machine's
+// gateway, which this app does not run.
+if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("gatewayRestartAPI", {
+  available: () => ipcRenderer.invoke("gateway:can-restart"),
+  restart: () => ipcRenderer.invoke("gateway:restart"),
+});
+
+// Remote Crew panes reached through the app's managed SSH forward. Each pane
+// loads a port the crew's gateway opened on its own machine, so in client-only
+// mode the app's keeper must carry that port too. `forwardPorts` names the
+// pane ports this window shows and resolves {port: "up" | "down"} once each
+// has been tried, or null where the app keeps no forward. Exposed to a remote
+// gateway's window too, which is the one that needs it; the main process
+// admits only the launch port's dashboard. Absent in plain browsers.
+contextBridge.exposeInMainWorld("remoteCrewPaneAPI", {
+  forwardPorts: (ports) => ipcRenderer.invoke(
+    "remote-crew:forward-pane-ports",
+    Array.isArray(ports) ? ports.slice(0, 64).map(Number) : [],
+  ),
 });
 
 // Crash-artifact notice for the dashboard banner (CrashReportNotice).
@@ -413,7 +446,14 @@ contextBridge.exposeInMainWorld("updateAPI", {
   },
   check: () => ipcRenderer.invoke("update:check"),
   download: () => ipcRenderer.invoke("update:download"),
+  // This shell's install ARMS the update. An older shell's install applies it at
+  // once, so the dashboard offers "Install when I quit" only when this is true.
+  armsOnQuit: true,
+  // ARMS the update: it installs when the user quits, never while the app runs.
   install: () => ipcRenderer.invoke("update:install"),
+  // A plain quit and relaunch with no update command of its own. An armed
+  // update is applied by the quit it triggers.
+  relaunch: () => ipcRenderer.invoke("update:relaunch"),
   getInfo: () => ipcRenderer.invoke("update:get-info"),
   // Channel switcher (Settings > About): "" follows the build stamp,
   // "insider"|"stable" opts the production app onto that lane.

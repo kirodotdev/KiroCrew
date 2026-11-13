@@ -28,7 +28,6 @@ Resolution principles (from the design + the grounding analysis):
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import threading
 from dataclasses import dataclass, field, replace
@@ -44,6 +43,7 @@ from kiro_crew.platform.governance import (
     deny_all_profile,
     parse_profile,
 )
+from kiro_crew.user_json import loads_user_json
 
 
 @dataclass(frozen=True)
@@ -762,7 +762,7 @@ class ProfileStore:
                 fallback_stems.add(stem)
                 continue
             try:
-                data = json.loads(raw)
+                data = loads_user_json(raw)
                 if not isinstance(data, dict):
                     raise PlatformCompositionError("profile is not a JSON object")
                 by_name[stem] = parse_profile(data)
@@ -1060,6 +1060,64 @@ def any_configured_profile_governs(ref: str) -> bool:
     # profile govern the ref" (see resolve, which is scope-map-agnostic).
     return any(
         not may_skip_gate(ref, profile)  # type: ignore[arg-type]
+        for profile in _STORE.all_profiles()
+    )
+
+
+def session_profiles_govern(ref: str, session_key: str, *, app: Optional[str]) -> bool:
+    """:func:`any_configured_profile_governs`, asked only of the profiles the gate
+    could resolve for the session *session_key*.
+
+    For a writer built per session (the KAS projection), which knows the session's
+    key and app but not the agent identity each later call carries. A profile
+    counts when :func:`resolve_active_scope` could pick it for one of this
+    session's calls:
+
+    * the one ``resolve_active_scope(session_key)`` picks: the surface bind, or the
+      unattended deny-all;
+    * every ``task`` bind, since the gate's agent may name any of them;
+    * the ``app`` bind of *app*, or every ``app`` bind when *app* is ``None``
+      (not known).
+
+    A profile bound to another surface or another app never judges this session's
+    calls, so it does not withhold here. An empty key, an unresolved store, or a
+    reload between the bind read and the surface resolution answers
+    :func:`any_configured_profile_governs`, the rule for a writer with no session.
+    """
+    from kiro_crew.platform.governance import may_skip_gate
+
+    if not session_key or not _STORE.resolved():
+        return any_configured_profile_governs(ref)
+    snap = _STORE.snapshot()
+    candidates = [
+        snap.by_name.get(name)
+        for (bind_type, bind_id), name in snap.by_bind.items()
+        if bind_type == "task" or (bind_type == "app" and (app is None or bind_id == app))
+    ]
+    candidates.append(resolve_active_scope(session_key))
+    if _STORE.snapshot() is not snap:
+        return any_configured_profile_governs(ref)
+    return any(
+        profile is not None and not may_skip_gate(ref, profile)  # type: ignore[arg-type]
+        for profile in candidates
+    )
+
+
+def any_configured_profile_constrains(scope: str) -> bool:
+    """True if ANY loaded profile's ruleset for *scope* constrains anything.
+
+    The scope-level sibling of :func:`any_configured_profile_governs`, for a reader
+    with no ref to ask about: a harness whose calls carry no identity in that scope
+    (``governance.mcp_scope_governed_now``). Same fail-closed rule for an
+    unresolved store.
+    """
+    from kiro_crew.platform.governance import _ruleset_has_an_opinion
+    from kiro_crew.platform.governance_parts.evaluator import policy_level_control
+
+    if not _STORE.resolved():
+        return True
+    return any(
+        _ruleset_has_an_opinion(policy_level_control(profile, scope))  # type: ignore[arg-type]
         for profile in _STORE.all_profiles()
     )
 

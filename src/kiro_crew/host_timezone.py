@@ -168,13 +168,16 @@ def refresh_host_timezone() -> str:
 def _read_and_publish() -> str:
     frozen = _FROZEN[0]
     detected = frozen if frozen is not None else detect_host_timezone()
-    if detected and not _loadable(detected):
+    # No zone at all is normal on a server or a container; a name that will not load is not.
+    unloadable = bool(detected) and not _loadable(detected)
+    if unloadable:
         detected = ""
     if not detected and frozen is None and not _UNDETECTED_WARNED[0]:
         _UNDETECTED_WARNED[0] = True
-        logger.warning(
+        logger.log(
+            logging.WARNING if unloadable else logging.INFO,
             "Could not detect this computer's time zone; a schedule that follows it "
-            "keeps the last zone detected, or UTC when there is none"
+            "keeps the last zone detected, or UTC when there is none",
         )
     publish_host_timezone(detected)
     state = _STATE

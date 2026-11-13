@@ -250,6 +250,11 @@ def _spawn(args: argparse.Namespace) -> None:
     print("Usage: kirocrew spawn {run|list}")
 
 
+#: Seconds the gateway holds one status read of a blocking ``spawn run``, and the
+#: interval between reads it answered without holding.
+_SPAWN_WAIT_SECS = 2.0
+
+
 def _spawn_run(args: argparse.Namespace, base: str) -> None:
     """Spawn a subagent via the dashboard API.
 
@@ -338,14 +343,17 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
         )
     else:
         print(f"Spawned subagent {agent_id}, waiting for result...", file=sys.stderr)
-    poll_url = f"{base}/api/spawn/{agent_id}"
+    # The gateway holds each read until the run ends or the interval passes, so the
+    # result prints when the run ends. A read answered sooner with the run not done
+    # (it is queued, or the gateway did not hold) is repeated on the interval.
+    poll_url = f"{base}/api/spawn/{agent_id}?wait_secs={_SPAWN_WAIT_SECS:g}"
     secret = _internal_secret(args.port)
     told_awaiting = False
     while True:
-        _time.sleep(2)
+        asked = _time.monotonic()
         poll_req = urllib.request.Request(poll_url, headers={"X-Internal-Secret": secret})
         try:
-            with _gateway_send(poll_req, args.port, 5, "cli_spawn_poll") as resp:
+            with _gateway_send(poll_req, args.port, 5 + _SPAWN_WAIT_SECS, "cli_spawn_poll") as resp:
                 status = json.loads(resp.read())
         except _peer_refusal() as e:
             print(f"Error: gateway ownership not verified: {e}", file=sys.stderr)
@@ -378,11 +386,28 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
                 file=sys.stderr,
             )
         if status.get("done"):
-            if status.get("error"):
-                print(f"Error: {status['error']}", file=sys.stderr)
+            # An empty ``error`` does not mean success: a user-stopped run (or a
+            # parent turn that ended) carries ``outcome: "stopped"`` with no
+            # error, the same shape ``_spawn_done_status`` reads for ``spawn
+            # list``. Exit 0 only for ``completed``, or for a gateway that sends
+            # no ``outcome`` and no error; any other terminal state prints the
+            # partial result and exits non-zero, so ``spawn run '…' && next``
+            # stops.
+            outcome = status.get("outcome")
+            error = status.get("error")
+            if outcome == "completed" or (outcome is None and not error):
+                print(status.get("result", ""))
+                return
+            if outcome == "stopped":
+                print(status.get("result", ""))
+                print("Stopped before completion.", file=sys.stderr)
                 sys.exit(1)
-            print(status.get("result", ""))
-            return
+            if error:
+                print(f"Error: {error}", file=sys.stderr)
+            else:
+                print(f"Error: run ended {outcome}", file=sys.stderr)
+            sys.exit(1)
+        _time.sleep(max(0.0, _SPAWN_WAIT_SECS - (_time.monotonic() - asked)))
 
 
 def _artifact(args: argparse.Namespace) -> None:

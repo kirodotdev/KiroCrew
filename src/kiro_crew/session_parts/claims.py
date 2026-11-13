@@ -53,6 +53,12 @@ _ACQUIRING_TASK: "ContextVar[weakref.ref[asyncio.Task[Any]] | None]" = ContextVa
     "kiro_crew_session_acquiring_task", default=None
 )
 
+#: How long an acquire waits for the Kiro account check before it goes ahead without
+#: it, so a slow store read or a long sweep does not hold up a claim of a live or warm
+#: session. An acquire that then cold-starts still queues for a start permit, and
+#: while the sweep holds every permit it waits for that sweep.
+_IDENTITY_CHECK_BEFORE_ACQUIRE_TIMEOUT_SECS = 30.0
+
 
 def process_shutdown_requested(sessions: SessionManager | None) -> bool:
     if shutdown_event.is_set():
@@ -213,8 +219,10 @@ async def _acquire_after_identity_check(
     (``final_drain_started``: a shutdown or re-exec, when no session outlives
     the process). During an update pause the check still runs, because
     ``try_acquire`` stays open then and must not take a session the check would
-    retire. A check that fails is logged and the acquire goes ahead, as it would
-    have before the check existed.
+    retire. A check that fails, or that has not finished within
+    ``_IDENTITY_CHECK_BEFORE_ACQUIRE_TIMEOUT_SECS``, is logged and the acquire goes
+    ahead, as it would have before the check existed. The installed check runs its
+    sweep in a task of its own, so giving up the wait does not cancel that sweep.
     """
     task = asyncio.current_task()
     acquiring = _ACQUIRING_TASK.get()
@@ -226,7 +234,13 @@ async def _acquire_after_identity_check(
         check = self.identity_check_before_acquire
         if check is not None and not identity_checked and not self.final_drain_started:
             try:
-                await check()
+                async with asyncio.timeout(_IDENTITY_CHECK_BEFORE_ACQUIRE_TIMEOUT_SECS):
+                    await check()
+            except TimeoutError:
+                logger.warning(
+                    "The Kiro account check before an acquire took over %.0fs; acquiring without it",
+                    _IDENTITY_CHECK_BEFORE_ACQUIRE_TIMEOUT_SECS,
+                )
             except Exception:
                 logger.warning("The Kiro account check before an acquire failed", exc_info=True)
         yield
@@ -855,6 +869,11 @@ def approval_revocation(self: SessionManager, key: str) -> int:
 def get_agent(self: SessionManager, key: str) -> str:
     """Return a folded session agent name."""
     return self._allocation_boundary().get_agent(key)
+
+
+def starting_agent(self: SessionManager, key: str) -> str:
+    """The agent a cold start in flight will register *key* as, or ``""``."""
+    return self._allocation_boundary().starting_agent(key)
 
 
 def get_agent_selection(self: SessionManager, key: str) -> tuple[str, str]:

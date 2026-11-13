@@ -389,14 +389,21 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
 
             # Capture the hard cap from the *persisted* config BEFORE applying any
             # subagent_auto_max from this request — deny-by-default prevents a
-            # same-request ceiling-raise+spend.
-            persisted_hard_cap = agent.get("subagent_auto_max", 16)
+            # same-request ceiling-raise+spend. An unset value is the loader's own
+            # default, the cap the gateway really runs under and the page shows.
+            # Imported here, not at module top: this module is mirrored by the
+            # ``core`` facade, and a new top-level name would have to join it.
+            from kiro_crew.config.fields import field_default
+            from kiro_crew.config.loader import AgentConfig
+
+            default_hard_cap = field_default(AgentConfig, "subagent_auto_max")
+            persisted_hard_cap = agent.get("subagent_auto_max", default_hard_cap)
             if (
                 not isinstance(persisted_hard_cap, int)
                 or isinstance(persisted_hard_cap, bool)
                 or persisted_hard_cap < 3
             ):
-                persisted_hard_cap = 16
+                persisted_hard_cap = default_hard_cap
             persisted_hard_cap = min(persisted_hard_cap, SUBAGENT_AUTO_MAX_CEILING)
 
             if "subagent_auto_max" in agent_settings:
@@ -504,4 +511,55 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "restart_required": restart_required})
 
     cfg = KiroCrewConfig.load()
-    return web.json_response(_masked_config_dict(cfg))
+    return web.json_response(_config_body(cfg, await _kas_in_use(cfg)))
+
+
+async def _kas_in_use(cfg: KiroCrewConfig) -> bool | None:
+    """``crewmate_harness.kas_runs_here`` off the event loop, or ``None`` when it fails.
+
+    Off the loop because on it a Bot's worker-spec answer is only the held one,
+    empty until a background refresh lands, so a read soon after boot would say
+    nothing runs on KAS for a Bot whose spec moves it there. ``None`` leaves the
+    field out: the dashboard then reads the main harness alone, and the config
+    read itself never fails over a hint.
+    """
+    from kiro_crew.crewmate_harness import kas_runs_here
+
+    try:
+        return await asyncio.to_thread(kas_runs_here, cfg)
+    except Exception:
+        logger.debug("could not tell whether anything runs on KAS", exc_info=True)
+        return None
+
+
+def _config_body(cfg: KiroCrewConfig, kas_in_use: bool | None = None) -> dict:
+    """The ``/api/config/kirocrew`` body: GET's, and every PATCH reply's.
+
+    Both must carry the same edition view, because the dashboard caches a PATCH
+    reply in place of the GET one. An LTS build (RFC D12) reports every Feature
+    Preview off, and lists in ``locked_controls`` the one browser-only control the
+    dashboard drops, ``debug_tools``. The preview lock itself reaches the dashboard
+    as ``lockedByPolicy`` on each preview path in ``GET /api/config/schema``. On
+    ``oss`` the field is absent and the body is the masked config as before.
+
+    *kas_in_use* (from :func:`_kas_in_use`) says whether any session here runs on
+    KAS, Bots included, so the dashboard shows the Kiro sign-in wherever something
+    signs in with it, not only on a KAS main harness. ``None`` leaves it out.
+    """
+    from kiro_crew.edition_locks import feature_previews, locked_controls
+
+    body = _masked_config_dict(cfg)
+    if kas_in_use is not None:
+        body["kas_in_use"] = kas_in_use
+    dashboard = body.get("dashboard")
+    if isinstance(dashboard, dict) and "feature_previews" in dashboard:
+        # Unchanged on oss; {} in LTS, whatever the Debug tools lock does.
+        dashboard["feature_previews"] = feature_previews(dashboard["feature_previews"])
+    locked = [c for c in locked_controls() if c in _DASHBOARD_LOCKS]
+    if locked:
+        body["locked_controls"] = locked
+    return body
+
+
+#: The locked controls the dashboard enforces in the browser and has no config path for.
+_DASHBOARD_LOCKS = ("debug_tools",)

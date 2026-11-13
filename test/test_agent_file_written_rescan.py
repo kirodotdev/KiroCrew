@@ -5,7 +5,8 @@ rescan, so a spec written by hand or by kiro-cli after it warmed was refused
 (409 ``agent_choice_unavailable`` on chat create and switch, ``agent_unresolved``
 from ``session_create``) until something else rescanned. Each of the three now
 refreshes the snapshot once when a template or name-first pick misses, and
-resolves again; a name that still has no file keeps its refusal.
+resolves again; a name that still has no file keeps its refusal. kiro-cli's own
+agent switch and the Crew Mode migration's target check do the same.
 """
 
 from __future__ import annotations
@@ -25,15 +26,18 @@ from session_control_helpers import (  # noqa: F401 -- the autouse fixtures regi
     _key,
     _slot,
 )
-from test_chat_agent_selection import _turn_state
+from test_chat_agent_selection import _record_store, _turn_state
 
-from kiro_crew.config import loader
+from kiro_crew import session_agent_selection
+from kiro_crew.config import KiroCrewConfig, loader
 from kiro_crew.config.loader_snapshots import (
     _materialized_kiro_agent,
     materialized_snapshot_complete,
 )
 from kiro_crew.config.paths import kiro_agents_dir
+from kiro_crew.dashboard import crew_mode_migration
 from kiro_crew.dashboard import session_control as sc
+from kiro_crew.memory_stores import UnknownMemoryStore
 
 
 @pytest.fixture
@@ -161,3 +165,27 @@ def test_session_create_still_refuses_a_name_with_no_file(tmp_path, monkeypatch,
     assert err.value.code == "agent_unresolved"
     assert len(refreshes) == 1
     assert set(state._slots) == before
+
+
+def test_a_provider_switch_to_a_spec_written_after_the_snapshot_warmed_is_recorded(
+    monkeypatch, agents_home
+):
+    asyncio.run(_warm_without(agents_home, "fresh"))
+    cell = _record_store(monkeypatch, None)
+
+    session_agent_selection.record_provider_agent_switch(
+        KiroCrewConfig(), "dashboard:switched", None, "fresh", None
+    )
+
+    assert cell["record"].template_id == "fresh"
+    with pytest.raises(UnknownMemoryStore):
+        session_agent_selection.record_provider_agent_switch(
+            KiroCrewConfig(), "dashboard:switched", None, "absent", None
+        )
+
+
+def test_a_crew_mode_target_written_after_the_snapshot_warmed_is_usable(agents_home):
+    asyncio.run(_warm_without(agents_home, "fresh"))
+
+    assert crew_mode_migration._usable("fresh") == ""
+    assert crew_mode_migration._usable("absent") == "agent_not_found"

@@ -153,6 +153,21 @@ def _span(text: str, piece: str, cursor: int) -> tuple[int, int]:
     return found.start(), found.end()
 
 
+def _heading_at(line: str) -> tuple[int, str | None] | None:
+    """``(level, title)`` when *line* is an ATX heading, else None.
+
+    A heading is 1-6 ``#`` followed by a space, a tab or the end of the line;
+    an empty title is None, and ``#tag`` is body text.
+    """
+    rest = line.lstrip("#")
+    level = len(line) - len(rest)
+    if not 1 <= level <= 6:
+        return None
+    if rest and rest[0] not in " \t":
+        return None
+    return level, rest.strip() or None
+
+
 class HeadingAwareChunker:
     """Token-based text chunker with recursive separator splitting."""
 
@@ -372,32 +387,37 @@ class HeadingAwareChunker:
         # pulls in the whole channel stack.
         from kiro_crew.messaging.split import iter_fence_spans
 
-        heading_re = re.compile(r"^(#{1,6})\s+(.+)", re.MULTILINE)
+        # An empty heading ("#", "# ", or an empty Word Heading paragraph) still
+        # starts a section, with no title. Plain string checks rather than a
+        # pattern: a heading is 1-6 "#" then a space, a tab or the line end.
         spans = list(iter_fence_spans(text))
-        splits = []
+        splits: list[tuple[int, str | None]] = []
         k = 0
-        for m in heading_re.finditer(text):
-            while k < len(spans) and spans[k][1] <= m.start():
+        offset = 0
+        for line in text.split("\n"):
+            start, offset = offset, offset + len(line) + 1
+            heading = _heading_at(line)
+            if heading is None:
+                continue
+            while k < len(spans) and spans[k][1] <= start:
                 k += 1
-            if k == len(spans) or m.start() < spans[k][0]:
-                splits.append(m)
+            if k == len(spans) or start < spans[k][0]:
+                splits.append((start, heading[1]))
 
         if not splits:
             # No headings — fall back to generic chunking
             return self.chunk(text)
 
         sections: list[tuple[str | None, int, str]] = []
-        for i, match in enumerate(splits):
-            title = match.group(2).strip()
-            start_pos = match.start()
-            end_pos = splits[i + 1].start() if i + 1 < len(splits) else len(text)
+        for i, (start_pos, title) in enumerate(splits):
+            end_pos = splits[i + 1][0] if i + 1 < len(splits) else len(text)
             body = text[start_pos:end_pos]
             line_start = text[:start_pos].count("\n") + 1
             sections.append((title, line_start, body))
 
         # Include any text before the first heading
-        if splits[0].start() > 0:
-            preamble = text[: splits[0].start()].strip()
+        if splits[0][0] > 0:
+            preamble = text[: splits[0][0]].strip()
             if preamble:
                 sections.insert(0, (None, 1, preamble))
 

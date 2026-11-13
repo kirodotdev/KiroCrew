@@ -1,19 +1,20 @@
 # Session Control — driving another session
 
 One chat session can open, fork, seed, watch, stop, retry, continue, rename, retitle, close and revive
-another one, change its model, reload its agent process, color it, and take another one under
-itself in the sidebar. The tools come from the
+another one, change its model, reload its agent process, color it, leave it a note, and take another
+one under itself in the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 39 of its tools, written for the agent that is about to use them.
+for all 41 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py` and its `mcp_dashboard_*`
 owner modules. Two halves:
 
 - **Session control** — `session_create`, `session_fork`, `session_send`,
-  `session_read_message`, `session_summary`, `session_stop`, `session_end_wait`, `session_retry`,
+  `session_read_message`, `session_summary`, `session_queue`, `session_stop`, `session_end_wait`, `session_retry`,
   `session_continue`, `session_set_model`, `session_reload`, `session_rename`, `session_generate_title`,
-  `session_set_color`, `session_close`, `session_revive`, `session_history_list`, `session_broadcast`,
+  `session_set_color`, `session_set_note`, `session_close`, `session_revive`, `session_history_list`,
+  `session_broadcast`,
   `session_status`, `session_adopt`, `session_handoff`, `session_release`,
   `session_move_to_column`, `work_dispatch`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
@@ -77,7 +78,11 @@ says so when that model was dropped.
 No argument is formally required. Without `message` the new session **starts
 empty** — nothing runs in it until the person types, or until you send it a
 message. With `message`, its first turn starts on that message in this same
-call, so you never send to a key you have not read back yet. The reply carries
+call, so you never send to a key you have not read back yet. An agent that
+auto-approves `session_create` but not `session_send` (a conductor, a team
+lead) is told so in its own prompt and leaves `message` out:
+"`session_create`'s `message` is refused for this agent
+(`message_needs_send_approval`): create, then `session_send`." The reply carries
 the new session's key:
 
 ```
@@ -125,8 +130,10 @@ Two things it deliberately does not take:
   agent, model, memory store and mode, project and folder — exactly what a human
   fork inherits, and for the same reason: a transcript belongs to the memory
   boundary it was written in, and a fork must stay inside it. A session bound to
-  a different agent is `session_create`'s job. One difference: a person's fork of a
-  pinned session is pinned, but a fork you make is never pinned.
+  a different agent is `session_create`'s job. Like a human fork, it also keeps
+  the source's sidebar color, so it sits in the same color group. One difference:
+  a person's fork of a pinned session is pinned, but a fork you make is never
+  pinned.
 - **No tail fork.** Only the head (everything up to the fork point) is offered.
 
 Forking another session is a **read** of its transcript, so naming a `source`
@@ -434,6 +441,66 @@ Each goal carries the panel's state word (`in-progress`, `needs-you`, `done`,
 failed (`verified=false`); a completed goal never checked either way reads
 `done`.
 
+### `session_queue`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `target` | yes | Session key, or its exact title, of a session you manage |
+| `action` | no | `list` (default) or `move` |
+| `entry` | for `move` | Queue entry id from `list` |
+| `position` | for `move` | 0-based position; 0 runs next, past the end means last |
+
+`session_send` to a busy session answers `started: false` and puts the message in
+the target's queue. `session_queue` is how the sender sees that queue and reorders
+its own entries in it by priority. In the example, the login fix should run
+before the changelog update. Moving `q-5e6f` to position 0 is refused
+(`move_blocked`), because it would pass the person's `q-3c4d`. Move `q-1a2b` to
+position 2 instead: moving your own entry later is how you reorder around a
+person's message. The queue becomes `q-3c4d`, `q-5e6f`, `q-1a2b`, and the
+person's message still runs first.
+
+```
+📥 `chat-7` — fix the build (still working), 3 queued
+0  q-1a2b  yours   "Then update the changelog for the build fix"
+1  q-3c4d  person  "stop after this one, I'll take over"
+2  q-5e6f  yours   "Fix the failing login test first, it blocks the release"
+```
+
+- `list` shows the first 50 queued entries in run order; any beyond that are
+  counted in `omitted`, not listed. `yours` marks entries you queued;
+  `person` marks a message the session's own human typed; `other` is anything
+  else (another session, an app, a scheduled job). Excerpts are redacted and cut
+  to 200 characters.
+- `move` puts one of YOUR entries at `position`. It can always move later. It can
+  move earlier only past your own entries, so it never jumps ahead of a person's
+  message or another session's (`move_blocked`).
+- A `move` behaves exactly like the queue card's own drag. It changes the queue in memory, tells open tabs, and is saved by the next
+  periodic flush. A gateway restart before that flush can bring the old queue
+  order back, just as it can after a person drags a card.
+
+A person's queued message is never movable here, and neither is
+another session's (`not_your_entry`). Neither is a steer of yours that missed
+its turn and was put back in the queue: its steer row already promises it will
+run. Ownership is what `session_send` writes on an entry it queues: your slot
+key, your tab identity, and a queued-send mark that a requeued steer never
+carries. The restore path drops the sender stamp on purpose, so entries that
+were queued before a gateway restart list as `other` and only the person can
+move them.
+
+There is no `cancel` here. A queued `session_send` to a worker on your work
+ledger can already be recorded as your answer to its report, so removing it
+could leave a decision the worker never gets. To correct a queued message, send
+the correction with `session_send` and leave it after the message it corrects:
+the target then reads the correction last. Moving it ahead would make the older
+message run last and undo the correction.
+
+The target must be a session you manage: one you created, or one handed to you
+with `session_handoff`. Once you hand a session on, you lose its queue as you do
+its transcript (`not_creator`). It passes the same gate as the other
+session tools: an archived session is not open (`target_not_found`), and
+scheduled-run, incognito, app-scoped, channel-linked and mirrored sessions are
+refused.
+
 ### `session_adopt` and `session_release`
 
 Both take only `target`. They change where a session sits in the sidebar and
@@ -485,7 +552,8 @@ own.
 ### `session_handoff`
 
 Takes `target` and `to`. It makes `to` the session that MANAGES `target`: from then
-on `to` can send to, read, summarize, stop, close, adopt, release and hand on the
+on `to` can send to, read, summarize, see and reorder the queue of, stop, close,
+adopt, release and hand on the
 target. With `agent.session_manager_chain` off (the default), a fenced session
 (see the `not_creator` row below) can no longer do those on a session it handed
 away; with it on, it keeps that reach while it still manages `to`. An agent in a person's own tab is not fenced for
@@ -658,7 +726,10 @@ agent-spec fix only reaches it after a reload. The new process re-reads its
 agent spec, environment and MCP servers and resumes the same conversation. The
 transcript is not rewritten; one reload notice is appended, and it names the
 calling session's key so the person reading that tab can see who reloaded it.
-The agent, model and workspace do not change.
+A second row follows once the new process is ready, failed to start (with the
+error), or will start with the target's next message, unless the target has
+already answered a message sent after the notice: that reply then shows how the
+agent came back. The agent, model and workspace do not change.
 
 Only sessions you created can be reloaded, whatever kind of session you are.
 Only an idle one: a turn running or starting, queued messages, or attached
@@ -757,6 +828,33 @@ person's own tabs (`not_creator`), even when session control is switched on
 for everyone. Everything else
 `authorize_target` refuses stays refused.
 
+### `session_set_note`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `target` | yes | Session key or exact title of a session you created; your own session is refused `self_target` |
+| `note` | yes | The note text: a short statement of fact |
+
+Leaves a note without starting a turn, through the same code a cron or an app
+uses to post a note to a chat. Two things happen: a note line appears in the
+target's transcript, labelled as sent by `session_set_note`, and its next turn
+reads the same text once as background context from `"session_set_note"`. A running target holds both until its turn
+ends. Once written, the line is transcript history like any other note line, so a
+history replay carries it. The limits, redaction and reply are that note route's: a
+note a running target holds is capped at 4,000 characters (`deferred_note_too_large`),
+it holds at most ten notes of any kind (past that the note is refused,
+`deferred_notes_full`, and nothing is written), and a session takes at most ten
+notes from `session_set_note` into its next turn; past that the line is still
+written but its next turn does not read it, and the reply says so.
+
+State facts; do not ask questions. A question rides along as background
+context and may be answered on an unrelated turn.
+
+Reach is `session_set_color`'s: only sessions you created, for every caller,
+never your own session or the person's tabs, and nothing else `authorize_target`
+refuses. If the target is linked or mirrored to a channel before its next turn,
+that turn does not take the note as background context; its transcript line stays.
+
 ### `session_revive`
 
 | Argument | Required | Meaning |
@@ -795,7 +893,7 @@ Refusals only a revive gives:
 |---|---|
 | `member_thread_target` | The match is a Bot's thread, which is not addressable |
 | `folder_not_found` | The `folder` you named does not exist; nothing was revived |
-| `creator_slot_cap_reached` | HTTP 409: you already hold the per-caller live-session cap |
+| `creator_slot_cap_reached` | HTTP 409: you already hold the per-caller live-session cap (`session.max_per_creator`, 50 by default). The message says how many you hold and where the owner raises the limit |
 | `resume_in_progress` | HTTP 409: the session is being resumed elsewhere. Try again |
 | `resume_conflict` | HTTP 409: the session is being deleted. Try again |
 | `resume_session_deleted` | HTTP 409: the session was deleted while it was being resumed |
@@ -1166,7 +1264,11 @@ retry.
 
 Rate limits are per caller, per verb, over a 300-second window: **20** session
 creates (forks included), **10** folder creates, **10** tag creates, **10** board-column creates. Capacity ceilings sit behind
-them: 500 live sessions, 50 per creator, 500 folders.
+them: 500 live sessions, 50 per creator, 500 folders. The per-creator number is
+the default of `session.max_per_creator`: the owner raises it, up to 450, in
+Settings > Chat > Sessions > Sessions per creator, and the change applies to
+the next create with no restart. An agent can only propose the change on a
+card that you apply.
 
 ## Combining two chats
 

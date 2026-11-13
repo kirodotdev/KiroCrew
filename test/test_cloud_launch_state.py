@@ -541,8 +541,8 @@ class TestTheTwoProductWritersAreSerialised:
     def test_the_writers_callers_absorb_that_failure(self, tmp_path, monkeypatch):
         """Strict locking is safe because both wizard callers answer `OSError`.
 
-        After a confirmed deploy the launch warns and continues; before provisioning it aborts
-        with nothing billed. An unlockable mount costs a pointer, never a command.
+        The record write warns and the launch goes on; the prior pointer's clear aborts with
+        nothing billed. An unlockable mount costs a pointer, never a command.
         """
         import kiro_crew.cloud.launch_state as ls
         from kiro_crew.cloud import wizard
@@ -559,11 +559,11 @@ class TestTheTwoProductWritersAreSerialised:
 
         monkeypatch.setattr(ls.platform_compat, "file_lock", _boom)
 
-        # After the deploy: warn, and let the launch finish.
+        # The record write: warn, and let the launch go on.
         wizard._record_launch(profile="p", region="us-east-1", tag="kc-new")
         assert any("launch record" in w for w in warnings), warnings
 
-        # Before provisioning: refuse, so nothing is created on a pointer that did not clear.
+        # The prior pointer's clear: refuse, so nothing is created on a pointer that did not clear.
         assert wizard._clear_prior_pointer("kc-old") is False
         assert any("kc-old" in f for f in failures), failures
 

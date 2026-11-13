@@ -5,11 +5,12 @@ The artifact HTTP routes live in the owner modules under
 stays the import path and the patch seam, built on ``kiro_crew._facade_mirror``. The
 contract every mirrored facade holds to (one object per name, the ``TYPE_CHECKING``
 manifest, no owner importing the facade, every patched name reaching every reader) is
-``test_facade_mirror_guards.py``'s. These cases pin what is particular to this family: it
-is one of those facades, its owners are exactly the modules of the package in layer
-order, no name of it had to be excluded, every owner logs under the module's original
-logger name, the names owners import from elsewhere stay visible to type checkers, and
-every route the dashboard server registers is served by the facade.
+``test_facade_mirror_guards.py``'s. These cases pin what is particular to this family: it is
+one of those facades, its owners are exactly the modules of the package in layer order, no
+module outside the family imports an owner, no name of it had to be excluded, every owner
+logs under the module's original logger name, the names owners import from elsewhere stay
+visible to type checkers, and every route the dashboard server registers is served by the
+facade.
 """
 
 from __future__ import annotations
@@ -22,7 +23,9 @@ import pkgutil
 from pathlib import Path
 from types import ModuleType
 
+import owner_import_scan
 import pytest
+import source_corpus
 
 from kiro_crew import _facade_mirror
 from kiro_crew.dashboard.handlers import artifacts, artifacts_parts
@@ -68,6 +71,24 @@ def test_the_owners_are_the_package_modules_lowest_layer_first() -> None:
     assert (
         _MIRROR.owners[0] == f"{_PACKAGE}.record_serialization"
     ), "the output redaction sits lowest"
+
+
+def test_only_the_family_imports_an_owner() -> None:
+    """A module outside the family that imported an owner would hold bindings the
+    facade's mirror never indexes, so a patch through the facade would miss it."""
+    owners = frozenset(_MIRROR.owners)
+    family = {
+        f"{name.removeprefix('kiro_crew.').replace('.', '/')}.py" for name in (_FACADE, *owners)
+    }
+    sources = source_corpus.iter_candidate_sources(
+        require_any=tuple(name.rpartition(".")[2] for name in owners)
+    )
+    importers = owner_import_scan.owner_importers(
+        sources, source_corpus.src_root(), lambda name: name in owners
+    )
+    # An owner importing a lower owner proves the scan reads real imports.
+    assert "dashboard/handlers/artifacts_parts/create_update.py" in importers
+    assert importers - family == set()
 
 
 def test_every_owner_logs_under_the_module_s_original_logger_name() -> None:

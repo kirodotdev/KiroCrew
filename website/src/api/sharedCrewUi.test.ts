@@ -10,6 +10,7 @@ import {
   messageAuthor,
   bylineFor,
   bylineSelfId,
+  continuesAuthorRun,
   setupPathStates,
   sharedAccessConfigured,
   ALL_UNAVAILABLE,
@@ -71,8 +72,31 @@ describe('principals', () => {
   it('falls back to the login and builds initials without fetching anything', () => {
     expect(principalName(person('', 'alice@example.test'))).toBe('alice@example.test')
     expect(principalInitials(person('Ada Lovelace'))).toBe('AL')
-    expect(principalInitials(person('', 'bob@example.test'))).toBe('BE')
+    expect(principalInitials(person('', 'bob@example.test'))).toBe('BO')
     expect(principalInitials(null)).toBe('?')
+  })
+
+  it('builds initials from the part of an email before the @, or from a handle', () => {
+    // A Tailscale login with no display name is shown as the email itself.
+    expect(principalInitials(person('', 'priyashah@example.com'))).toBe('PR')
+    expect(principalInitials(person('jordan.lee@example.com'))).toBe('JL')
+    expect(principalInitials(person('', 'sam_okafor@example.com'))).toBe('SO')
+    // A bare handle, with and without a separator.
+    expect(principalInitials(person('priyashah'))).toBe('PR')
+    expect(principalInitials(person('samokafor'))).toBe('SA')
+    expect(principalInitials(person('jordan-lee'))).toBe('JL')
+    // A relay label: a display name, an email, or the id fallback with spaces.
+    expect(principalInitials(person('Ada Lovelace'))).toBe('AL')
+    expect(principalInitials(person('ada.lovelace@example.com'))).toBe('AL')
+    expect(principalInitials(person('Kiro user ...a1b2c3'))).toBe('KU')
+  })
+
+  it('never crashes on a one-letter, separator-only or empty label', () => {
+    expect(principalInitials(person('x'))).toBe('X')
+    expect(principalInitials(person('', 'x@example.com'))).toBe('X')
+    expect(principalInitials(person('@'))).toBe('?')
+    expect(principalInitials(person('._-'))).toBe('?')
+    expect(principalInitials(person('', ''))).toBe('?')
   })
 
   it('reads a server-stamped message author and ignores garbage', () => {
@@ -147,6 +171,44 @@ describe('message bylines', () => {
     expect(bylineSelfId(null, attribution('unknown', 'unknown'))).toBe('')
     expect(bylineFor(person('p_bob'), '')).toBeNull()
     expect(bylineFor(null, 'p_viewer')).toBeNull()
+  })
+
+  describe('continuesAuthorRun', () => {
+    const user = (id: string | null, kind: 'human' | 'unknown' = 'human') => ({ role: 'user', meta: id ? { author: person(id, kind) } : {} })
+    const row = (role: string, extra: Record<string, unknown> = {}) => ({ role, ...extra })
+    const at = (rows: Array<{ role: string; meta?: Record<string, unknown> }>) => rows.map((_, i) => continuesAuthorRun(rows, i))
+
+    it('continues on the same author and breaks on a new one', () => {
+      expect(at([user('p_a'), user('p_a'), user('p_b'), user('p_a'), user('p_a')])).toEqual([false, true, false, false, true])
+    })
+
+    it('breaks on any drawn row between: an agent reply, a tool line, a notice, a system card', () => {
+      for (const between of [row('assistant'), row('tool'), row('notice'), row('system', { kind: 'stop_event' }), row('system', { meta: { kind: 'skill_load' } })]) {
+        expect(at([user('p_a'), between, user('p_a')])[2]).toBe(false)
+      }
+    })
+
+    it('reads past state rows no surface draws', () => {
+      expect(at([user('p_a'), row('done'), row('queued'), user('p_a')])[3]).toBe(true)
+    })
+
+    it('never continues an unstamped or an Unknown author', () => {
+      expect(at([user(null), user(null)])).toEqual([false, false])
+      expect(at([user('unknown', 'unknown'), user('unknown', 'unknown')])).toEqual([false, false])
+      expect(at([user(null), user('p_a')])).toEqual([false, false])
+    })
+
+    it('a steer above, retracted or confirmed, draws no byline, so the next message names its sender', () => {
+      const steer = (steerState: string) => ({ role: 'user', meta: { author: person('p_a'), steer: true, steerState } })
+      for (const state of ['retracted', 'settled', 'written']) {
+        expect(at([steer(state), user('p_a')])[1]).toBe(false)
+      }
+    })
+
+    it('an app\'s send above is labelled with the app, so the next message names its sender', () => {
+      const appSend = { role: 'user', meta: { author: person('p_a'), turnActor: 'app', appLabel: 'notes/1' } }
+      expect(at([appSend, user('p_a')])[1]).toBe(false)
+    })
   })
 })
 

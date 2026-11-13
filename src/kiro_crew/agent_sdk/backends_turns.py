@@ -27,6 +27,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
@@ -219,6 +220,18 @@ ACP_BACKENDS_STEERING_REQUEST = frozenset(
 # request answered ``stopReason: cancelled`` the moment the second arrived, and only
 # the second ran -- so it interrupts rather than joins. It is in no steer set:
 # ``_session/steering`` answered ``-32601``, and it advertises no other channel.
+#
+# mimocode is not a member, measured on MiMo Code 0.1.15 both on its own ``xiaomi``
+# provider and on Bedrock behind an openai-compatible proxy: a ``session/prompt``
+# sent while a bash call ran was answered ``end_turn`` in 0.03 s with no usage, and
+# the harness's message store never held it. Its ``POST /session/:id/message``
+# route refuses a busy session with 409 before storing anything, and its ACP prompt
+# step reads that refusal as an empty reply, so the drop is the harness's whatever
+# the provider. The harness's own composer sends ``prompt_async`` on its loopback
+# listener instead, and the running loop reads that message at its next step; that
+# listener is not ACP, so nothing here speaks it. Membership would also misreport:
+# the empty ``end_turn`` arrives before the turn's own terminal, and the settle
+# counts such an answer as consumed when the turn ends cleanly.
 ACP_BACKENDS_STEER_CONCURRENT_PROMPT = frozenset({ACP_BACKEND_OPENCODE})
 
 # Backends whose ``_session/steer/clear`` drops the steers the running turn has not
@@ -253,8 +266,8 @@ ACP_BACKENDS_STEER_RETRACT = frozenset({ACP_BACKEND_KIRO})
 # sends. They do not all answer it the same way, and that split is
 # ``ACP_BACKENDS_INLINE_COMPACTION``: kiro-cli ACKs the prompt then emits
 # ``_kiro.dev/compaction/status``, which ``wait_for_compaction()`` picks up, while
-# claude-agent-acp, codex-acp, opencode, goose and pi finish the whole compaction inside
-# the ``session/prompt`` turn.
+# claude-agent-acp, codex-acp, opencode, mimocode, goose and pi finish the whole compaction
+# inside the ``session/prompt`` turn.
 #
 # opencode is a member on a LIVE capture although its ``available_commands_update``
 # lists no ``compact``: it serves ``/compact`` from its PROMPT handler, so the command
@@ -333,6 +346,15 @@ ACP_BACKENDS_STEER_RETRACT = frozenset({ACP_BACKEND_KIRO})
 # ``available_commands_update`` and in ``ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST``, so
 # the prompt guard lets it through.
 #
+# mimocode is a member on a LIVE capture against MiMo Code 0.1.15:
+# ``test/fixtures/acp_frames/mimocode/compact-live.jsonl``. The harness serves ``/compact``
+# itself (its ACP prompt handler runs the session summarizer). Four ordinary turns
+# of ~2.5k tokens each read 33578 -> 48430, the ``/compact`` turn streamed the
+# summary and read 48708, and the next ordinary turn read 34571. The history has to
+# be that large to show it: the harness's fixed prompt is ~28.7k tokens, and a first
+# drive with one-word turns added ~23 tokens each, so its summary was longer than the
+# history it replaced and ``used`` rose.
+#
 # deepseek is the one non-member:
 # :data:`ACP_BACKENDS_CONTEXT_RECYCLE` carries the consequence, because deepseek
 # reports no compaction at all, so a decline leaves its context unbounded.
@@ -346,6 +368,7 @@ ACP_BACKENDS_COMPACT = frozenset(
         ACP_BACKEND_KAS,
         ACP_BACKEND_PI,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_MIMOCODE,
     }
 )
 
@@ -431,7 +454,8 @@ ACP_BACKENDS_CONTEXT_RECYCLE = frozenset({ACP_BACKEND_DEEPSEEK})
 # compaction ``tool_call_update`` arrives BEFORE the ``session/prompt`` response;
 # opencode, which sends no status frame at all; goose (``Compaction complete``
 # chunk); pi (``Compaction completed`` chunk); copilot, whose chunk and
-# ``usage_update`` land before its ``end_turn``.
+# ``usage_update`` land before its ``end_turn``; mimocode, whose turn streams the
+# summary and ends ``end_turn`` (``test/fixtures/acp_frames/mimocode/compact-live.jsonl``).
 ACP_BACKENDS_INLINE_COMPACTION = frozenset(
     {
         ACP_BACKEND_CLAUDE,
@@ -440,6 +464,7 @@ ACP_BACKENDS_INLINE_COMPACTION = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_PI,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_MIMOCODE,
     }
 )
 
@@ -450,6 +475,48 @@ ACP_BACKENDS_INLINE_COMPACTION = frozenset(
 # Every other member is read by the marker alone, so its own ``think`` call with
 # that title is never taken for a compaction.
 ACP_BACKENDS_UNMARKED_COMPACTION_PAIR = frozenset({ACP_BACKEND_CODEX})
+
+# The harnesses whose sessions keep a ``prompt_blocks.SentImageLedger``: the ones
+# whose compaction, started by Crew or by the harness itself, sends a frame this
+# client reads, so the record is forgotten whenever the conversation drops its
+# pictures. A harness not shown to report its own compaction stays out and inlines
+# a named picture on every turn, so the model is never told it holds a picture a
+# silent compaction dropped (harness-parity H6).
+#
+# - kiro: ``_kiro.dev/compaction/status`` (``acp_frames/kiro/compaction-live.jsonl``).
+# - kas: ``summarization_started`` / ``summarization_completed`` on its own
+#   (``acp_frames/kas/auto-compaction-live.jsonl``).
+# - codex: the marked compaction ``tool_call_update`` on a manual ``/compact``
+#   and on a native auto-compaction alike (``acp_frames/codex/compact-live.jsonl``).
+# - claude: the standard ACP ``compaction_update`` the adapter sends because Crew
+#   declares ``session.compaction`` (acp-client spec, "Native adapter compaction
+#   lifecycle"), and the ``Compacting...`` text notice of an adapter that sends none.
+#
+# Out: opencode, goose and pi send nothing this client reads for a compaction
+# they start on their own; copilot, strands and deepseek have no capture of one.
+ACP_BACKENDS_SENT_IMAGE_RECORD = frozenset(
+    {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE}
+)
+
+# The harnesses whose compaction Kiro Crew sees: whether Crew or the harness
+# itself starts it, a frame this client reads arrives. Anything Crew sends once
+# per conversation and sends again after a compaction rests on that, so this is
+# the name such a send gates on. It IS the set above, under the name of what
+# it means, never a second list: a harness joins both by joining that one, on
+# the evidence written there
+# (``acp_frames/kiro/compaction-live.jsonl``,
+# ``acp_frames/kas/auto-compaction-live.jsonl``,
+# ``acp_frames/codex/compact-live.jsonl``, and claude's standard ACP
+# ``compaction_update``).
+#
+# Its one reader is the reply-format rules block (``build_message`` in
+# ``context_assembly.turn_message``, through ``LLMProvider.reports_compaction``):
+# in the set the block is bound as the provider's delivery envelope, so the
+# engine is sent it once per conversation and again after a compaction; outside
+# it, and on a harness that is not known, it is sent on every message, so a
+# compaction the harness ran on its own can never leave a conversation without
+# the rules (harness-parity H6).
+ACP_BACKENDS_COMPACTION_REPORTED = ACP_BACKENDS_SENT_IMAGE_RECORD
 
 # How long each backend's provider keeps a conversation's prompt prefix cached
 # after the last request, in seconds, for ``session.idle_compaction``. A backend
@@ -606,6 +673,9 @@ ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS = frozenset({ACP_BACKEND_CLAUDE})
 # the prompt path. kiro is not a member: it runs ``/clear`` natively over
 # ``_kiro.dev/commands/execute``. A harness added later stays out until its
 # ``/clear`` is checked.
+# mimocode is a member on opencode's ground, read off its 0.1.15 prompt step: only
+# ``compact`` is special-cased, and the advertised command catalog carries no
+# ``clear``, so a ``/clear`` sent there would reach the model as text.
 ACP_BACKENDS_LOCAL_CLEAR = frozenset(
     {
         ACP_BACKEND_KAS,
@@ -618,6 +688,7 @@ ACP_BACKENDS_LOCAL_CLEAR = frozenset(
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_CODEX,
         ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_MIMOCODE,
         ACP_BACKEND_PI,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
@@ -648,10 +719,37 @@ ACP_BACKENDS_LOCAL_CLEAR = frozenset(
 # kiro is not a member: it runs its commands over ``_kiro.dev/commands/execute``.
 # claude is not a member: its harness owns its own command set. codex, opencode,
 # pi, deepseek, goose and copilot are not members: each serves the commands it
-# knows from its own prompt handler, so their other commands keep the prompt
-# path (``ACP_BACKENDS_LOCAL_CLEAR`` covers the ``/clear`` most of them lack). A
-# harness added later stays out until its command handling is checked.
+# knows from its own prompt handler. Codex's commands are checked, so the dashboard
+# answers its other commands too (``ACP_BACKEND_PROMPT_HANDLER_COMMANDS``). The
+# others' commands keep the prompt path (``ACP_BACKENDS_LOCAL_CLEAR`` covers the
+# ``/clear`` most of them lack). A harness added later stays out until its command
+# handling is checked.
 ACP_BACKENDS_LOCAL_HARNESS_COMMANDS = frozenset({ACP_BACKEND_KAS, ACP_BACKEND_STRANDS})
+
+# Harness id -> the harness commands (``_SLASH_COMMANDS`` names) that the
+# harness's own prompt handler runs. The dashboard answers every other harness
+# command of a member itself, as it does for ``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS``:
+# ``/clear`` is dropped the way ``reset_conversation`` does, and any other command
+# gets a notice instead of reaching the model as text. ``GET /api/slash-commands``
+# lists only the row's commands and the commands the dashboard serves without the
+# harness.
+#
+# - codex: codex-acp 2.3.0's ``classifyPrompt`` runs plan, mcp, skills, status,
+#   review, review-branch, review-commit, compact, goal, rename and logout, and
+#   sends any other name to the model. Of Crew's harness commands only ``/compact``
+#   and ``/mcp`` are in that list, so a ``/help``, ``/context`` or ``/tools`` sent
+#   as prompt text reached the model as a bare word. The row does not forward
+#   Codex's other built-ins: they are not Crew harness commands, so they stay text.
+#
+# kiro-cli has no row, because it runs every command over its own command channel.
+# claude has no row, because it owns its command set
+# (``ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS``). opencode, pi, deepseek, goose and
+# copilot have no row: each keeps the prompt path until its own command handling is
+# checked. A member of ``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS`` has no row, because it
+# runs no command.
+ACP_BACKEND_PROMPT_HANDLER_COMMANDS: Mapping[str, frozenset[str]] = MappingProxyType(
+    {ACP_BACKEND_CODEX: frozenset({"/compact", "/mcp"})}
+)
 
 # Backends whose model-side REFUSAL arrives with a structured reason, not just a
 # stop reason. When the Kiro service's content filter declines a turn, kiro-cli

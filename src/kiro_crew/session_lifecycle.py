@@ -177,7 +177,7 @@ class _SessionEntry(Protocol):
 
 
 class _SessionMapPort(Protocol):
-    def clear_sid(self, key: str) -> None: ...
+    def clear_sid(self, key: str) -> bool: ...
 
     def delete(self, key: str, *, reason: str | None = None) -> None: ...
 
@@ -673,6 +673,7 @@ class SessionLifecycleService:
     destroy = _teardown.destroy
     destroy_if = _teardown.destroy_if
     discard_conversation = _teardown.discard_conversation
+    swap_conversation = _teardown.swap_conversation
     # ── Account-identity retirement (identity_retirement) ──
     holds_kiro_process_of_unknown_account = (
         _identity_retirement.holds_kiro_process_of_unknown_account
@@ -686,6 +687,7 @@ class SessionLifecycleService:
     _stop_bucket = _turn_stop._stop_bucket
     note_stop = _turn_stop.note_stop
     open_replay_gap = _turn_stop.open_replay_gap
+    has_open_replay_gap = _turn_stop.has_open_replay_gap
     close_replay_gap = _turn_stop.close_replay_gap
     _discard_replay_gap = _turn_stop._discard_replay_gap
     _orphan_turn_holder = _turn_stop._orphan_turn_holder

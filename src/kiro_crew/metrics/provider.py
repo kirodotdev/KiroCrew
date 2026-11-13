@@ -50,7 +50,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
 from kiro_crew.metrics import destination_filter
 from kiro_crew.metrics import harness as _harness
-from kiro_crew.metrics import otlp_endpoints, otlp_governance
+from kiro_crew.metrics import otlp_endpoints, otlp_governance, otlp_session
 from kiro_crew.metrics.behavioral_metrics import BEHAVIORAL_SCOPE
 
 # The env-var pins live in ``consent_pins`` (this module's line budget); they are
@@ -1355,6 +1355,32 @@ def _otlp_destinations(
     )
 
 
+def trace_destination_permitted(dest: Any) -> bool:
+    """Whether the policy permits *dest*'s host for spans, audited like a metric build.
+
+    The traces signal (``tracing/otlp.py``) answers to the same ``otlp_hosts``
+    policy, ceiling and SEL row as metrics, through this module's resolution.
+    """
+    return bool(
+        otlp_governance.governed_destinations(
+            (dest,), _policy_ceiling(), audit=True, redact=_policy_redactor()
+        )
+    )
+
+
+def gate_trace_exporter(exporter: Any, endpoint: str) -> None:
+    """Hold every span export of *exporter* to the policy in force at that export."""
+    from opentelemetry.sdk.trace.export import SpanExportResult
+
+    otlp_governance.gate_exporter(
+        exporter,
+        endpoint,
+        _policy_ceiling,
+        redact=_policy_redactor(),
+        refused=SpanExportResult.FAILURE,
+    )
+
+
 _FOREIGN_SIGNAL_ROUTES = (("/v1/traces", "traces"), ("/v1/logs", "logs"))
 
 
@@ -1437,8 +1463,9 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
     foreign = _foreign_signal_route(endpoint)
     if foreign is not None:
         logger.warning(
-            "OTLP destination %r points at an OTLP %s route, but Kiro Crew exports "
-            "metrics only (no %s); use the collector's /v1/metrics URL",
+            "OTLP destination %r points at an OTLP %s route, but this setting "
+            "exports metrics only (no %s); use the collector's /v1/metrics URL "
+            "(traces are sent to telemetry.traces_otlp_endpoint)",
             dest.name,
             foreign,
             foreign,
@@ -1520,22 +1547,11 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
             kwargs["headers"] = _OwnHeadersOnly(headers)
         elif headers:
             kwargs["headers"] = headers
-        # Passed only when supplied so the exporter keeps its own defaults (and
-        # its env-var fallbacks) for everything an edition did not set.
-        if dest.session is not None:
-            # An authenticated transport. requests re-evaluates Session.auth per
-            # request, which is what lets a credential that rotates mid-process
-            # keep working where a header frozen at construction would 401. A
-            # destination built in code carries its static headers on
-            # Session.headers.
-            kwargs["session"] = dest.session
-        elif own_only:
-            # A plain session of our own, so the exporter does not load the OTel
-            # credential-provider session either: that variable is process-wide
-            # in the same way the header variables are.
-            import requests
-
-            kwargs["session"] = requests.Session()
+        # A session that follows no redirect, for every destination: the policy
+        # gate and the https rule checked this endpoint only. A destination built
+        # in code gets a copy of its authenticated session (Session.auth is
+        # re-evaluated per request, so a rotating credential keeps working).
+        kwargs["session"] = otlp_session.export_session(dest.session, own_only)
         exporter = OTLPMetricExporter(**kwargs)
         # Every later export is held to the policy in force THEN, so a runtime
         # policy install stops a running reader without waiting for a rebuild.

@@ -23,6 +23,7 @@ from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.config import KiroCrewConfig, config_dir
 from kiro_crew.config.loader import workspace_dir_for
 from kiro_crew.config.paths import project_agents_dir
+from kiro_crew.file_uri import file_uri_path_text
 from kiro_crew.frontmatter import STEERING_LOADER, split_frontmatter
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink, validate_file_path
 from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
@@ -90,6 +91,11 @@ _LAUNCH_RECORD_MAX_BYTES = 128_000
 # A resources entry is a URI string this reader may open, or an object whose
 # keys are kiro-cli's schema. The alias records the shape, not those keys.
 ResourceDeclaration = str | dict[str, object]
+
+
+def _file_uri_path(uri: str) -> Path:
+    """The path a ``file://`` declaration names, ``~`` expanded."""
+    return Path(file_uri_path_text(uri)).expanduser()
 
 
 class MemberEssentialContextError(ValueError):
@@ -1384,7 +1390,7 @@ def documents_for_member(
     # install directory (see is_managed_prompt).
     if prompt and not agent_mod.is_managed_prompt(prompt):
         if prompt.startswith("file://"):
-            path = Path(prompt[7:]).expanduser()
+            path = _file_uri_path(prompt)
             if path.is_absolute():
                 # An absolute persona is also contained by the template_dir
                 # that stood in for a missing project. Declared resources keep
@@ -1556,7 +1562,7 @@ def _resource_paths(
     for resource in resources:
         if not isinstance(resource, str) or not resource.startswith("file://"):
             continue
-        path = Path(resource[7:]).expanduser()
+        path = _file_uri_path(resource)
         root = absolute_root if path.is_absolute() else source_root
         if path.is_absolute():
             pattern = _resource_pattern(path, root)

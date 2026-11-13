@@ -326,6 +326,44 @@ async def test_release_approval_hold_for_is_best_effort(svc, _nosleep, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_a_later_non_human_turn_releases_the_hold_and_the_loop_fires_again(svc, _nosleep):
+    """Hold set, then a conductor's session_send runs a turn: the loop wakes again.
+
+    The reported stall: an approval timed out in a worker, the loop held, and a
+    later turn sent by another agent (not a person) ran and ended. Nothing ended
+    the hold, so CI going red woke nobody. The turn start (wired in `_turn_open`,
+    pinned by `test_dashboard_approval_window.py`) calls the same release
+    an answered approval does; the turn's end then re-arms and the cycle fires.
+    """
+    fired: list[NudgeLoop] = []
+
+    async def on_fire(loop):
+        fired.append(loop)
+        return True
+
+    loop = await _armed(svc)
+    svc._on_fire = on_fire
+    await _stall(svc)
+    svc._cancel_timer(loop.id)
+    await svc._timer(loop)
+    assert fired == [] and svc._loops[loop.id].approval_stalled is True
+
+    svc.notify_user_input("chat-1-123")  # the session_send turn: not a person
+    _an.release_approval_hold_for("chat-1-123", why="a new turn started in the session", arm=False)
+    await asyncio.gather(*list(svc._inflight_adds))
+    timer = svc._timers.get(loop.id)
+    assert timer is None or timer.done(), "an unarmed release must leave arming to the turn's end"
+    svc.notify_turn_complete("chat-1-123")
+
+    refreshed = svc._loops[loop.id]
+    assert refreshed.approval_stalled is False
+    assert refreshed.next_due_ts > 0, "the loop was not re-armed"
+    await svc._timers[loop.id]
+    assert len(fired) == 1, "the released loop did not fire its next cycle"
+    await _stop_and_drain(svc)
+
+
+@pytest.mark.asyncio
 async def test_stall_hook_records_without_stopping(svc, _nosleep):
     """The hook writes evidence and returns; _timer owns the stop.
 

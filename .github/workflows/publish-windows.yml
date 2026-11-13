@@ -40,7 +40,7 @@ on:
   workflow_call:
     inputs:
       channel:
-        description: "Release channel: nightly | insider | stable"
+        description: "Release channel: nightly | insider | stable | lts"
         required: true
         type: string
       version:
@@ -100,7 +100,8 @@ jobs:
     # docs/ci/ci-and-reviews.md.
     runs-on:
       group: kirocrew-runners
-    timeout-minutes: 15
+    # 15 minutes of work plus the gh-rate-limit wrapper's 20-minute budget.
+    timeout-minutes: 35
     environment: prod
     env:
       # Mirrors publish-linux.yml: the signing role gates the whole lane, so a
@@ -113,7 +114,7 @@ jobs:
       # The published basename is a PUBLIC CONTRACT: the `latest/` alias URL is
       # what manualDownloadUrl() hands a user whose in-app update failed, so it
       # can carry neither the version nor electron-builder's spaces.
-      PUBLISHED_BASENAME: KiroCrew-Setup
+      PUBLISHED_BASENAME: ${{ inputs.channel == 'lts' && 'KiroCrew-LTS-Setup' || 'KiroCrew-Setup' }} # brand-ok
       # The leaf certificate the signing profile issues. Pinned as the expected
       # publisher so a misconfigured signing profile is caught here rather than
       # by every client's fail-closed update check.
@@ -122,6 +123,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # The probe below draws on the repository's shared installation rate
+      # limit, which the rest of the CI fleet can spend. A spent limit resets
+      # within the hour, so the wrapper waits for the reset instead of failing
+      # the publish. The job timeout leaves room for its wait budget.
+      - uses: ./.github/actions/gh-rate-limit
 
       # Windows publishes x64 only, so these are constants rather than inputs.
       # There is deliberately no `arch` parameter: with none, nothing can request

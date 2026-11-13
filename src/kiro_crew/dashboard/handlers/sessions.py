@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         _ANSI_ESCAPE_RE,
         _BONUS_COLON_RE,
         _BONUS_DASH_RE,
+        _BONUS_USED_RE,
         _MAX_BONUS_CREDITS,
         _MAX_BONUS_DAYS_LEFT,
         _MAX_BONUS_GRANTS,
@@ -55,10 +56,12 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.handlers.sessions_parts.history_reads import (  # noqa: F401
         _DASHBOARD_SLOT_STEM_RE,
+        _GUARDED_TAIL_MAX_MESSAGES,
         _MACHINE_NAMESPACES,
         _SHORT_SLOT_NAME_RE,
         _AppOwnedKeys,
         _app_search,
+        _guarded_tail_wanted,
         _has_user_content,
         _is_machine_only_session,
         _is_user_listed_row,
@@ -140,9 +143,15 @@ if TYPE_CHECKING:
         api_sessions_clearable_count,
     )
     from kiro_crew.dashboard.handlers.sessions_parts.live_turn import (  # noqa: F401
+        _HEARTBEAT_ID_MAX_CHARS,
+        _HEARTBEAT_SUBAGENTS_MAX,
+        _MODEL_THINK_WINDOW_DEFAULT_SECS,
+        _model_think_window,
+        _note_tool_heartbeat,
         _provider_steer_stamp,
         _resolve_app_approval,
         _service_wait_ping,
+        _subagent_activity_at,
         _wait_end_reason,
         api_approval_resolve,
         api_approvals,
@@ -185,6 +194,7 @@ if TYPE_CHECKING:
     from kiro_crew.agent_discovery import plain_markdown_document  # noqa: F401
     from kiro_crew.agent_discovery import read_agent_spec_strict  # noqa: F401
     from kiro_crew.agent_discovery import spec_by_declared_name  # noqa: F401
+    from kiro_crew.agent_sdk.mcp_problems import mcp_server_state  # noqa: F401
     from kiro_crew.agent_sdk.mcp_refs import per_tool_grants  # noqa: F401
     from kiro_crew.agent_spec_format import agent_spec_candidates  # noqa: F401
     from kiro_crew.agent_spec_format import is_markdown_spec  # noqa: F401
@@ -193,6 +203,7 @@ if TYPE_CHECKING:
     from kiro_crew.channel_transcript_migration import _orphan_target_stem  # noqa: F401
     from kiro_crew.cloud.login_target import parse_whoami_output  # noqa: F401
     from kiro_crew.config.paths import kiro_agents_dir  # noqa: F401
+    from kiro_crew.context import RECALL_ROLES  # noqa: F401
     from kiro_crew.cron import CronStoreBusy  # noqa: F401
     from kiro_crew.cron import CronStoreUnreadable  # noqa: F401
     from kiro_crew.cron import cron_owner_matches  # noqa: F401
@@ -228,6 +239,10 @@ if TYPE_CHECKING:
     from kiro_crew.llm_helpers import run_bg_oneliner  # noqa: F401
     from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS  # noqa: F401
     from kiro_crew.mcp_discovery import sync_discovered_servers  # noqa: F401
+    from kiro_crew.mcp_listing_gateway import session_listing_body  # noqa: F401
+    from kiro_crew.mcp_listing_relay import CODE_PARAM  # noqa: F401
+    from kiro_crew.mcp_listing_relay import LISTING_PARAM  # noqa: F401
+    from kiro_crew.mcp_listing_relay import PLACE_PARAM  # noqa: F401
     from kiro_crew.messaging.link import _in_namespace  # noqa: F401
     from kiro_crew.messaging.link import canonical_key  # noqa: F401
     from kiro_crew.platform import redact_log_via_context  # noqa: F401
@@ -238,6 +253,7 @@ if TYPE_CHECKING:
     from kiro_crew.security import redact_credentials  # noqa: F401
     from kiro_crew.security import redact_exfiltration_urls  # noqa: F401
     from kiro_crew.validation import sanitize_string  # noqa: F401
+    from kiro_crew.validation_parts.core_agent_schemas import SPAWN_BATCH_MEMBERS_MAX  # noqa: F401
 
 from aiohttp import web
 

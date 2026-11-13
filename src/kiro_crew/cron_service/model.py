@@ -40,6 +40,27 @@ _NEVER_PAUSE_BACKOFF_MAX_SECS = 3600
 _ALERT_AFTER_DEFAULT = 1
 
 
+def parked_by_its_run(
+    kind: object, user_paused: object, user_pause_requested: object, last_run_ts: object
+) -> bool:
+    """Whether a paused job is a one-shot its own run parked, not a pause the user made.
+
+    A fired ``at`` job that keeps its row is stored as ``enabled`` False and
+    ``user_paused`` True, the same flags a user pause writes
+    (:func:`~kiro_crew.cron_service.execution.run_parks_one_shot`). A user pause
+    also sets ``user_pause_requested``; a park does not. A paused one-shot without
+    it that has run (``last_run_ts``) was parked by that run, so health readers
+    count it and a failed one-shot is not hidden as a user pause.
+
+    shortcut: a pause saved before ``user_pause_requested`` existed carries no
+    marker, so an ``at`` job paused that way after a run reads as parked until the
+    user pauses or resumes it again. Drop this note once such stores are gone.
+    """
+    if kind != "at" or user_paused is not True or user_pause_requested is True:
+        return False
+    return not isinstance(last_run_ts, bool) and isinstance(last_run_ts, (int, float))
+
+
 def _lifts_default_pause(limit: object) -> bool:
     """Whether *limit* lets a job keep failing past the default limit (0 or above it)."""
     if isinstance(limit, bool) or not isinstance(limit, int):
@@ -119,6 +140,11 @@ class CronJob:
     # repeated request whose booleans already have that value. A pending run
     # record uses it to keep a newer user choice while merging runtime fields.
     user_pause_generation: int = 0
+    # True while ``user_paused`` is the person's own pause request (a pause, a job
+    # created paused, an import held for review); a resume clears it. A run's park
+    # of a fired one-shot writes ``user_paused`` but never this, which is how the
+    # health readers tell the two apart (:func:`parked_by_its_run`).
+    user_pause_requested: bool = False
     auto_paused: bool = (
         False  # True when paused by execution after repeated failures; cleared on re-enable/success
     )
@@ -159,6 +185,10 @@ class CronJob:
     # tick, which woke no one), so the run writes no history row. Reset at the
     # start of every run.
     quiet_run: bool = False
+    # Runtime-only (never serialized): set by the gateway when THIS run was a
+    # script's Skip(), so its history row is marked idle and the Logs tab can
+    # hide it. Reset at the start of every run.
+    idle_run: bool = False
     last_result: str | None = None
     # Epoch at which ``last_result`` was produced, written by
     # :meth:`set_run_result` and PERSISTED. Carries the run's identity for
@@ -354,6 +384,14 @@ class CronJob:
     secret_env_pending: dict[str, str] = field(default_factory=dict)
     secret_env_pending_pin: str = ""
     secret_env_pending_ts: float = 0.0
+    # The pending pin of the last re-approval request the SCHEDULER filed for
+    # a stale active grant (see cron_service.grant_resurface). It lets the
+    # scheduler raise that request once per code revision: an operator who
+    # denies it is not asked again on every refused run, while a further code
+    # change mints a different pin and asks again. Agent-writable like every
+    # stored field, which costs nothing: it only ever suppresses or permits a
+    # REQUEST, and nothing is granted without the operator's approval.
+    secret_env_resurfaced_pin: str = ""
 
     def set_run_result(self, value: str) -> None:
         """Record a result produced by the CURRENT run.

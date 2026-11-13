@@ -29,7 +29,7 @@ import CategoryRail from '../../components/appstore/CategoryRail'
 import AppListRow from '../../components/appstore/AppListRow'
 import TrustAppModal, { isTrustDeniedError } from '../../components/appstore/TrustAppModal'
 import SourcesPopover from '../../components/appstore/SourcesPopover'
-import { categoryCounts, categoryFor, type Category } from '../../components/appstore/categories'
+import { categoryCounts, categoryFor, categoryLabel, type Category } from '../../components/appstore/categories'
 import { sourceKey, sourceRowKey, type RegistryApp } from '../../components/appstore/types'
 import { api } from '../../api/client'
 import { i18nT } from '../../i18n/t'
@@ -647,7 +647,7 @@ function DiscoverPageBody() {
 
             <div className="flex items-baseline justify-between mt-2 mb-3">
               <h3 className="text-[17px] font-semibold text-text-strong">
-                {category === 'all' ? i18nT('pages.appsPage.all_apps') : category}
+                {category === 'all' ? i18nT('pages.appsPage.all_apps') : categoryLabel(category)}
               </h3>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-[224px_minmax(0,1fr)] gap-6 items-start">

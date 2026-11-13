@@ -771,6 +771,7 @@ class TestStatsCounters:
     def test_a_governance_denied_message_counts_nothing(self) -> None:
         # It never happened as far as the operator's own traffic figures go, and
         # counting it would make the failure ratio read as the bot's fault.
+        from kiro_crew.messaging import dispatch
         from kiro_crew.telegram import transport_dispatch as td
 
         d, _, _ = _dispatcher({7})
@@ -782,7 +783,7 @@ class TestStatsCounters:
         )
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(td, "Stats", lambda: recorder)
-            mp.setattr(td, "channel_inbound_permitted", _false)
+            mp.setattr(dispatch, "channel_inbound_permitted", _false)
             asyncio.run(d.handle_message(_dm("a question")))
         assert seen == []
 
@@ -1036,9 +1037,7 @@ class TestStatsAndReplyTargetCharacterization:
             asked.append(channel)
             raise RuntimeError("profile store down")
 
-        monkeypatch.setattr(
-            "kiro_crew.telegram.transport_dispatch.channel_inbound_permitted", _raise
-        )
+        monkeypatch.setattr("kiro_crew.messaging.dispatch.channel_inbound_permitted", _raise)
         d, _client, _sess = _dispatcher({7})
         with pytest.raises(RuntimeError):
             asyncio.run(d.handle_message(_dm("hi")))
