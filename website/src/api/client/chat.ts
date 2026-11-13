@@ -49,6 +49,10 @@ function themeConsentSha(colorTheme?: string): string | null {
   return stored
 }
 
+type CrewWorkersAnswer = { root: string; workers: CrewWorker[]; root_closed?: boolean; root_title?: string; root_kind?: 'mate'; paused?: CrewPause }
+/** The last answer and ETag of each root's worker list, for If-None-Match. */
+const crewWorkersEtags = new Map<string, { etag: string; data: CrewWorkersAnswer }>()
+
 export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetch: fetch, sessionKeyHeader: _sk, sendResponseAuthRecovery }: ClientTransport) {
   const summaries = {
     /** Intent summary for the chat summary panel.
@@ -85,8 +89,18 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
      *  through another worker (`GET /api/chat/slots/{root}/crew-workers`). */
     /** A closed root (its tab gone) still answers, from saved data:
      *  `root_closed: true` and its saved `root_title`. */
-    crewWorkers: (root: string): Promise<{ root: string; workers: CrewWorker[]; root_closed?: boolean; root_title?: string; root_kind?: 'mate'; paused?: CrewPause }> =>
-      fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers').then(j),
+    crewWorkers: async (root: string): Promise<CrewWorkersAnswer> => {
+      // Revalidate with the last ETag (sent as received, weak `W/` prefix included:
+      // If-None-Match compares weakly). A 304 means unchanged: keep the cached list.
+      const hit = crewWorkersEtags.get(root)
+      const r = await fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers', hit ? { headers: { 'If-None-Match': hit.etag } } : undefined)
+      if (r.status === 304 && hit) return hit.data
+      const data: CrewWorkersAnswer = await j(r)
+      const etag = r.headers?.get('etag')
+      if (etag) crewWorkersEtags.set(root, { etag, data })
+      else crewWorkersEtags.delete(root)
+      return data
+    },
     /** One session's recap under its root, from the ledger and its crew log only
      *  (`GET .../crew-workers/{worker}/recap`). No model call. */
     crewWorkerRecap: (root: string, worker: string): Promise<CrewWorkerRecap> =>
