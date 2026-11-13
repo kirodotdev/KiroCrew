@@ -248,6 +248,57 @@ class TestWriteSerialization:
         assert sess.frames_dirty is False
 
     @pytest.mark.asyncio
+    async def test_replay_drops_terminal_questions_but_keeps_the_screen(self):
+        """A reattach replays old output into a fresh xterm.js, which answers
+        every question in it through onData; the answers reached the shell as
+        typed junk (``11;rgb:ffff/ffff/ffff;1R``). Replay must carry no question
+        and every other byte, so the colour and cursor queries go and the
+        prompt, the colour change and the OSC 7 cwd report stay."""
+        new_ws = MagicMock()
+        new_ws.send_bytes = AsyncMock()
+        new_ws.send_str = AsyncMock()
+        sess = _make_session(ws=None)
+        screen = b"\x1b[32muser@host\x1b[0m % "
+        cwd_report = b"\x1b]7;file://host/home/user\x07"
+        questions = [
+            b"\x1b]11;?\x07",  # background colour, BEL-terminated
+            b"\x1b]10;?\x1b\\",  # foreground colour, ST-terminated
+            b"\x1b]4;1;?\x07",  # palette entry
+            b"\x1b[6n",  # cursor position (CPR)
+            b"\x1b[?6n",  # DEC cursor position
+            b"\x1b[5n",  # device status
+            b"\x1b[c",  # primary device attributes
+            b"\x1b[>0c",  # secondary device attributes
+            b"\x1b[?2004$p",  # DECRQM
+            b"\x1bP$qm\x1b\\",  # DECRQSS
+        ]
+        sess.scrollback.extend(screen + b"".join(questions) + cwd_report + screen)
+        sess.output_bytes = len(sess.scrollback)
+
+        assert await terminal._replace_terminal_ws(sess, new_ws) is True
+
+        sent = b"".join(call.args[0] for call in new_ws.send_bytes.await_args_list)
+        assert sent == screen + cwd_report + screen
+        assert sess.ws is new_ws
+
+    def test_replay_strip_keeps_everything_that_is_not_a_question(self):
+        """Look-alikes and cut-off sequences pass through byte for byte: a
+        modifier reset (``CSI > 4 n``), a colour SET, a colour query left
+        unterminated by the ring's end, and a CSI with no final byte."""
+        kept = [
+            b"\x1b[>4n",  # resets key modifiers, not a question
+            b"\x1b[?2004h",  # bracketed paste on
+            b"\x1b]11;#ffffff\x07",  # sets the background
+            b"\x1b]4;1;rgb:00/00/00\x1b\\",  # sets a palette entry
+            b"\x1bP$qm\x07",  # DECRQSS needs ST, BEL does not end it
+        ]
+        for seq in kept:
+            assert terminal._strip_terminal_queries(seq) == seq, seq
+        assert terminal._strip_terminal_queries(b"a\x1b]11;?") == b"a\x1b]11;?"
+        assert terminal._strip_terminal_queries(b"a\x1b[6") == b"a\x1b[6"
+        assert terminal._strip_terminal_queries(b"a\x1b[6nb\x1b]11;?\x07c") == b"abc"
+
+    @pytest.mark.asyncio
     async def test_failed_ready_send_keeps_previous_owner(self):
         old_ws = MagicMock()
         new_ws = MagicMock()
