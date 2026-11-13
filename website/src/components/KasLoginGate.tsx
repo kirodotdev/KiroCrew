@@ -1,7 +1,7 @@
-import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ReactNode } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { createContext, useContext, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import {
   AlertTriangle,
+  ArrowLeft,
   Building2,
   Check,
   Copy,
@@ -12,13 +12,13 @@ import {
   RefreshCw,
   ExternalLink,
 } from 'lucide-react'
+import { Trans } from 'react-i18next'
 import {
-  api,
   type KasLoginDeviceSession,
   type KasLoginLoopbackSession,
   type KasLoginStatus,
 } from '../api/client'
-import { ApiError, apiErrorCode } from '../api/apiError'
+import { apiErrorCode } from '../api/apiError'
 import { isUnansweredRead } from '../api/queryClient'
 import { reportForError, type ErrorReport } from '../utils/errorReport'
 import {
@@ -29,76 +29,25 @@ import {
   type ShellAsideCopy,
 } from './OnboardingChapterShell'
 import GithubLogo from './icons/GithubLogo'
-import { Btn } from './ui'
+import { Btn, IconButton } from './ui'
 import { initialCompanySignIn, rememberCompanySignIn } from '../utils/companySignIn'
 import ErrorNotice from './ErrorNotice'
 import { copyToClipboard } from '../utils/clipboard'
 import { safeHref } from '../utils/safeHref'
-import { clearCachedModels } from '../providers/adapters/acp'
-import { RELAY_VIEWER_CREWS_KEY, closeRelayCrews } from '../hooks/useRelayViewerCrews'
+import { openAuthTab, useKasLoginFlow, type KasLoginExtra } from '../hooks/useKasLogin'
 import { providerLabel, type KasLoginProvider } from './kasProviderLabel'
+import googleMarkUrl from '../assets/google-mark.svg'
+import awsMarkUrl from '../assets/aws-mark.svg'
 
 import { i18nT } from '../i18n/t'
 import { fmtTime } from '../i18n/format'
 
-const QUERY_KEY = ['kas-login'] as const
-
-// Device-flow poll cadence. The auth service does not return a per-provider
-// interval, so we poll at the flow's default (kiro-cli uses 5s).
-const DEVICE_POLL_INTERVAL_MS = 5_000
-// Loopback poll cadence: the listener is in-process on this machine, so a tight
-// poll is free and the app opens within a couple of seconds of the redirect.
-const LOOPBACK_POLL_INTERVAL_MS = 2_000
 // After this long on the loopback wait screen the screen says the sign-in is not
 // finished: the tab was closed or blocked, or the redirect cannot land.
 const LOOPBACK_SLOW_HINT_MS = 30_000
 // The begin error's DOM id, so the SSO field it names can point at it.
 const SSO_ERROR_ID = 'kas-sso-begin-error'
 const SSO_PREFILLED_ID = 'kas-sso-start-url-prefilled'
-
-// `extra` keeps Company SSO's start URL and region, so Start over can begin the
-// same sign-in again without the form.
-type ActiveSession = { provider: KasLoginProvider; extra?: KasLoginExtra } & (
-  | ({ kind: 'device' } & KasLoginDeviceSession)
-  | ({ kind: 'loopback' } & KasLoginLoopbackSession)
-)
-
-/** True when this page is itself served from a loopback address — the only case
- *  in which a portal redirect to `http://localhost:<port>` reaches the gateway. */
-function browserOnLoopback(): boolean {
-  const h = window.location.hostname
-  return h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1'
-}
-
-/** The begin-loopback 409: "take the device flow", not an error to display.
- *  Reads the structured error (status + JSON body `code`); the message text is
- *  only a fallback for a transport that lost the body. */
-function isLoopbackUnavailable(err: unknown): boolean {
-  if (err instanceof ApiError) {
-    if (err.status === 409) return true
-    try {
-      const parsed = JSON.parse(err.body || '{}') as { code?: unknown }
-      if (parsed.code === 'loopback_unavailable') return true
-    } catch {
-      /* non-JSON body: fall through to the message check */
-    }
-  }
-  return /loopback_unavailable/.test(String((err as { message?: string })?.message ?? err))
-}
-
-/** Open the portal in a new tab. Popup blockers may refuse; the wait screen
- *  keeps an explicit "open again" button for exactly that case. */
-function openAuthTab(url: string): void {
-  try {
-    window.open(url, '_blank', 'noopener,noreferrer')
-  } catch {
-    /* blocked or headless: the wait screen's button is the fallback */
-  }
-}
-
-// Extra begin-device fields the `idc` provider needs (the company's IAM Identity
-// Center access-portal URL, plus an optional region); other providers send none.
-export type KasLoginExtra = { start_url?: string; region?: string }
 
 /**
  * Which chrome the flow renders in. `gate` is the full-screen door (scrim +
@@ -178,6 +127,131 @@ function ViewShell({ aside, children }: { aside: ShellAsideCopy; children: React
  * in a new tab (a click is a user gesture, so a popup blocker lets it through),
  * and a separate always-visible button copies it for approval on ANOTHER device.
  */
+/**
+ * Where a surface that hosts the flow in its own header (the sign-in dialog) puts
+ * the device screen's back control. `set(null)` takes it away. Without a host the
+ * device screen draws its own back button.
+ */
+export interface SignInBackSlot {
+  set: (back: { onBack: () => void; disabled: boolean } | null) => void
+}
+export const SignInBackContext = createContext<SignInBackSlot | null>(null)
+
+/**
+ * The device-code screen in card chrome (the sign-in dialog): one heading, one
+ * button that opens the issuer's page with a small copy control, the code in a
+ * plain box with its own copy control, one waiting line, and a back control to
+ * the choices. A copy that fails shows the value to select by hand.
+ */
+function DeviceCodeCard({
+  session,
+  fellBack,
+  busy,
+  notice,
+  onCancel,
+}: {
+  session: KasLoginDeviceSession
+  fellBack?: boolean
+  busy: boolean
+  notice: string
+  onCancel: () => void
+}) {
+  const href = safeHref(session.verification_uri_complete)
+  const [copied, setCopied] = useState<'link' | 'code' | null>(null)
+  const [copyFailed, setCopyFailed] = useState<'link' | 'code' | null>(null)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current) }, [])
+  const copy = async (what: 'link' | 'code', value: string) => {
+    // copyCode-style contract: false when both clipboard paths failed.
+    if (!(await copyToClipboard(value))) {
+      setCopyFailed(what)
+      return
+    }
+    setCopyFailed(null)
+    setCopied(what)
+    if (timer.current) clearTimeout(timer.current)
+    timer.current = setTimeout(() => setCopied(null), 1500)
+  }
+  const back = useContext(SignInBackContext)
+  const cancelRef = useRef(onCancel)
+  cancelRef.current = onCancel
+  useEffect(() => {
+    back?.set({ onBack: () => cancelRef.current(), disabled: busy })
+  }, [back, busy])
+  useEffect(() => () => back?.set(null), [back])
+  const linkLabel = copied === 'link' ? i18nT('components.kasLogin.copied') : i18nT('components.kasLogin.copy_link')
+  const codeLabel = copied === 'code' ? i18nT('components.kasLogin.copied') : i18nT('components.kasLogin.copy_code')
+  return (
+    <div className="w-full">
+      <div className="flex items-center gap-2">
+        {back ? null : (
+          <IconButton aria-label={i18nT('components.kasLogin.use_different_sign_in')} disabled={busy} onClick={onCancel}>
+            <ArrowLeft size={16} aria-hidden="true" />
+          </IconButton>
+        )}
+        <h2 className="text-[15px] font-semibold text-text-strong">{i18nT('components.kasLogin.finish_in_browser')}</h2>
+      </div>
+      {fellBack ? (
+        <p className="mt-2 text-[13px] leading-relaxed text-muted" role="status" data-testid="kas-login-fell-back">
+          {i18nT('components.kasLogin.loopback_fell_back')}
+        </p>
+      ) : null}
+      <div className="mt-4 flex items-center gap-2">
+        {href ? (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            data-testid="kas-login-verification-link"
+            className="btn-sweep inline-flex min-h-9 items-center rounded-lg bg-accent px-4 text-sm font-semibold text-accent-fg hover:bg-accent-hover focus-ring"
+          >
+            {i18nT('components.kasLogin.open_sign_in_page')}
+          </a>
+        ) : (
+          <code className="min-w-0 overflow-x-auto font-mono text-[13px] text-text-strong">{session.verification_uri_complete}</code>
+        )}
+        <IconButton aria-label={linkLabel} onClick={() => void copy('link', session.verification_uri_complete)}>
+          {copied === 'link' ? <Check size={14} className="text-ok" aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
+        </IconButton>
+      </div>
+      {copyFailed === 'link' ? (
+        <ErrorNotice
+          className="mt-2"
+          variant="inline"
+          message={i18nT('components.kasLogin.copy_link_failed', { url: session.verification_uri_complete })}
+          onDismiss={() => setCopyFailed(null)}
+          noHandoffReason="a sign-in is in progress in this dialog and the agent may run as the very sign-in being replaced; the value is shown to select by hand"
+          testId="kas-login-copy-link-failed"
+        />
+      ) : null}
+      <p className="mt-5 text-[13px] text-text">{i18nT('components.kasLogin.check_code')}</p>
+      <div className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-border bg-bg-elevated py-2 pl-4 pr-2">
+        <span className="font-mono text-2xl font-bold tracking-[0.2em] text-text-strong" data-testid="kas-login-user-code">
+          {session.user_code}
+        </span>
+        <IconButton aria-label={codeLabel} onClick={() => void copy('code', session.user_code)}>
+          {copied === 'code' ? <Check size={14} className="text-ok" aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
+        </IconButton>
+      </div>
+      {copyFailed === 'code' ? (
+        <ErrorNotice
+          className="mt-2"
+          variant="inline"
+          message={i18nT('components.kasLogin.copy_code_failed')}
+          onDismiss={() => setCopyFailed(null)}
+          noHandoffReason="a sign-in is in progress in this dialog and the agent may run as the very sign-in being replaced; the value is shown to select by hand"
+          testId="kas-login-copy-code-failed"
+        />
+      ) : null}
+      <p className="mt-4 flex items-center gap-2 text-[13px] text-muted" aria-live="polite" data-testid="kas-login-code-expiry">
+        <Loader2 className="lucide-inline animate-spin text-accent" aria-hidden="true" />
+        {i18nT('components.kasLogin.waiting_code_expires', { time: fmtTime(session.expires_at) })}
+      </p>
+      <ErrorNotice className="mt-4" askAgent message={notice || null} testId="kas-login-settle-error" />
+    </div>
+  )
+}
+
 function LinkField({ value }: { value: string }) {
   const [copied, setCopied] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -294,6 +368,7 @@ function Chooser({
   beginError,
   beginErrorCode,
   companyDefault,
+  bare = false,
   onPick,
 }: {
   busy: boolean
@@ -302,6 +377,7 @@ function Chooser({
   beginErrorCode: string
   /** The gateway's default company portal (`KasLoginStatus.company_sign_in`). */
   companyDefault?: KasLoginStatus['company_sign_in']
+  bare?: boolean
   onPick: (provider: KasLoginProvider, extra?: KasLoginExtra) => void
 }) {
   // The company-SSO choice expands an inline form (start URL + region) instead of
@@ -334,7 +410,7 @@ function Chooser({
         panelFootnote: i18nT('components.kasLogin.aside_footnote'),
       }}
     >
-      {chrome.card ? (
+      {bare ? null : chrome.card ? (
         // The card's title already says "Kiro sign-in"; what the embedded
         // chooser needs is one sentence saying WHICH backend the identity is
         // for -- it sits under a switch that also lists Kiro CLI, whose own
@@ -351,32 +427,43 @@ function Chooser({
       <div
         className={
           chrome.card
-            ? 'mt-3 grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2'
+            ? bare
+              ? 'grid w-full grid-cols-1 gap-2'
+              : 'mt-3 grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2'
             : 'mt-7 flex w-full max-w-md flex-col gap-3'
         }
       >
         {!organisationOnly && (
           <>
             <ProviderButton
-              icon={<Globe className="lucide-inline" />}
+              icon={bare ? <img src={googleMarkUrl} alt="" width={16} height={16} className="shrink-0" /> : <Globe className="lucide-inline" />}
               label={i18nT('components.kasLogin.continue_with_google')}
               primary
               disabled={busy}
               onClick={() => onPick('google')}
             />
             <ProviderButton
-              icon={<GithubLogo size={15} />}
+              icon={<GithubLogo size={bare ? 16 : 15} />}
               label={i18nT('components.kasLogin.continue_with_github')}
               disabled={busy}
               onClick={() => onPick('github')}
             />
             <ProviderButton
-              icon={<IdCard className="lucide-inline" />}
+              icon={bare ? <img src={awsMarkUrl} alt="" width={16} height={16} className="shrink-0" /> : <IdCard className="lucide-inline" />}
               label={i18nT('components.kasLogin.continue_with_builder_id')}
               hint={i18nT('components.kasLogin.builder_id_hint')}
               disabled={busy}
               onClick={() => onPick('builder_id')}
             />
+            {bare ? (
+              // The dialog sets company SSO apart: a work sign-in, after the personal ones.
+              <div className="my-1 flex items-center gap-3 text-[12px] text-muted">
+                <Trans
+                  i18nKey="components.kasLogin.or_divider"
+                  components={{ line: <span className="h-px flex-1 bg-border" aria-hidden="true" />, or: <span /> }}
+                />
+              </div>
+            ) : null}
           </>
         )}
         {ssoOpen ? (
@@ -502,7 +589,7 @@ function Chooser({
         testId="kas-login-begin-error"
       />
       {/* "Each option starts…" reads wrong over a single option. */}
-      {!organisationOnly && (
+      {!organisationOnly && !bare && (
         <p
           className={
             chrome.card
@@ -643,6 +730,9 @@ function DeviceWaiting({
         panelFootnote: i18nT('components.kasLogin.device_aside_footnote'),
       }}
     >
+      {chrome.card ? (
+        <DeviceCodeCard session={session} fellBack={fellBack} busy={busy} notice={notice} onCancel={onCancel} />
+      ) : (<>
       <div className={`${chrome.tile} bg-accent-subtle text-accent`}>
         <Link2 className="lucide-inline" />
       </div>
@@ -718,6 +808,7 @@ function DeviceWaiting({
       >
         {i18nT('components.kasLogin.use_different_sign_in')}
       </button>
+      </>)}
     </ViewShell>
   )
 }
@@ -848,7 +939,10 @@ export interface KasLoginFlowSlots {
    * for. `reauth` starts the chooser over the current sign-in (a new
    * credential landing in the same slot replaces it). Default: `children`.
    */
-  renderAuthenticated?: (status: KasLoginStatus, actions: { reauth: () => void }) => ReactNode
+  renderAuthenticated?: (
+    status: KasLoginStatus,
+    actions: { reauth: () => void; replaceWarning: boolean },
+  ) => ReactNode
   /**
    * Shown under the chooser while a signed-in identity is being replaced, so
    * the user can back out of the replacement. `busy` is true while a begin is
@@ -858,6 +952,10 @@ export interface KasLoginFlowSlots {
    * `renderAuthenticated`; the gate never re-authenticates.
    */
   renderReauthCancel?: (cancel: () => void, busy: boolean) => ReactNode
+  /** Only the four choices: no intro line, no browser note (the dialog's form). */
+  bare?: boolean
+  /** Show the choices over a stored sign-in too: a switch, or one Kiro refused. */
+  startInReauth?: boolean
 }
 
 /**
@@ -907,283 +1005,12 @@ function KasLoginFlow({
   renderPending,
   renderAuthenticated,
   renderReauthCancel,
+  bare,
+  startInReauth,
 }: { children?: ReactNode } & KasLoginFlowSlots) {
-  const queryClient = useQueryClient()
   const chrome = useChrome()
-  // The sign-in in flight, tagged by transport. `loopback` means the gateway is
-  // listening on a local port for the portal's redirect; `device` means the user
-  // confirms a code. Null whenever the chooser owns the screen.
-  const [session, setSession] = useState<ActiveSession | null>(null)
-  // Set when a loopback attempt degraded to the device flow, so the code screen
-  // can say why it appeared instead of the promised no-typing sign-in.
-  const [fellBack, setFellBack] = useState(false)
-  // True while the user is replacing a signed-in identity from the embedded
-  // card: the chooser renders over a still-authenticated status, and the next
-  // credential to land supersedes the stored one. Cleared when the poll answers
-  // authorized (the status re-read then shows the new account) or on cancel.
-  const [reauth, setReauth] = useState(false)
-  // Read by the authorized effect below without re-running it on every toggle.
-  const reauthRef = useRef(reauth)
-  reauthRef.current = reauth
-  // Set when a switch's new credential landed but the previous slot could not
-  // be removed (`previous_identity_not_removed`): the old account still takes
-  // precedence, and the signed-in view must say so until the user acts.
-  const [replaceWarning, setReplaceWarning] = useState(false)
-  // True from the moment the user abandons a login until the gateway has
-  // acknowledged the cancel and the status has been re-read. The waiting screen
-  // stays up with its transition buttons disabled, so no second login can be
-  // started while the first is still being unwound.
-  const [settling, setSettling] = useState(false)
-  // A cancel (or the status read after it) that failed used to leave the
-  // waiting screen up with no explanation — buttons re-enabled, nothing said.
-  // Held here and rendered on that screen; cleared by the next attempt.
-  const [settleError, setSettleError] = useState('')
-  // The login a signed-in status dropped whose cancel did not settle: the
-  // gateway keeps it open, so the signed-in view says so and offers a retry.
-  const [unsettledLoginId, setUnsettledLoginId] = useState<string | null>(null)
-  const statusQuery = useQuery({
-    queryKey: QUERY_KEY,
-    queryFn: api.kasLoginStatus,
-    refetchInterval: 30_000,
-  })
-
-  // While replacing a signed-in identity, every begin -- first attempt or the
-  // loopback→device fallback -- names the slot being replaced. The gateway
-  // removes that slot only after the NEW credential has landed, so the switch
-  // is real (the store resolves by slot priority, not recency: a Google sign-in
-  // stored beside a still-present Identity Center entry would leave the agents
-  // on the old account) and a failed or abandoned attempt leaves it untouched.
-  const replaces =
-    reauth && statusQuery.data?.authenticated && statusQuery.data.identity
-      ? statusQuery.data.identity
-      : undefined
-
-  const beginDevice = useMutation({
-    mutationFn: ({ provider, extra }: { provider: KasLoginProvider; extra?: KasLoginExtra }) =>
-      api.kasLoginBeginDevice(provider, replaces ? { ...(extra ?? {}), replaces } : extra),
-    onSuccess: (s, { provider, extra }) => setSession({ kind: 'device', provider, extra, ...s }),
-  })
-
-  const beginLoopback = useMutation({
-    mutationFn: (provider: KasLoginProvider) =>
-      replaces
-        ? api.kasLoginBeginLoopback(provider, { replaces })
-        : api.kasLoginBeginLoopback(provider),
-    onSuccess: (s, provider) => {
-      setSession({ kind: 'loopback', provider, ...s })
-      openAuthTab(s.auth_url)
-    },
-    // 409 loopback_unavailable (busy ports, or the gateway decided against it) is
-    // not a failure the user can act on: silently take the device path instead.
-    onError: (err, provider) => {
-      if (isLoopbackUnavailable(err)) {
-        setFellBack(true)
-        beginDevice.mutate({ provider })
-      }
-    },
-  })
-
-  const pollQuery = useQuery({
-    queryKey: ['kas-login-poll', session?.login_id],
-    // `session!` is safe: `enabled` gates this off until a session exists.
-    queryFn: () => api.kasLoginPoll(session!.login_id),
-    // Off while a cancel is settling: the id is about to become unknown, and an
-    // error answer here must not read as a loopback failure to degrade from.
-    enabled: !!session && !settling,
-    // Poll at the server-requested cadence and STOP on any terminal answer —
-    // an authorized/expired login has nothing left to poll, and a transport
-    // failure should surface as the problem screen rather than retry forever.
-    refetchInterval: (query) => {
-      if (query.state.status === 'error') return false
-      const s = query.state.data?.status
-      if (s && s !== 'pending') return false
-      // The device flow polls at the auth service's expected cadence (kiro-cli
-      // uses 5s); the loopback listener is local, so a tighter poll costs nothing
-      // and shortens the gap between the redirect landing and the app opening.
-      return session?.kind === 'loopback' ? LOOPBACK_POLL_INTERVAL_MS : DEVICE_POLL_INTERVAL_MS
-    },
-    retry: false,
-  })
-
-  // Success is observed, not returned: the poll answering 'authorized' means
-  // the gateway now holds a token, so re-read status (the single authority on
-  // `authenticated`) and drop the session.
-  // The model list belongs to the account: on the KAS bundle route the gateway
-  // forgets the previous account's catalog the moment a sign-in lands, and
-  // `['available-models']` is refetched only on a session spawn (global
-  // `staleTime: Infinity`), so without this the picker keeps showing the
-  // previous account's models and prices. Drop localStorage first, then reset,
-  // the same pair the Agent Harness switch uses. Called from BOTH places a
-  // sign-in is confirmed: the poll answering 'authorized', and a cancel whose
-  // fresh status read finds the credential already stored (the poll is detached
-  // by then and never reports 'authorized' for it).
-  const invalidateSignInCaches = useCallback(() => {
-    clearCachedModels()
-    void queryClient.resetQueries({ queryKey: ['available-models'] })
-    // The usage reading names the previous account too (the Kiro sign-in card
-    // shows its e-mail): drop it rather than show that name until the next poll.
-    void queryClient.resetQueries({ queryKey: ['kiro-usage'] })
-    // A switch can keep every status field unchanged while replacing the account.
-    void queryClient.invalidateQueries({ queryKey: ['kas-login-sources'] })
-    // Team Crews are listed for the account: the new one's list, not the old one's.
-    void queryClient.resetQueries({ queryKey: RELAY_VIEWER_CREWS_KEY })
-  }, [queryClient])
-
-  const authorized = pollQuery.data?.status === 'authorized'
-  const authorizedCode = pollQuery.data?.code
-  useEffect(() => {
-    if (!authorized) return
-    // A Switch account landed: open relay Crew windows ran as the old account,
-    // so close them now rather than at their next renewal.
-    if (reauthRef.current) void closeRelayCrews()
-    void queryClient.invalidateQueries({ queryKey: QUERY_KEY })
-    invalidateSignInCaches()
-    // A switch whose old slot could not be removed is a sign-in that landed AND
-    // a failure the user has to act on: the previous account still wins by slot
-    // priority, so the re-read status will keep showing it. Kept as a notice
-    // over the signed-in view (rendered below) rather than dropped with the
-    // session, and cleared only by the user or by the next sign-in attempt.
-    setReplaceWarning(authorizedCode === 'previous_identity_not_removed')
-    setSession(null)
-    setFellBack(false)
-    setReauth(false)
-  }, [authorized, authorizedCode, invalidateSignInCaches, queryClient])
-
-  // Loopback degradation: a listener nobody reached (timeout — the browser is
-  // not on this machine) or that failed before persisting a token restarts the
-  // SAME provider on the device flow. Only a persist failure is a real dead end.
-  const pollCode = pollQuery.data?.code
-  const pollStatus = pollQuery.data?.status
-  useEffect(() => {
-    if (session?.kind !== 'loopback' || settling) return
-    if (pollStatus !== 'expired' && pollStatus !== 'error') return
-    if (pollCode === 'token_store_failed') return
-    const provider = session.provider
-    setFellBack(true)
-    setSession(null)
-    beginDevice.mutate({ provider })
-    // beginDevice is a stable mutation handle; listing it would re-fire on every render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session, pollStatus, pollCode, settling])
-
-  const status = statusQuery.data
-
-  // Abandon the in-flight login and learn whether a credential landed anyway.
-  // The gateway serialises cancel against the poll's persist step, so once
-  // cancel SUCCEEDS the outcome is settled: either nothing was written, or the
-  // token is already stored. Deciding the next screen before that answer would
-  // leave an abandoned credential active behind a second sign-in.
-  //   'signed_in'  -- a token landed; the refreshed status renders the app.
-  //   'signed_out' -- nothing landed; safe to start another login.
-  //   'unknown'    -- cancel or the status read failed; the old login may still
-  //                  complete, so the caller must NOT start another one.
-  const settleCancel = async (loginId: string): Promise<'signed_in' | 'signed_out' | 'unknown'> => {
-    // While replacing a signed-in identity the old credential is still stored
-    // after the cancel, so only a CHANGED one means this login landed. Read
-    // right before the cancel, not from the cache: a token refresh since the
-    // cached read moves expires_at too.
-    let before: KasLoginStatus | undefined
-    try {
-      if (reauth) before = await api.kasLoginStatus()
-      await api.kasLoginCancel(loginId)
-    } catch {
-      return 'unknown'
-    }
-    // An independent request, not fetchQuery: fetchQuery joins a status refetch
-    // already in flight, and one that left before the token landed answers
-    // "signed out" for a login that just succeeded. The fresh answer is pushed
-    // into the cache so the gate re-renders on it.
-    try {
-      const fresh = await api.kasLoginStatus()
-      queryClient.setQueryData(QUERY_KEY, fresh)
-      const landed =
-        fresh.authenticated &&
-        !(before && fresh.identity === before.identity && fresh.expires_at === before.expires_at)
-      // A sign-in that landed under the cancel is still a sign-in: the model
-      // list is the new account's now, and the poll that would have dropped the
-      // old one is already detached.
-      if (landed) invalidateSignInCaches()
-      if (landed && reauth) void closeRelayCrews()
-      return landed ? 'signed_in' : 'signed_out'
-    } catch {
-      return 'unknown'
-    }
-  }
-
-  const reset = async () => {
-    const loginId = session?.login_id
-    beginDevice.reset()
-    beginLoopback.reset()
-    if (!loginId) {
-      setSession(null)
-      setFellBack(false)
-      return
-    }
-    // The waiting screen stays up, buttons disabled, until the gateway has
-    // answered. A confirmed outcome clears the session; an unknown one (cancel
-    // or the status read failed) keeps it and lets the poll resume, because the
-    // old login may still complete and the chooser must not offer a second one.
-    setSettling(true)
-    setSettleError('')
-    const outcome = await settleCancel(loginId)
-    setSettling(false)
-    if (outcome === 'unknown') { setSettleError(i18nT('components.kasLogin.cancel_unsettled')); return }
-    setSession(null)
-    setFellBack(false)
-  }
-
-  // Abandon the attempt on screen, then hand it to `next` to start another for
-  // the same provider.
-  const replaceAttempt = async (next: (prev: ActiveSession) => void) => {
-    if (!session) return
-    const prev = session
-    setSettling(true)
-    setSettleError('')
-    const outcome = await settleCancel(prev.login_id)
-    setSettling(false)
-    // Unknown: the cancel never settled, so the old login is still live -- stay
-    // on its screen (a waiting screen resumes polling) rather than racing it.
-    if (outcome === 'unknown') { setSettleError(i18nT('components.kasLogin.cancel_unsettled')); return }
-    setSession(null)
-    // Signed in after all (the portal redirect landed while the user reached
-    // for the button): the refreshed status renders the app, or the card's
-    // signed-in view when this was a switch. Only nothing landing starts
-    // another login.
-    if (outcome === 'signed_in') setReauth(false)
-    else next(prev)
-  }
-
-  const useCodeInstead = () =>
-    replaceAttempt(({ provider }) => {
-      setFellBack(true)
-      beginDevice.mutate({ provider })
-    })
-
-  // Start over: a fresh attempt with the same provider on the same transport,
-  // one click. Switching method is the chooser's job (`reset`).
-  const startOver = () =>
-    replaceAttempt((prev) =>
-      prev.kind === 'loopback'
-        ? beginLoopback.mutate(prev.provider)
-        : beginDevice.mutate({ provider: prev.provider, extra: prev.extra }),
-    )
-
-  // Signed in another way (another tab, the CLI) while this login was pending:
-  // the signed-in view hides it, and it would poll unseen until its code
-  // expires. Drop it, then cancel it the way a user's cancel does. The session
-  // is never restored, so an unsettled cancel does not resume the poll.
-  const cancelDropped = async (loginId: string) => {
-    setUnsettledLoginId(null)
-    if ((await settleCancel(loginId)) === 'unknown') setUnsettledLoginId(loginId)
-  }
-  useEffect(() => {
-    if (!status?.authenticated || reauth || !session || settling) return
-    setSession(null)
-    setFellBack(false)
-    void cancelDropped(session.login_id)
-    // cancelDropped is re-created every render; listing it would re-fire on every render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status?.authenticated, reauth, session, settling])
+  const flow = useKasLoginFlow({ startInReauth })
+  const { statusQuery, status, session, pollQuery, settling, settleError } = flow
 
   // Mirror KiroPrerequisiteGate: an unresolved check is UNKNOWN, never a locked
   // door — render the app rather than flashing a sign-in screen at every load.
@@ -1233,10 +1060,11 @@ function KasLoginFlow({
     )
   }
 
-  if (status.authenticated && !reauth) {
+  if (status.authenticated && !flow.reauth) {
+    const unsettledLoginId = flow.unsettledLoginId
     return (
       <>
-        {replaceWarning ? (
+        {flow.replaceWarning ? (
           // askAgent on: nothing here is a draft, and a vault entry that could
           // not be deleted is a store/permissions fault the agent can diagnose.
           // Dismissable: once the user has signed the old account out by hand
@@ -1246,7 +1074,7 @@ function KasLoginFlow({
             askAgent
             title={i18nT('components.kasLogin.previous_sign_in_not_removed')}
             message={i18nT('components.kasLogin.previous_sign_in_not_removed_body')}
-            onDismiss={() => setReplaceWarning(false)}
+            onDismiss={flow.dismissReplaceWarning}
             testId="kas-login-replace-warning"
           />
         ) : null}
@@ -1258,15 +1086,15 @@ function KasLoginFlow({
             askAgent
             message={i18nT('components.kasLogin.pending_cancel_unsettled')}
             footer={
-              <Btn type="button" onClick={() => void cancelDropped(unsettledLoginId)}>
+              <Btn type="button" onClick={() => flow.retryDroppedCancel(unsettledLoginId)}>
                 {i18nT('components.kiroPrerequisiteGate.try_again')}
               </Btn>
             }
-            onDismiss={() => setUnsettledLoginId(null)}
+            onDismiss={flow.dismissUnsettled}
             testId="kas-login-cancel-unsettled"
           />
         ) : null}
-        {renderAuthenticated ? renderAuthenticated(status, { reauth: () => setReauth(true) }) : children}
+        {renderAuthenticated ? renderAuthenticated(status, { reauth: flow.startReauth, replaceWarning: flow.replaceWarning }) : children}
       </>
     )
   }
@@ -1274,7 +1102,7 @@ function KasLoginFlow({
   if (session) {
     const effective = pollQuery.error ? 'error' : (pollQuery.data?.status ?? 'pending')
     const terminal = effective === 'expired' || effective === 'error'
-    // A loopback terminal state is handled by the degradation effect above (it
+    // A loopback terminal state is handled by the hook's degradation effect (it
     // restarts on the device flow); only a token-store failure — or a transport
     // error on the poll itself — is a dead end worth a problem screen.
     const loopbackDeadEnd =
@@ -1294,8 +1122,8 @@ function KasLoginFlow({
           detail={detail}
           busy={settling}
           notice={settleError}
-          onStartOver={startOver}
-          onCancel={reset}
+          onStartOver={flow.startOver}
+          onCancel={flow.reset}
         />
       )
     }
@@ -1308,9 +1136,9 @@ function KasLoginFlow({
           provider={session.provider}
           busy={settling}
           notice={settleError}
-          onUseCode={useCodeInstead}
-          onStartOver={startOver}
-          onCancel={reset}
+          onUseCode={flow.switchToCode}
+          onStartOver={flow.startOver}
+          onCancel={flow.reset}
         />
       )
     }
@@ -1318,46 +1146,23 @@ function KasLoginFlow({
       <DeviceWaiting
         session={session}
         provider={session.provider}
-        fellBack={fellBack}
+        fellBack={flow.fellBack}
         busy={settling}
         notice={settleError}
-        onCancel={reset}
+        onCancel={flow.reset}
       />
     )
   }
 
-  // Loopback only when BOTH sides agree the browser shares this machine: the
-  // gateway's install-shape verdict, and the page itself being served from a
-  // loopback address. A dashboard reached over a tunnel or tailnet fails the
-  // second test, so the portal's redirect to localhost would land on the wrong
-  // machine — the device flow is the right transport there regardless of shape.
-  const loopbackOk = status.transport === 'loopback' && browserOnLoopback()
-
   return (
     <>
       <Chooser
-        busy={beginDevice.isPending || beginLoopback.isPending}
-        beginError={
-          beginDevice.error?.message ??
-          (beginLoopback.error && !isLoopbackUnavailable(beginLoopback.error)
-            ? beginLoopback.error.message
-            : '')
-        }
-        beginErrorCode={apiErrorCode(beginDevice.error)}
+        busy={flow.beginBusy}
+        beginError={flow.beginError}
+        beginErrorCode={flow.beginErrorCode}
         companyDefault={status.company_sign_in}
-        onPick={(provider, extra) => {
-          beginDevice.reset()
-          beginLoopback.reset()
-          setFellBack(false)
-          setReplaceWarning(false)
-          // Only the two portal-brokered social providers have a loopback flow;
-          // Builder ID / IdC run the SSO-OIDC device flow on every shape (as in kiro-cli).
-          if (loopbackOk && (provider === 'google' || provider === 'github')) {
-            beginLoopback.mutate(provider)
-            return
-          }
-          beginDevice.mutate({ provider, extra })
-        }}
+        bare={bare}
+        onPick={flow.pick}
       />
       {/* Replacing a signed-in identity is reversible until a new credential
           lands: the stored one is untouched while the chooser is up. NOT while
@@ -1365,15 +1170,8 @@ function KasLoginFlow({
           start polling after the cancel had already closed the chooser, and the
           poll would then persist the replacement nobody is watching. The card
           disables the back-out for that window (`busy`). */}
-      {reauth && status.authenticated && renderReauthCancel
-        ? renderReauthCancel(
-            () => {
-              beginDevice.reset()
-              beginLoopback.reset()
-              setReauth(false)
-            },
-            beginDevice.isPending || beginLoopback.isPending,
-          )
+      {flow.reauth && status.authenticated && renderReauthCancel
+        ? renderReauthCancel(flow.cancelReauth, flow.beginBusy)
         : null}
     </>
   )
