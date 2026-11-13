@@ -223,7 +223,10 @@ Endpoints (host: `https://prod.us-east-1.auth.desktop.kiro.dev`, portal:
   `/oauth/callback?login_option=<google|github>&code=…&state=…`; then
   `POST {host}/oauth/token` with `{code, code_verifier, redirect_uri}` where
   `redirect_uri` MUST equal `http://localhost:<port>/oauth/callback?login_option=<p>`
-  (path + login_option query, exactly as rebuilt in portal.rs).
+  (path + login_option query, exactly as rebuilt in portal.rs). A callback carrying
+  `error` fails the sign-in at once, and the tab names the reason in fixed words for
+  each RFC 6749 §4.1.2.1 code (`_PORTAL_ERROR_REASONS`); nothing the request carries,
+  `error_description` included, reaches the page.
 - **Device code:** `POST {host}/oauth/device/authorization`
   `{clientId:"Kiro-CLI", loginProvider:"Google"|"Github"}` →
   `{deviceCode, userCode, verificationUri, verificationUriComplete,
