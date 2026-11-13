@@ -549,6 +549,34 @@ class TestCredentialVerifier:
         assert await self._probe(monkeypatch, 200, {"access_token": "t"}) is None
 
     @pytest.mark.asyncio
+    async def test_credential_probe_uses_the_configured_proxy(self, monkeypatch) -> None:
+        from urllib import request as urllib_request
+
+        from aiohttp import web as aioweb
+        from aiohttp.test_utils import TestServer
+
+        issuer = "http://token-issuer.invalid/{tenant}/token"
+        seen = []
+
+        async def token_proxy(request: Any) -> Any:
+            seen.append(request.raw_path)
+            return aioweb.json_response({"access_token": "t"})
+
+        app = aioweb.Application()
+        app.router.add_post("/{tenant}/token", token_proxy)
+        async with TestServer(app) as proxy:
+            monkeypatch.setattr(teams_client, "_TOKEN_URL_TMPL", issuer)
+            monkeypatch.setattr(
+                urllib_request, "getproxies", lambda: {"http": str(proxy.make_url("/"))}
+            )
+            monkeypatch.setattr(urllib_request, "proxy_bypass", lambda _host: False)
+
+            result = await mod._validate_teams_app_credentials("app-1", "secret", "tenant-1")
+
+        assert result is None
+        assert seen == [issuer.format(tenant="tenant-1")]
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("status", [400, 401, 403])
     async def test_azure_refusal_is_a_rejection(self, monkeypatch, status: int) -> None:
         result = await self._probe(

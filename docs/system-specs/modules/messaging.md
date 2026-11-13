@@ -5963,6 +5963,15 @@ per send nor overwrite the first failure reason. Before the request is made,
 the text to fit — mirroring Webex and WeCom's wire-side `truncate_utf8` guards —
 so an over-budget activity delivers its head instead of dying as a Connector 413.
 
+**Proxy.** The token request, the Connector send and the dashboard's credential
+check (`_validate_teams_app_credentials` in `dashboard/messaging_api/teams_settings.py`)
+each pass `proxy=kiro_crew.http_proxy.resolve_proxy(url)`, so all three take one
+route: the HTTPS (else HTTP) proxy that `urllib.request.getproxies()` reports, unless
+the host is bypassed, and direct when none is set (#20185). The sessions keep
+aiohttp's default `trust_env=False`, so `~/.netrc` is never read. Attachment downloads are excluded on purpose. They dial the address
+`_VettedResolver` pinned after the SSRF vet, and a proxy would resolve the host
+itself, so that pin would never be consulted.
+
 **serviceUrl durability (`service_urls.py`).** The Bot Framework offers no way to
 look up where a conversation can be reached: `serviceUrl` arrives on an inbound
 activity and the bot must remember it. An in-memory map lost every proactive
