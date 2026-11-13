@@ -161,7 +161,7 @@ tool call before it runs, or block it outright.
 | `PreToolUse` | before a tool runs | allows the tool |
 | `PostToolUse` | after a tool ran | nothing |
 | `Stop` | the turn ends | usually nothing — but see the continuation contract below |
-| `SessionLaneChanged` | a dashboard user moves a session between board lanes — an agent's move fires nothing | nothing |
+| `SessionLaneChanged` | a dashboard user moves a session between board lanes, or starts one in a folder whose tags include a lane — an agent's move fires nothing | nothing |
 
 A spawned sub-agent fires `AgentSpawn` (on a new session) and `UserPromptSubmit`
 (with the task its parent wrote) before its prompt is sent, and their exit-0
