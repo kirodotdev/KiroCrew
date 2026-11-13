@@ -78,6 +78,7 @@ export { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 export { shouldAutoFillOlder } from './chat/page/transcriptPaging'
 import { claimAppAutoOpen } from '../hooks/usePanelTabs'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
+import { usePinnedScrollOrigin } from '../hooks/usePinnedScrollOrigin'
 
 import ChatDropOverlay from '../components/ChatDropOverlay'
 import SessionGridView from '../components/SessionGridView'
@@ -350,6 +351,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     uploadError, setUploadError, uploadHint, setUploadHint,
     resizedInfo, setResizedInfo,
   } = staging
+  usePinnedScrollOrigin(chatPaneEl)
   const { reconcileFileChipsRef, onComposerDraftCommit, noCarryCreateIdsRef } = useComposerDraftLifecycle({
     activeSlot,
     stores: draftStores,

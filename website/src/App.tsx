@@ -72,6 +72,7 @@ import BottomTerminalPanel, { TerminalDetachedBar } from './components/BottomTer
 import { toggleBottomTerminal, useTerminalFullscreen } from './hooks/useBottomTerminal'
 import { RunInTerminalShellNotice, useRunInTerminalShellBridge } from './shell/runInTerminalShellBridge'
 import { TerminalHostContext } from './hooks/useTerminalCommand'
+import { usePinnedScrollOrigin } from './hooks/usePinnedScrollOrigin'
 // Side effect: closes a terminal tab when its shell exits (main window and popout).
 import './utils/terminalExitClose'
 import { focusPopout as focusTerminalPopout } from './utils/terminalPopout'
@@ -335,6 +336,7 @@ export default function App() {
   } = shell
   // "Run in terminal" from a code block outside every chat, on any route.
   const runInTerminal = useRunInTerminalShellBridge(activeSlotProject, !isPopout && !isEmbed)
+  usePinnedScrollOrigin(shellRef)
   // The dock terminal fills the content area only while maximized, so <main>
   // becomes its own stacking context ONLY then — confining the fullscreen panel
   // above the in-content chat layers it covers. Docked or closed, <main> creates
