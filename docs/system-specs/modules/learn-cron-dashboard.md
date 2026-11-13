@@ -59,7 +59,7 @@ the per-turn usage rows of the same 30-day window (`_shard_sessions`) into the
 same today, week, month, daily and total figures. A row counts when its
 `provider` is in `usage_store._SHARD_COUNTED_PROVIDERS` (`claude_code`) or its
 `harness` is in `usage_store._SHARD_COUNTED_HARNESSES` (Claude, Codex, Copilot,
-DeepSeek, goose, OpenCode, Pi, Strands). Every ACP harness other than Claude
+DeepSeek, goose, MiMo Code, OpenCode, Pi, Strands). Every ACP harness other than Claude
 records `provider: acp`, the same value kiro-cli does, so it is the row's
 `harness` that tells their turns apart. A row is parsed only when its text holds
 one of those providers or a counted `"harness": "<id>"` member, so on an install
