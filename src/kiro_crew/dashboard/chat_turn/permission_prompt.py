@@ -338,6 +338,11 @@ async def _on_permission_prompt(
     loop = asyncio.get_running_loop()
     fut: asyncio.Future[str] = loop.create_future()
     slot.register_approval(str(event.request_id), fut, permission_row)
+    from kiro_crew.tracing import steps as trace_steps
+
+    # Answerable from here: its trace span starts now, though it opens below beside
+    # the crew-log request, after the cancellable Slack post (tracing/steps.py).
+    _trace_asked = trace_steps.asked_now()
     _decision_id = (
         "" if "resolved" in perm_meta else open_slot_approval(state, slot, str(event.request_id))
     )
@@ -548,6 +553,13 @@ async def _on_permission_prompt(
         tool=event.tool_name or "",
         reason=event.title or "",
     )
+    # Its span, closed beside the decision below; never awaits.
+    _trace_approval = trace_steps.approval_opened(
+        str(event.request_id),
+        session_key=session_key,
+        tool_call_id=event.tool_call_id or "",
+        since=_trace_asked,
+    )
     _approval_window = min(state.approval_timeout_for(slot), tool_approval_timeout_secs())
     _unattended_wait = slot.unattended
     _approval_card: str | None = None
@@ -738,6 +750,13 @@ async def _on_permission_prompt(
             decision=_crew_log_decision,
             by=("host" if (_host_deny_cause or _host_cancelled or _host_stopped) else ""),
             cause=_host_deny_cause,
+        )
+        trace_steps.approval_closed(
+            _trace_approval,
+            approved=_crew_log_decision == "approved",
+            by=trace_steps.decided_by(
+                host=_host_cancelled or _host_stopped, cause=_host_deny_cause
+            ),
         )
         # The same attribution decides the approval hold: a decision
         # no host route made came from a person, and a loop paused for

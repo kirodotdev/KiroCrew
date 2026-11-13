@@ -253,7 +253,7 @@ async def test_a_three_phase_replay_reproduces_the_live_tree(spans):
     await _run("wf_000103")
     _assert_shape(spans)
     assert _tree(spans) == live
-    assert len(live) == 1 + 3 + 4 * 4 + 1  # root, phases, 4 spans per turn, outcome
+    assert len(live) == 1 + 3 + 5 * 4 + 1  # root, phases, 5 spans per turn, outcome
 
 
 @pytest.mark.asyncio

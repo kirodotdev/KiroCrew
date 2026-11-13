@@ -86,6 +86,7 @@ from kiro_crew.agent_sdk.backends import (
 )
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.tracing import steps as trace_steps
 
 if TYPE_CHECKING:
     from kiro_crew.acp.client import AcpClient
@@ -561,6 +562,9 @@ async def steer(self: AcpClient, message: str) -> bool:
     A backend in ``ACP_BACKENDS_STEER_CONCURRENT_PROMPT`` takes the steer as
     a second ``session/prompt`` instead (:meth:`_steer_via_concurrent_prompt`),
     whose answer the turn's own read loop settles.
+
+    A steer that went out gets a point span in the turn it went into
+    (``tracing/steps.py``): its mode, never its text.
     """
     text = (message or "").strip()
     if not text or not self._session_id:
@@ -569,19 +573,26 @@ async def steer(self: AcpClient, message: str) -> bool:
         sent = await pi_steer_turn.steer(self, text)
         if sent:
             batch_guard.note_prompt(getattr(self, "_batch_window", None), text)
-        return sent
-    if self._speaks_steering_request:
-        return await self._steer_via_request(_CLIENT_STEERING_REQUEST_METHODS[self.backend], text)
-    if self.backend in ACP_BACKENDS_STEERING_REQUEST:
+    elif self._speaks_steering_request:
+        sent = await self._steer_via_request(_CLIENT_STEERING_REQUEST_METHODS[self.backend], text)
+    elif self.backend in ACP_BACKENDS_STEERING_REQUEST:
+        # A steer held behind an open tool call is not delivered yet: its span is
+        # written where it is injected (``_send_steering_request``), not here.
         return await self._steer_via_steering_request(text)
-    if self.backend in ACP_BACKENDS_STEER_CONCURRENT_PROMPT:
-        return await self._steer_via_concurrent_prompt(text)
-    wrapped = wrap_user_message(text)
-    await self._send_request("_session/steer", {"sessionId": self._session_id, "message": wrapped})
-    batch_guard.note_prompt(getattr(self, "_batch_window", None), text)
-    # See AcpSessionHandle.steer for why the stamp is taken at the write.
-    self._last_steer_monotonic = time.monotonic()
-    return True
+    elif self.backend in ACP_BACKENDS_STEER_CONCURRENT_PROMPT:
+        sent = await self._steer_via_concurrent_prompt(text)
+    else:
+        wrapped = wrap_user_message(text)
+        await self._send_request(
+            "_session/steer", {"sessionId": self._session_id, "message": wrapped}
+        )
+        batch_guard.note_prompt(getattr(self, "_batch_window", None), text)
+        # See AcpSessionHandle.steer for why the stamp is taken at the write.
+        self._last_steer_monotonic = time.monotonic()
+        sent = True
+    if sent:
+        trace_steps.steered(trace_steps.STEER_INTERRUPT, source=self)
+    return sent
 
 
 def _steering_request_ready(self: AcpClient) -> bool:
@@ -847,6 +858,7 @@ async def _send_steering_request(self: AcpClient, aimed_at: int, text: str) -> b
         return None
     self._steers_accepted.append((aimed_at, wrap_user_message(text)))
     self._last_steer_monotonic = time.monotonic()
+    trace_steps.steered(trace_steps.STEER_INTERRUPT, source=self)
     return True
 
 

@@ -42,6 +42,7 @@ from kiro_crew.acp.types import (
     steering_outcome,
     wrap_user_message,
 )
+from kiro_crew.tracing import steps as trace_steps
 
 if TYPE_CHECKING:
     from kiro_crew.acp.session_handle import AcpSessionHandle
@@ -82,7 +83,10 @@ async def steer(self: AcpSessionHandle, message: str) -> bool:
             # (``_meta.steering.supported: true``): nothing is sent, and the
             # caller queues the text as the next turn.
             return False
-        return await self._steer_via_steering_request(text)
+        sent = await self._steer_via_steering_request(text)
+        if sent:
+            trace_steps.steered(trace_steps.STEER_INTERRUPT, source=self)
+        return sent
     wrapped = wrap_user_message(text)
     await self._runtime.send_request(
         "_session/steer",
@@ -95,6 +99,9 @@ async def steer(self: AcpSessionHandle, message: str) -> bool:
     # end up on this line. A reader of the stamp therefore needs no
     # per-transport wiring. See ``last_steer_monotonic``.
     self._last_steer_monotonic = time.monotonic()
+    # The same funnel gives the steer its point span in the turn it went into
+    # (tracing/steps.py): its mode, never its text.
+    trace_steps.steered(trace_steps.STEER_INTERRUPT, source=self)
     return True
 
 

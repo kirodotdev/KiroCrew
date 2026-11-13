@@ -1984,6 +1984,19 @@ replay) is dropped; a tool still open when its turn ends is ended with it. An MC
 call is named `mcp`, and so is any tool name spelled like an MCP one; with no
 harness-authored name the tool kind stands in.
 
+**Steps inside a turn.** Each is a child of the turn span and carries no spend.
+
+| Span | Opened by | Carries |
+|---|---|---|
+| `kirocrew.step` | `TurnTrace.observe`: the first at the turn's start, the next at text after a tool group (the boundary the crew log derives in `chat_turn/stream_chunks.py`), the last ended with the turn | `kirocrew.step.index` (1-based), `kirocrew.step.derived=true` |
+| `kirocrew.compaction` | `observe`, on this session's own `compaction_status` events (a fanned-out `runtime_global` frame is not the turn's): `started` to `completed`/`failed`, or zero-length at a result with no start seen | `kirocrew.compaction.outcome`; `failed` is an error |
+| `kirocrew.approval` | `tracing/steps.py::approval_opened`/`approval_closed`, from the moment the prompt can be answered (`asked_now`, taken before a cancellable post) to its decision; a wait cancelled or failed with no answer is the host's (`policy`): the dashboard's `chat_turn/permission_prompt.py::_on_permission_prompt`, a channel's decider wait (`messaging/driver.py::TurnDriver._approve`), a sub-agent's tool prompt (`subagent_manager/run.py::_ApprovalPrompt`, under the child's own turn) and its spawn approval (`admission/pump.py`, under the parent's spawn tool span) | `kirocrew.approval.wait_ms`, `kirocrew.approval.decided_by` (`person`; `policy` when the host decided with no answer: undeliverable, no budget, cancelled, stopped; `timeout`; absent on a sub-agent tool prompt whose approver does not say who answered), `kirocrew.approval.outcome` (`approved`/`rejected`), `kirocrew.tool_call_id` |
+| `kirocrew.steer` | `steps.steered`, zero-length: an interrupt where it is written (`acp/session_handle_steering.py::steer`, the funnel for kiro and Kiro Agent; `acp/client_turn_control.py::steer`), into the turn open on that ACP session; a sub-agent follow-up (`continuation.py::follow_up_run_impl`) into the run's open turn | `kirocrew.steer.mode` (`interrupt`, `follow_up`); never the text |
+
+A tool the harness auto-approves never reaches Crew, so it has no approval span; nor
+does a Crew policy that answers before a prompt is shown. The dashboard and channel
+approvals find their turn through the root bound in the task that streams it.
+
 **Trace id.** `dashboard/chat_runner.py::_run_chat` binds `turn._recovery_turn_id`
 through `dashboard/trace_binding.py::bind_turn` around the turn, and that id is the
 trace id of each stream the same task opens; the n-th stream is `kirocrew.attempt=n`.
@@ -2175,6 +2188,8 @@ A turn's trace id is the turn id itself when it is 32 hex, else
 | `invoke_agent` | `turn, turn_id, attempt` |
 | `chat`, `user.prompt`, `turn.complete` | that kind, `turn_id, attempt` |
 | `execute_tool` | `tool, acp_session_id, tool_call_id` |
+| `kirocrew.step`, `kirocrew.compaction`, `kirocrew.steer` | `step` / `compaction` / `steer`, `turn_id, attempt, n` (n counts that kind in the turn from 1) |
+| `kirocrew.approval` | `approval, acp_session_id, tool_call_id` (the request id when there is none); a spawn approval `approval, subagent_id, request_id` |
 | sub-agent `invoke_agent` | `turn, turn_id, attempt`, in the parent's trace under its spawn span |
 | run anchor (`subagent`, `cron`, `workflow`) | `<kind>, *key, cont`; trace `trace.<kind>, *key, cont` |
 | `<kind> outcome <status>` | `<kind>.outcome, *key, cont, outcome_key` |
