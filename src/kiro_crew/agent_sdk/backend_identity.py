@@ -6,12 +6,13 @@ reader who conflates them will draw the wrong conclusion from either:
 
 * ``agent.provider`` -- ``"acp"`` or ``"claude_code"``. Which *seam* serves the
   session. Answered by ``provider_identity.is_claude_code``.
-* ``agent.acp_backend`` -- ``""`` (kiro-cli), ``"kas"``, or ``"claude"``. Which
-  *harness* the ACP seam spawned. Answered here.
+* ``agent.acp_backend`` -- ``""`` (kiro-cli), ``"kas"``, ``"claude"`` or another
+  harness id (``agent_sdk.backends.BASELINE_SELECTABLE_BACKENDS`` holds the public
+  build's). Which *harness* the ACP seam spawned. Answered here.
 
 Both can say "claude" about the same session and neither implies the other: the
-public build admits only ``provider == "acp"`` while still refusing
-``acp_backend == "claude"``, so the pair is genuinely two-dimensional.
+public build admits only ``provider == "acp"``, yet ``acp_backend == "claude"``
+is selectable there, so the pair is genuinely two-dimensional.
 
 Why this module takes the backend NAME and not the provider
 -----------------------------------------------------------

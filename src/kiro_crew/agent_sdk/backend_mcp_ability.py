@@ -312,8 +312,8 @@ def _broker_only_dispositions(backend: str) -> Dict[str, str]:
     A ``broker-only`` projection is handed no agent spec, so the spec's ``hooks``
     field reaches the harness by no route. Unless Crew fires that field itself
     (``ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS``), nothing runs it, and an empty map would
-    tell the card and the session-start notice the opposite. Every other kind keeps
-    its ``{}``, as before this ruling: this answers the broker-only kind alone.
+    tell the card and the session-start notice the opposite. Every other kind
+    answers ``{}``: this rules on the broker-only kind alone.
     """
     # circular import -- see :func:`_declaration`.
     from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
