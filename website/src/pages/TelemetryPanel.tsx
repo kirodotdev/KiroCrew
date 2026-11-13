@@ -87,7 +87,7 @@ function Notice({ children }: { children: React.ReactNode }) {
 // counter beside it.
 function GenNote({ shown, total, compact }: { shown?: number; total?: number; compact?: boolean }) {
   if (shown == null || total == null || total <= shown) return null
-  const text = i18nT('pages.telemetryPanel.showing_partial_window', { shown, total })
+  const text = i18nT('pages.telemetryPanel.showing_partial_window', { shown: fmtNumber(shown), total: fmtNumber(total) })
   // A fixed-width cell cannot hold the sentence: rendered inline it wraps to a
   // nine-line sliver and pushes the row to ten times its height. The marker keeps
   // the caveat visible and discoverable while the sentence moves to the tooltip.
