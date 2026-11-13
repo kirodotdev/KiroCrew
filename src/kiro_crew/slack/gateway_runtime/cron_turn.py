@@ -79,13 +79,76 @@ if TYPE_CHECKING:
     )
 
 
+async def _end_failed_cron_turn(sessions: Any, session_key: str) -> bool:
+    """Stop the sub-agent runs of a failed cron run's attempt on *session_key*.
+
+    A turn that returns normally leaves its session to the sub-agents it spawned (its
+    ``finally`` defers the reset), since each completion continues the orchestration
+    there. A run that failed for good has no orchestration left: it is recorded as
+    failed, so a worker left running keeps acting with the job's permissions for a run
+    that is over. The attempt whose failure handler records that failure calls this on
+    its own key, before it releases the key: the attempt that failed the run, and, as
+    the failure unwinds, each attempt that handed the run to an ACP-death retry. That
+    retry may have run on a key of its own (a stateless job mints one per attempt) or
+    failed before its turn began. An attempt that is retried calls this at no point
+    before the run fails for good.
+
+    - It still holds the key's session: the conversation ends as a cron reaper or
+      cancel ends it (``reset(..., ends_conversation=True)``), which stops the key's
+      runs. Only the entry this task holds is reset (``expect_session``), and a
+      completion waiting on the permit is woken by the pop and finds no session.
+    - No session is registered under the key: one was torn down under the turn (a
+      completion's timeout reset, a provider shutdown, the retry's own ending), or
+      this attempt never acquired one. The key's runs are ended with
+      ``end_children_for``.
+    - A session the attempt does not hold is registered under the key (another turn's,
+      or one an earlier attempt released for a retry): it is left alone with its runs,
+      since runs are told apart by key only. Whether one is registered is read in the
+      same lock hold as the runs' snapshot (``unless_registered``), so a successor
+      registered while this attempt waited for that lock keeps the runs its own turn
+      spawned meanwhile.
+
+    On a stable ``cron:`` key the key's runs include those an earlier fire or the job's
+    dashboard tab started there, as they do for the reaper and a cancel.
+
+    Returns whether the key's runs were stopped, so the caller can retire the key's
+    reaper registration: no completion of a stopped run is delivered, so no deferred
+    reset retires it later. Never raises ``Exception``.
+    """
+    try:
+        if sessions.turn_holder(session_key) is asyncio.current_task():
+            entry = sessions._sessions.get(sessions._fold_key(session_key))
+            if entry is not None and await sessions.reset(
+                session_key, ends_conversation=True, expect_session=entry
+            ):
+                logger.info("Cron session %s: the failed run ended its conversation", session_key)
+                return True
+        if not await sessions.end_children_for(session_key, unless_registered=True):
+            logger.info(
+                "Cron session %s: the failed run does not hold the session registered "
+                "there; its sub-agent runs are left running",
+                session_key,
+            )
+            return False
+        logger.info(
+            "Cron session %s: no session left for the failed run; its sub-agent runs ended",
+            session_key,
+        )
+        return True
+    except Exception:
+        logger.exception("Cron session %s: could not end the failed run's sub-agents", session_key)
+        return False
+
+
 async def _cron_run_sequence(
     self: GatewayOrchestrator, job: CronJob, cap: _CronCapture
 ) -> str | None:
     """Run an agent-sequence message job, one step after another.
 
     Each step runs on its own stable session key and hands back, releases and
-    resets that key in its own ``finally``; a step's failure propagates.
+    resets that key in its own ``finally``. A step that fails for good stops its
+    key's sub-agent runs there instead (``_end_failed_cron_turn``), and the failure
+    propagates.
     """
     msg, cron_execution = cap.msg, cap.cron_execution
     cron_memory_store = cap.cron_memory_store
@@ -197,6 +260,10 @@ async def _cron_run_sequence(
             if self.cron_svc is not None:
                 self.cron_svc.register_active_session_key(job.id, agent_session_key)
             _acq = False
+            # Set when this attempt fails the step for good (every raise below, not
+            # the Session-not-found re-load): the finally then stops the key's
+            # sub-agent runs instead of deferring its reset to them.
+            _seq_failed = False
             # Whether a re-projection left this step holding the replay gap.
             _seq_reprojected = False
             # Post-compaction re-injection bookkeeping for the finally:
@@ -453,6 +520,7 @@ async def _cron_run_sequence(
                 except Exception:
                     logger.debug("usage row (cron seq) persist failed", exc_info=True)
             except Exception as _seq_exc:
+                _seq_failed = True
                 if not acp_error_is_session_not_found(_seq_exc):
                     raise
                 # Re-running the step re-sends its prompt, which
@@ -463,6 +531,26 @@ async def _cron_run_sequence(
                     ) from _seq_exc
                 if _seq_snf_retry_used:
                     raise AcpError(f"{SESSION_NOT_FOUND_GIVE_UP_TEXT} {_seq_exc}") from _seq_exc
+                # Spawning a sub-agent is tool activity, so a loss with THIS
+                # turn's sub-agents in flight took the no-replay arm above; this
+                # is work another turn left on the same key, still running or
+                # injecting. A re-run against the un-reset stale binding would
+                # only hit Session not found again, and a reset under that work
+                # is what the step gives up instead of. Decided here, while the
+                # step still holds the key, so the finally stops those runs
+                # before a waiting completion can claim the session.
+                if (
+                    self.subagent_mgr
+                    and await _subagent_work_pending(self.subagent_mgr, agent_session_key)
+                ) or self._cron_injecting.get(agent_session_key, 0) > 0:
+                    logger.info(
+                        "Cron '%s': lost session of step %r but sub-agents "
+                        "pending; not retrying this step",
+                        job.name,
+                        agent,
+                    )
+                    raise AcpError(f"{SESSION_NOT_FOUND_GIVE_UP_TEXT} {_seq_exc}") from _seq_exc
+                _seq_failed = False
                 _seq_snf_retry_used = True
                 _seq_snf_retry = True
                 _seq_snf_err = str(_seq_exc)
@@ -486,17 +574,39 @@ async def _cron_run_sequence(
                 )
                 rollback_skill_bodies(self.ctx_builder, agent_session_key, landed=_seq_landed)
                 if _acq:
-                    # This step is done with its key: the last sub-agent's
-                    # cleanup may retire it while the run goes on.
-                    _finish_key = getattr(self.cron_svc, "finish_session_key", None)
-                    if callable(_finish_key):
-                        _finish_key(job.id, agent_session_key)
-                    self.sessions.release(agent_session_key)
-                    if _seq_reprojected:
-                        # After the release, as on the single-agent site.
-                        from kiro_crew.agent_sdk.spec_hooks import close_reprojection_gap
+                    try:
+                        # As on the single-agent site, a failed step ends its
+                        # conversation before its key is marked finished.
+                        if _seq_failed:
+                            await _end_failed_cron_turn(self.sessions, agent_session_key)
+                    finally:
+                        # Owed even when the run is cancelled meanwhile, as on
+                        # the single-agent site. This step is done with its key:
+                        # the last sub-agent's cleanup may retire it while the run
+                        # goes on.
+                        _finish_key = getattr(self.cron_svc, "finish_session_key", None)
+                        if callable(_finish_key):
+                            _finish_key(job.id, agent_session_key)
+                        self.sessions.release(agent_session_key)
+                        if _seq_reprojected:
+                            # After the release, as on the single-agent site.
+                            from kiro_crew.agent_sdk.spec_hooks import close_reprojection_gap
 
-                        close_reprojection_gap(self.sessions, agent_session_key)
+                            close_reprojection_gap(self.sessions, agent_session_key)
+                elif _seq_failed:
+                    # This attempt failed before it held the key. Stopped runs
+                    # report nothing, so nothing else retires its registration.
+                    if (
+                        await _end_failed_cron_turn(self.sessions, agent_session_key)
+                        and self.cron_svc is not None
+                    ):
+                        self.cron_svc.clear_active_session_key(job.id, agent_session_key)
+                if _acq and _seq_failed:
+                    # The failed step stopped its key's runs above, so nothing
+                    # is left to defer to and the reaper needs no key of it.
+                    if self.cron_svc is not None:
+                        self.cron_svc.clear_active_session_key(job.id, agent_session_key)
+                elif _acq:
                     # Mirror the single-agent finally below: defer the
                     # reset when this agent's sub-agents are still
                     # running, QUEUED behind the concurrency/stagger
@@ -548,15 +658,14 @@ async def _cron_run_sequence(
                 break
             # The finally above defers its reset while sub-agents
             # are pending so a completion about to inject is not
-            # torn down; honour that same deferral here. Spawning a
-            # sub-agent is tool activity, so a loss with THIS turn's
-            # sub-agents in flight already took the no-replay arm and
-            # never reaches here; this guards a sibling step's
-            # completion still injecting. When we must defer, let
-            # _subagent_done do the reset and give up the retry (a
-            # re-run against the un-reset stale binding would only
-            # hit Session not found again), rather than reset under
-            # the pending completion.
+            # torn down; honour that same deferral here. Work pending
+            # before the release gave the step up there already; this
+            # is work that appeared after it (a turn that took the key
+            # in the gap). The step does not hold the key here and a
+            # session is registered there, so the give-up leaves that
+            # session and its runs alone and the reset to
+            # _subagent_done (a re-run against the un-reset stale
+            # binding would only hit Session not found again).
             _retry_has_pending = bool(
                 self.subagent_mgr
                 and await _subagent_work_pending(self.subagent_mgr, agent_session_key)
@@ -643,6 +752,11 @@ async def _cron_run_single(
         await asyncio.to_thread(tag_run_transcript)
 
     _acquired = False
+    # Set when this attempt's failure handler records the run as failed: the
+    # attempt that failed it, or one whose ACP-death retry failed. Never while the
+    # run is handed to a retry. The ``finally`` then stops this attempt's key's
+    # sub-agent runs instead of deferring its reset to them.
+    _turn_failed = False
     # Whether a re-projection left this run holding the replay gap.
     _reprojected = False
     _model_downgraded = False
@@ -1198,6 +1312,10 @@ async def _cron_run_single(
             # Retries exhausted — fall through to dedup + alert +
             # record_failure: a persistent outage should still count.
         logger.exception("Cron job '%s' failed", job.name)
+        # The run has failed for good. A frame whose ACP retry failed stops the
+        # runs of its own key too: the retry may have had a key of its own (a
+        # stateless job's key is minted per attempt) or failed before its turn.
+        _turn_failed = True
         # During an in-flight ACP retry (inner recursive _cron_callback
         # call), suppress all notify/slack/dedup work — the outer
         # invocation is authoritative and will handle notification
@@ -1237,17 +1355,50 @@ async def _cron_run_single(
         )
         rollback_skill_bodies(self.ctx_builder, session_key, landed=_turn_landed)
         if _acquired:
-            # The run is done with its key: the last sub-agent's cleanup may
-            # retire it before the run's claim is released.
-            _finish_key = getattr(self.cron_svc, "finish_session_key", None)
-            if callable(_finish_key):
-                _finish_key(job.id, session_key)
-            self.sessions.release(session_key)
-            if _reprojected:
-                # After the release, as the shared channel pipeline closes its own.
-                from kiro_crew.agent_sdk.spec_hooks import close_reprojection_gap
+            try:
+                # A failed run ends its conversation first: a completion that reset
+                # wakes must not retire the key while the reset still tears its
+                # process down, or the reaper would lose that process.
+                if _turn_failed:
+                    await _end_failed_cron_turn(self.sessions, session_key)
+            finally:
+                # Owed even when the run is cancelled while that reset waits: a
+                # permit left held would lock the session against every later turn.
+                # The run is done with its key: the last sub-agent's cleanup may
+                # retire it before the run's claim is released.
+                _finish_key = getattr(self.cron_svc, "finish_session_key", None)
+                if callable(_finish_key):
+                    _finish_key(job.id, session_key)
+                self.sessions.release(session_key)
+                if _reprojected:
+                    # After the release, as the shared channel pipeline closes its own.
+                    from kiro_crew.agent_sdk.spec_hooks import close_reprojection_gap
 
-                close_reprojection_gap(self.sessions, session_key)
+                    close_reprojection_gap(self.sessions, session_key)
+        else:
+            try:
+                # This attempt holds no key here: it failed before it acquired one,
+                # or gave its key to an ACP-death retry. Stopped runs report
+                # nothing, so nothing else retires the key's registration.
+                if (
+                    _turn_failed
+                    and await _end_failed_cron_turn(self.sessions, session_key)
+                    and self.cron_svc is not None
+                ):
+                    self.cron_svc.clear_active_session_key(job.id, session_key)
+            finally:
+                if _reprojected:
+                    # A retry arm released early; the gap ends with this run too,
+                    # even when the run is cancelled while its cleanup waits.
+                    from kiro_crew.agent_sdk.spec_hooks import close_reprojection_gap
+
+                    close_reprojection_gap(self.sessions, session_key)
+        if _acquired and _turn_failed:
+            # The failed run stopped its key's runs above, so nothing is left to
+            # defer to and the reaper needs no key of it.
+            if self.cron_svc is not None:
+                self.cron_svc.clear_active_session_key(job.id, session_key)
+        elif _acquired:
             # Defer session reset if subagents are still running,
             # queued behind the concurrency/stagger gate, or
             # mid-injection — _subagent_done will reset after the last one.
@@ -1284,11 +1435,6 @@ async def _cron_run_single(
                     # run's → the reaper does not need this key.
                     if self.cron_svc is not None:
                         self.cron_svc.clear_active_session_key(job.id, session_key)
-        elif _reprojected:
-            # A retry arm released early; the gap ends with this run too.
-            from kiro_crew.agent_sdk.spec_hooks import close_reprojection_gap
-
-            close_reprojection_gap(self.sessions, session_key)
         # A reset that took the lease away (a cancel, a reap) absorbs the release
         # above, and the release observer never sees an absorbed one.
         if self.dashboard_state is not None:

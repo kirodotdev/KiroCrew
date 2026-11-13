@@ -517,6 +517,7 @@ from kiro_crew.slack.gateway_runtime.cron_fire import (
     _cron_extra_env,
     _CronCapture,
 )
+from kiro_crew.slack.gateway_runtime.cron_turn import _end_failed_cron_turn
 from kiro_crew.slack.gateway_runtime.cron_verdict import (
     _CRON_FAILURE_DETAIL_CAP,
     _EPOCH_RE,

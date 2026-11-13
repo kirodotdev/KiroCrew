@@ -751,6 +751,25 @@ class TestParentEndCancelsItsChildrenTeardownRules(_TestParentEndCancelsItsChild
         await mgr.close_all()
 
     @pytest.mark.asyncio
+    async def test_ending_the_children_unless_registered_spares_a_registered_session(self, cfg):
+        """A caller ending the runs of a conversation already torn down asks for nothing
+        to be ended while a session is registered under the key, since that session's
+        turn may have spawned some of them; once none is registered the runs end."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        _snapshotted, cancelled, handler = self._recorder()
+        mgr.set_child_teardown_handler(handler)
+        await mgr.get_or_create("cron:job-9")
+        mgr.release("cron:job-9")
+
+        assert await mgr.end_children_for("cron:job-9", unless_registered=True) is False
+        assert cancelled == []
+
+        await mgr.reset("cron:job-9")
+        assert await mgr.end_children_for("cron:job-9", unless_registered=True) is True
+        assert cancelled == [("run-1",)]
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
     async def test_a_teardown_disarms_the_watcher_of_a_delivered_run(self):
         """A DELIVERED run still holds a watcher, and that watcher can still speak.
 
@@ -938,6 +957,8 @@ class TestParentEndCancelsItsChildrenTeardownRules(_TestParentEndCancelsItsChild
         assert found == {
             # A cancelled cron job's conversation is over.
             "cron_service/service/run_kill.py",
+            # A cron run that failed for good has no orchestration left.
+            "slack/gateway_runtime/cron_turn.py",
             # Cancel cleanup ends every step conversation of the run.
             "taskrunner_parts/run_scope.py",
             # The pool starts a NEW conversation on a pooled key.
