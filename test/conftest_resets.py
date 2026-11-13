@@ -477,6 +477,24 @@ def _fresh_aws_bin_dir_trust(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_hardlink_spec_warnings():
+    """Start each test with no hardlink refusal of an agent spec already warned about.
+
+    ``agent_discovery_parts.spec_reads._HARDLINK_WARNED`` holds the resolved paths
+    whose refusal this process logged at WARNING; a path an earlier test on the same
+    worker refused would turn this test's first WARNING into DEBUG. The facade and
+    its owner hold one set, so it is cleared in place. Only when already imported,
+    and read with ``getattr`` so a tree without the set (``prove.py``'s revert of the
+    fix) still runs its tests.
+    """
+    spec_reads = sys.modules.get("kiro_crew.agent_discovery_parts.spec_reads")
+    warned = getattr(spec_reads, "_HARDLINK_WARNED", None)
+    if warned is not None:
+        warned.clear()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_cjk_segmenter():
     """Forget session search's registered Chinese segmenter around each test.
 

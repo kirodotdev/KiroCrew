@@ -287,6 +287,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _forget_mount_source_sweep_pacing,
     _forget_sandbox_launch_mark,
     _fresh_aws_bin_dir_trust,
+    _fresh_hardlink_spec_warnings,
     _fresh_reexec_environment,
     _fresh_released_sessions_warning,
     _history_cleanup_throttle_closed,
