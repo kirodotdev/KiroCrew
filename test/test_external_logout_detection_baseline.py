@@ -367,7 +367,11 @@ class TestLatchNarrowingPolicy:
 
         from kiro_crew.dashboard import chat_runner
 
-        # No store on disk at all: the fingerprint is absent.
+        # A store that is there but will not read: the fingerprint is absent, and
+        # the read cannot prove that nobody is signed in.
+        db = kp.kiro_identity_store_path("linux", tmp_path, {})
+        db.parent.mkdir(parents=True, exist_ok=True)
+        db.write_bytes(b"not a sqlite database")
         service = kp.KiroPrerequisiteService(home=tmp_path, environ={}, platform_name="linux")
         sessions = self._Sessions(complete=True)
         state = self._State(service, sessions)
@@ -377,8 +381,62 @@ class TestLatchNarrowingPolicy:
         await chat_runner._retire_sessions_on_identity_change(state)
 
         # Every turn re-sweeps rather than accepting the unreadable state.
+        assert service.identity_absence_is_definitive is False
         assert sessions.calls == 3
         assert service._session_identity is None
+
+    @pytest.mark.asyncio
+    async def test_a_proven_sign_out_is_swept_once_by_the_turn(self, tmp_path: Path) -> None:
+        """A send while signed out does not drain every idle chat again.
+
+        Nobody is signed in (no store, no API key, an empty vault), so the read proves
+        the absence. The first turn sweeps it, which retires any child still holding
+        the account just left; every later turn under the same sign-out leaves the
+        sessions alone, though it still runs the stamp check.
+        """
+
+        from kiro_crew.dashboard import chat_runner
+
+        service = kp.KiroPrerequisiteService(home=tmp_path, environ={}, platform_name="linux")
+        sessions = self._Sessions(complete=True)
+        flagged: list[str] = []
+
+        async def _flag(live: str) -> list[str]:
+            flagged.append(live)
+            return []
+
+        sessions.flag_identity_stamp_mismatches = _flag  # type: ignore[attr-defined]
+        state = self._State(service, sessions)
+
+        await chat_runner._retire_sessions_on_identity_change(state)
+        assert sessions.calls == 1
+        assert service.identity_absence_already_swept is True
+
+        await chat_runner._retire_sessions_on_identity_change(state)
+        await chat_runner._retire_sessions_on_identity_change(state)
+
+        assert sessions.calls == 1
+        assert flagged == ["", "", ""]
+        assert service._session_identity is None
+
+    @pytest.mark.asyncio
+    async def test_an_incomplete_sign_out_sweep_retries_on_the_next_turn(
+        self, tmp_path: Path
+    ) -> None:
+        """Only a COMPLETE sweep covers a sign-out; one a busy chat held back retries."""
+
+        from kiro_crew.dashboard import chat_runner
+
+        service = kp.KiroPrerequisiteService(home=tmp_path, environ={}, platform_name="linux")
+        sessions = self._Sessions(complete=False)
+        state = self._State(service, sessions)
+
+        await chat_runner._retire_sessions_on_identity_change(state)
+        await chat_runner._retire_sessions_on_identity_change(state)
+
+        assert service.identity_absence_is_definitive is True
+        assert service.identity_absence_already_swept is False
+        assert sessions.calls == 2
 
 
 class TestReturnToBaselineAfterIncompleteSweep:
