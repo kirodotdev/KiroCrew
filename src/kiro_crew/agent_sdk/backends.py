@@ -324,6 +324,10 @@ with no row here.
    * - ``ACP_BACKENDS_RESUME_WITHOUT_LOAD``
      - driver-internal (which ACP verb restores a session, and which capability
        key advertises it)
+   * - ``ACP_BACKENDS_CWD_BOUND_SESSIONS``
+     - pre-session registry query (whether a saved session is restored only in
+       the directory it was created in, so a chat whose folder changed starts
+       fresh and replays its conversation)
    * - ``ACP_BACKENDS_FORK_AT_MESSAGE``
      - driver-internal (whether ``session/fork`` honours a fork point, so a
        rewind keeps the retained native history)
@@ -1413,6 +1417,7 @@ from kiro_crew.agent_sdk.backends_sessions import (  # noqa: E402,F401 - re-expo
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_CHAT_RUNTIME_SHARING,
     ACP_BACKENDS_CLIENT_NEW_CONVERSATION,
+    ACP_BACKENDS_CWD_BOUND_SESSIONS,
     ACP_BACKENDS_FORK_AT_MESSAGE,
     ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
     ACP_BACKENDS_LOAD_WITHOUT_MODES,

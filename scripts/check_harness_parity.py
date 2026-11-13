@@ -481,6 +481,7 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
     "ACP_BACKENDS_HARNESS_OWNED_SESSIONS": "standard ACP: session/load by id",
     "ACP_BACKENDS_RESUME_WITHOUT_LOAD": "standard ACP: session/resume capability",
     "ACP_BACKENDS_LOAD_WITHOUT_MODES": "standard ACP: session/load result shape",
+    "ACP_BACKENDS_CWD_BOUND_SESSIONS": "standard ACP: whether session/load is sent for a moved cwd",
     "ACP_BACKENDS_SESSION_MCP_ARRAY": "standard ACP: session/new mcpServers array",
     "ACP_BACKENDS_REMOTE_MCP_OAUTH": "off the wire: the agent file's remote-server oauth block",
     "ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION": "standard ACP: session/set_config_option",
