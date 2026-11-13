@@ -14,7 +14,7 @@ Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``, ``_fold_mcp_frame``,
 ``_initialized``, ``_kas_telemetry_sent``,
 ``_mcp_gateway_overlay``, ``_open_mcp_report``, ``_park_in_start_agent``, ``_pid``,
-``_pool_lookup``, ``_refuse_over_ceiling_start``,
+``_pool_lookup``, ``_record_tree_in_background``, ``_refuse_over_ceiling_start``,
 ``_remote_session_servers``, ``_remote_workspace_agents``, ``_session_label_elements``,
 ``_wire_mode_id``, ``_work_dir``,
 ``_write_remote_token``, ``can_release``, ``release_session``.
@@ -674,13 +674,9 @@ async def load_session(
 
     # A resume re-initializes the MCP servers and forks the same agent
     # processes a fresh session does, so it needs the same scan; without it
-    # every descendant a resumed session created stays unrecorded. Guarded
-    # for the same reason as create_session: session/load already succeeded.
-    try:
-        await self._snapshot_descendants()
-    except BaseException:
-        await self.terminate_session(resume_sid)
-        raise
+    # every descendant a resumed session created stays unrecorded. It runs
+    # beside the session, as create_session's does, and every kill waits for it.
+    self._record_tree_in_background()
 
     logger.info("Resumed session %s on runtime PID %d", resume_sid, self._pid or 0)
     return handle
