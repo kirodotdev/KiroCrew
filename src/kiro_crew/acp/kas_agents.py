@@ -69,6 +69,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from kiro_crew import mcp_cleanup
 from kiro_crew.acp import kas_engine_features as engine
 from kiro_crew.acp import kas_env_launch, session_label
 from kiro_crew.acp.kas_agents_registered import (  # noqa: F401 - re-exported
@@ -842,11 +843,14 @@ def _project_mcp_servers(
     relayed = _relayed_env_references()
     warned_about_the_marker = False
     launch_key = launch_key or session_key
+    # Every scope read once for the whole pass, not once per server: the same
+    # answer, through the one reader (and patch seam) the predicate uses.
+    scope_muted = mcp_cleanup.mcp_scope_muted_aliases()
     for name, entry in servers.items():
         if not isinstance(name, str) or not name or not isinstance(entry, dict):
             continue
         managed = name in MANAGED_MCP_SERVER_NAMES
-        if mcp_server_muted_in_any_store(name, entry):
+        if mcp_server_muted_in_any_store(name, entry, scope_muted=scope_muted):
             # ``mcp_server_muted_in_any_store`` is ``mcp_entry_is_muted`` plus the config scopes
             # (why, for a spec that DECLARES the server: see it), so this stays the shared
             # launch-decision reading and the gateway rewriter still cannot wrap an entry this

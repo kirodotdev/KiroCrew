@@ -1154,7 +1154,7 @@ def test_the_failed_handshake_settles_the_drain_before_teardown():
     # The spawn and its failed-start cleanup live in the owner that binds _spawn_admitted.
     owner = sys.modules[runtime_mod.AcpRuntime._spawn_admitted.__module__]
     source = Path(owner.__file__).read_text()
-    handler = source.split("await self._snapshot_descendants(retry_when_empty=True)", 1)[1]
+    handler = source.split("self._record_tree_in_background(retry_when_empty=True)", 1)[1]
     handler = handler.split("\nasync def _handshake_client_capabilities(", 1)[0]
 
     settle = handler.index("await self.settle_stderr()")
