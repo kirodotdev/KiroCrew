@@ -23,7 +23,6 @@ if TYPE_CHECKING:
         _ACTION_APPROVE,
         _ACTION_REJECT,
         _ACTION_TRUST,
-        _IDENTITY_NAME_MAX,
         _SLACK_SECTION_TEXT_LIMIT,
         _TRUNCATION_MARKER,
         LLMEvent,
@@ -38,6 +37,7 @@ if TYPE_CHECKING:
         escape_mrkdwn,
         is_allowed_user,
         logger,
+        mcp_identity_line,
         redact_credentials,
         redact_exfiltration_urls,
         sel,
@@ -363,20 +363,12 @@ def resolve_linked_approval(channel: str, approval_ts: str) -> None:
 def mcp_identity_text(server: str, tool: str) -> str:
     """The mrkdwn line naming the MCP server and tool a card asks about, or ``""``.
 
-    Both names are the trusted ``_meta.kiro`` identity (:func:`trusted_mcp_identity`),
-    not the title: ``email_send`` on a card does not say which server sends the mail,
-    and the model chooses the title. Scrubbed like every other string the card posts,
-    then bounded and escaped, so a name cannot carry a ``<!channel>``. Every Slack
-    approval card draws its identity line here, the transport card too.
+    The channel-neutral :func:`kiro_crew.messaging.renderer.mcp_identity_line` with
+    Slack's styling: each name bold and mrkdwn-escaped after the shared scrub and
+    bound, so a name cannot carry a ``<!channel>``. Every Slack approval card draws
+    its identity line here, the transport card too.
     """
-    if not server.strip():
-        return ""
-    shown: list[str] = []
-    for name in (server.strip(), tool.strip() or "unnamed tool"):
-        name, _ = redact_exfiltration_urls(name)
-        name, _ = redact_credentials(name)
-        shown.append(escape_mrkdwn(name[:_IDENTITY_NAME_MAX]))
-    return f"MCP tool: *{shown[0]}* / *{shown[1]}*"
+    return mcp_identity_line(server, tool, lambda name: f"*{escape_mrkdwn(name)}*")
 
 
 def _build_approval_blocks(

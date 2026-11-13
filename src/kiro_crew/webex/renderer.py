@@ -56,6 +56,7 @@ from kiro_crew.messaging.renderer import (
     apply_options_cap,
     chunk_for_transport,
     count_redaction_tags,
+    mcp_identity_line,
     new_approval_nonce,
     redaction_notice,
     split_options_trailer,
@@ -356,7 +357,17 @@ class WebexRenderer(Renderer):
         # affordance, and it always ships. The card rides alongside it because the
         # inbound half of a press travels over the undocumented device websocket:
         # if that frame never arrives, a typed 1/2 still resolves the prompt.
-        text = f"🔐 Approve `{tool}`?\n\nReply **1** to approve or **2** to deny."
+        # The trusted server and tool, so the operator sees where the call goes. Not
+        # model text, but each name still passes the label sanitiser so it cannot
+        # style, link or overflow: a code span in the text, de-autolinked in the card.
+        identity = mcp_identity_line(
+            *self.prompt_mcp_identity, fmt=lambda name: f"`{_safe_tool_label(name)}`"
+        )
+        card_identity = mcp_identity_line(
+            *self.prompt_mcp_identity, fmt=lambda name: _card_tool_label(_safe_tool_label(name))
+        )
+        asked = f"🔐 Approve `{tool}`?\n{identity}" if identity else f"🔐 Approve `{tool}`?"
+        text = f"{asked}\n\nReply **1** to approve or **2** to deny."
         attachments = None
         if self.capabilities.rich_blocks and self._mint_approval_nonce is not None:
             # The nonce is minted by the approval REGISTRY, against the pending
@@ -367,7 +378,10 @@ class WebexRenderer(Renderer):
             # already looked the decision up.
             attachments = [
                 approval_card(
-                    _card_tool_label(tool), nonce=self._mint_approval_nonce(rid), request_id=rid
+                    _card_tool_label(tool),
+                    nonce=self._mint_approval_nonce(rid),
+                    request_id=rid,
+                    identity=card_identity,
                 )
             ]
         await self._client.send_message(
