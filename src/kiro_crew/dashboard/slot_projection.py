@@ -7,6 +7,7 @@ from collections import deque
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from kiro_crew.clear_command import CLEAR_COMMAND, is_clear_command_row  # noqa: F401 - re-exported
 from kiro_crew.dashboard.agent_welcome import welcome_preview
 from kiro_crew.dashboard.slot_preparing import is_preparing, preparing_caption
 from kiro_crew.dashboard.slot_queue_repository import is_held_queue_entry
@@ -34,27 +35,6 @@ def summary_rows(slot: Any) -> list[Any]:
     if getattr(slot, "window_pending", False) is True:
         return slot.sidebar_messages()
     return slot.messages
-
-
-CLEAR_COMMAND = "/clear"
-
-
-def is_clear_command_row(msg: Any) -> bool:
-    """Whether *msg* is a user row that typed ``/clear``.
-
-    Matches the runner's own test (``chat_turn/slash_commands.py``): the first
-    word of the message, case-insensitive. The user row is the boundary because
-    it is durable and every harness writes it, while the confirmation row's text
-    differs per harness and a native clear empties only the in-memory window, so
-    a restore brings the earlier rows back.
-    """
-    if not isinstance(msg, dict) or msg.get("role") != "user":
-        return False
-    content = msg.get("content")
-    if not isinstance(content, str):
-        return False
-    words = content.split(maxsplit=1)
-    return bool(words) and words[0].lower() == CLEAR_COMMAND
 
 
 def stop_declined_armed(slot: Any, now: float | None = None) -> bool:
