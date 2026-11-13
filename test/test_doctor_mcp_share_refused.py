@@ -61,6 +61,15 @@ def test_refused_share_is_reported_as_an_issue_with_the_approve_path(refused, ca
     assert issues == ["2 MCP server(s) set to share are not shared: launch not approved"]
 
 
+def test_a_share_over_the_launch_cap_is_named_with_its_remedy(refused, capsys):
+    refused["alpha-mcp"] = {"reason": launch_approval.REFUSED_TOO_MANY}
+
+    mcp._doctor_mcp_share_refused(_cfg(stub=("alpha-mcp",)), [])
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"alpha-mcp ({mcp._SHARE_REFUSAL_LABELS.get(launch_approval.REFUSED_TOO_MANY)})" in out
+
+
 def _changed(**over):
     """A complete changed-launch refusal whose approved launch is ``/opt/a --one``."""
     record = {
@@ -218,9 +227,10 @@ def test_refused_shares_keys_by_configured_name():
         "playwright-mcp": {"reason": launch_approval.REFUSED_UNAPPROVED},
         "alpha-mcp": {"reason": launch_approval.REFUSED_CHANGED},
         "gone-mcp": {"reason": launch_approval.REFUSED_UNAPPROVED},
+        "capped-mcp": {"reason": launch_approval.REFUSED_TOO_MANY},
     }
     assert launch_approval.refused_shares(
-        ["npm:@playwright/mcp", "alpha-mcp", "beta-mcp"], refused
+        ["npm:@playwright/mcp", "alpha-mcp", "beta-mcp", "capped-mcp"], refused
     ) == {
         "npm:@playwright/mcp": launch_approval.REFUSED_UNAPPROVED,
         "alpha-mcp": launch_approval.REFUSED_CHANGED,

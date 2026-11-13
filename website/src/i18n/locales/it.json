@@ -16998,6 +16998,7 @@
       "share_all_cancel": "Annulla",
       "enable_all_review_skipped_names": "Saltati: {{names}}.",
       "approval_not_approvable_here": "Il comando di questo server non può essere approvato per la condivisione, quindi continua a essere eseguito in ogni sessione.",
+      "approval_over_launch_cap": "Troppi agenti avviano questo server con impostazioni diverse (il limite è {{cap}}). Toglilo da alcuni agenti, poi premi Rimuovi: il server resta, si ferma solo la condivisione e torna il suo interruttore, così puoi condividerlo di nuovo.",
       "launch_preview_error_name_required": "Non è stato inviato alcun nome di server, quindi non c'è nulla da mostrare. Non è stato attivato nulla.",
       "launch_preview_error_invalid_name": "{{name}} non è un nome che {{productName}} possa leggere come server. Non è stato attivato nulla.",
       "launch_preview_error_unresolved": "{{name}} non ha alcun comando da mostrare, quindi non può usare un backend condiviso. Non è stato attivato nulla.",

@@ -467,6 +467,10 @@ def _doctor_mcp_gateway_daemon(issues: list[str]) -> None:
 _SHARE_REFUSAL_LABELS = {
     "added_outside_dashboard": "not approved yet",
     "changed_needs_reapproval": "command changed since it was approved",
+    "too_many_launches": (
+        "too many agents start it with different settings; take it out of some "
+        "agents, then see its row on MCP Servers"
+    ),
 }
 
 #: A ``changed_needs_reapproval`` refusal that only added a launch: every approved
@@ -577,8 +581,8 @@ def _doctor_mcp_share_refused(cfg: KiroCrewConfig, issues: list[str]) -> None:
     render._print_wrapped(
         "Config asks to share these servers, but the gateway refused their launch "
         "until it is approved on the dashboard. Open MCP Servers, the "
-        "Sharing view (/mcp?view=sharing), approve each one, then run "
-        "`kirocrew restart` so new chats use the shared copy.",
+        "Sharing view (/mcp?view=sharing), approve each one that offers "
+        "Approve, then run `kirocrew restart` so new chats use the shared copy.",
         keep=("`kirocrew restart`",),
     )
     issues.append(f"{len(hits)} MCP server(s) set to share are not shared: launch not approved")

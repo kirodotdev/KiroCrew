@@ -16574,6 +16574,7 @@
       "share_all_cancel": "Abbrechen",
       "enable_all_review_skipped_names": "Übersprungen: {{names}}.",
       "approval_not_approvable_here": "Der Befehl dieses Servers kann nicht zum Teilen freigegeben werden, daher läuft er in jeder Sitzung weiter.",
+      "approval_over_launch_cap": "Zu viele Agenten starten diesen Server mit unterschiedlichen Einstellungen (das Limit ist {{cap}}). Nimm ihn aus einigen Agenten heraus und drücke dann Entfernen: Der Server bleibt, nur das Teilen endet, und sein Schalter kommt zurück, damit du ihn wieder teilen kannst.",
       "launch_preview_error_name_required": "Es wurde kein Servername gesendet, also gibt es nichts zu zeigen. Es wurde nichts eingeschaltet.",
       "launch_preview_error_invalid_name": "{{name}} ist kein Name, den {{productName}} als Server lesen kann. Es wurde nichts eingeschaltet.",
       "launch_preview_error_unresolved": "{{name}} hat keinen Befehl zum Anzeigen und kann daher kein geteiltes Backend nutzen. Es wurde nichts eingeschaltet.",
