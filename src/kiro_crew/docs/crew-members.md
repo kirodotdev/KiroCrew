@@ -320,7 +320,11 @@ anywhere else (from the agent picker in chat or on the welcome screen, as a chat
 folder's default agent, or in a channel bound to it, such as a Slack channel)
 runs on its memory and workspace but has no worker and no sub-agents, so the bot
 does that work in the chat itself. Abilities added to the bot are not available
-there, because they reach only its worker. A scheduled turn runs on its worker.
+there, because they reach only its worker. A scheduled turn runs on its worker,
+so it cannot message other sessions; its result comes back to the bot's thread
+as a worker report. To hand work to another session at a set time, have the
+scheduled turn report back, and send the message from the bot's thread when
+that report arrives.
 
 Slack is the exception worth knowing. Its per-thread `!ta <name>` (`!ta off`
 clears it) resolves the name against the agent spec files in `~/.kiro/agents/`,
