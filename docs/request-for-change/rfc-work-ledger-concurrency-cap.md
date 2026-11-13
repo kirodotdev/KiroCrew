@@ -1,10 +1,10 @@
 ---
 title: Work ledger caps a goal's open items, and its item total becomes an advisory line
-status: accepted
+status: partial
 author: kirocrew agent session, directed by iamwhatever
 created: 2026-10-12
-last-audited: 2026-10-12
-audited-at: 0a47021090
+last-audited: 2026-11-13
+audited-at: 9b32941be6
 doc-pr: null
 implementation-prs: [19338]
 tracking-issues: []
@@ -18,6 +18,14 @@ Amended 2026-11-09 by
 [`rfc-drop-goal-item-cap.md`](rfc-drop-goal-item-cap.md): the advisory
 `item_cap` and `cap_exceeded` of §3 are removed; `concurrency_cap` and
 `goal_items_used` stand.
+
+Amended 2026-11-13 by §7 below, by the repository owner's decision: the
+default `concurrency_cap` becomes `MAX_ITEMS_PER_CONDUCTOR` (32), the field
+stays for a bound the user sets, and `resource_status` decides each wave. §3 to
+§6 are kept as the record of the 2026-10-12 decision. §3 shipped in #19338;
+§7 is not built. §7 relies on
+[`rfc-work-ledger-resource-pressure.md`](rfc-work-ledger-resource-pressure.md)
+for the host signal that replaces the fixed 6.
 
 Status: accepted. The maintainer (iamwhatever) accepted this design in the
 conductor chat on 2026-10-12 at about 06:12 UTC: a hard cap on open items, the
@@ -126,3 +134,86 @@ Accepted by the maintainer (iamwhatever) in the conductor chat, 2026-10-12 ~06:1
 UTC: cap parallel work (open items) in code; keep the lifetime total as an advisory
 line, not a refusal. Recorded here as `accepted` on landing, so #19338 rebases onto
 the base that carries it.
+
+## 7. Amendment (2026-11-13): no fixed default; resources decide the wave
+
+Decided 2026-11-13 by the repository owner in the conductor chat. The owner's
+words: "有人也提到这个DEFAULT_GOAL_CONCURRENCY_CAP对于ultra mode没有用，是不是卡Bot
+worker的？我觉得我们不应该微操，依赖资源探取。" (Someone said the default cap does
+nothing for Ultra Mode; is it holding back Bot workers? We should not
+micro-manage; rely on probing resources.)
+
+This reverses an earlier owner ruling. While `item_cap` was being removed
+([`rfc-drop-goal-item-cap.md`](rfc-drop-goal-item-cap.md), 2026-11-09), the
+owner kept `concurrency_cap` at 6 to stop an agent opening too many workers by
+itself. The owner has now made the opposite call: the bound on parallel work
+comes from the host's resources, not from a constant. Every code reference in
+this section was read at `9b32941be6`.
+
+### 7.1 What the 6 does today
+
+- It is not Bot-only and not dead for Ultra Mode. The check is
+  `live.goal_version > 0 and len(open_items) >= live.concurrency_cap` in
+  `_admit_create_locked` in `src/kiro_crew/work_ledger_writes.py`, which both `_create_item` and `create_bound_item` call. It binds any
+  board that has recorded a goal.
+- Ultra Mode's team lead always records a goal, so it is always bound. A Bot
+  (crewmate) conductor records a goal only for multi-item work, so it is bound
+  then. Queue boards and a remote peer's `hub:` board never record a goal and
+  get only the store's bound of 32. Native subagents are not ledger items.
+- The cap is per board, not per goal tree: a child conductor gets its own 6,
+  so one tree can hold 6 x 6 = 36 sessions. That, and subagents escaping it, is
+  the likely source of "useless for Ultra Mode".
+- The 6 was never measured. §2 names spend and host memory as the reason, and
+  §4 already called it a default a user may want to tune.
+- The team-lead skill already says the opposite of a fixed number: "Carry no
+  number of your own" (`src/kiro_crew/builtin_skills/team-lead/SKILL.md`, section 5).
+
+### 7.2 Decision
+
+| Change | Where |
+|---|---|
+| `DEFAULT_GOAL_CONCURRENCY_CAP = MAX_ITEMS_PER_CONDUCTOR` (32). With §3's check order, a board at 32 open items is refused by the store's `item_cap_exceeded` first, so the goal check never fires by default. | `DEFAULT_GOAL_CONCURRENCY_CAP` in `src/kiro_crew/work_ledger_records.py` |
+| The field stays (1..32, set with `work_ledger_record action=goal concurrency_cap=<N>`). It is the user's way to set a bound, and a user-set value still refuses `goal_concurrency_cap_reached`. | unchanged |
+| The refusal text says wait for a seat: dispatch nothing new until an item lands. It no longer says "ask the user and raise it", which already contradicts the conductor prompt's "never ask to raise it". | the `goal_concurrency_cap_reached` message in `_admit_create_locked` (`src/kiro_crew/work_ledger_writes.py`) and its copy in `src/kiro_crew/mcp_work.py` |
+| The conductor rule drops "at most 6 open" and says: before each wave, `resource_status` decides how many to start; a bound the user set is `concurrency_cap`; on a `host_pressure` record, follow the pressure RFC. | `spend_bounded` in `src/kiro_crew/agent_parts/spec_prompts.py`, the "Rounds are not gated, but spend is bounded" section of `goal-conductor/SKILL.md` |
+| The Bot conductor gets the same `resource_status` wave rule. Its prompt has none today (`crewmate_prompts.json`: no hits). The shared rule keeps Bot and Ultra Mode in parity (`test/test_mate_conductor_parity.py`). | `src/kiro_crew/crewmate_prompts.json` or the shared conductor rules in `spec_prompts.py` |
+| Tests that pin 6 move to the new default. | `test/test_work_ledger_caps.py` and the other ledger tests that reference the 6 |
+
+Compatibility: every header write stores `concurrency_cap`
+(`ConductorRecord.to_dict` in `src/kiro_crew/work_ledger_records.py`), and a `goal` write
+that names no cap keeps the stored one (the `goal` branch of `src/kiro_crew/work_ledger_writes.py`). So a
+header with no key reads as the new default, and a board that already stored
+6 keeps 6: it cannot be told apart from a user who chose 6. That board runs
+under 6 until a `goal` write names another value, or until it is replaced by a
+new board. New boards start at 32. No migration rewrites stored values.
+
+### 7.3 Linked to the pressure signal
+
+Dropping the fixed 6 relies on
+[`rfc-work-ledger-resource-pressure.md`](rfc-work-ledger-resource-pressure.md).
+A local worker session from `session_create` has no host-memory refusal of its
+own; only the cold-start queues and the counts (32 per board, 50 per creator,
+500 live) apply. The pressure RFC puts the host's memory posture on the
+ledger, wakes the conductor when it turns tight or critical, and refuses a
+`create` at critical. Without it, a conductor that skips `resource_status` can
+fan out to 32 worker chats per board on a host that cannot hold them. The two
+code changes should land in the order pressure first, default second, or in
+one PR.
+
+### 7.4 Not decided here
+
+- Deleting the field or its code path. It is the user's only goal bound, and
+  removing it touches the schema, the fold and validation for no gain.
+- A memory floor on `session_create` itself. If Bot fan-out ever overloads a
+  host even with the pressure signal, reusing `check_memory_available` there
+  (as remote dispatch does) is the upgrade.
+- `MAX_ITEMS_PER_CONDUCTOR`, `MAX_SLOTS_PER_CREATOR` and `MAX_LIVE_SLOTS` keep
+  their values.
+
+### 7.5 Alternatives considered
+
+- **Keep 6.** The owner's earlier ruling. Rejected by the owner: a constant
+  nobody measured blocks a healthy host and does nothing for a starved one.
+- **Delete `concurrency_cap`.** Removes the user's bound. See 7.4.
+- **Raise the default to another constant (say 12).** Still a guess; it moves
+  the problem without tying it to the host.
