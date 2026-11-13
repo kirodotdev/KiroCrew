@@ -17,6 +17,8 @@ import { TAB_ID } from '../tabId'
 import { takeSessionFolderNotice } from '../../lib/sessionFolderNotice'
 import { clearCrewSteerNotice, noteCrewSteerReceipt } from '../../lib/crewSteerNotice'
 import { activeLocale } from '../../i18n/format'
+import { ApiError } from '../apiError'
+import { isEmbedCursor, mergeEmbedRead } from '../../app-sdk/embedIncrementalRead'
 import type { ClientTransport } from './transport'
 
 /** Shared Crew first-submit-wins fields of one send (see `api/sendRace.ts`). */
@@ -52,6 +54,65 @@ function themeConsentSha(colorTheme?: string): string | null {
 type CrewWorkersAnswer = { root: string; workers: CrewWorker[]; root_closed?: boolean; root_title?: string; root_kind?: 'mate'; paused?: CrewPause }
 /** The last answer and ETag of each root's worker list, for If-None-Match. */
 const crewWorkersEtags = new Map<string, { etag: string; data: CrewWorkersAnswer }>()
+
+/** The newest slot-detail page last read per slot, the limit it was read with,
+ *  the cursor the server issued for it, and that response's ETag. The next read
+ *  of that slot echoes the cursor and gets back only the rows from `since` on
+ *  while the rows before it still render the same, and a 304 when even those are
+ *  unchanged, so a turn-end or reconnect refresh that missed nothing costs no
+ *  body instead of a whole page. Capped so the pages held stay a few MB. */
+const HELD_PAGES_MAX = 6
+const heldPages = new Map<string, { page: ChatSlotDetailResponse; limit: number; etag: string | null }>()
+
+type SlotDetailRead = (query: Record<string, string>, etag: string | null) => Promise<{ page: ChatSlotDetailResponse | null; etag: string | null }>
+
+/** Read the newest page of `slot`, echoing the held cursor when there is one.
+ *
+ *  Every read asks for the caller's own `limit`, so a held cursor never changes
+ *  how many rows come back. The server owns every decision about whether the
+ *  held rows are still current (see `slot_detail_delta`): an edit, rewind,
+ *  rotation, redaction change, a different slot behind the same key, or a window
+ *  reaching older than the held span is answered with a whole page, which
+ *  replaces what is held. This side only drops the cursor and reads whole when
+ *  the server refuses it (400) or a delta does not fit the held rows
+ *  (`mergeEmbedRead` returns null), so a rejected cursor never shows a partial
+ *  page. The page returned is always a whole one, so no caller sees a delta.
+ *
+ *  A read narrower than the held one (a one-row probe, a hover preview) is a
+ *  plain read and leaves the held page alone, so it cannot turn the next
+ *  refresh into a whole read. */
+async function readNewestPage(slot: string, limit: number, read: SlotDetailRead): Promise<ChatSlotDetailResponse> {
+  const held = heldPages.get(slot)
+  const sent = held && isEmbedCursor(held.page.cursor) ? held.page.cursor : null
+  if (held && sent && limit < held.limit) {
+    const plain = await read({ limit: String(limit) }, null)
+    return plain.page as ChatSlotDetailResponse
+  }
+  let page: ChatSlotDetailResponse | null = null
+  let etag: string | null = null
+  if (held && sent) {
+    try {
+      const res = await read({ limit: String(limit), from: String(sent.from), since: String(sent.since), digest: sent.digest }, limit === held.limit ? held.etag : null)
+      // A 304 answers the same query with the same body as last time: the held page.
+      page = res.page === null ? held.page : mergeEmbedRead(held.page, sent, res.page)
+      etag = res.etag
+    } catch (e) {
+      if (!(e instanceof ApiError) || e.status !== 400) throw e
+    }
+  }
+  heldPages.delete(slot)
+  if (page === null) {
+    const res = await read({ limit: String(limit), cursor: '1' }, null)
+    page = res.page as ChatSlotDetailResponse
+    etag = res.etag
+  }
+  if (page.delta !== undefined) page = { ...page, delta: undefined }
+  if (isEmbedCursor(page.cursor)) {
+    heldPages.set(slot, { page, limit, etag })
+    if (heldPages.size > HELD_PAGES_MAX) heldPages.delete(heldPages.keys().next().value as string)
+  }
+  return page
+}
 
 export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetch: fetch, sessionKeyHeader: _sk, sendResponseAuthRecovery }: ClientTransport) {
   const summaries = {
@@ -187,12 +248,24 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     unlinkSourceLink: (slot: string, identity: string, expect: string): Promise<{ ok?: boolean; dismissed?: boolean; source_links_total?: number; error?: string; code?: string }> =>
       del('/api/chat/slots/' + encodeURIComponent(slot) + '/source-links/' + encodeURIComponent(identity)
         + '?expect=' + encodeURIComponent(expect)).then(j),
-    chatSlotDetail: (slot: string, limit?: number, before?: number, signal?: AbortSignal): Promise<ChatSlotDetailResponse> => {
-      if (isLookPreviewFrame()) return Promise.resolve({ key: slot, ...lookPreviewSlotDetail() })
-      const p = new URLSearchParams()
-      if (limit) p.set('limit', String(limit))
-      if (before !== undefined) p.set('before', String(before))
-      return fetch(chatSlotDetailPath(slot) + '?' + p, { signal }).then(j)
+    chatSlotDetail: async (slot: string, limit?: number, before?: number, signal?: AbortSignal): Promise<ChatSlotDetailResponse> => {
+      if (isLookPreviewFrame()) return { key: slot, ...lookPreviewSlotDetail() }
+      // Only the newest bounded page is incremental: an older page (`before`) or
+      // the whole-history read has no cursor to echo.
+      if (before !== undefined || !limit) {
+        const p = new URLSearchParams()
+        if (limit) p.set('limit', String(limit))
+        if (before !== undefined) p.set('before', String(before))
+        return fetch(chatSlotDetailPath(slot) + '?' + p, { signal }).then(j)
+      }
+      return readNewestPage(slot, limit, async (query, etag) => {
+        const r = await fetch(chatSlotDetailPath(slot) + '?' + new URLSearchParams(query), {
+          signal, ...(etag ? { headers: { 'If-None-Match': etag } } : {}),
+        })
+        if (r.status === 304 && etag) return { page: null, etag }
+        const page: ChatSlotDetailResponse = await j(r)
+        return { page, etag: r.headers?.get('etag') ?? null }
+      })
     },
     /** Create a chat slot on this machine. A session on a connected crew is
      *  created on that crew and opened through its window, never here. */
