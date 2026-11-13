@@ -380,19 +380,21 @@ def _glob_to_regex(pattern: str, depth: int = 0, budget: "list[int] | None" = No
     return "".join(out)
 
 
-def _pipes_into_evaluator(tokens: "list[str]") -> bool:
+def _pipes_into_evaluator(tokens: "list[str]", *, fold_shell_names: bool = False) -> bool:
     """True if this command pipes into a shell or evaluator.
 
     ``echo <name> <verb> | sh`` produces the dangerous command as TEXT and then
     hands it to something that runs it, so the "arguments are just data" reasoning
-    does not hold: the data IS the command.
+    does not hold: the data IS the command.  *fold_shell_names* matches a shell
+    name in any letter case (see :func:`_shell_payload_walk`).
     """
     seen_pipe = False
     for token in tokens:
         if "|" in token:
             seen_pipe = True
+        name = _program_basename(token)
         if seen_pipe and (
-            _program_basename(token) in _NESTED_SHELL_PROGRAMS
+            (name.lower() if fold_shell_names else name) in _NESTED_SHELL_PROGRAMS
             or _program_basename(token) in _NESTED_SHELL_VERBS
             or _program_basename(token) == "xargs"
             or _is_shell_variable_reference(token)
@@ -1256,8 +1258,12 @@ def _nested_shell_payloads(
     *,
     allow_join: bool = True,
     joined_out: "set[str] | None" = None,
+    fold_shell_names: bool = False,
 ) -> "list[str]":
     """Literal shell-script payloads carried as an argument inside *tokens*.
+
+    *fold_shell_names* matches a wrapping shell's name in any letter case; every
+    caller but the case-preserving walk of :func:`_shell_payload_walk` leaves it off.
 
     Covers ``sh -c '<script>'`` / ``bash -c '<script>'`` (the payload is the
     first non-flag token after ``-c``) and ``eval '<script>'``.  Only LITERAL
@@ -1396,7 +1402,9 @@ def _nested_shell_payloads(
         # A shell reached through a VARIABLE (``$SHELL -c '<payload>'``) runs the
         # payload exactly as a named shell does.  The recognizer already used for the
         # ``| $SHELL`` evaluator sink applies here too.
-        if base in _NESTED_SHELL_PROGRAMS or _is_shell_variable_reference(token):
+        if (base.lower() if fold_shell_names else base) in _NESTED_SHELL_PROGRAMS or (
+            _is_shell_variable_reference(token)
+        ):
             if first_shell is None:
                 # Recorded here, where the shell test has already been paid,
                 # so the every-carrier sweep below needs no second scan that
@@ -1486,7 +1494,11 @@ def _nested_shell_payloads(
         if "<<<" not in token:
             continue
         head, _, tail = token.partition("<<<")
-        if tail and _program_basename(head) in _NESTED_SHELL_PROGRAMS:
+        here_shell = _program_basename(head)
+        if (
+            tail
+            and (here_shell.lower() if fold_shell_names else here_shell) in _NESTED_SHELL_PROGRAMS
+        ):
             payloads.append(tail)
     # EVERY ``-c`` carrier past the first shell token is swept, not only the
     # first-stop one.  The stop tables above read one token per spelling class,
@@ -1558,7 +1570,7 @@ def _nested_shell_payloads(
                 payloads.append(spec.group(2))
     # A payload only matters if it looks like a command line rather than a bare
     # operand; a single word is already covered by the direct token scan.
-    if _pipes_into_evaluator(tokens):
+    if _pipes_into_evaluator(tokens, fold_shell_names=fold_shell_names):
         # ``echo '<script>' | sh`` produces the command as TEXT and then hands it to
         # something that runs it, so the printed text is a payload exactly as a
         # ``-c`` argument is.
@@ -1583,22 +1595,33 @@ def _nested_shell_payloads(
 # ``${a[@]}`` / ``${a[*]}`` / ``$a[@]`` -- the whole array as separate words.
 
 
-def _shell_payload_walk(text_lower: str) -> "list[tuple[str, list[str]]]":
+def _shell_payload_walk(
+    text_lower: str, *, fold_shell_names: bool = False
+) -> "list[tuple[str, list[str]]]":
     """:func:`_shell_payload_walk_uncached`, once per text inside one ``sharing_views``
-    call; each caller gets fresh lists, so one that edits its argv cannot reach the next."""
+    call; each caller gets fresh lists, so one that edits its argv cannot reach the next.
+
+    *fold_shell_names* is for a caller that walks the command in the case it was
+    submitted: a wrapping shell is then recognised in any letter case (``BASH -c``),
+    as a lower-cased walk already recognises it.  Every other caller keeps it off."""
     from .shell_commands import _CALL_VIEWS  # circular import: the reader imports this module
 
     memo = _CALL_VIEWS.get()
     if memo is None:
-        return _shell_payload_walk_uncached(text_lower)
-    key = ("payload_walk", text_lower)  # the redirect views' keys are plain str
+        return _shell_payload_walk_uncached(text_lower, fold_shell_names=fold_shell_names)
+    # The redirect views' keys are plain str.
+    key = ("payload_walk_folded" if fold_shell_names else "payload_walk", text_lower)
     frames = memo.get(key)
     if frames is None:
-        frames = memo[key] = _shell_payload_walk_uncached(text_lower)
+        frames = memo[key] = _shell_payload_walk_uncached(
+            text_lower, fold_shell_names=fold_shell_names
+        )
     return [(source, list(tokens)) for source, tokens in frames]
 
 
-def _shell_payload_walk_uncached(text_lower: str) -> "list[tuple[str, list[str]]]":
+def _shell_payload_walk_uncached(
+    text_lower: str, *, fold_shell_names: bool = False
+) -> "list[tuple[str, list[str]]]":
     """``(source, argv)`` for *text_lower* and every nested shell payload in it.
 
     ``bash -c "kirocrew token"`` tokenizes to ``['bash', '-c', 'kirocrew token']``
@@ -1627,9 +1650,20 @@ def _shell_payload_walk_uncached(text_lower: str) -> "list[tuple[str, list[str]]
     # A frame PRODUCED by a join may not, which is what bounds the walk: see
     # ``_nested_shell_payloads``.
     pending: list[tuple[str, int, bool]] = [(text_lower, len(text_lower) + 1, True)]
+    from .shell_commands import _CALL_VIEWS  # circular import: the reader imports this module
+
+    # The walks with and without the shell-name fold read the same frames, so inside
+    # one ``sharing_views`` call each text is tokenized once for both.
+    memo = _CALL_VIEWS.get()
     while pending:
         source, parent_len, allow_join = pending.pop()
-        tokens = _self_tokens(source)
+        if memo is None:
+            tokens = _self_tokens(source)
+        else:
+            cached = memo.get(("walk_tokens", source))
+            if cached is None:
+                cached = memo[("walk_tokens", source)] = _self_tokens(source)
+            tokens = list(cached)
         if not tokens:
             continue
         out.append((source, tokens))
@@ -1650,7 +1684,12 @@ def _shell_payload_walk_uncached(text_lower: str) -> "list[tuple[str, list[str]]
         # reads folded, and the fold preserves single-quoted and ANSI-C spans, so a
         # continuation that bash keeps literal stays literal in the body too.
         joined_here: set[str] = set()
-        nested = _nested_shell_payloads(tokens, allow_join=allow_join, joined_out=joined_here)
+        nested = _nested_shell_payloads(
+            tokens,
+            allow_join=allow_join,
+            joined_out=joined_here,
+            fold_shell_names=fold_shell_names,
+        )
         # A redirect before the ``-c`` operand hides the script from ``nested``.
         from .shell_commands import redirect_hidden_payloads  # the reader imports this module
 

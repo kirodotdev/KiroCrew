@@ -807,7 +807,16 @@ def _url_payload_command(n: int) -> str:
 #: row only, and ``is_denied`` judges that row on the view while its events keep the
 #: command as submitted. Every other row, an operator's copy, and the rm floor for
 #: ``/`` and ``~`` read the full text. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_997
+#: Raised by 1138, from 35,997, to 37,135, for the self-kill floor's ``git grep``
+#: pager read, in its own owner module ``argv_floor_pager``: the last ``-O`` and its ``--no-``
+#: form, the last ``core.pager`` / ``pager.grep`` from ``-c``, ``--config-env`` and
+#: ``GIT_CONFIG_*`` words, ``GIT_PAGER`` / ``PAGER`` unless ``-P``, an inline alias
+#: chain, ``find -exec``, here-documents fed to a shell, and the floor's own pass
+#: over array assignments under an expansion budget, with candidate caps that
+#: count only values that could carry a pager; the walk's opt-in shell-name
+#: fold for that read; the walk's shared tokenization; and the
+#: facade's type-checker imports of its names. Re-measured.
+_PACKAGE_LINE_BUDGET = 37_135
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
