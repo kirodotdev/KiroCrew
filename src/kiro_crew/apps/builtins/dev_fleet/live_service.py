@@ -5,17 +5,20 @@ program, the staged pointer target), which systemd unit or launchd label it runs
 under, the restart backend that drives it (systemd, launchd, or a foreground
 process), the cached service-active and start-id probes, and the systemd drop-in a
 cutover writes. Holds ``_GATEWAY_SERVICE_ACTIVE`` / ``_GATEWAY_SERVICE_CHECK_AT``,
-which ``_gateway_service_active`` rebinds. Reached through ``live``, its facade.
+which ``_gateway_service_probe`` rebinds, and the health route's start-id cache,
+which ``_gateway_start_id_read`` rebinds. Reached through ``live``, its facade.
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import shutil
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.dev_fleet import gateway_service, repository, runtime
@@ -108,6 +111,19 @@ def _staged_target() -> str | None:
 _GATEWAY_SERVICE_ACTIVE: bool | None = None
 _GATEWAY_SERVICE_CHECK_AT: float = 0.0
 _GATEWAY_SERVICE_TTL = 30.0
+# The single in-flight service probe. A probe spawns its own `systemctl` scopes,
+# so concurrent cache misses await this one task instead of each starting one.
+_GATEWAY_SERVICE_INFLIGHT: asyncio.Task[bool] | None = None
+# How long the health route reuses a finished start-identity read, in seconds.
+# The dashboard's restart handshake polls /api/health about every 2 s and only
+# while a restart is in progress, so a 2 s reuse delays the handshake by at most
+# one poll, and an idle page causes no read at all.
+_GATEWAY_START_ID_TTL = 2.0
+# The last finished read: (time.monotonic() when it finished, its result).
+_GATEWAY_START_ID_CACHE: tuple[float, str | None] | None = None
+# The single in-flight read. A read can spawn two `systemctl` scopes, so
+# concurrent health requests await this one task instead of each starting one.
+_GATEWAY_START_ID_INFLIGHT: asyncio.Task[str | None] | None = None
 _LIVE_GATEWAY_UNIT = "kirocrew-gateway.service"
 # The launchd counterpart of the live systemd unit. Same agent
 # `kirocrew service install` writes (kiro_crew.service.common.LAUNCHD_LABEL);
@@ -206,15 +222,36 @@ async def _gateway_service_active() -> bool:
 
     Async and routed through the sandboxed ``_run_cmd`` chokepoint: a sync
     ``subprocess.run`` here would block the event loop on cache miss AND
-    bypass the spawn-audit sandbox invariant.
+    bypass the spawn-audit sandbox invariant. Concurrent cache misses share
+    one probe, ``_GATEWAY_SERVICE_INFLIGHT``.
     """
-    global _GATEWAY_SERVICE_ACTIVE, _GATEWAY_SERVICE_CHECK_AT
+    global _GATEWAY_SERVICE_INFLIGHT
     now = time.monotonic()
     if (
         _GATEWAY_SERVICE_ACTIVE is not None
         and (now - _GATEWAY_SERVICE_CHECK_AT) < _GATEWAY_SERVICE_TTL
     ):
         return _GATEWAY_SERVICE_ACTIVE
+    task = _GATEWAY_SERVICE_INFLIGHT
+    if task is None or not _joinable(task):
+        task = asyncio.ensure_future(_gateway_service_probe(now))
+        _GATEWAY_SERVICE_INFLIGHT = task
+    # shield: a caller that is cancelled must not cancel the probe others await.
+    return await asyncio.shield(task)
+
+
+def _joinable(task: asyncio.Task[Any]) -> bool:
+    """Whether *task* is a read still running on THIS event loop.
+
+    A task created on another loop (a closed one, or a worker thread's own)
+    cannot be awaited here, so the caller starts a fresh read instead.
+    """
+    return not task.done() and task.get_loop() is asyncio.get_running_loop()
+
+
+async def _gateway_service_probe(now: float) -> bool:
+    """The uncached probe behind :func:`_gateway_service_active`, cached as of *now*."""
+    global _GATEWAY_SERVICE_ACTIVE, _GATEWAY_SERVICE_CHECK_AT
     svc = _gateway_backend()
     active = False if svc is None else await svc.active()
     if not active:
@@ -274,6 +311,48 @@ async def _gateway_start_id() -> str | None:
         if fg is not None:
             return await fg.start_id()
     return None
+
+
+async def _cached_gateway_start_id() -> str | None:
+    """The start identity for ``/api/health``: one read in flight, reused briefly.
+
+    A finished read, a stamp or ``None``, is served for ``_GATEWAY_START_ID_TTL``
+    seconds. The cache is process-local and has no key: a restart replaces the
+    identity, and the TTL bounds how long the old one can be served. The restart
+    and make-live paths call :func:`_gateway_start_id` directly, because the
+    identity they hand the handshake must be read right before the bounce.
+    """
+    global _GATEWAY_START_ID_INFLIGHT
+    cached = _GATEWAY_START_ID_CACHE
+    if cached is not None and time.monotonic() - cached[0] < _GATEWAY_START_ID_TTL:
+        return cached[1]
+    task = _GATEWAY_START_ID_INFLIGHT
+    if task is None or not _joinable(task):
+        task = asyncio.ensure_future(_gateway_start_id_read())
+        _GATEWAY_START_ID_INFLIGHT = task
+    # shield: a health request that is cancelled must not cancel the read the
+    # other requests await.
+    return await asyncio.shield(task)
+
+
+async def _gateway_start_id_read() -> str | None:
+    """One uncached read for :func:`_cached_gateway_start_id`; never raises.
+
+    A read that raises counts as ``None``, the "identity unavailable" answer the
+    handshake already degrades on, and is cached like any other result.
+    """
+    global _GATEWAY_START_ID_CACHE
+    try:
+        start_id = await _gateway_start_id()
+    except Exception as exc:  # noqa: BLE001 -- the health route must still answer
+        # The type only, so the text of a failed systemctl read (a path or a unit
+        # file's contents) never reaches the log from this module.
+        runtime.logger.debug(
+            "dev-fleet: gateway start identity read failed: %s", type(exc).__name__
+        )
+        start_id = None
+    _GATEWAY_START_ID_CACHE = (time.monotonic(), start_id)
+    return start_id
 
 
 def _foreground_eligible(status: str) -> bool:
