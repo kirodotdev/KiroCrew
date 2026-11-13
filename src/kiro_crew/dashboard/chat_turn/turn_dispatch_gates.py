@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         ReplayFamily,
         SessionClosingError,
         StructuredStatus,
+        _run_clock,
         classify_stop_reason,
         code_channel_post_thread,
         crew_log_emit,
@@ -931,8 +932,31 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
                 store=str(turn.memory_store or ""),
             )
         )
+    # A person's message: an admitted human turn from a dashboard or channel
+    # opener, counted once. Depth re-entries, synthetic recovery and replay turns
+    # must not count the same message again. ``_directive_user_origin`` alone is
+    # not enough: a script cron's ``ctx.send_to_session`` reaches /api/chat with it
+    # True, so the turn's structural actor must also be ``user`` (as the
+    # attended-turn checks above require).
+    _persons_message = (
+        _prompt_depth == 0
+        and not _is_refusal_retry_turn
+        and not turn._synthetic_recovery_turn
+        and not turn._replay
+        and turn._directive_user_origin is True
+        and turn._crew_log_actor == "user"
+    )
     if not turn._agent_cancel_owed:
         # A stopped agent-started turn opens only to send its cancel: not a turn.
+        if _persons_message:
+            # A person's message starts a new run, timed from this turn's own
+            # start, so work an earlier run waited on that then ended with no turn
+            # (a loop switched off, a failed activity probe, a cancelled child)
+            # leaves no stamp this run is measured from. Every other turn
+            # continues the open run, or starts one (the ``task`` setter).
+            started = slot._task_started_at
+            slot._run_started_at = started if started is not None else _run_clock.now()
+            slot._run_started_turns = slot._turns_started
         slot._turns_started += 1
     crew_log_emit.on_turn_started(
         _crew_log_sid,
@@ -940,24 +964,12 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         turn._crew_log_actor,
         depth=_prompt_depth,
     )
-    # Milestones count admitted, persistent human turns from dashboard or channel
-    # openers. Depth re-entries, synthetic recovery and replay turns must not count
-    # the same message again. ``_directive_user_origin`` alone is not enough: a
-    # script cron's ``ctx.send_to_session`` reaches /api/chat with it True, so the
-    # turn's structural actor must also be ``user`` (as the attended-turn checks
-    # above require). The write runs off-loop and never raises, adding no
+    # Milestones count a person's message (above) in a persistent session, never a
+    # restricted one. The write runs off-loop and never raises, adding no
     # suspension point here.
     from kiro_crew.dashboard.handlers._shared import is_restricted_session_key
 
-    if (
-        _prompt_depth == 0
-        and not _is_refusal_retry_turn
-        and not turn._synthetic_recovery_turn
-        and not turn._replay
-        and turn._directive_user_origin is True
-        and turn._crew_log_actor == "user"
-        and not is_restricted_session_key(turn.state, session_key)
-    ):
+    if _persons_message and not is_restricted_session_key(turn.state, session_key):
         record_user_turn(
             mate_thread=(
                 getattr(slot, "mode", "") == DM_SLOT_MODE

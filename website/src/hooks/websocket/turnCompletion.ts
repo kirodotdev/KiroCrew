@@ -47,6 +47,13 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
       // Taken for EVERY chat_done (take-and-clear), muted or not, so a
       // failure never carries into the next turn's completion.
       const turnErrored = !!data.slot && takeTurnErrored(data.slot)
+      // The run's length, for the minimum-turn-length rule on the toast. The
+      // gateway measures it from the run's first turn to the frame that ends it,
+      // so a window that reloaded or opened mid-run reads the whole run. Absent
+      // (an older gateway, a run it did not see start) is unknown.
+      const runSeconds = typeof data.run_seconds === 'number' && Number.isFinite(data.run_seconds) && data.run_seconds >= 0
+        ? data.run_seconds
+        : null
       // Keep transcript finalization independent from attention: a parent
       // can finish a turn while its children or workflow still owe work.
       // A frame's activity hint wins over coalesced snapshots; older
@@ -108,9 +115,12 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
       }
       // Native notifications can carry an OS sound too, so they share
       // the attention gate before applying the opt-in and away checks.
+      // A turn that stopped on a question or an error is announced whatever
+      // its length: the minimum only quiets routine finishes, as the mute does.
       if (completionNeedsAttention && shouldNotifyOnChatComplete({
         slot: data.slot,
         reconnecting: reconnectingRef.current,
+        turnSeconds: completionNeedsInput || turnErrored ? null : runSeconds,
       })) {
         const doneSlot = data.slot as string
         // A session missing from the slot list keeps its key: its title is

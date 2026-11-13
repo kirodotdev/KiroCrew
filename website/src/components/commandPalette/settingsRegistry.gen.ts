@@ -3130,6 +3130,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "notifications.only-notify-for-longer-turns",
+    "label": "Only notify for longer turns",
+    "labelKey": "pages.settings.notificationsPanel.notify_min_turn",
+    "hint": "Skips the notification for a turn that finishes faster than this, so quick replies do not ping you. A turn that stops to ask you something or fails still notifies.",
+    "tab": "notifications",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "alerts"
+    }
+  },
+  {
     "id": "notifications.play-sound-on-new-notifications",
     "label": "Play sound on new notifications",
     "labelKey": "pages.settings.notificationsPanel.play_sound_on_new_notifications",

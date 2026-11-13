@@ -25,9 +25,10 @@ Writes: ``_acp_client``, ``_active_turn_session_key``, ``_approval_futures``,
 ``_question_pending``, ``_queue``, ``_queue_persist_inflight``, ``_queue_persist_owed``,
 ``_queue_persisted_sig``, ``_queue_repository``, ``_regenerate_target``,
 ``_rejection_reasons``, ``_responsive``, ``_side``,
-``_restored_turn_marker``, ``_stop_declined_at``, ``_stop_escalated_card_id``, ``_stop_event_id``,
+``_restored_turn_marker``, ``_run_started_at``, ``_run_started_turns``,
+``_stop_declined_at``, ``_stop_escalated_card_id``, ``_stop_event_id``,
 ``_stop_generation``, ``_stop_state_raw``, ``_subagent_delivery_pending``, ``_swap_in_flight``,
-``_synthesis_recheck``, ``_task``, ``_trust``, ``_trust_reads``, ``_trust_scope``,
+``_synthesis_recheck``, ``_task``, ``_task_started_at``, ``_trust``, ``_trust_reads``, ``_trust_scope``,
 ``_trusted_pattern_deadlines``, ``_trusted_patterns``, ``_turn_admission_reserved``,
 ``_turn_generation``, ``_turn_in_flight_generation``, ``_turn_in_flight_prompt``, ``_turn_lineage``,
 ``_turn_reply_mids``, ``_turns_started``, ``_unsent_resends``, ``_unstarted_generation``,
@@ -260,6 +261,15 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # None after teardown, so consumers that span awaits cannot distinguish
     # "stayed idle" from "ran and finished" by comparing task references.
     self._turn_generation = 0
+    # When the running run's first turn started (``run_clock.now()``); None
+    # between runs. Stamped by the ``task`` setter, cleared by the run's final
+    # ``chat_done``.
+    self._run_started_at = None
+    # ``_turns_started`` at that stamp; -1 (never equal to it) while unstamped.
+    self._run_started_turns = -1
+    # When the task holding the slot was set (``run_clock.now()``); None while
+    # none is. A person's message restamps the run from it at the dispatch gates.
+    self._task_started_at = None
     # ``(generation, first generation)`` of the latest dispatch that was a turn's
     # own retry (``queue_drain``), so it counts as that turn, not a new one.
     self._turn_lineage = (0, 0)

@@ -19,13 +19,13 @@ import { CustomSoundsSection, type UndoResult } from './CustomSoundsSection'
 import { PushSection } from './NotificationsPushSection'
 import { AppSessionMuteSection } from './AppSessionMuteSection'
 import { DeliverToControl, type BridgePatch } from './NotificationsBridgeRoute'
-import { saveChatCompleteNotify, useChatCompleteNotify } from '../../hooks/chatCompleteNotify'
+import { saveChatCompleteMinSeconds, saveChatCompleteNotify, useChatCompleteMinSeconds, useChatCompleteNotify } from '../../hooks/chatCompleteNotify'
 import { loadBannerEnabled, saveBannerEnabled } from '../../hooks/notificationBanner'
 import { loadUnreadOnAttention, saveUnreadOnAttention } from '../../hooks/unreadOnAttention'
 import { useNotificationPermission } from '../../hooks/useNotificationPermission'
 
 import { i18nT } from '../../i18n/t'
-import { compareText, fmtTime } from '../../i18n/format'
+import { compareText, fmtTime, fmtUnit } from '../../i18n/format'
 const PRESET_OPTIONS: SoundPreset[] = ['none', ...SOUND_PRESETS]
 
 /** localStorage key the sound settings persist under. Mirrors the private
@@ -185,6 +185,19 @@ const muteLabel = (choice: MuteChoice, now: number): string => {
     case '2h': return i18nT('pages.settings.notificationsPanel.mute_for_2h')
     case 'morning': return i18nT('pages.settings.notificationsPanel.mute_until', { time: fmtTime(muteEnd('morning', now)) })
   }
+}
+
+/** Shortest-turn choices for the toast, in seconds; `0` means every turn. A
+ *  stored value outside this list is still offered, so the select never hides
+ *  what is saved. */
+const MIN_TURN_CHOICES = [0, 15, 60, 300] as const
+
+const minTurnLabel = (seconds: number): string => {
+  if (seconds === 0) return i18nT('pages.settings.notificationsPanel.notify_min_turn_every')
+  const duration = seconds % 60 === 0
+    ? fmtUnit(seconds / 60, 'minute', { unitDisplay: 'long' })
+    : fmtUnit(seconds, 'second', { unitDisplay: 'long' })
+  return i18nT('pages.settings.notificationsPanel.notify_min_turn_longer_than', { duration })
 }
 
 /** Shared style for the sound-preview buttons: the Sound card's "Test
@@ -428,6 +441,8 @@ function SystemNotificationsRow() {
 export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
   const [settings, setSettings] = useState(() => loadSoundSettings())
   const notifyChatComplete = useChatCompleteNotify()
+  const minTurnSeconds = useChatCompleteMinSeconds()
+  const minTurnChoices = [...new Set<number>([...MIN_TURN_CHOICES, minTurnSeconds])].sort((a, b) => a - b)
   const [bannerEnabled, setBannerEnabled] = useState(() => loadBannerEnabled())
   const [unreadOnAttention, setUnreadOnAttention] = useState(() => loadUnreadOnAttention())
 
@@ -850,6 +865,15 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
             hint={i18nT('pages.settings.notificationsPanel.notify_when_a_background_chat_finishes_description')}
             checked={notifyChatComplete}
             onChange={saveChatCompleteNotify}
+          />
+          <SettingsSelect
+            label={i18nT('pages.settings.notificationsPanel.notify_min_turn')}
+            hint={i18nT('pages.settings.notificationsPanel.notify_min_turn_description')}
+            value={String(minTurnSeconds)}
+            options={minTurnChoices.map(String)}
+            optionLabels={minTurnChoices.map(minTurnLabel)}
+            onChange={v => saveChatCompleteMinSeconds(Number(v))}
+            disabled={!notifyChatComplete}
           />
           <SettingsToggle
             label={i18nT('pages.settings.notificationsPanel.unread_only_when_done_or_waiting')}
