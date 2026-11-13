@@ -401,6 +401,19 @@ def _dollar_row(*, slot, cost, model="claude-x", age_days=0.0):
 
 
 class TestSpendUnit:
+    def test_dollar_amounts_keep_four_decimals_in_every_figure(self, store):
+        """One-decimal rounding turns sub-dime dollar spend into $0.0 everywhere."""
+        store([
+            _dollar_row(slot="chat-1-1700000000", cost=0.01234),
+            {**_dollar_row(slot="chat-1-1700000000", cost=0.00456), "context_used": 250_000},
+        ])
+        out = usage_mod.cost_breakdown(7)
+        assert out.get("unit") == "usd"
+        assert (out.get("priciest") or {}).get("credits") == pytest.approx(0.0123)
+        assert [r.get("credits") for r in out.get("by_category", [])] == [pytest.approx(0.0169)]
+        bands = {b.get("label"): b.get("mean_credits") for b in out.get("context_bands", [])}
+        assert bands.get("200k–400k") == pytest.approx(0.0046)
+
     def test_a_dollar_billed_window_is_summed_from_cost(self, store):
         """A dollar-billed harness leaves `credits` at zero on every turn, so a
         credits-only sum reported "no spend" for a window that cost real money.
