@@ -79,7 +79,7 @@ export const RAW_API_FETCH_INVENTORY = {
   'src/apps/mochi/pet/main.tsx': 1,
   'src/apps/mochi/pet/petBridge.ts': 4,
   'src/apps/mochi/src/mochiApi.ts': 10,
-  'src/components/AutoNudgePopover.tsx': 2,
+  'src/components/AutoNudgePopover.tsx': 1,
   'src/components/CliPanel.tsx': 2,
   'src/components/FileRenderers.tsx': 1,
   'src/components/McpAppFrame.tsx': 2,
