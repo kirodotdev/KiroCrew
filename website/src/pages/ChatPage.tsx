@@ -606,6 +606,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     sidMatches,
     setSidMatches,
     openShortNameMatch,
+    resumeSidClosed,
     ownChatClosedElsewhere,
   } = session
 
@@ -1120,7 +1121,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           switchSlotGone={switchSlotGone} titleInTopbar={titleInTopbar} undeletableHistory={undeletableHistory} unresumableResume={unresumableResume} crewWindow={crewWindow} messages={messages}
           slotRunning={slotRunning} splitMode={splitMode} selectionCapabilitiesQ={selectionCapabilitiesQ} actionError={actionError} setActionError={setActionError} setUploadError={setUploadError}
           setUploadHint={setUploadHint} snipFrame={snipFrame} uploadError={uploadError} uploadHint={uploadHint} handleSnipCancel={handleSnipCancel} handleSnipComplete={handleSnipComplete}
-          closeSessionTab={closeSessionTab} openShortNameMatch={openShortNameMatch} ownsSessionTabs={ownsSessionTabs} selectSessionTab={selectSessionTab} sessionTabs={sessionTabs}
+          closeSessionTab={closeSessionTab} openShortNameMatch={openShortNameMatch} resumeSidClosed={resumeSidClosed} ownsSessionTabs={ownsSessionTabs} selectSessionTab={selectSessionTab} sessionTabs={sessionTabs}
           setSidError={setSidError} setSidMatches={setSidMatches} sidError={sidError} sidMatches={sidMatches} splitFeatureEnabled={splitFeatureEnabled} chipDefault={chipDefault}
           dismissPinStatus={dismissPinStatus} pinError={pinError} pinStatus={pinStatus} inlineSidePanelShowing={inlineSidePanelShowing} openSidebar={openSidebar} sidebarOpen={sidebarOpen}
           COLLAPSED_SESSION_TABS_INSET={COLLAPSED_SESSION_TABS_INSET}
