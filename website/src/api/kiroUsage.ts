@@ -24,6 +24,7 @@ export type KiroUsageState =
   | 'none'
   | 'signin-required'
   | 'signin-rejected'
+  | 'api-key'
   | null
 
 /**
@@ -114,14 +115,20 @@ export function parseKiroUsagePayload(d: { usage?: KiroUsagePayload } | undefine
   // harness shell/topbar/kiroUsageReadout.tsx hides the segment (see
   // isKiroHarness). No readable Kiro credential -> terminal, with its remedy
   // named: sign in again. Empty cache (Kiro warming) -> spinner. API-key auth
-  // is not a terminal state: the /usage scrape returns the real balance for it
-  // just as it does for an SSO sign-in, so it resolves to a reading.
+  // with no stored login is not a terminal state: the /usage scrape returns the
+  // real balance for it just as it does for an SSO sign-in, so it resolves to a
+  // reading. A KIRO_API_KEY beside a stored login is `api-key`, above.
   if (u.available === false) {
     // `signin-rejected`: the API refused a credential, so a read failed.
     // `signin-required`: no credential was read, so there may be no sign-in.
     if (u.reason === 'signin_required') {
       return u.credential_rejected === true ? 'signin-rejected' as const : 'signin-required' as const
     }
+    // The sessions run on a KIRO_API_KEY while kiro-cli's own login is another
+    // identity: the gateway reads no balance rather than the login's, which is
+    // not what the sessions spend. Permanent until the key is removed, so a
+    // terminal state like `signin-required`, with no refresh to offer.
+    if (u.reason === 'api_key') return 'api-key' as const
     if (u.reason === 'account_unproven') {
       const type = u.account_type
       return { accountOnly: true, accountType: typeof type === 'string' && type ? type : undefined }

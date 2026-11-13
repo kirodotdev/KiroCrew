@@ -1662,3 +1662,14 @@ def held_flag(monkeypatch):
     monkeypatch.setattr(agent_mod, "_main_spec_skip_generation", None)
     monkeypatch.setattr(agent_mod, "_main_spec_held_pass_at", None)
     return agent_mod
+
+
+@pytest.fixture
+def no_ambient_kiro_api_key(monkeypatch):
+    """Run the credit-pill refresh as an install with no ``KIRO_API_KEY``.
+
+    With the key set the refresh publishes the ``api_key`` marker and reads no balance
+    (sessions bill the key, not kiro-cli's login), so a test of the reading itself must
+    not inherit an operator's key from the shell that launched pytest.
+    """
+    monkeypatch.delenv("KIRO_API_KEY", raising=False)

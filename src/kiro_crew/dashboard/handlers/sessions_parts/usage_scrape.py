@@ -307,6 +307,32 @@ def _whoami_agreement(before: dict[str, object], after: dict[str, object]) -> st
 #: and no user (see :func:`_account_type_only`).
 _REASON_ACCOUNT_UNPROVEN = "account_unproven"
 
+#: Pill ``reason`` when the sessions run on a ``KIRO_API_KEY`` while kiro-cli's own
+#: login is a different identity. Neither ``whoami`` nor ``/usage`` reports the key's
+#: account in that state (kiro-cli answers both from its stored login), so any
+#: balance read here would belong to the login and not to the credits being spent.
+_REASON_API_KEY = "api_key"
+
+
+def _kiro_api_key_configured() -> bool:
+    """Whether a ``KIRO_API_KEY`` is set for the Kiro sessions this gateway spawns.
+
+    Looks where the spawn paths do: the process environment first (the ``.env``
+    line is propagated into it at boot, and live), then the data home's ``.env``
+    itself, which is where a Docker install keeps it after the entrypoint scrubs
+    the environment. An unreadable ``.env`` answers ``False``, as the spawn paths'
+    own read does. Blocking file IO; call off the event loop.
+    """
+    from kiro_crew.config.loader import CRED_KIRO_API_KEY, read_env_file_credential
+
+    if (os.environ.get(CRED_KIRO_API_KEY) or "").strip():
+        return True
+    try:
+        return bool(read_env_file_credential(CRED_KIRO_API_KEY).strip())
+    except Exception:  # noqa: BLE001 - an unreadable .env proves no key
+        logger.debug("could not read KIRO_API_KEY from .env for the usage meter", exc_info=True)
+        return False
+
 
 def _account_type_only(identity: dict[str, object]) -> bool:
     """True when an external identity provider whoami names no user.

@@ -32,7 +32,9 @@ export type { KiroBonusCreditGrant, KiroCreditUsage }
  * where the Refresh below can fill it), `'failed'` when
  * the fetch itself failed with nothing cached, `'signin-required'`
  * when no live Kiro credential could be read, `'signin-rejected'` when the
- * usage API refused the one that was, or `'config-unreadable'` when the
+ * usage API refused the one that was, `'api-key'` when the sessions run on a
+ * `KIRO_API_KEY` and so spend credits kiro-cli's login does not own, or
+ * `'config-unreadable'` when the
  * gateway holds no reading AND the config read that decides whether this is a
  * Kiro harness at all failed -- so nothing can be shown as a fact, and the read
  * is retried from here. `null` is the ONLY value that means "still loading" —
@@ -47,6 +49,7 @@ export type KiroAccountUsage =
   | 'failed'
   | 'signin-required'
   | 'signin-rejected'
+  | 'api-key'
   | 'config-unreadable'
 
 /** True only for an actual reading, so the sentinels cannot reach a field access. */
@@ -640,6 +643,18 @@ function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () 
   // user). That holds until the sign-in changes, so it is a configuration the
   // account is in, not a failure: the passive notice, and no Refresh, since
   // another read of the same sign-in answers the same.
+  if (usage === 'api-key') {
+    // Same passive shape as the account-only notice, and for the same reason:
+    // the key stays in place until the user removes it, so another read answers
+    // the same and there is no failure to recover from. It must be said, though:
+    // the login named above is not the account these chats bill.
+    return (
+      <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 p-3.5 text-[13px] text-muted">
+        <Info className="lucide-inline shrink-0" aria-hidden="true" />{' '}
+        {i18nT('components.kiroAccountModal.credit_usage_api_key')}
+      </div>
+    )
+  }
   if (isAccountOnly(usage)) {
     return (
       <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 p-3.5 text-[13px] text-muted">

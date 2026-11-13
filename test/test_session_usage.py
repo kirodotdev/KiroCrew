@@ -33,6 +33,8 @@ from kiro_crew.dashboard.handlers.sessions import (
 )
 from kiro_crew.testing.wait import finished
 
+pytestmark = pytest.mark.usefixtures("no_ambient_kiro_api_key")
+
 SAMPLE_USAGE_WITH_BONUS = (
     "Estimated Usage | resets on 2026-08-01 | KIRO PRO+\n"
     "Bonus Credits:\n"

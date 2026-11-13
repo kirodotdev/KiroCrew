@@ -269,12 +269,14 @@ from kiro_crew.dashboard.handlers.kiro_vault_identity import (
 )
 from kiro_crew.dashboard.handlers.sessions_parts.usage_scrape import (
     _REASON_ACCOUNT_UNPROVEN,
+    _REASON_API_KEY,
     _WHOAMI_DIFFERENT,
     _WHOAMI_SAME,
     _WHOAMI_UNPROVEN,
     _account_type_only,
     _fetch_whoami,
     _fetch_whoami_or_none,
+    _kiro_api_key_configured,
     _normalize_text_usage,
     _parse_usage,
     _redact_strings,
@@ -1381,6 +1383,22 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
             )
 
         skip_usage_api = _is_api_key(identity)
+        # A KIRO_API_KEY in the environment makes the sessions bill THE KEY'S
+        # account, but kiro-cli's `whoami` and `/usage` keep answering from its
+        # stored login whenever one exists (verified on kiro-cli 3.3.0), so every
+        # number below would be the login's while the credits go elsewhere. When
+        # whoami answered with a login that is NOT the key itself, no source here
+        # can name the key's balance: publish that instead of the login's number,
+        # which is the one outcome that misleads the user into thinking nothing is
+        # being spent. An empty identity is a whoami that failed or named no one,
+        # so it proves no login and takes the ordinary path below.
+        if identity and not skip_usage_api and await asyncio.to_thread(_kiro_api_key_configured):
+            logger.info(
+                "Kiro usage: sessions run on KIRO_API_KEY but kiro-cli reports its own "
+                "login; not showing the login's balance as this session's usage"
+            )
+            _publish_usage({"available": False, "reason": _REASON_API_KEY})
+            return None
         if skip_usage_api:
             logger.info("Kiro usage: API-key auth; skipping the API path, using the /usage scrape")
         # The ExternalIdP type and nothing that names the user: no reading could
