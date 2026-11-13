@@ -226,3 +226,50 @@ def test_install_sh_never_turns_the_bundle_route_on() -> None:
         stripped = line.strip()
         if "kas_bundle true" in stripped and not stripped.startswith("#"):
             assert stripped.startswith(("echo ", "ok ", "detail ", "info ")), line
+
+
+@pytest.mark.parametrize(
+    "home",
+    [None, "data-home", ""],
+    ids=["custom-home", "relative-home", "unset"],
+)
+def test_cli_sh_next_steps_name_the_data_home_only_when_it_is_set(
+    tmp_path: Path, signing_key: SigningKey, home: str | None
+) -> None:
+    # The harness sets KIROCREW_HOME to the absolute <run_root>/data-home and runs
+    # from <run_root>, so "data-home" is the same folder spelled relative; an
+    # empty value is the installer's "unset".
+    extra_env = None if home is None else {"KIROCREW_HOME": home}
+    result, _calls, launcher = _run_cli_sh(tmp_path / "case", signing_key, extra_env=extra_env)
+
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    block = out[out.index("Next steps:") : out.index("Need a non-default port")]
+    if home != "":
+        data_home = str(launcher.parents[3].resolve() / "data-home")
+        export_line = f'  export KIROCREW_HOME="{data_home}"\n'
+        assert f"This install used the data home {data_home}" in block, block
+        assert export_line in block, block
+        assert block.index(export_line) < block.index("kirocrew gateway"), block
+    else:
+        assert block == (
+            "Next steps:\n"
+            "  kirocrew gateway            # start the dashboard now (http://localhost:5476)\n"
+            "  kirocrew service install    # needs sudo on Linux; run it 24/7 as a service"
+            " (survives logout, restarts on crash)\n"
+            "  kirocrew --help             # everything else\n"
+            "\n"
+        ), block
+
+
+def test_cli_sh_engine_unsupported_ending_names_the_data_home(
+    tmp_path: Path, signing_key: SigningKey
+) -> None:
+    """The ending that replaces the next steps still names the data home."""
+    result, _calls, launcher = _run_cli_sh(
+        tmp_path / "case", signing_key, extra_env={"FAKE_KIROCREW_EXIT": "3"}
+    )
+
+    assert result.returncode == 3, result.stderr
+    data_home = launcher.parents[3].resolve() / "data-home"
+    assert f'  export KIROCREW_HOME="{data_home}"\n' in result.stderr, result.stderr

@@ -914,6 +914,13 @@ echo ""
 echo "  ${BOLD}Next steps:${RESET}"
 echo ""
 echo "    ${CYAN}1.${RESET} Reload your shell:"
+if [ -n "${KIROCREW_HOME:-}" ]; then
+# Absolute: a relative value would resolve against whatever directory a later command runs from.
+KIROCREW_DATA_ABS="$(cd "$KIROCREW_DATA_DIR" && pwd -P)"
+echo "       This install used the data home ${CYAN}${KIROCREW_DATA_ABS}${RESET} (from KIROCREW_HOME)."
+echo "       Every kirocrew command needs it set too, or it uses ~/.kiro/crew; add this to your shell profile:"
+echo "       ${GREEN}export KIROCREW_HOME=\"${KIROCREW_DATA_ABS}\"${RESET}"
+fi
 case "$(basename "${SHELL:-}")" in
     fish) echo "       ${GREEN}source ~/.config/fish/config.fish${RESET}" ;;
     bash|zsh) echo "       ${GREEN}source ~/.$(basename "${SHELL}")rc${RESET}" ;;
