@@ -929,8 +929,15 @@ async def start_background_run(
         except asyncio.CancelledError:
             await registry.mark_terminal_async(run_id, STATUS_CANCELLED, error="cancelled")
             raise
-        except Exception as exc:  # noqa: BLE001 - capture, never crash the loop
+        except BaseException as exc:  # noqa: BLE001 - capture, never crash the loop
+            # Never leave the run "running" with a dead driver: Cancel would then
+            # report success on a task that is already gone. A closing coroutine
+            # must not await; an interrupt or exit is marked, then goes on up.
+            if isinstance(exc, GeneratorExit):
+                raise
             await registry.mark_terminal_async(run_id, STATUS_FAILED, error=repr(exc))
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
         else:
             # The runner has already selected its outcome. Cancellation while
             # flushing must drain that outcome, not reinterpret success as cancel.
