@@ -2594,6 +2594,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "display.dark-theme-from",
+    "label": "Dark theme from",
+    "labelKey": "pages.settings.displayPanel.theme_schedule_dark_at",
+    "tab": "display",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "sub": "theme"
+    }
+  },
+  {
     "id": "display.default-for-new-sessions",
     "params": {
       "sub": "sidebar"
@@ -2779,6 +2790,39 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "display.latitude",
+    "label": "Latitude",
+    "labelKey": "pages.settings.displayPanel.theme_schedule_latitude",
+    "tab": "display",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "sub": "theme"
+    }
+  },
+  {
+    "id": "display.light-theme-from",
+    "label": "Light theme from",
+    "labelKey": "pages.settings.displayPanel.theme_schedule_light_at",
+    "tab": "display",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "sub": "theme"
+    }
+  },
+  {
+    "id": "display.longitude",
+    "label": "Longitude",
+    "labelKey": "pages.settings.displayPanel.theme_schedule_longitude",
+    "tab": "display",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "sub": "theme"
+    }
+  },
+  {
     "id": "display.mode",
     "label": "Mode",
     "labelKey": "pages.settings.displayPanel.mode",
@@ -2837,6 +2881,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "sub": "terminal"
     },
     "configKey": "dashboard.terminal.reuse_current"
+  },
+  {
+    "id": "display.schedule",
+    "label": "Schedule",
+    "labelKey": "pages.settings.displayPanel.theme_schedule_method",
+    "tab": "display",
+    "type": "buttonGroup",
+    "occurrence": 1,
+    "params": {
+      "sub": "theme"
+    }
   },
   {
     "id": "display.show-search-in-the-top-bar",
@@ -2898,6 +2953,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "sub": "remote-editor"
     },
     "configKey": "dashboard.remote_editor.host"
+  },
+  {
+    "id": "display.switch-light-and-dark-on-a-schedule",
+    "label": "Switch light and dark on a schedule",
+    "labelKey": "pages.settings.displayPanel.theme_schedule",
+    "hint": "A mode you pick by hand stays until the next scheduled switch.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "theme"
+    },
+    "settingId": "display.theme-schedule"
   },
   {
     "id": "display.theme",
