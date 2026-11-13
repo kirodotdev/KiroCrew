@@ -18,13 +18,7 @@ import unittest.mock
 import pytest
 from config_loader_helpers import _load_from_dict, _load_from_dict_with_logs
 
-from kiro_crew.config.loader import _HAS_JSONSCHEMA, AgentConfig, KiroCrewConfig
-
-# Skip marker for tests that require jsonschema validation
-_requires_jsonschema = pytest.mark.skipif(
-    not _HAS_JSONSCHEMA,
-    reason="jsonschema not available — validation tests require it",
-)
+from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
 
 
 def test_max_subagents_defaults_to_auto_sentinel() -> None:
@@ -538,7 +532,6 @@ class TestDynamicSubagentSizingFields:
         assert a.subagent_auto_max == 24
         assert a.subagent_spawn_stagger_secs == 1.5
 
-    @_requires_jsonschema
     def test_deprecated_warning_is_once_per_value(self, monkeypatch, caplog) -> None:
         from kiro_crew.config import validation
 
@@ -570,7 +563,6 @@ class TestDynamicSubagentSizingFields:
             _load_from_dict({"agent": {"subagent_cpu_cost_cores": 0.8}})
             assert notices() == []
 
-    @_requires_jsonschema
     @pytest.mark.parametrize("value", [1.0, 1], ids=["float", "int"])
     def test_the_fields_own_default_is_not_announced(self, monkeypatch, caplog, value) -> None:
         """A config Kiro Crew just created carries the default; warning on it is
@@ -582,7 +574,6 @@ class TestDynamicSubagentSizingFields:
             _load_from_dict({"agent": {"subagent_cpu_cost_cores": value}})
         assert not [r for r in caplog.records if "deprecated field" in r.getMessage()]
 
-    @_requires_jsonschema
     def test_a_fresh_default_config_loads_without_a_deprecation_notice(
         self, monkeypatch, caplog
     ) -> None:

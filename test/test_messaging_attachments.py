@@ -931,9 +931,10 @@ class TestAppendAttachmentContext:
         # the bare path line into an image block leaves the note readable.
         import io
 
+        import PIL.Image as pil
+
         from kiro_crew.acp.prompt_blocks import build_prompt_blocks
 
-        pil = pytest.importorskip("PIL.Image")
         buf = io.BytesIO()
         pil.new("RGB", (2, 2), (127, 127, 127)).save(buf, format="PNG")
         image = tmp_path / "shot.png"

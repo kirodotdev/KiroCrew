@@ -25,7 +25,7 @@ from named_cases_helpers import named_cases
 from test_config_load_pipeline import _DECLARED_EXCEPTIONS, _document, _section_fields
 
 from kiro_crew.acp_backends import selectable_backends
-from kiro_crew.config import loader, sections, validation
+from kiro_crew.config import loader, sections
 from kiro_crew.instances.constants import DEFAULT_CONNECT_TIMEOUT_SECS, DEFAULT_MINT_TIMEOUT_SECS
 from kiro_crew.monitoring.limits import DEFAULT_RUNTIME_CEILING_SECS
 from kiro_crew.stt import models as stt_models
@@ -113,7 +113,6 @@ def _build(tmp_path: Path, document: dict) -> loader.KiroCrewConfig:
 # A wrong-typed value, through the read and build stages.
 
 
-@pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
 class TestAWrongTypedValueLoadsTheFieldDefault:
     @pytest.mark.parametrize("section", [name for name, _ in _section_fields()])
     def test_every_field_of_the_section(self, staged_load, section):
@@ -260,7 +259,6 @@ class TestTheDeclaredDepartures:
         assert read(_build(tmp_path, document)) == built
         assert read(_BARE) != built
 
-    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
     @pytest.mark.parametrize(("document", "read", "built", "loaded"), _BUILD_DEPARTURES)
     def test_a_load_reads_the_declared_value_or_the_validated_default(
         self, staged_load, document, read, built, loaded
