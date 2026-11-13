@@ -46,7 +46,7 @@ __all__ = [
 ]
 
 #: Engine version this release runs.
-KAS_PIN_VERSION = "0.66.104"
+KAS_PIN_VERSION = "0.66.111"
 
 #: sha256 of ``<base>/kas/<KAS_PIN_VERSION>/manifest.json`` as published.
 KAS_PIN_MANIFEST_SHA256 = "263d3d1e59c2d32987d2a09cb066f650b6455cc9de94473693bd0a07aec151f4"
