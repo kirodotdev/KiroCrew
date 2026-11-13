@@ -356,6 +356,35 @@ async def test_reclaim_failed_when_terminate_returns_false() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("windows", "hint"), [(True, "taskkill /PID 1234 /T /F"), (False, "kill -9 1234")]
+)
+async def test_reclaim_failed_names_the_platform_s_own_force_kill(
+    monkeypatch: pytest.MonkeyPatch, windows: bool, hint: str
+) -> None:
+    """Windows reaches this path too (netstat lookup, taskkill terminate), so
+    the manual remedy must not be a POSIX-only ``kill -9`` there."""
+    from unittest.mock import MagicMock
+
+    async def _terminate(_pids: list[int]) -> bool:
+        return False
+
+    monkeypatch.setattr(pr.platform_compat, "IS_WINDOWS", windows)
+    log = MagicMock()
+    outcome = await pr.reclaim_stale_gateway_port(
+        5476,
+        list_listeners=lambda _p: [1234],
+        is_kirocrew=lambda _pid: True,
+        probe_healthy=_unhealthy,
+        terminate=_terminate,
+        log=log,
+    )
+    assert outcome == pr.RECLAIM_FAILED
+    fmt, *args = log.error.call_args.args
+    assert hint in fmt % tuple(args)
+
+
+@pytest.mark.asyncio
 async def test_slow_identity_check_times_out_to_unavailable() -> None:
     """A wedged ps (slow identity check) degrades to UNAVAILABLE, never hangs."""
     import time as _time
