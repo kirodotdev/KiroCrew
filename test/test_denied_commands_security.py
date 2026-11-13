@@ -383,8 +383,9 @@ class TestSelfProtectionFlagInterposition:
         force back on. Both spellings must resolve to ``None`` (reported by
         ``_resolved_pin_ids`` as pinning nothing) rather than to an id the
         catalog cannot display or toggle, and the alias map is pinned to its EXACT
-        contents -- the prior spellings of ``reverse-shell-nc`` and of the two
-        interpreter-payload rows -- so it cannot quietly re-acquire an entry for a
+        contents -- the prior spellings of ``reverse-shell-nc``, of the three
+        ``pipe-to-shell`` rows and of the two interpreter-payload rows -- so it
+        cannot quietly re-acquire an entry for a
         deleted row (a ratchet may only tighten); the row each entry names must
         also EXIST.
         """
@@ -394,6 +395,11 @@ class TestSelfProtectionFlagInterposition:
         # other addition) fails here until these lines are changed on purpose.
         aliases = dict(security._LEGACY_RULE_ID_BY_PATTERN)
         assert aliases.pop("nc -e" + ".*") == "reverse-shell-nc"
+        # The three pipe-to-shell rows before their shell name ended on ``\b``.
+        for shell_row in ("curl-bash", "curl-sh", "wget-bash"):
+            tool, shell = shell_row.split("-")
+            prior = tool + " .* \\| " + shell
+            assert aliases.pop(prior) == "pipe-to-shell-" + shell_row
         assert sorted(aliases.values()) == [_RULE_MINT + "-argv", _RULE_KILL + "-interpreter"]
         live_ids = {r.id for r in BUILTIN_DENIED_RULES}
         for legacy, rule_id in security._LEGACY_RULE_ID_BY_PATTERN.items():

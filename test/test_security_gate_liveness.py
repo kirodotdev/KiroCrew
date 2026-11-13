@@ -811,7 +811,12 @@ def _url_payload_command(n: int) -> str:
 #: floor in ``paths_lists`` (per-chat steering switch-offs). Re-measured.
 #: Raised by 18, from 36,000, to 36,018, for ``paths.py``'s scratch tree-index fence:
 #: artifact reads refuse the canonical index path even during replacement.
-_PACKAGE_LINE_BUDGET = 36_018
+#: Raised by 13, from 36,018, to 36,031, for the three ``pipe-to-shell`` rows ending the
+#: shell's name on a word boundary, so ``| sha256sum`` no longer reads as ``| sh``: the
+#: comment that says why, and the legacy alias that keeps a governance pin in each row's
+#: prior spelling resolving. A false positive left; every pipe into a shell still matches.
+#: Re-measured.
+_PACKAGE_LINE_BUDGET = 36_031
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
