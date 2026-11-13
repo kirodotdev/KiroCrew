@@ -7,6 +7,7 @@ import { invalidateFoldersWhenIdle } from '../../api/chatFoldersWrite'
 import ErrorNotice from '../../components/ErrorNotice'
 import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
 import { Btn, PanelSectionHeader } from '../../components/ui'
+import { joinSentences } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { useScrollEdgesY } from '../../hooks/useScrollEdges'
 import { closeBusyReasons } from '../../lib/closeBusyGate'
@@ -85,7 +86,7 @@ export default function FolderCleanupPanel({ folders, root, slots = [], onClose 
     const tree = collectFolderSubtreeIds(folders, root.id)
     return slots.filter(s => s.folder_id && tree.has(s.folder_id))
   }, [root, folders, slots])
-  const busy = useAppSelector(state => toClose.map(s => closeBusyReasons(state, s.key).map(reasonLine).join(' ')), shallowEqual)
+  const busy = useAppSelector(state => toClose.map(s => joinSentences(closeBusyReasons(state, s.key).map(reasonLine))), shallowEqual)
   const cleanup = useMutation({
     mutationFn: async () => {
       // The open chat closes last, so its close lands outside this tree

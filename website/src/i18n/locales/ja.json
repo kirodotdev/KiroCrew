@@ -14604,7 +14604,7 @@
       "not_verified_help": "{{productName}} は {{provider}} の認証状態を確認できません。トークンは Kiro CLI が保持しています。エージェントから呼び出せているなら動作しており、そうでなければ認証が必要です。",
       "official_mcp_server": "公式 MCP サーバー",
       "open_managed_connection": "{{provider}}コネクションカードを開く",
-      "prerequisite_atlassian": "Jira または Confluence サイトを持つ Atlassian アカウントが必要です。ない場合、同意ページの Accept ボタンは無効のままになります。 組織で Atlassian の MCP サーバーが制限されている場合は、下のリダイレクト先アドレスと Read、Write、Search の権限を許可するよう組織の管理者に依頼してください（Connections ドキュメント：Atlassian organization admin checklist）。",
+      "prerequisite_atlassian": "Jira または Confluence サイトを持つ Atlassian アカウントが必要です。ない場合、同意ページの Accept ボタンは無効のままになります。組織で Atlassian の MCP サーバーが制限されている場合は、下のリダイレクト先アドレスと Read、Write、Search の権限を許可するよう組織の管理者に依頼してください（Connections ドキュメント：Atlassian organization admin checklist）。",
       "prerequisite_gitlab": "GitLab Duo をベータ機能・実験的機能とともに有効にし、トップレベルグループに対して MCP サーバーへのアクセスを許可してください。これらがないと、接続は成功してもツールは一切公開されません。",
       "prerequisite_gitlab_steps": "GitLab Duo をベータ機能・実験的機能とともに有効にし、トップレベルグループに対して MCP サーバーへのアクセスを許可してください。",
       "prerequisites_for_provider": "{{provider}} の前提条件",

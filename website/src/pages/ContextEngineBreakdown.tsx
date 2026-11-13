@@ -3,7 +3,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react'
 
 import InfoTip from '../components/InfoTip'
 
-import { fmtBytes, fmtCompact, fmtList, fmtNumber, fmtPercent, fmtUnit } from '../i18n/format'
+import { fmtBytes, fmtCompact, fmtList, fmtNumber, fmtPercent, fmtUnit, joinSentences } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 
 /**
@@ -697,7 +697,7 @@ export function TurnBreakdown({
   const hovered = segments.find(s => s.id === hover)
   const media = measured ? mediaText(engine?.media) : null
   const caption = measured
-    ? [i18nT('pages.contextBreakdown.caption_measured'), ttft ? i18nT('pages.contextBreakdown.engine_ttft', { total: fmtSeconds(ttft.total_ms) }) : ''].filter(Boolean).join(' ')
+    ? joinSentences([i18nT('pages.contextBreakdown.caption_measured'), ttft ? i18nT('pages.contextBreakdown.engine_ttft', { total: fmtSeconds(ttft.total_ms) }) : ''])
     : inTokens
       ? i18nT('pages.contextBreakdown.caption_estimate', { ratio: fmtNumber(charsPerToken ?? 4) })
       : i18nT('pages.contextBreakdown.caption_chars')

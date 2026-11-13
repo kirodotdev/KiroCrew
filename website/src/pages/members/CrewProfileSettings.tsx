@@ -2,7 +2,7 @@ import { useContext, useEffect, useRef, useState, type KeyboardEvent, type React
 import { createPortal } from 'react-dom'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { fmtList } from '../../i18n/format'
+import { fmtList, joinSentences } from '../../i18n/format'
 import { Check, Cpu, Gauge, Loader2, Puzzle, SendHorizontal, Shield, SlidersHorizontal, Sparkles, Users } from 'lucide-react'
 import { api, type MemberRosterRow } from '../../api/client'
 import { ApiError } from '../../api/apiError'
@@ -370,16 +370,16 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
       if (!names.some((n) => n !== 'auto')) return undefined
       served = new Set(names.map(modelKey))
     }
-    return [
+    return joinSentences([
       modelPinned ? (served.has(modelKey(pinnedModel))
         ? t('pages.membersPage.profile_harness_keeps_model', { model: pinnedModel })
         : t('pages.membersPage.profile_harness_model_resets')) : '',
       workerPinned ? (served.has(modelKey(pinnedWorker))
         ? t('pages.membersPage.profile_harness_keeps_worker', { model: pinnedWorker })
         : t('pages.membersPage.profile_harness_worker_resets', { name })) : '',
-    ].filter(Boolean).join(' ')
+    ])
   }
-  const joinDesc = (...parts: (string | undefined)[]) => parts.filter(Boolean).join(' ') || undefined
+  const joinDesc = (...parts: (string | undefined)[]) => joinSentences(parts) || undefined
   // The known limits of a harness, under its label, before it is picked.
   const harnessLimit = (h: string) => {
     if (harnessUnavailable(h)) return t('pages.membersPage.profile_harness_cannot_start')
@@ -471,7 +471,7 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
       icon: <Users size={16} />, tone: 'info',
       value: workerModel, valueLabel: workerModelLabel(workerModel),
       options: workerModelOptions.map((m) => ({ value: m, label: workerModelLabel(m) })),
-      caption: [
+      caption: joinSentences([
         workerModel === SAME_AS_CREWMATE
           ? t('pages.membersPage.profile_worker_same_hint', { name, model: ownModelNoun })
           : workerModel === WORKER_AUTO
@@ -480,7 +480,7 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
         // Says what is true when the effort row folds: the setting does not apply
         // to that model. Never "no reasoning", which reads as a downgrade.
         workerEffortRowShown ? '' : t('pages.membersPage.profile_worker_no_effort_hint'),
-      ].filter(Boolean).join(' '),
+      ]),
     },
     ...(workerEffortRowShown ? [{
       // '' means "the crewmate's own level" only while the workers run the
