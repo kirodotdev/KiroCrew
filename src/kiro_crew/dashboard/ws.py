@@ -748,7 +748,10 @@ def _handle_slot_focused(
     reported = getattr(slot, "_eager_spawn_reported_resume", False)
     if pending is not None and not pending.done() and reported:
         return None
-    return schedule_eager_spawn(state, slot, allow_resume=True)
+    # The owner came back to this chat (``owner`` was checked above): the load
+    # stays BACKGROUND in the start queues and is done as one a person is about
+    # to wait on (rule: ``acp.mcp_start_wait.person_waits``).
+    return schedule_eager_spawn(state, slot, allow_resume=True, focus_resume=True)
 
 
 def _check_ws_origin(request: web.Request) -> None:

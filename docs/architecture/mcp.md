@@ -4899,7 +4899,8 @@ lead's row measures 7,808, so its budget is 7,850.
 #### A server that is still starting
 
 A session's start does not wait for the agent's own MCP servers when a person
-is waiting on it (`acp/mcp_start_wait.py`), so a turn can begin while some of
+is waiting on it (`acp/mcp_start_wait.py`), a new chat and a re-opened one
+alike, so a turn can begin while some of
 them are still connecting. Such a server is not in the model's tool list yet, and
 the host's tool loader answers a request for one of its tools as though it did
 not exist. Two parts keep the model from repeating that to the user. Both reach

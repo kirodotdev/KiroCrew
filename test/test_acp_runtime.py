@@ -194,15 +194,18 @@ def kas_readiness_wire(monkeypatch, tmp_path):
         # block (``hoist_servers_for_session``); everything else is byte-identical.
         projection = rt._kas_custom_agents.return_value.custom_agents
         sent_agents = request["params"]["_meta"]["kiro"]["customAgents"]
-        if not resume:
-            # A new session whose agent keeps servers in its block also registers
-            # the start agent, after the batch, and starts in it (kas_start_agent).
-            own = [a for a in sent_agents if a.get("id") != START_AGENT_ID]
-            held = with_start_agent(own) is not None
-            assert (sent_agents[-1]["id"] == START_AGENT_ID) == held
+        # A batch whose agent keeps servers in its block also registers the start
+        # agent, after the batch (kas_start_agent). A new session starts in it; a
+        # load names no mode, since the engine resumes in the one it stored.
+        own = [a for a in sent_agents if a.get("id") != START_AGENT_ID]
+        held = with_start_agent(own) is not None
+        assert sent_agents == (with_start_agent(own) or own)
+        if resume:
+            assert "modeId" not in request["params"]["_meta"]["kiro"]
+        else:
             started_in = request["params"]["_meta"]["kiro"]["modeId"]
             assert started_in == (START_AGENT_ID if held else own[0]["id"])
-            sent_agents = own
+        sent_agents = own
         assert len(sent_agents) == len(projection)
         wire_names = [entry["name"] for entry in request["params"]["mcpServers"]]
         assert len(wire_names) == len(set(wire_names)), "a name must appear once on the wire"

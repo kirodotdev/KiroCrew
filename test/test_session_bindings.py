@@ -250,7 +250,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "get_bg_session": ("function", True, "c8c03f90e44b", "runtimes"),
     "get_channel": ("function", False, "4b576121a346", "links"),
     "get_mirror_link": ("function", False, "cdc6a6d31d8b", "links"),
-    "get_or_create": ("function", True, "bd03b7b05fd0", "claims"),
+    "get_or_create": ("function", True, "8c8e6ffe6655", "claims"),
     "get_origin_link": ("function", False, "cdc6a6d31d8b", "links"),
     "get_pid": ("function", False, "1290edeed1b6", "claims"),
     "get_provider": ("function", False, "c66f77f7d253", "claims"),

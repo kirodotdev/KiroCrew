@@ -58,7 +58,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_effort_model": ("property", False, "bb418bb7ece8", "acp"),
     "_emit_kiro_startup_metric": ("function", False, "4c7cfd604f41", "acp_runtime_start"),
     "_inline_turn_finished_cleanly": ("function", False, "a6632a57e602", "acp_turns"),
-    "_load_session_with_retry": ("function", True, "1568673b0925", "acp_runtime_start"),
+    "_load_session_with_retry": ("function", True, "0ee486035da1", "acp_runtime_start"),
     "_member_session_key": ("function", False, "bb418bb7ece8", "acp_runtime_start"),
     "_note_zero_tool_servers": ("function", True, "b60c5fea256e", "acp_runtime_start"),
     "_owning_channel_id": ("function", False, "f21e39ec5ffb", "acp_runtime_start"),

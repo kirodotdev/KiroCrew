@@ -698,7 +698,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "schedule_eager_spawn",
             "function",
-            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", *, allow_resume: 'bool' = False, start_priority: 'StartPriority' = <StartPriority.BACKGROUND: 'bg'>, on_ended: 'Callable[[Exception | None], None] | None' = None) -> \"'asyncio.Task | None'\"",
+            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", *, allow_resume: 'bool' = False, start_priority: 'StartPriority' = <StartPriority.BACKGROUND: 'bg'>, on_ended: 'Callable[[Exception | None], None] | None' = None, focus_resume: 'bool' = False) -> \"'asyncio.Task | None'\"",
         ),
         (
             "_slot_binding",
@@ -708,12 +708,12 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_eager_spawn",
             "async function",
-            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", *, allow_resume: 'bool' = False, signal_generation: 'float | None' = None, start_priority: 'StartPriority' = <StartPriority.BACKGROUND: 'bg'>, on_ended: 'Callable[[Exception | None], None] | None' = None) -> 'None'",
+            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", *, allow_resume: 'bool' = False, signal_generation: 'float | None' = None, start_priority: 'StartPriority' = <StartPriority.BACKGROUND: 'bg'>, on_ended: 'Callable[[Exception | None], None] | None' = None, focus_resume: 'bool' = False) -> 'None'",
         ),
         (
             "_spawn_admitted_prefetch",
             "async function",
-            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", sessions: 'Any', session_key: 'str', _t0: 'float', *, kiro_agent: 'str | None', crew_alias: 'str', agent_model: 'str', allow_resume: 'bool', _bound: 'tuple', start_priority: 'StartPriority') -> 'None'",
+            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", sessions: 'Any', session_key: 'str', _t0: 'float', *, kiro_agent: 'str | None', crew_alias: 'str', agent_model: 'str', allow_resume: 'bool', _bound: 'tuple', start_priority: 'StartPriority', focus_resume: 'bool' = False) -> 'None'",
         ),
         (
             "_schedule_prefetch_ttl",
