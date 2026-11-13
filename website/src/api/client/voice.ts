@@ -107,6 +107,18 @@ export function createVoiceEndpoints({ post, put, j, jfetch: fetch }: ClientTran
     },
     voiceCancel: (slot: string, request_id: string) =>
       post('/api/voice/cancel', { slot, request_id }).then(j),
+    // What to SPEAK for a finished reply. In `speakMode: 'summary'` the gateway
+    // answers a short spoken summary with `summarized: true`; in `full` mode, and
+    // whenever the summary step fails or returns nothing usable, it echoes the
+    // text with `summarized: false`. Callers fall back to the text they already
+    // hold when this request itself fails, so speech never waits on it twice.
+    voiceSummarize: (text: string, request_id: string) =>
+      post('/api/voice/summarize', { text, request_id }).then(j) as Promise<{
+        ok: boolean
+        text: string
+        summarized: boolean
+        request_id?: string
+      }>,
   }
 
   return { speechToText, voiceSettings, synthesis }

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { VoicePcmPlayer, voiceBoundary, createVoiceRequestId } from '../lib/voicePlayback'
+import { VoicePcmPlayer, voiceBoundary, createVoiceRequestId, splitForSynthesis, SYNTHESIS_TEXT_CAP } from '../lib/voicePlayback'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -20,6 +20,39 @@ describe('speech boundaries', () => {
   it('bounds the wait for a long clause without chopping a word', () => {
     const text = '这是需要尽快播放的内容'.repeat(7) + '，接下来'
     expect(voiceBoundary(text, 0)).toBe(text.indexOf('，') + 1)
+  })
+})
+
+describe('splitForSynthesis', () => {
+  it('returns a short text whole and cuts a long one at sentence ends under the bound', () => {
+    expect(splitForSynthesis('Short.')).toEqual(['Short.'])
+    const parts = splitForSynthesis('One sentence here. '.repeat(400).trim(), 500)
+    expect(parts.length).toBeGreaterThan(1)
+    for (const p of parts) {
+      expect(p.length).toBeLessThanOrEqual(500)
+      expect(p.endsWith('.')).toBe(true)
+    }
+    expect(parts.join(' ')).toBe('One sentence here. '.repeat(400).trim())
+  })
+  it('never cuts inside a code fence, so a half fence is never read as prose', () => {
+    const prose = 'A sentence of prose. '.repeat(30).trim()
+    const fence = '```py\n' + 'x = 1\n'.repeat(300) + '```'
+    const parts = splitForSynthesis(prose + '\n' + fence + '\n' + prose, 500)
+    const fenced = parts.filter(p => p.includes('```'))
+    expect(fenced).toHaveLength(1)
+    expect(fenced[0]).toBe(fence)
+    for (const p of parts) if (!p.includes('```')) expect(p.length).toBeLessThanOrEqual(500)
+  })
+  it('cuts an unmatched marker like prose and empties a fence past the gateway cap', () => {
+    const tail = 'A sentence of prose. '.repeat(60).trim()
+    const unmatched = splitForSynthesis('Wrap code in ``` fences. ' + tail, 500)
+    expect(unmatched.length).toBeGreaterThan(1)
+    for (const p of unmatched) expect(p.length).toBeLessThanOrEqual(500)
+    const huge = '~~~\n' + 'x = 1\n'.repeat(SYNTHESIS_TEXT_CAP / 4) + '~~~'
+    const parts = splitForSynthesis('Before. ' + huge + ' After.', 500)
+    // A backtick fence whatever the marker was: only that form speaks as "(code block)".
+    expect(parts).toContain('```\n```')
+    expect(parts.some(p => p.includes('x = 1'))).toBe(false)
   })
 })
 

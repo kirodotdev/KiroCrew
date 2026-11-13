@@ -149,6 +149,13 @@ you can interrupt at any time by typing or speaking your next message.
 3. Nothing else on macOS or Windows — the built-in engine is already selected.
    Pick a voice matching your language if the OS default speaks another one.
 
+**Hear the gist instead of every word:** set **What to speak** to **Short
+summary**. The dashboard then waits for the reply to finish and speaks two to
+four sentences about it: what was done, what you have to decide, and whether
+anything failed. The written reply is unchanged. When no summary can be made,
+the full reply is spoken. The setting also applies to **Read aloud**; Slack and
+other channel voice replies always speak the full reply.
+
 ### Manual Replay
 
 Open the **More actions** menu on any non-blank assistant reply and choose

@@ -60,10 +60,20 @@ from kiro_crew.voice_reply import (
     validated_config_string,
     validated_language_code,
 )
+from kiro_crew.voice_summary import (
+    SPEAK_MODE_SUMMARY,
+    summarize_for_speech,
+    validated_speak_mode,
+)
 
 logger = logging.getLogger(__name__)
 
 _MAX_SYNTHESIS_TEXT_CHARS = 20000
+#: Body cap for ``/api/voice/summarize``, above the shared default: a whole turn
+#: arrives here as written so the gateway can strip its markup BEFORE it clips
+#: the model input (``voice_summary.SUMMARY_MAX_INPUT_CHARS``). A client-side
+#: cut of the raw markdown would drop prose the stripped form would have kept.
+_MAX_SUMMARY_BODY_BYTES = 512 * 1024
 _MAX_ACTIVE_SYNTHESES = 2
 _MAX_REQUEST_ID_CHARS = 128
 _CANCELLED_REQUEST_TTL = 60.0
@@ -79,6 +89,7 @@ _CLIENT_FALLBACK_CODES = frozenset({"voice_unavailable", "voice_polly_rejected"}
 _VOICE_ATTR_TO_CONFIG_KEY: dict[str, str] = {
     "global_enabled": "enabled",
     "auto_speak": "auto_speak",
+    "speak_mode": "speak_mode",
     "provider": "provider",
     "default_voice": "voice_id",
     "default_engine": "engine",
@@ -280,6 +291,8 @@ async def api_voice_config(request: web.Request) -> web.Response:
                 "rate": _vc.default_rate,
                 "pitch": _vc.default_pitch,
                 "autoSpeak": _vc.auto_speak,
+                # ``full`` or ``summary``: what Auto-speak and Read aloud speak.
+                "speakMode": _vc.speak_mode,
                 "aws_profile": _vc.aws_profile,
                 "region": _vc.region,
                 "system_voice": _vc.system_voice,
@@ -363,6 +376,19 @@ async def api_voice_config(request: web.Request) -> web.Response:
                     status=400,
                 )
             pending[_flag_attr] = _flag_value
+    # Refused, not degraded: the loader reads an unknown stored value as ``full``
+    # because it cannot ask, but a PUT caller can fix its request.
+    if "speakMode" in body:
+        _mode = validated_speak_mode(body["speakMode"])
+        if _mode is None:
+            return web.json_response(
+                {
+                    "error": "speakMode must be 'full' or 'summary'",
+                    "code": "voice_speak_mode_invalid",
+                },
+                status=400,
+            )
+        pending["speak_mode"] = _mode
     # Every string field goes through one validator rather than str(): stringifying
     # persists a dict as the literal "{}" -- a voice name or binary path that no
     # engine can satisfy, so synthesis then returns silence with nothing in the
@@ -510,6 +536,54 @@ def _response_code(resp: web.Response) -> object:
     except (TypeError, ValueError):
         return None
     return body.get("code") if isinstance(body, dict) else None
+
+
+async def api_voice_summarize(request: web.Request) -> web.Response:
+    """POST /api/voice/summarize — the text Auto-speak and Read aloud should speak.
+
+    Answers ``{ok, text, summarized}``: in ``summary`` mode a short spoken summary
+    with ``summarized`` true; in ``full`` mode, and whenever the summary step fails
+    or returns nothing usable, the original text with ``summarized`` false, so the
+    caller always has something to hand to ``/api/voice/synthesize``. ``request_id``
+    is echoed for the caller's matching only; the cancel registry never sees it.
+    """
+    body, body_err = await read_bounded_json(request, _MAX_SUMMARY_BODY_BYTES)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    if not isinstance(body.get("text"), str):
+        return web.json_response(
+            {"error": "text required", "code": "voice_invalid_request"}, status=400
+        )
+    text = body["text"].strip()
+    request_id = body.get("request_id", "")
+    if not text or not isinstance(request_id, str) or len(request_id) > _MAX_REQUEST_ID_CHARS:
+        return web.json_response(
+            {"error": "invalid summary request", "code": "voice_invalid_request"}, status=400
+        )
+    # No length refusal of its own beyond the body cap above: the summarizer
+    # clips its model input (``SUMMARY_MAX_INPUT_CHARS``), because a long turn is
+    # the one that most needs a summary, and a refusal here would make the
+    # client speak all of it instead.
+    passthrough = {"ok": True, "text": text, "summarized": False, "request_id": request_id}
+    # The mode is read once per request: a settings change while the summary is
+    # in flight must not turn this answer into the other mode's half way through.
+    if _vc.speak_mode != SPEAK_MODE_SUMMARY:
+        return web.json_response(passthrough)
+    state = request.app.get("state")
+    sessions = getattr(state, "sessions", None)
+    if sessions is None:
+        return web.json_response(
+            {"error": "summary unavailable", "code": "voice_summary_unavailable"}, status=503
+        )
+    # The length band compares against what the full mode would speak, not the
+    # markdown: a reply that is mostly a table is short once stripped.
+    summary = await summarize_for_speech(sessions, text, spoken=strip_markdown(text))
+    if summary is None:
+        return web.json_response(passthrough)
+    return web.json_response(
+        {"ok": True, "text": summary, "summarized": True, "request_id": request_id}
+    )
 
 
 async def _synthesize_request(
