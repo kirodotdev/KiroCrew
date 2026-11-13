@@ -993,6 +993,28 @@ def register_agent_parser(sub: _Commands) -> None:
         "file", nargs="?", help="Bare file name in the agents directory, e.g. PkgA-helper.json"
     )
     agent_pin.add_argument("--clear", action="store_true", help="Remove the pin for this name")
+    agent_validate = agent_sub.add_parser(
+        "validate",
+        help=(
+            "Check agent specs offline (unknown fields, wrong value shapes, malformed "
+            "tools entries, @server refs nothing defines); exits 1 on a problem"
+        ),
+    )
+    agent_validate.add_argument(
+        "path",
+        nargs="?",
+        help="Spec file, or a directory of specs (default: the user-level agents directory)",
+    )
+    agent_validate.add_argument(
+        "--allow-unknown-fields",
+        action="store_true",
+        help="Do not report top-level fields this release does not list",
+    )
+    agent_validate.add_argument(
+        "--print-schema",
+        action="store_true",
+        help="Print the JSON Schema of an agent spec and exit",
+    )
     agent_reset_model = agent_sub.add_parser(
         "reset-model",
         help="Clear an agent spec's pinned model so it tracks the shipped default again",

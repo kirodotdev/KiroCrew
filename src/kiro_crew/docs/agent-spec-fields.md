@@ -9,6 +9,18 @@ this page has never seen. To check a field missing here, grep the spelling under
 `src/kiro_crew/`; a field kiro-cli accepts but Kiro Crew ignores has no entry
 below because there is nothing Crew-side to describe.
 
+To check a spec before a session reads it, run `kirocrew agent validate [path]`.
+It needs no gateway or kiro-cli and prints one line per problem
+(`<file>: <field>: <message>`), exiting 1 when there is any: an unlisted top-level
+field, a field of the wrong shape, a malformed `tools` or `allowedTools` entry, and
+an `@server` ref that no `mcpServers` entry, Crew-owned server or opted-in
+`mcp.json` server defines. `path` is a spec file or a directory of specs; with no
+path it checks the user-level agents directory. `--allow-unknown-fields` skips the
+unlisted-field check for a kiro-cli newer than this release's table, and
+`--print-schema` prints the JSON Schema built from that same table
+(`src/kiro_crew/agent_spec_schema.py`, `FIELDS`), which a spec can name in its
+`$schema` field.
+
 **How to read every statement here.** Each one is what the cited symbol does on
 `main` today, not a guarantee across versions, backends or spec types. Where a
 sentence says "never" or "only", a single named reader backs it and that reader is
