@@ -10,7 +10,8 @@ import {
 import type { CompletionMode } from '../utils/terminalCompletion'
 import { sendRawToTerminalSession } from '../utils/terminalRegistry'
 import { isMac } from '../utils/platform'
-import { terminalChord } from '../utils/terminalFullscreen'
+import { isChordLetter, terminalChord } from '../utils/terminalFullscreen'
+import { getTerminalFont } from '../hooks/useTerminalFont'
 
 import { i18nT } from '../i18n/t'
 /** Debounce between the last keystroke and the completion request. Short enough
@@ -542,6 +543,18 @@ export default function TerminalCompletion({ term, sessionId, active, onOpenSear
         if (!term.hasSelection()) return true
         document.execCommand('copy')
         return claim(e)
+      }
+      // The opt-in Ctrl+C / Ctrl+V setting (never offered on macOS). Ctrl+C
+      // copies and clears a selection, so the next Ctrl+C interrupts. Ctrl+V
+      // is refused WITHOUT cancelling: xterm sends no ^V and the browser's own
+      // paste reaches xterm's paste listener.
+      if (e.ctrlKey && !e.shiftKey && !e.metaKey && !e.altKey && getTerminalFont().ctrlCopyPaste) {
+        if (isChordLetter(e.key, e.code, 'c') && term.hasSelection()) {
+          document.execCommand('copy')
+          term.clearSelection()
+          return claim(e)
+        }
+        if (isChordLetter(e.key, e.code, 'v')) return false
       }
       // Scrollback find + fullscreen chords (#10176, #9906), per platform
       // (terminalChord). The shell owns bare Ctrl+F on every platform

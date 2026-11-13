@@ -9386,6 +9386,8 @@
         "terminal_cursor_style_underline": "Underline",
         "terminal_copy_on_select": "Copy on select",
         "terminal_copy_on_select_desc": "Copy text to the clipboard as soon as you select it in the terminal with the mouse. The selection toolbar still opens.",
+        "terminal_ctrl_copy_paste": "Ctrl+C and Ctrl+V copy and paste",
+        "terminal_ctrl_copy_paste_desc": "Ctrl+C copies the selected text; with nothing selected, it still stops the running command. Ctrl+V pastes instead of reaching the shell.",
         "terminal_shell": "Default shell",
         "terminal_shell_hint": "The shell the built-in terminal launches.",
         "terminal_shell_desc": "An absolute path or a command on PATH. Leave empty to use the system default ($SHELL).",

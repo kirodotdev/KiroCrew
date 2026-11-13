@@ -2570,6 +2570,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "display.ctrl-c-and-ctrl-v-copy-and-paste",
+    "label": "Ctrl+C and Ctrl+V copy and paste",
+    "labelKey": "pages.settings.displayPanel.terminal_ctrl_copy_paste",
+    "hint": "Ctrl+C copies the selected text; with nothing selected, it still stops the running command. Ctrl+V pastes instead of reaching the shell.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "terminal"
+    }
+  },
+  {
     "id": "display.cursor-style",
     "label": "Cursor style",
     "labelKey": "pages.settings.displayPanel.terminal_cursor_style",

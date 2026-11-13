@@ -19960,6 +19960,8 @@
         "terminal_cursor_style_underline": "Sottolineatura",
         "terminal_copy_on_select": "Copia alla selezione",
         "terminal_copy_on_select_desc": "Copia il testo negli appunti non appena lo selezioni nel Terminale con il mouse. La barra di selezione si apre comunque.",
+        "terminal_ctrl_copy_paste": "Copia e incolla con Ctrl+C e Ctrl+V",
+        "terminal_ctrl_copy_paste_desc": "Ctrl+C copia il testo selezionato; senza selezione interrompe comunque il comando in esecuzione. Ctrl+V incolla invece di essere inviato alla tua shell.",
         "terminal_shell": "Shell predefinita",
         "terminal_shell_hint": "Shell avviata dal terminale integrato.",
         "terminal_shell_desc": "Un percorso assoluto o un comando nel PATH. Lascia vuoto per usare il valore predefinito di sistema ($SHELL).",

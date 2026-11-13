@@ -19460,6 +19460,8 @@
         "terminal_cursor_style_underline": "আন্ডারলাইন",
         "terminal_copy_on_select": "নির্বাচন করলেই কপি",
         "terminal_copy_on_select_desc": "টার্মিনালে মাউস দিয়ে টেক্সট নির্বাচন করার সঙ্গে সঙ্গে সেটি ক্লিপবোর্ডে কপি হয়। নির্বাচনের টুলবার তবুও খোলে।",
+        "terminal_ctrl_copy_paste": "Ctrl+C ও Ctrl+V দিয়ে কপি ও পেস্ট",
+        "terminal_ctrl_copy_paste_desc": "Ctrl+C নির্বাচিত টেক্সট কপি করে; কিছু নির্বাচিত না থাকলে এটি আগের মতোই চলমান কমান্ড থামায়। Ctrl+V শেলে পৌঁছানোর বদলে পেস্ট করে।",
         "terminal_shell": "ডিফল্ট শেল",
         "terminal_shell_hint": "বিল্ট-ইন টার্মিনাল যে শেল চালু করে।",
         "terminal_shell_desc": "একটি সম্পূর্ণ পাথ বা PATH-এ থাকা কমান্ড। খালি থাকলে সিস্টেম ডিফল্ট ($SHELL) ব্যবহার হয়।",

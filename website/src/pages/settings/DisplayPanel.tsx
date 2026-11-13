@@ -30,10 +30,12 @@ import {
   setTerminalFontSize,
   setTerminalCursorStyle,
   setTerminalCopyOnSelect,
+  setTerminalCtrlCopyPaste,
   DEFAULT_TERMINAL_FONT_SIZE,
   TERMINAL_CURSOR_STYLES,
 } from '../../hooks/useTerminalFont'
 import { FONT_FAMILY_OPTIONS, OPENDYSLEXIC_MONO_FAMILY_NAME } from '../../utils/fontFamilyOptions'
+import { isMac } from '../../utils/platform'
 import { useFontOptions } from '../../hooks/useFontOptions'
 import { isFontInstalled, monospaceFontStack, proportionalFontStack } from '../../utils/fontDetect'
 
@@ -994,6 +996,16 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
             checked={termFont.copyOnSelect}
             onChange={setTerminalCopyOnSelect}
           />
+          {/* Not on macOS: Cmd+C and Cmd+V already copy and paste there, and
+              Ctrl+C stays the shell's interrupt. */}
+          {!isMac && (
+            <SettingsToggle
+              label={i18nT('pages.settings.displayPanel.terminal_ctrl_copy_paste')}
+              hint={i18nT('pages.settings.displayPanel.terminal_ctrl_copy_paste_desc')}
+              checked={termFont.ctrlCopyPaste}
+              onChange={setTerminalCtrlCopyPaste}
+            />
+          )}
           {/* Free text with commit-on-blur, mirroring the font field above: the
               gateway host's installed shells cannot be enumerated from the
               browser (reading /etc/shells is host-side and absent on some

@@ -19460,6 +19460,8 @@
         "terminal_cursor_style_underline": "Unterstrich",
         "terminal_copy_on_select": "Beim Markieren kopieren",
         "terminal_copy_on_select_desc": "Kopiert Text in die Zwischenablage, sobald du ihn im Terminal mit der Maus markierst. Die Auswahlleiste öffnet sich weiterhin.",
+        "terminal_ctrl_copy_paste": "Mit Strg+C und Strg+V kopieren und einfügen",
+        "terminal_ctrl_copy_paste_desc": "Strg+C kopiert den markierten Text; ohne Markierung bricht es weiterhin den laufenden Befehl ab. Strg+V fügt ein, statt an deine Shell zu gehen.",
         "terminal_shell": "Standard-Shell",
         "terminal_shell_hint": "Shell, die das integrierte Terminal startet.",
         "terminal_shell_desc": "Ein absoluter Pfad oder ein Befehl im PATH. Leer lassen, um den Systemstandard ($SHELL) zu verwenden.",
