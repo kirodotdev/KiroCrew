@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isRelayCrewWindow, offlineReason } from '../utils/offlineReason'
+import { isRelayCrewWindow, isRelayRetrying, offlineReason } from '../utils/offlineReason'
 import en from '../i18n/locales/en.manual.json'
 
 describe('offlineReason', () => {
@@ -24,5 +24,13 @@ describe('offlineReason', () => {
     // The test runner is a plain dashboard, as a local or Tailscale one is.
     expect(isRelayCrewWindow()).toBe(false)
     expect(offlineReason(null)).toBe(en.app.gateway_offline_reconnecting)
+  })
+
+  it('treats only a plain drop in a relay Crew window as retrying', () => {
+    expect(isRelayRetrying(null, true)).toBe(true)
+    expect(isRelayRetrying('refused', true)).toBe(false)
+    expect(isRelayRetrying('session_ended', true)).toBe(false)
+    expect(isRelayRetrying(null, false)).toBe(false)
+    expect(isRelayRetrying(null)).toBe(false)
   })
 })

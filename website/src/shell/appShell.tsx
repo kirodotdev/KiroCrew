@@ -1,10 +1,10 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useLayoutEffect, useState, useCallback, useRef } from 'react'
 import { isLookPreviewFrame } from '../utils/lookPreview'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, useAppStore } from '../store'
 import { fetchSlots, sseStatus, setEnabledAppIds } from '../store/dashboardSlice'
-import { offlineReason } from '../utils/offlineReason'
+import { isRelayCrewWindow, isRelayRetrying, offlineReason } from '../utils/offlineReason'
 import { prefillCrewAddForm, setActiveId } from '../store/instancesSlice'
 import { selectAllSurfacesAttention, surfaceLabel, surfaceMachineValue } from '../surfaces/registry'
 import { switchSlot, selectActiveSlotProject, stageToMainComposer, setPendingInput } from '../store/chatSlice'
@@ -217,6 +217,32 @@ export function useAppShell() {
       : gatewayConnecting
         ? i18nT('app.gateway_connecting')
         : offlineReason(offlineCause)
+  // A relay Crew window still retrying a dropped connection shows the calm
+  // reconnecting view (RelayReconnectingView) instead of the outage styling;
+  // a refusal, an ended session and an expired sign-in keep theirs. That view
+  // is then the one live region speaking the state, so the capsule's region
+  // and the focus-mode stand-in say nothing until the state changes again.
+  const relayCrewWindow = useRef(isRelayCrewWindow()).current
+  const relayRetrying = relayCrewWindow && !connected && !gatewayConnecting && !authRequired
+    && isRelayRetrying(offlineCause, relayCrewWindow)
+  const gatewayStatusAnnounce = relayRetrying ? '' : gatewayStatusMsg
+  // The retry makes <main> and the docked terminal inert, which drops their
+  // focused element (usually the composer) to <body>. Remember it as the retry
+  // starts and give it focus back when the connection returns, unless the user
+  // has focused something else meanwhile. A layout effect, like focus mode's
+  // hand-off, so the read lands before the browser's focus fixup for inert.
+  const relayFocusReturn = useRef<HTMLElement | null>(null)
+  useLayoutEffect(() => {
+    if (relayRetrying) {
+      const active = document.activeElement
+      relayFocusReturn.current = active instanceof HTMLElement && active !== document.body ? active : null
+      return
+    }
+    const el = relayFocusReturn.current
+    relayFocusReturn.current = null
+    const focusLost = !document.activeElement || document.activeElement === document.body
+    if (el && el.isConnected && focusLost) el.focus({ preventScroll: true })
+  }, [relayRetrying])
   // The chord that turns focus mode off, as the user has it bound RIGHT NOW. In
   // focus mode the top bar (and its toggle) is inert, so this chord is the only
   // keyboard route back; it is spoken when focus mode turns on and declared on
@@ -1088,7 +1114,8 @@ export function useAppShell() {
 
   return {
     isEmbed, isPopout, initialPopoutPath, appPopoutRoute, dispatch, connected, gatewayConnecting, updateAvailable, settingsDotLabel, authRequired, terminalEnabled,
-    gatewayStatusMsg, focusModeChord, focusModeExitMsg, focusModeExitMsgVisible, focusChromeInert,
+    gatewayStatusMsg, gatewayStatusAnnounce, relayCrewWindow, relayRetrying,
+    focusModeChord, focusModeExitMsg, focusModeExitMsgVisible, focusChromeInert,
     terminalPoppedOut, bottomTerminalOpen, mobileConnect, mobileConnectOpen, setMobileConnectOpen,
     hasRenderableMobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
     colorTheme, resolvedMode, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked,
