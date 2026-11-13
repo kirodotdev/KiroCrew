@@ -212,8 +212,14 @@ class SlackClientOps(ABC):
         file: str,
         filename: str,
         title: str,
+        initial_comment: str | None = None,
     ) -> None:
-        """Upload a file to a Slack thread."""
+        """Upload a file to a Slack thread.
+
+        *initial_comment* is an optional message posted with the file as its
+        Slack ``initial_comment``; ``None`` (the default) carries no comment, so
+        callers that have none (voice replies, the outbox copy) are unchanged.
+        """
 
     @abstractmethod
     async def open_dm(self, user_id: str) -> str:
@@ -703,16 +709,23 @@ class RealSlackClient(SlackClientOps):
         file: str,
         filename: str,
         title: str,
+        initial_comment: str | None = None,
     ) -> None:
         require_channel(channel)
         if turn_muted(channel, thread_ts):
             return
+        # initial_comment defaults to None, which files_upload_v2 treats as "no
+        # comment" -- the same call the comment-less callers (voice replies)
+        # rely on. Explicit kwargs, not a dict spread, because the SDK's kwargs
+        # are heterogeneously typed (list/bool/str), which mypy cannot check
+        # through a single dict[str, str].
         await self._web.files_upload_v2(
             channel=channel,
             thread_ts=thread_ts,
             file=file,
             filename=filename,
             title=title,
+            initial_comment=initial_comment,
         )
 
     async def open_dm(self, user_id: str) -> str:

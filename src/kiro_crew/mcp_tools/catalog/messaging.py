@@ -494,7 +494,23 @@ def schemas() -> list[dict[str, Any]]:
                     "path": {"type": "string", "description": "Absolute path to the file to send"},
                     "description": {
                         "type": "string",
-                        "description": "Brief description of what the file is",
+                        "description": (
+                            "Preamble for the file. On the Slack leg it is the "
+                            "file's initial_comment — a signature or a request to "
+                            "review — so the report and its note land as ONE chat "
+                            "item. On the non-Slack leg it is the caption the "
+                            "channel shows with the file. Prefer plain text: Slack "
+                            "shows Markdown syntax literally here. It is redacted "
+                            "and its @-mentions are defanged like any outbound "
+                            "text. Keep it within the target channel's limit "
+                            "(Slack 3900 characters, Telegram 1024 UTF-16 units "
+                            "(an emoji counts 2), Discord 2000 characters). A "
+                            "longer preamble is never sliced: the file is "
+                            "delivered once without it, and the result ends "
+                            "'(description not sent: ...)' naming the limit. Send "
+                            "the note with send_message; calling file_send for the "
+                            "same file adds a second dashboard copy."
+                        ),
                     },
                     "channel": {
                         "type": "string",
