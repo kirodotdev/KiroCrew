@@ -92,6 +92,36 @@ searches, still go together in one block.
 """
 
 
+#: What a refused write to ``config.json`` or a refused read of ``work-ledger``
+#: means. The OS sandbox refuses both (``sandbox_leaves``: READONLY and HIDDEN), so
+#: the script that tried gets a bare errno and nothing in Kiro Crew sees it; this
+#: is the only place the agent learns why and which route works. The root
+#: conductor carries ``_SEALED_CREW_PATHS_RULE`` and the worker
+#: ``_WORKER_SEALED_CREW_PATHS_RULE``; ``config/prompt.md`` states the same for
+#: the default agents with the routes those agents can reach. Each copy names
+#: only tools its own agents mount and are granted
+#: (``test_sealed_crew_paths_prompt.py``): the root conductor has no
+#: ``kirocrew-guide``, so no ``propose_change``, and a worker is granted only
+#: ``work_brief`` and ``work_report``, so no ``work_ledger_read``.
+_SEALED_CREW_PATHS_LEAD = """**Inside the sandbox, `config.json` and `config.local.json` in the data home
+are read-only and `work-ledger` is hidden.** An `Operation not permitted`,
+`Read-only file system` or `Device or resource busy` on those paths is that
+protection, not a broken install. Say so, and name the supported route: the
+Settings page for a setting; """
+
+_SEALED_CREW_PATHS_RULE = _SEALED_CREW_PATHS_LEAD + """`work_ledger_read` for the ledger, or
+`work_brief` and `work_report` for your own item.
+
+"""
+
+_WORKER_SEALED_CREW_PATHS_RULE = (
+    _SEALED_CREW_PATHS_LEAD + """`work_brief` and `work_report` for your own item; the
+ledger itself is your conductor's to read.
+
+"""
+)
+
+
 #: The rules every conductor that tracks dispatched work in a work ledger carries:
 #: the root conductor (``_CONDUCTOR_SYSTEM_PROMPT``, assembled below) and a
 #: crewmate's conductor (``crewmate_prompts.json`` ``conductor.patrol``, whose
@@ -527,6 +557,7 @@ conductor gets `not_bound` from `work_brief` and knows it has no parent.
 
 """,
     ),
+    ("sealed_crew_paths", _SEALED_CREW_PATHS_RULE),
     (
         "tool_inventory",
         """Your tools:
@@ -821,7 +852,7 @@ You have every tool the default agent has: write files, run builds, drive git,
 open pull requests. Nothing is withheld, because anything withheld would be
 something some work item needs.
 
-""" + _DEPENDENT_CALLS_RULE
+""" + _WORKER_SEALED_CREW_PATHS_RULE + _DEPENDENT_CALLS_RULE
 
 
 _SECURITY_CONDUCTOR_SYSTEM_PROMPT = """# Kiro Crew Security Conductor

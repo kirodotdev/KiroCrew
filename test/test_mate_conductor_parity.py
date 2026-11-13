@@ -74,6 +74,7 @@ ALLOWLIST: dict[str, str] = {
     "prompt:own_session_ledger": "names session_ledger goal/phase/next, the root conductor's round state; a crewmate keeps its state in its briefing and goal",
     "prompt:talking_to_the_person": "the Crew Mode introduction, board widget and task-dashboard artifact; a crewmate talks and reports through its own member pieces",
     "prompt:dispatched_by_a_conductor": "a crewmate's conductor is never dispatched onto a parent's ledger item",
+    "prompt:sealed_crew_paths": "a crewmate's conductor runs on the default contract, config/prompt.md, which states the same sealed-path rule",
     "prompt:tool_inventory": "lists the root conductor's narrowed tool set; a crewmate has the default tools and its member pieces name the crewmate-only ones",
     "prompt:goal_changes": "round-boundary goal changes; a crewmate's goal is set through set_goal (member pieces)",
 }
