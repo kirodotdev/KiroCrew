@@ -10,6 +10,7 @@ import { isTouchDevice } from '../utils/isTouchDevice'
 import { SubmitBar, type SubmitVerdict } from './ArtifactSubmitBar'
 import ErrorNotice from './ErrorNotice'
 import { ArtifactBodyNative, ArtifactBodyIframe, ArtifactBodyImage } from './ArtifactBody'
+import CanvasPanelView from './canvas/CanvasPanelView'
 import { useFileArtifactComments } from './FileArtifactComments'
 import { proseOverlayComments } from './codeComments'
 import { useConfirm } from './ConfirmDialog'
@@ -345,6 +346,8 @@ export default memo(forwardRef<ArtifactPanelHandle, Props>(function ArtifactPane
           slug={slug}
           heightStyle={BODY_HEIGHT_STYLE}
         />
+      ) : effectiveKind === 'canvas' && artifact ? (
+        <CanvasPanelView content={effectiveContent ?? ''} heightStyle={BODY_HEIGHT_STYLE} />
       ) : usesIframe && artifact ? (
         <ArtifactBodyIframe
           artifact={artifact}

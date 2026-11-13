@@ -35,6 +35,7 @@ export const KIND_BADGE: Record<Artifact['kind'], 'ok' | 'err' | 'warn' | 'aim'>
   svg: 'warn',
   json: 'ok',
   text: 'ok',
+  canvas: 'aim',
   webapp: 'aim',
   image: 'warn',
   // A crewmate's dashboard package. `aim` with `widget` and `webapp`, the other

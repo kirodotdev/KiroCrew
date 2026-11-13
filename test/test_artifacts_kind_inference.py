@@ -47,6 +47,7 @@ class TestInferKind:
             ("icon.svg", "svg"),
             ("data.json", "json"),
             ("notes.txt", "text"),
+            ("Board.kirocanvas", "canvas"),
             ("Makefile", "text"),  # no extension → text
             ("archive.tar.gz", "text"),  # unknown extension → text
             ("UPPER.MD", "markdown"),  # case-insensitive
@@ -108,6 +109,22 @@ class TestCreateKindInference:
     def test_create_persists_inferred_kind(self, store: ArtifactStore) -> None:
         store.create(name="P", content="plain prose, no tags here", slug="p")
         assert store.get("p").kind == "markdown"
+
+    def test_a_canvas_keeps_its_kind_through_a_save(self, store: ArtifactStore) -> None:
+        # A canvas is JSON, but it is created with its kind named, so the blank
+        # re-typing that turns a JSON-looking first save into ``json`` never
+        # applies to it.
+        body = json.dumps({"kind": "kirocrew-canvas", "schema": 1, "shapes": [], "connectors": []})
+        store.create(name="Board", content=body, kind="canvas", slug="b")
+        assert store.update("b", content=body.replace("[]", "[ ]", 1)).kind == "canvas"
+        assert store.get("b").kind == "canvas"
+
+    def test_a_person_cannot_pick_canvas_in_the_type_control(self) -> None:
+        # Flipping prose to ``canvas`` would hand the editor a document it cannot read.
+        from kiro_crew.artifacts import ALLOWED_KINDS, USER_SELECTABLE_KINDS
+
+        assert "canvas" in ALLOWED_KINDS
+        assert "canvas" not in USER_SELECTABLE_KINDS
 
 
 class TestDetectEditorKind:
@@ -415,3 +432,42 @@ class TestSettleBlank:
     ) -> None:
         with pytest.raises(ArtifactNotFoundError):
             store.settle_blank("nope", untitled_name=self.UNTITLED)
+
+
+class TestContentRedactedFlag:
+    """`_serialize` says when the content it shows is not the stored content.
+
+    A canvas autosaves its whole document, so an editor that saved the masked
+    text would write the placeholders over what they hide. The flag is what
+    lets it open read-only instead. The redactor is stubbed so the test needs
+    no credential-shaped literal.
+    """
+
+    def _serialize(self, monkeypatch, content: str) -> dict:
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.handlers.artifacts_parts import record_serialization as rs
+
+        monkeypatch.setattr(rs, "redact_exfiltration_urls", lambda text: (text, []))
+        monkeypatch.setattr(
+            rs,
+            "redact_credentials",
+            lambda text: (text.replace("SECRET", "[REDACTED: credential]"), []),
+        )
+        art = SimpleNamespace(
+            to_dict=lambda include_content=False: {
+                "slug": "board",
+                "name": "Board",
+                "content": content,
+            }
+        )
+        return rs._serialize(art, include_content=True)
+
+    def test_masked_content_is_flagged(self, monkeypatch) -> None:
+        out = self._serialize(monkeypatch, '{"note": "SECRET"}')
+        assert out["content"] == '{"note": "[REDACTED: credential]"}'
+        assert out["content_redacted"] is True
+
+    def test_untouched_content_carries_no_flag(self, monkeypatch) -> None:
+        out = self._serialize(monkeypatch, '{"note": "plain"}')
+        assert "content_redacted" not in out
