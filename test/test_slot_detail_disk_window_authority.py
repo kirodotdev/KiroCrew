@@ -1,10 +1,12 @@
-"""``GET /api/chat/slots/{slot}``: the in-memory window, not disk, owns its region.
+"""``GET /api/chat/slots/{slot}``: what each read serves when disk and the window differ.
 
-Builds a disk-vs-window disagreement and asserts the bounded branch returns the
-WINDOW's answer. Both disk readers (``read_messages_chained_full`` for the bounded
-branch, ``read_messages_chained`` for the unbounded one) are stubbed with ONE
-corpus, so a pass cannot come from either silently reading an empty history; the
-indexed-page test reads a real saved transcript instead.
+Builds a disk-vs-window disagreement. A row the window holds under an id disk holds
+once is served as the window's copy; a disk row no window row holds (another
+writer's append) is served by the bounded branch where disk put it. Both disk
+readers (``read_messages_chained_full`` for the bounded branch,
+``read_messages_chained`` for the unbounded one) are stubbed with ONE corpus, so a
+pass cannot come from either silently reading an empty history; the indexed-page
+test reads a real saved transcript instead.
 """
 
 from __future__ import annotations
@@ -20,14 +22,6 @@ from kiro_crew.dashboard.state import _ChatSlot
 SETTLED = 12
 OLDER = 4  # rows above the live window -> _disk_older_count
 LIMIT = 4
-
-#: Known-red: disk rows the window does not hold read the same whether they are a
-#: deleted tail or another writer's append, which the bounded page keeps. ``strict``
-#: so a fix fails here and the marker gets removed instead of rotting.
-DISAGREEMENT = pytest.mark.xfail(
-    strict=True,
-    reason="#7526: a deleted tail and another writer's append look the same on disk",
-)
 
 
 @pytest.fixture()
@@ -91,8 +85,8 @@ def _variant_switch(state: Any) -> None:
     _slot(state, window, on_disk)
 
 
-def _regenerate_truncation(state: Any) -> None:
-    """A window two rows shorter than disk: disk still holds a tail the window dropped."""
+def _another_writers_append(state: Any) -> None:
+    """Disk holds two rows after the window's last row: another writer appended them."""
     on_disk = [_row(i, f"m{i}") for i in range(SETTLED)]
     window = [dict(r) for r in on_disk[OLDER : SETTLED - 2]]
     _slot(state, window, on_disk)
@@ -149,24 +143,27 @@ class TestARepeatedIdKeepsTheDiskCopies:
         assert [m["content"] for m in data["messages"]][OLDER:] == ["foreign", "own on disk"]
 
 
-class TestLengthDisagreement:
-    @DISAGREEMENT
+class TestAnotherWritersAppend:
     @pytest.mark.asyncio
-    async def test_bounded_read_does_not_resurrect_the_deleted_tail(self, state: Any) -> None:
-        _regenerate_truncation(state)
+    async def test_bounded_read_serves_the_rows_disk_holds_after_the_window(
+        self, state: Any
+    ) -> None:
+        _another_writers_append(state)
         data = await _get(state, f"?limit={SETTLED}")
-        contents = [m["content"] for m in data["messages"]]
-        assert "m10" not in contents and "m11" not in contents
+        assert [m["content"] for m in data["messages"]] == [f"m{i}" for i in range(SETTLED)]
 
-    @DISAGREEMENT
     @pytest.mark.asyncio
-    async def test_both_branches_agree_on_length(self, state: Any) -> None:
-        _regenerate_truncation(state)
+    async def test_the_no_limit_read_serves_the_window_where_the_bounded_read_adds_them(
+        self, state: Any
+    ) -> None:
+        """Pins today's difference between the two reads, so a change to either is deliberate."""
+        _another_writers_append(state)
         bounded = await _get(state, f"?limit={SETTLED}")
         unbounded = await _get(state, "")
-        assert [m["content"] for m in bounded["messages"]] == [
-            m["content"] for m in unbounded["messages"]
+        assert [m["content"] for m in unbounded["messages"]] == [
+            f"m{i}" for i in range(SETTLED - 2)
         ]
+        assert [m["content"] for m in bounded["messages"]] == [f"m{i}" for i in range(SETTLED)]
 
 
 class TestTheFrozenPrefixSurvives:
