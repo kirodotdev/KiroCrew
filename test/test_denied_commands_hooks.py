@@ -279,20 +279,20 @@ class TestHooksConfigDeniedCommands:
 class TestEffectiveDenied:
     def test_builtin_denied_by_default(self):
         mgr = HookManager(HooksConfig())
-        result = mgr.on_tool_call("rm -rf /tmp/foo", command="rm -rf /tmp/foo", is_shell=True)
+        result = mgr.on_tool_call("rm -rf /srv/foo", command="rm -rf /srv/foo", is_shell=True)
         assert result.action == TOOL_DENY
 
     def test_disabled_builtin_falls_through(self):
         cfg = HooksConfig(denied_commands_disabled_ids=["local-destructive-rm-rf-root"])
         mgr = HookManager(cfg)
-        result = mgr.on_tool_call("rm -rf /tmp/foo", command="rm -rf /tmp/foo", is_shell=True)
+        result = mgr.on_tool_call("rm -rf /srv/foo", command="rm -rf /srv/foo", is_shell=True)
         # Not denied — the built-in rule was individually opted out.
         assert result.action != TOOL_DENY
 
     def test_disable_all_falls_through(self):
         cfg = HooksConfig(denied_commands_disable_all=True)
         mgr = HookManager(cfg)
-        result = mgr.on_tool_call("rm -rf /tmp/foo", command="rm -rf /tmp/foo", is_shell=True)
+        result = mgr.on_tool_call("rm -rf /srv/foo", command="rm -rf /srv/foo", is_shell=True)
         assert result.action != TOOL_DENY
 
     def test_user_added_pattern_denies(self):
@@ -525,7 +525,7 @@ class TestGovernancePins:
         mgr = HookManager(cfg)
         # Governance pinned the rule — user opt-out (and disable-all) cannot
         # weaken it (tightest-wins).
-        result = mgr.on_tool_call("rm -rf /tmp/foo", command="rm -rf /tmp/foo", is_shell=True)
+        result = mgr.on_tool_call("rm -rf /srv/foo", command="rm -rf /srv/foo", is_shell=True)
         assert result.action == TOOL_DENY
 
     def test_governance_pinned_ids_helper_failsoft(self):
