@@ -15,6 +15,8 @@ export const {
   useChatSession, ChatPanel, ChatEmbed, ChatMessageList,
   // The dashboard's pull-request panel, behind the app's declared source paths (level 2).
   PullRequestPanel,
+  // Issue lists behind the app's declared `/api/source/issues` (level 6).
+  useIssues, IssueList, IssueCard,
   defaultMessageRenderers, mergeRenderers, resolveRenderer, ToolCallPill, GROUPED_ROLES,
   // WS event scope prediction, so a subscription that will never be delivered warns at
   // development time instead of silently receiving nothing.

@@ -733,6 +733,58 @@ report one (Jira Cloud and Linear never do); GitHub search and Linear stop at a
 search API returns no count, and a Linear `commentCount` is `0` because its list API
 reports none.
 
+## Issue List
+
+`useIssues`, `IssueList` and `IssueCard` show the issues [Issue Search](#issue-search)
+returns, through one query (`IssueSearchRequest`) and one result shape
+(`IssueSummary`). The views draw all four providers the route serves (GitHub, GitLab,
+Jira and Linear) from that shape. They need
+`APP_SDK_LEVEL >= 6` and `/api/source/issues` in your manifest's `permissions.api`.
+Without the declaration, or outside an app, the components render a refusal naming
+the path and send nothing; the hook reports an `AppApiPermissionError`. Declaring
+`/api/source/issue` (one issue) does not cover the list. A built-in page keeps the
+dashboard's client. [issues-guide.md](issues-guide.md) walks through a first list.
+
+```tsx
+import * as sdk from '@kirocrew/app-sdk'
+
+sdk.APP_SDK_LEVEL >= 6 && sdk.IssueList
+  ? <sdk.IssueList query={{ provider: 'github', scope: 'acme/widgets', state: 'open' }} view="expanded" showFilters />
+  : <a href="https://github.com/acme/widgets/issues">Open the issues on GitHub</a>
+```
+
+The query is the request body [Issue Search](#issue-search) describes.
+
+`useIssues(query, { enabled? })` pages through the response's `nextCursor`. The query
+minus its cursor is the cache key, so a changed query starts again from the first
+page.
+
+| Returns | Type | Purpose |
+|---|---|---|
+| `issues` | `IssueSummary[]` | Every page loaded so far |
+| `isLoading` | `boolean` | The first page is loading |
+| `error` | `Error \| null` | The last failure, or the refusal |
+| `hasNextPage`, `fetchNextPage` | `boolean`, `() => void` | Paging |
+| `isFetchingNextPage` | `boolean` | A next page is loading |
+| `refetch` | `() => void` | Read every loaded page again |
+
+| `IssueList` prop | Type | Required | Purpose |
+|---|---|---|---|
+| `query` | `IssueSearchRequest` | yes | What to list; a new query replaces the filter bar's edits |
+| `view` | `'condensed' \| 'expanded'` | no | One row per issue (default) or one card |
+| `showFilters` | `boolean` | no | State, assignee (`me` included), labels and search text; hidden while `query.raw` is set, since a raw query replaces those filters |
+| `onSelect` | `(issue: IssueSummary) => void` | no | Makes each row a button; without it a row links out |
+| `emptyText` | `string` | no | Replaces the empty-state text |
+
+`IssueCard` takes `issue`, `view` and `onSelect` and renders one issue on its own.
+The condensed row shows the provider mark, the key (`#4821`, `CREW-142`), the title,
+up to two labels (hidden when narrow), the provider's `statusLabel` and the updated
+time. The expanded card adds the project, a three-line excerpt, priority, every
+label, the first assignee, the author, the comment count (left out for Jira and Linear, whose searches return none) and linked-change count, and an
+**Open in &lt;provider&gt;** link. Every provider string is rendered as text, links
+open only `http(s)` urls in a new tab with `rel="noopener noreferrer"`, and an avatar
+loads only from an `http(s)` url.
+
 ## Chat Marker Protocol
 
 An agent encodes UI affordances inline in the prose it streams. A surface that renders a transcript
@@ -1666,8 +1718,9 @@ adds the manifest's `credentialMasks` (see
 [manifest-reference.md](manifest-reference.md#credential-masks)), and level 4 adds the
 `agentTools` keys `namespace`, `timeoutSeconds` and `result` and an app's own bell
 notes (`/api/notifications/own` and the dashboard's `useAppNotifications()`, see
-[Backend Environment Variables](#backend-environment-variables)), and level 5 adds
-[`ctx.app_token()` and `ctx.gateway_origin()`](#app-token-ctxapp_token); each level
+[Backend Environment Variables](#backend-environment-variables)), level 5 adds
+[`ctx.app_token()` and `ctx.gateway_origin()`](#app-token-ctxapp_token), and level 6
+adds the dashboard's [issue list](#issue-list) (`useIssues`, `IssueList`, `IssueCard`); each level
 includes every level below it. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
 `ctx.health.mark_degraded(...)` with the consequence and keep serving what you can.
