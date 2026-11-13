@@ -1,16 +1,20 @@
 """The agents Kiro Crew's own services drive: lite, guest, knowledge and research.
 
 ``kirocrew-lite`` is the cheap background helper; ``kirocrew-guest`` is the tool-less
-agent a non-operator channel sender talks to, a trust boundary that mounts nothing;
+agent a non-operator channel sender talks to, a trust boundary that mounts nothing
+and is rewritten before a turn it would refuse (:func:`repair_guest_agent_spec`);
 ``kirocrew-knowledge`` runs the Knowledge Library's extraction; ``kirocrew-research``
 is the Research Lab's per-cycle worker, derived from the default template so it
-inherits the governance ceiling. Each is rewritten on every rebuild, and the
-knowledge spec also before each knowledge worker spawn when the file on disk is not
-its template (:func:`repair_knowledge_agent_spec`).
+inherits the governance ceiling. Each is rewritten on every rebuild. The knowledge
+spec is also rewritten before each knowledge worker spawn when the file on disk is not
+its template (:func:`repair_knowledge_agent_spec`), and the lite spec before a
+background turn its helper would otherwise refuse (:func:`repair_lite_agent_spec`).
 """
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -30,13 +34,11 @@ from kiro_crew.agent_materialization import auto_approve, managed_mcp, skill_res
 from kiro_crew.user_json import strict_json_equal
 
 
-def _install_guest_agent() -> None:
-    """Write the tool-less ``kirocrew-guest`` config a non-operator sender talks to.
+def _guest_agent_config() -> dict[str, Any]:
+    """The ``kirocrew-guest`` spec as its installer and its repair build it, before the tail.
 
-    Separate from ``kirocrew-lite`` on purpose: the lite agent is the background
-    helper (titles, extraction) and may one day need a tool; this one is a trust
-    boundary and never may. Same model as the operator's chat so an admitted
-    sender gets an ordinary answer, never a background worker's minimal default.
+    Same model as the operator's chat so an admitted sender gets an ordinary answer,
+    never a background worker's minimal default.
     """
     from kiro_crew.config.loader import KiroCrewConfig
 
@@ -44,8 +46,7 @@ def _install_guest_agent() -> None:
         model = KiroCrewConfig.load().agent.model or "auto"
     except Exception:
         model = "auto"
-    guest_path = agent_mod.kiro_agents_dir_path() / _GUEST_AGENT_FILENAME
-    guest_config = {
+    return {
         "name": "kirocrew-guest",
         "model": model,
         "tools": [],
@@ -55,9 +56,113 @@ def _install_guest_agent() -> None:
         "includeMcpJson": False,
         "prompt": agent_mod.GUEST_AGENT_PROMPT,
     }
+
+
+def _install_guest_agent() -> None:
+    """Write the tool-less ``kirocrew-guest`` config a non-operator sender talks to.
+
+    Separate from ``kirocrew-lite`` on purpose: the lite agent is the background
+    helper (titles, extraction) and may one day need a tool; this one is a trust
+    boundary and never may.
+    """
+    guest_path = agent_mod.kiro_agents_dir_path() / _GUEST_AGENT_FILENAME
     auto_approve.write_governed_spec(
-        guest_path, guest_config, source="_install_guest_agent", kas_policy="none"
+        guest_path, _guest_agent_config(), source="_install_guest_agent", kas_policy="none"
     )
+
+
+def repair_guest_agent_spec() -> bool:
+    """Rewrite an existing ``kirocrew-guest.json`` from its template unless it already is it.
+
+    A ``deny_all_tools`` channel turn is refused before its spawn when this spec mounts
+    anything, and only a rebuild re-derives the file, so a tool that writes its own MCP
+    server into every spec in the agents directory leaves every non-operator turn
+    refused until then. The channel pipeline calls this when it would refuse
+    (``messaging.dispatch_tools._repair_toolless_spec``), then reads the spec again,
+    and the second read still decides whether the turn runs.
+
+    Compared and rewritten as :func:`repair_knowledge_agent_spec` does, with a WARNING
+    naming the top-level keys that differed and never their values. A missing file is
+    not created: another spec may claim the name, and one more claimant would leave
+    the harness a choice. Returns True when it rewrote the file. Never raises.
+    Blocking.
+    """
+    return _repair_spec_from_template(
+        _GUEST_AGENT_FILENAME,
+        _guest_agent_config,
+        source="repair_guest_agent_spec",
+        operation="guest_spec_repair",
+        label="guest agent spec",
+    )
+
+
+def _repair_spec_from_template(
+    filename: str,
+    build: Callable[[], dict[str, Any]],
+    *,
+    source: str,
+    operation: str,
+    label: str,
+) -> bool:
+    """Rewrite the existing spec *filename* from the template *build* returns, if it differs.
+
+    The one body of :func:`repair_guest_agent_spec` and :func:`repair_lite_agent_spec`;
+    *label* names the spec in its log lines. A missing file is not created. Returns
+    True when it rewrote the file. Never raises. Blocking.
+    """
+    path = agent_mod.kiro_agents_dir_path() / filename
+    try:
+        config = build()
+        auto_approve.govern_spec(config, agent_filename=filename, source=source, kas_policy="none")
+        drift, _on_disk = _spec_drift(path, config, operation=operation)
+        if drift is None or drift == "missing":
+            return False
+        auto_approve.write_governed_spec(path, config, source=source, kas_policy="none")
+    except agent_mod.SharedAgentHomeRefused:
+        agent_mod.logger.debug("%s repair declined: %s", label, path, exc_info=True)
+        return False
+    except Exception:
+        agent_mod.logger.warning(
+            "Could not rewrite the %s %s from its template", label, path, exc_info=True
+        )
+        return False
+    agent_mod.logger.warning(
+        "%s %s was not the spec Kiro Crew writes (%s); rewrote it from the template",
+        label[:1].upper() + label[1:],
+        path,
+        drift,
+    )
+    return True
+
+
+#: How long a spec repair waits for one session's reset. Every turn on the repaired
+#: spec is refused until the repair finishes, so one hung teardown must not hold them all.
+_SPEC_REPAIR_RESET_TIMEOUT_SECS = 30.0
+
+
+async def reset_after_spec_repair(
+    sessions: Any, keys: Iterable[str], failed: dict[str, Any]
+) -> None:
+    """Reset each session in *keys* after its agent spec was rewritten from the template.
+
+    Each reset is bounded (:data:`_SPEC_REPAIR_RESET_TIMEOUT_SECS`). A provider whose
+    reset raises or times out stays in *failed*, keyed by its session, so the clean
+    file does not vouch for it; only a reset that returns forgets it, and a successor
+    recorded meanwhile is kept.
+    """
+    for key in keys:
+        provider = sessions.get_provider(key)
+        if provider is not None:
+            failed[key] = provider
+        try:
+            await asyncio.wait_for(sessions.reset(key), _SPEC_REPAIR_RESET_TIMEOUT_SECS)
+        except Exception:
+            agent_mod.logger.warning(
+                "Could not reset session %s after its agent spec was rewritten", key, exc_info=True
+            )
+        else:
+            if provider is not None and failed.get(key) is provider:
+                del failed[key]
 
 
 def _exclude(config: dict, refs: tuple[str, ...]) -> None:
@@ -239,20 +344,24 @@ def _install_mate_worker_agent() -> None:
     _write_mate_service_spec(_MATE_WORKER_AGENT_FILENAME, config, "_install_mate_worker_agent")
 
 
-def _install_lite_agent_fallback() -> None:
-    """Write a bare kirocrew-lite config (cheap background agent)."""
-    lite_path = agent_mod.kiro_agents_dir_path() / _LITE_AGENT_FILENAME
-    lite_config = {
+def _lite_agent_config() -> dict[str, Any]:
+    """The ``kirocrew-lite`` spec as its installer and its repair build it, before the tail."""
+    return {
         "name": "kirocrew-lite",
         "model": agent_mod._background_agent_model(),
         "tools": [],
         "mcpServers": {},
         "prompt": "",
     }
+
+
+def _install_lite_agent_fallback() -> None:
+    """Write a bare kirocrew-lite config (cheap background agent)."""
+    lite_path = agent_mod.kiro_agents_dir_path() / _LITE_AGENT_FILENAME
     # Mounts nothing, so the tail has no grant to govern; what it adds here is the
     # ``includeMcpJson`` pin, without which kiro-cli merges the global ``mcp.json``.
     auto_approve.write_governed_spec(
-        lite_path, lite_config, source="_install_lite_agent_fallback", kas_policy="none"
+        lite_path, _lite_agent_config(), source="_install_lite_agent_fallback", kas_policy="none"
     )
     # Cheap model for the claude_code (CC) provider. kiro-cli resolves the lite
     # model from `model` via --agent; the CC backend can't, so the provider
@@ -383,7 +492,7 @@ def repair_knowledge_agent_spec(*, tolerate_registered_injection: bool = False) 
     path = agent_mod.kiro_agents_dir_path() / _KNOWLEDGE_AGENT_FILENAME
     try:
         config = _governed_knowledge_template("repair_knowledge_agent_spec")
-        drift, on_disk = _spec_drift(path, config)
+        drift, on_disk = _spec_drift(path, config, operation="knowledge_spec_repair")
         if drift is None:
             return False
         if tolerate_registered_injection:
@@ -413,6 +522,25 @@ def repair_knowledge_agent_spec(*, tolerate_registered_injection: bool = False) 
     return True
 
 
+def repair_lite_agent_spec() -> bool:
+    """Rewrite an existing ``kirocrew-lite.json`` from its template unless it already is it.
+
+    The background helper refuses a ``kirocrew-lite`` session on a spec that mounts
+    anything, so a tool that writes its own MCP server into every spec in the agents
+    directory stops every background turn until a rebuild. The helper calls this when
+    it is about to refuse, then reads the spec again, and that read still decides.
+    Compared and rewritten as :func:`repair_guest_agent_spec` is; a missing file is not
+    created.
+    """
+    return _repair_spec_from_template(
+        _LITE_AGENT_FILENAME,
+        _lite_agent_config,
+        source="repair_lite_agent_spec",
+        operation="lite_spec_repair",
+        label="background agent spec",
+    )
+
+
 def _governed_knowledge_template(source: str) -> dict[str, Any]:
     """The knowledge spec as its writers put it on disk, governed tail included."""
     config = _knowledge_agent_config()
@@ -422,7 +550,9 @@ def _governed_knowledge_template(source: str) -> dict[str, Any]:
     return config
 
 
-def _spec_drift(path: Path, expected: dict[str, Any]) -> tuple[str | None, object]:
+def _spec_drift(
+    path: Path, expected: dict[str, Any], *, operation: str
+) -> tuple[str | None, object]:
     """How the spec at *path* differs from *expected* (``None`` when it does not), and the spec.
 
     Read through the hardened reader, so a link planted at the name is screened
@@ -432,7 +562,7 @@ def _spec_drift(path: Path, expected: dict[str, Any]) -> tuple[str | None, objec
     """
     try:
         on_disk = agent_discovery.read_agent_spec_strict(
-            path, operation="knowledge_spec_repair", source="unknown"
+            path, operation=operation, source="unknown"
         )
     except FileNotFoundError:
         return "missing", None

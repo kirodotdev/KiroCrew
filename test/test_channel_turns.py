@@ -654,8 +654,13 @@ class TestAToolLessGuestTurn:
 
     def test_a_spec_the_pre_spawn_read_refuses_never_starts_a_session(self, monkeypatch) -> None:
         """Starting the session would run what the spec names, so a failed
-        pre-spawn read refuses before ``get_or_create``."""
+        pre-spawn read the repair cannot restore refuses before ``get_or_create``."""
         monkeypatch.setattr(D, "_toolless_spec_before_spawn", lambda _key: False)
+
+        async def _not_restored(_sessions: Any, _key: str) -> tuple[bool, int]:
+            return False, D._guest_spec_repair_count()
+
+        monkeypatch.setattr(D, "_repair_toolless_spec", _not_restored)
         provider = ScriptedProvider()
         sessions = FakeSessions(provider)
         renderer = RecordingRenderer()
@@ -666,6 +671,80 @@ class TestAToolLessGuestTurn:
         assert sessions.calls("get_or_create") == [] and provider.spec_reads == []
         assert renderer.shown == [TOOLLESS_TURN_REFUSAL_NOTE]
         assert sessions.count("release") == 0
+
+    def test_a_spec_the_repair_restores_runs_the_turn(self, monkeypatch) -> None:
+        """A failed pre-spawn read hands the spec to the repair, whose read after
+        its rewrite decides the turn."""
+        monkeypatch.setattr(D, "_toolless_spec_before_spawn", lambda _key: False)
+        repaired: list[str] = []
+
+        async def _restored(_sessions: Any, key: str) -> tuple[bool, int]:
+            repaired.append(key)
+            return True, D._guest_spec_repair_count()
+
+        monkeypatch.setattr(D, "_repair_toolless_spec", _restored)
+        sessions = FakeSessions(ScriptedProvider(answer()))
+
+        outcome = _answer(_turns(sessions), asker=self._guest())
+
+        assert outcome.verdict is Verdict.ANSWERED and repaired == [self._KEY]
+
+    def test_a_repair_during_the_spawn_refuses_the_turn(self, monkeypatch) -> None:
+        """Another guest turn started a repair while this session was starting: its
+        resets did not reach this session, so the read after the start, of a file
+        the repair may have restored, does not vouch for it."""
+        from kiro_crew.messaging import dispatch_tools
+
+        provider = ScriptedProvider(answer())
+        sessions = FakeSessions(provider)
+        start = sessions.get_or_create
+
+        async def _repaired_during_spawn(key: str, **kw: Any) -> Any:
+            for name in ("_guest_spec_repairs_started", "_guest_spec_repairs_finished"):
+                monkeypatch.setattr(dispatch_tools, name, getattr(dispatch_tools, name) + 1)
+            return await start(key, **kw)
+
+        monkeypatch.setattr(sessions, "get_or_create", _repaired_during_spawn)
+        renderer = RecordingRenderer()
+
+        outcome = _answer(_turns(sessions), asker=self._guest(), renderer=renderer)
+
+        assert outcome.verdict is Verdict.TOOLLESS_REFUSED and provider.prompts == []
+        assert renderer.shown == [TOOLLESS_TURN_REFUSAL_NOTE]
+        assert sessions.count("reset") == 1
+
+    def test_a_repair_started_during_the_pre_spawn_read_refuses_the_turn(self, monkeypatch) -> None:
+        """The count is read before the read that vouches for the spawn, so a repair
+        that starts while that read runs leaves it unconfirmed."""
+        from kiro_crew.messaging import dispatch_tools
+
+        def _read_during_a_repair(_key: str) -> bool:
+            for name in ("_guest_spec_repairs_started", "_guest_spec_repairs_finished"):
+                monkeypatch.setattr(dispatch_tools, name, getattr(dispatch_tools, name) + 1)
+            return True
+
+        monkeypatch.setattr(D, "_toolless_spec_before_spawn", _read_during_a_repair)
+        provider = ScriptedProvider(answer())
+
+        outcome = _answer(_turns(FakeSessions(provider)), asker=self._guest())
+
+        assert outcome.verdict is Verdict.TOOLLESS_REFUSED and provider.prompts == []
+
+    def test_a_repair_still_running_refuses_the_turn(self, monkeypatch) -> None:
+        """A repair that has rewritten the file but not yet reset every guest
+        session: a warm session it has not reached may hold the injected server, so
+        no turn is vouched for until it finishes."""
+        from kiro_crew.messaging import dispatch_tools
+
+        started = dispatch_tools._guest_spec_repairs_finished + 1
+        monkeypatch.setattr(dispatch_tools, "_guest_spec_repairs_started", started)
+        provider = ScriptedProvider(answer())
+        sessions = FakeSessions(provider)
+
+        outcome = _answer(_turns(sessions), asker=self._guest())
+
+        assert outcome.verdict is Verdict.TOOLLESS_REFUSED and provider.prompts == []
+        assert sessions.count("reset") == 1
 
     def test_an_owner_turn_never_reads_the_guest_spec(self) -> None:
         provider = ScriptedProvider(answer(), toolless=False)

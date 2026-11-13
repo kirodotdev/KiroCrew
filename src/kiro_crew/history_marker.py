@@ -572,3 +572,60 @@ def record_consolidation_environment_failure(
             },
         )
     return failures, retry_at
+
+
+def clear_consolidation_environment_backoff(self: ConversationLog, key: str) -> bool:
+    """Drop *key*'s environment-failure backoff once the host can run turns again.
+
+    An environment failure (:func:`record_consolidation_environment_failure`)
+    says nothing about the span: no turn reached a provider. Its deadline only
+    keeps a broken host from retrying every tick, and it widens to a day. Once a
+    consolidation turn has reached a provider again, that wait is stale, and
+    without this release a session refused while the host was broken sits out
+    the rest of its day after the fix.
+
+    Released only while the session carries no billed attempt for its current
+    span: a billed failure writes the same ``consolidation_retry_at`` field, and
+    its backoff must hold. A billed count left from a span that is gone does not
+    hold it, by the same test :func:`consolidation_retry_state` applies.
+
+    Released ONCE per session until it next consolidates: the release stamps
+    ``consolidation_env_released`` and keeps the failure count, and a
+    successful mark clears both with the rest of the retry accounting. So a
+    session whose failure is its own (a deleted member store, say) gets one free
+    retry when the host recovers, then resumes widening from its old count up to
+    the ceiling instead of being released after every other session's success.
+
+    Nothing else changes: no span field moves, nothing is marked consolidated
+    and no unread message is retired.
+
+    Returns True when a backoff was released. Same locked read-modify-write and
+    deleted-session guard as the recording path. Blocking file IO; call it off
+    the event loop.
+    """
+    with self._locked(key):
+        if not self._path(key).exists():
+            return False
+        meta = self._read_metadata(key)
+        if meta.get("consolidation_env_released"):
+            return False
+        try:
+            failures = int(meta.get("consolidation_env_failures", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            failures = 0
+        try:
+            attempts = int(meta.get("consolidation_attempts", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            attempts = 0
+        if attempts and not self._attempts_describe_current_span(meta, None):
+            attempts = 0
+        if failures < 1 or attempts > 0:
+            return False
+        self._update_metadata_locked(
+            key,
+            {
+                "consolidation_env_released": True,
+                "consolidation_retry_at": 0.0,
+            },
+        )
+    return True

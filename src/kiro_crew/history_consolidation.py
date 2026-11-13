@@ -237,6 +237,12 @@ class HistoryConsolidator:
         self._last_lifecycle: float = 0.0
         self._running: set[str] = set()
         self._tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
+        # True while a session may still carry an environment-failure backoff
+        # from a host that could not run turns. Starts True: the backoff is on
+        # disk and survives the restart (or upgrade) that fixed the host. The
+        # first turn that reaches a provider releases it, once, through
+        # :meth:`_release_environment_backoff`.
+        self._env_backoff_pending = True
         # Transcript files whose rows are being counted off the loop, keyed by
         # file name like _busy so alias spellings of one transcript share one
         # claim. See _claim_count and _release_count.
@@ -598,6 +604,7 @@ class HistoryConsolidator:
             return
         if failures < 1:
             return
+        self._env_backoff_pending = True
         self._logger.warning(
             "Consolidation for %s could not reach the LLM (%s; environment "
             "failure #%d, nothing billed); retrying in %.0fs without consuming "
@@ -607,6 +614,55 @@ class HistoryConsolidator:
             failures,
             max(0.0, retry_at - _time.time()),
         )
+
+    def _release_environment_backoff(self) -> None:
+        """Release the environment backoff of every tracked session, once per recovery.
+
+        Called when a consolidation turn has reached a provider, which proves the
+        host can run turns again. Sessions refused while it could not (a missing
+        kiro-cli, a background session refused before it started) would
+        otherwise keep their widened deadline, up to a day, after the fix.
+
+        Runs off the event loop as a tracked task and never raises into the pass
+        that reached the provider. The keys are the sessions the idle sweep
+        already tracks (live activity plus the startup seed), so the cost is one
+        metadata read each. :meth:`ConversationLog.clear_consolidation_environment_backoff`
+        leaves a session with a billed attempt alone.
+        """
+        if not self._env_backoff_pending:
+            return
+        self._env_backoff_pending = False
+        keys = list(self._last_activity)
+
+        def _release() -> int:
+            released = 0
+            for key in keys:
+                try:
+                    if self._log.clear_consolidation_environment_backoff(key):
+                        released += 1
+                except Exception:
+                    self._logger.debug(
+                        "Could not release the environment backoff for %s", key, exc_info=True
+                    )
+            return released
+
+        async def _run() -> None:
+            try:
+                released = await asyncio.to_thread(_release)
+            except Exception:
+                self._env_backoff_pending = True
+                self._logger.warning("Releasing the environment backoff failed", exc_info=True)
+                return
+            if released:
+                self._logger.info(
+                    "Consolidation reached the LLM again; released the environment "
+                    "backoff of %d session(s)",
+                    released,
+                )
+
+        t = asyncio.ensure_future(_run())
+        self._tasks.add(t)
+        t.add_done_callback(self._tasks.discard)
 
     def _busy(self, key: str) -> bool:
         """True when *key*, or any other key naming the same transcript file, is running."""
@@ -696,6 +752,9 @@ class HistoryConsolidator:
             if _safe_key(key) not in tracked:
                 self._last_activity[key] = mtime
                 self._seeded_keys.add(key)
+                # A turn may have reached a provider before this scan finished
+                # and spent the startup release on the live keys alone.
+                self._env_backoff_pending = True
 
     def maybe_consolidate(self, key: str) -> None:
         """Fire preferences/projects consolidation if message threshold exceeded.

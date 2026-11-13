@@ -874,7 +874,12 @@ background work. It is:
   leaves no `_bg` session. When the refusal carries the `kiro_cli_missing` tag
   (no Kiro CLI installed, the normal state right after a fresh install, which the
   dashboard's Set up Kiro page handles) it is one warning line with the
-  refusal's message; any other failure is logged with its traceback
+  refusal's message; any other failure is logged with its traceback. An
+  `_ensure_background` start is shut down instead of registered when `_bg`'s
+  ownership generation moves after it takes its start permit (every reset of
+  `_bg` moves it, even with nothing registered yet), so a reset leaves no older
+  provider from that start for a later claimant; its caller finds no `_bg`
+  registered, as after a failed start.
 - **Never expired** by idle cleanup (`_expire_idle` skips it)
 - **Serialized** by the per-session semaphore (one background task at a time)
   — applies to the **non-kiro** `_bg` path only; see "Multiplexed _bg runtime"
