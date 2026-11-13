@@ -928,9 +928,9 @@ async def _surface_withheld_project_hooks(
         )
 
 
-def _on_kas(client) -> bool:
-    """Whether *client* runs on KAS."""
-    return capabilities_of(client).backend == ACP_BACKEND_KAS
+def _crew_fires_agent_spawn(client) -> bool:
+    """Whether Crew, not the harness, fires the spec's ``agentSpawn`` on *client*."""
+    return capabilities_of(client).crew_fires_spec_observer_hooks
 
 
 async def _fire(
