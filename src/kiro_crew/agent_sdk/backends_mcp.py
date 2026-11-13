@@ -358,9 +358,10 @@ ACP_BACKENDS_UNASKED_NATIVE_TOOLS = frozenset({ACP_BACKEND_MIMOCODE})
 #   in ``providers/mirrors/registry.py``'s ``MIRRORS``, or, for a mirror-less host
 #   whose declared projection is ``ProjectionKind.BROKER_ONLY`` (pi),
 #   ``AcpClient._mirrorless_member_mounts`` reading the same parse -- AND the
-#   session is served by ``AcpClient`` rather than ``AcpRuntime``, because the
-#   refusal that closes the gap, ``AcpClient._deny_zero_tools``, lives ONLY on
-#   ``AcpClient``.
+#   session is served by ``AcpClient`` rather than ``AcpRuntime``. The runtime's
+#   own refusal, ``AcpSessionHandle._deny_zero_tools``, serves only codex, and
+#   codex runs some calls without asking, so that ban stays partial (see the
+#   codex paragraph below).
 #
 # Today that is opencode and goose (``Routing.VERIFIED_SEEDED_SETTINGS``) and
 # deepseek (``Routing.VERIFIED_GATE_EXTENSION``): mirrored, not in
