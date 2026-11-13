@@ -997,6 +997,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _goal_state,
         _hunk_separator,
         _import_after_is_written,
+        _import_dashboard_state,
         _import_rules_digest,
         _import_state,
         _mcp_detail,

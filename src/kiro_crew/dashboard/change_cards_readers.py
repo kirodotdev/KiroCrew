@@ -957,14 +957,21 @@ async def resumed_undo_is_stale(rec: dict[str, Any], index: int, *, state: Any, 
         current = await read_state(kind, params, rec["evidence"][:1], state=state, app=app)
         keys: tuple[str, ...] = ("exists", "member_id", "revision")
         undo = (rec.get("plan") or {}).get("undo") or []
-        rules_at = next(
-            (i for i, s in enumerate(undo) if str(s.get("path", "")).endswith("/rules")), -1
-        )
-        if kind == catalog.KIND_CREWMATE_IMPORT and "rules" in after and index <= rules_at:
-            # Until the Undo's own rules step runs, rules saved since are the
-            # owner's; after it, the Undo cleared them itself.
+
+        def at(suffix: str) -> int:
+            return next(
+                (i for i, s in enumerate(undo) if str(s.get("path", "")).endswith(suffix)), -1
+            )
+
+        # Until the Undo's own step for a part runs, a change saved since is the
+        # owner's; after it, the Undo removed or cleared that part itself. A card stored
+        # before the dashboard step has no ``dashboard`` in its after-state: not compared.
+        guarded = (("rules", at("/rules")), ("dashboard", at("/dashboard/template")))
+        is_import = kind == catalog.KIND_CREWMATE_IMPORT
+        parts = tuple(k for k, at_ in guarded if is_import and k in after and index <= at_)
+        if parts:
             current = await read_state(kind, params, rec["evidence"], state=state, app=app)
-            keys += ("rules",)
+            keys += parts
         return canonical({k: current.get(k) for k in keys}) != canonical(
             {k: after.get(k) for k in keys}
         )
@@ -1074,7 +1081,8 @@ async def _import_state(
     """An applied import's crewmate, plus each cron it made and its rules, as fingerprints.
 
     The Undo deletes a cron only while it still reads as the import left it, and
-    clears the rules only while they are still the imported text: an edit the
+    clears the rules only while they are still the imported text, and removes the
+    dashboard only at the template and version the card adopted: an edit the
     owner saved since makes the snapshot differ, so the Undo is refused. The
     carried files are checked file by file by their own route's Undo.
     """
@@ -1091,7 +1099,23 @@ async def _import_state(
     out = {**base, "crons": crons}
     if catalog.IMPORT_STEP_RULES in roles[: len(evidence)]:
         out["rules"] = await asyncio.to_thread(_import_rules_digest, evidence[0])
+    if catalog.IMPORT_STEP_DASHBOARD in roles[: len(evidence)]:
+        out["dashboard"] = await asyncio.to_thread(_import_dashboard_state, evidence[0])
     return out
+
+
+def _import_dashboard_state(ev0: dict[str, Any]) -> dict[str, Any] | None:
+    """The page now set on the imported Bot: which template, at which instance version."""
+    from kiro_crew.dashboard_templates import instance
+
+    slug = ev0.get("member_id")
+    if not isinstance(slug, str) or not slug:
+        return None
+    try:
+        now = instance.read(slug)
+    except instance.InstanceError:
+        return None
+    return {"template_id": now.template_id, "instance_version": now.instance_version}
 
 
 def _import_after_is_written(
@@ -1115,6 +1139,13 @@ def _import_after_is_written(
         elif role == catalog.IMPORT_STEP_RULES:
             text = str(params.get("rules") or "").strip()
             if after.get("rules") != hashlib.sha256(text.encode("utf-8")).hexdigest():
+                return False
+        elif role == catalog.IMPORT_STEP_DASHBOARD:
+            page = after.get("dashboard")
+            written = evidence[index].get("instance_version")
+            if not isinstance(page, dict) or not isinstance(written, int):
+                return False
+            if page.get("instance_version") != written:
                 return False
     return True
 
