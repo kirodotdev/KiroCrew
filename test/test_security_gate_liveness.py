@@ -807,7 +807,13 @@ def _url_payload_command(n: int) -> str:
 #: row only, and ``is_denied`` judges that row on the view while its events keep the
 #: command as submitted. Every other row, an operator's copy, and the rm floor for
 #: ``/`` and ``~`` read the full text. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_997
+#: Raised by 35, from 35,997, to 36,032, for push false positives read from shell
+#: structure: a ``$(`` inside double quotes starts its body unquoted, taken only for a
+#: flat body (a nested ``$(``/backtick/``<<`` keeps the whole-remainder reading) that is
+#: NOT in program position (``"$(echo git)" push`` still reads the whole remainder, so a
+#: quoted expansion that runs ``git push`` stays denied). The recorded true positives
+#: stay denied. Re-measured.
+_PACKAGE_LINE_BUDGET = 36_032
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

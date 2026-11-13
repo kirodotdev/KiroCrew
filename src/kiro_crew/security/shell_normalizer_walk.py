@@ -244,6 +244,18 @@ def _ends_argv(token: str) -> bool:
     return "|" in token or ";" in token
 
 
+def _quoted_subst_in_program_position(text: str, i: int) -> bool:
+    """True if the ``$(`` at offset *i* (inside double quotes) stands where a PROGRAM
+    word would: at the start of a command, bar the opening quote(s) and blanks.
+    ``"$(echo git)" push`` runs the expansion's output as the command; ``B="$(pwd)"``
+    does not (the ``=`` makes it an assignment value). The quoted-body fast path is
+    skipped here so the git-publish floor keeps reading the whole remainder, as on main."""
+    j = i - 1
+    while j >= 0 and text[j] in " \t\"'":
+        j -= 1
+    return j < 0 or text[j] in ";&|`\n("
+
+
 def _substitution_bodies(text: str) -> "list[str]":
     """The body of each command substitution in *text*.
 
@@ -272,11 +284,34 @@ def _substitution_bodies(text: str) -> "list[str]":
     cannot disagree.
     """
     bodies: list[str] = []
+    # A ``$(`` inside double quotes starts its body unquoted, as bash reads it and as
+    # ``shell_commands.read_commands`` does. Walking it with the quote still open hid
+    # its ``)`` and returned the whole remainder: ``B="$(pwd)"; git push origin feat``
+    # yielded ``pwd)"; git push ...``, an open quote the push floor refuses.
+    quoted_dollars = (
+        {s.offset for s in _iter_shell_chars(text) if s.state == 2 and s.text == "$"}
+        if '"' in text
+        else set()
+    )
     i = 0
     while i < len(text):
         # PROCESS substitutions run their body as a command just as a command
         # substitution does -- ``cat <(kirocrew token)`` executes the inner command and
         # feeds its output through a pipe.  Same paren-nesting walk.
+        if (
+            i in quoted_dollars
+            and text.startswith("$(", i)
+            and not _quoted_subst_in_program_position(text, i)
+        ):
+            close, proven = _matching_close_paren(text[i + 2 :], 0)
+            body = text[i + 2 : i + 1 + close]
+            # Only a flat body: a nested substitution, backtick or heredoc in it starts
+            # its own quote context this one walk does not model (a heredoc body ``)``
+            # reads as the closer), so it keeps the reading below.
+            if proven and not any(t in body for t in ("$(", "`", "<(", ">(", "<<")):
+                bodies.append(body)
+                i += 2 + close
+                continue
         if text.startswith(("<(", ">(", "$("), i):
             end, proven = _matching_close_paren(text, i + 2)
             bodies.append(text[i + 2 : end - 1] if proven else text[i + 2 :])
