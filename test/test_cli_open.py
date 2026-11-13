@@ -69,6 +69,30 @@ class TestBuildDeepLink:
         with pytest.raises(DeepLinkError):
             build_deep_link(session=session)
 
+    def test_crew_link_names_the_crew_and_the_session(self):
+        assert (
+            build_deep_link(session="chat-3-1785870239", crew="devbox-1")
+            == "kirocrew://chat?crew=devbox-1&sid=chat-3-1785870239"
+        )
+        assert (
+            build_deep_link(session="hook%3Acos%3Amenubar-chat", crew="devbox-1")
+            == "kirocrew://chat?crew=devbox-1&sid=hook%3Acos%3Amenubar-chat"
+        )
+
+    @pytest.mark.parametrize("crew", ["Dev Box", "UPPER", "-lead", "a" * 64, "a/b"])
+    def test_crew_that_is_not_a_crew_id_is_refused(self, crew):
+        with pytest.raises(DeepLinkError, match="crew id"):
+            build_deep_link(session="cos-quick-chat", crew=crew)
+
+    def test_crew_session_key_is_capped_at_the_hint_store_limit(self):
+        assert build_deep_link(session="a" * 128, crew="devbox-1").endswith("sid=" + "a" * 128)
+        with pytest.raises(DeepLinkError, match="128"):
+            build_deep_link(session="a" * 129, crew="devbox-1")
+
+    def test_crew_without_a_session_is_refused(self):
+        with pytest.raises(DeepLinkError, match="session"):
+            build_deep_link(crew="devbox-1")
+
 
 class TestOpenUrl:
     def test_macos_and_linux_use_the_shared_launcher_and_wait_for_its_exit(self, monkeypatch):
@@ -161,6 +185,28 @@ class TestCli:
         assert out == ""
         assert "session key" in err
 
+    def test_crew_option_prints_the_crew_link(self, monkeypatch, tmp_path, capsys):
+        code, out, _ = self._run(
+            monkeypatch,
+            tmp_path,
+            capsys,
+            "open",
+            "chat-3-1785870239",
+            "--crew",
+            "devbox-1",
+            "--print",
+        )
+        assert code == 0
+        assert out.strip() == "kirocrew://chat?crew=devbox-1&sid=chat-3-1785870239"
+
+    def test_invalid_crew_exits_2_with_a_reason(self, monkeypatch, tmp_path, capsys):
+        code, out, err = self._run(
+            monkeypatch, tmp_path, capsys, "open", "cos-quick-chat", "--crew", "Dev Box", "--print"
+        )
+        assert code == 2
+        assert out == ""
+        assert "crew id" in err
+
     def test_open_hands_the_url_to_the_os_opener(self, monkeypatch, tmp_path, capsys):
         opened = []
         monkeypatch.setattr(cli_open, "open_url", lambda url: opened.append(url) or (True, "stub"))
@@ -195,6 +241,12 @@ class TestGrammarAgreesWithTheElectronResolver:
 
     def test_slot_key_regex_is_identical(self):
         assert cli_open._SLOT_KEY_RE.pattern == _js_regex("SLOT_KEY_RE")
+
+    def test_crew_slot_key_regex_is_identical(self):
+        assert cli_open._CREW_SLOT_KEY_RE.pattern == _js_regex("CREW_SLOT_KEY_RE")
+
+    def test_crew_id_regex_is_identical(self):
+        assert cli_open._CREW_ID_RE.pattern == _js_regex("CREW_ID_RE")
 
     def test_app_name_samples_agree_with_the_manifest_grammar(self):
         # deep-link.js checks ``kirocrew://apps/detail/<name>`` with plain logic
